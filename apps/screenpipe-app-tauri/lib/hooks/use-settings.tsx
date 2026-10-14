@@ -19,7 +19,7 @@ import type { SourceCitation } from "@/lib/source-citations";
 import type {
 	EnterpriseAppUpdatePolicy,
 	EnterpriseInstallMetadata,
-} from "@ee/lib/app-update-policy";
+} from "@/lib/app-update-policy";
 import { type FontSize, applyFontSize } from "@/lib/utils/font-size";
 export type VadSensitivity = "low" | "medium" | "high";
 
