@@ -239,3 +239,19 @@ work packages that already edit those files.
 `crates/screenpipe-core/src/agents/bash_env.rs` was fixed in place: the
 bash-env wrapper now goes to the default data dir resolver, which honours
 `SCREENPIPE_DATA_DIR`.
+
+### Running the Rust test suites safely
+
+Some upstream tests touch the real home directory. Export
+`SCREENPIPE_DATA_DIR` (dev-env.sh does) before `cargo test`, and expect:
+
+- `screenpipe-core` `agents::pi::tests::test_ensure_pi_config_adds_ollama_provider`
+  writes `~/.pi/agent/models.json` regardless of any variable; delete it
+  afterwards if `~/.pi` did not exist before.
+- `screenpipe-app` `config::tests::test_resolve_{default,empty,relative_path_falls_back}`
+  assert that the default data dir ends in `.screenpipe` and create
+  `<default>/data`. With `SCREENPIPE_DATA_DIR` set they fail instead of
+  creating `~/.screenpipe/data`; that failure is expected in an isolated
+  shell.
+- `screenpipe-core` `pipes::tests::test_should_run_cron_stale_last_run_waits`
+  depends on the local time zone and fails at some hours of the day.
