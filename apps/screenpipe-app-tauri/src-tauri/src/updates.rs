@@ -112,12 +112,14 @@ fn get_target_arch() -> &'static str {
 pub fn is_source_build(_app: &tauri::AppHandle) -> bool {
     // The official-build feature is only enabled during CI releases
     // Source builds will not have this feature enabled
-    !cfg!(feature = "official-build") && !cfg!(feature = "enterprise-build")
+    !cfg!(feature = "official-build")
 }
 
 /// Enterprise build: updates are managed by IT (Intune/RoboPack), not in-app.
+/// Freenpipe has no enterprise build (the `enterprise-build` feature was
+/// removed with the proprietary `ee/` sources), so this is always false.
 pub fn is_enterprise_build(_app: &tauri::AppHandle) -> bool {
-    cfg!(feature = "enterprise-build")
+    false
 }
 
 fn enterprise_app_update_policy(app: &tauri::AppHandle) -> Option<serde_json::Value> {

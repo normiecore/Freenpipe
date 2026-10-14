@@ -150,19 +150,6 @@ screenpipe-redact = { path = "../../../crates/screenpipe-redact", features = ["o
 sqlx = { version = "0.7", features = ["sqlite", "runtime-tokio-rustls"] }
 image = "0.25.5"
 
-# Used only by the path-included `ee/desktop-rust/enterprise_sync.rs`. Gated
-# behind enterprise-build via the `dep:thiserror` syntax in [features] so
-# cargo-machete (which doesn't follow `#[path = ...]` imports) doesn't flag
-# this as unused. Stays cross-platform — the EE sync compiles on Windows
-# too, so this CANNOT live under `cfg(not(target_os = "windows"))`.
-thiserror = { version = "1.0", optional = true }
-
-# Generic sync primitives (destination trait + ticketed pipeline + body
-# encryption). Used by `ee/desktop-rust/enterprise_upload.rs` for the
-# direct-upload path. Gated behind enterprise-build for the same reason
-# as thiserror — `#[path = ...]` imports aren't followed by cargo-machete.
-screenpipe-sync = { path = "../../../crates/screenpipe-sync", optional = true }
-
 # jemalloc — aggressively returns freed pages to OS, reducing RSS bloat
 [target.'cfg(not(target_os = "windows"))'.dependencies]
 tikv-jemallocator = { version = "0.6", optional = true }
@@ -256,15 +243,6 @@ custom-protocol = ["tauri/custom-protocol"]
 # Source builds without this flag will show "auto-updates unavailable"
 official-build = []
 
-# Enterprise build: updates are policy-managed (Intune/MDM or Screenpipe),
-# tauri.enterprise
-# bundle identifier, and the periodic telemetry sync that pushes screen + audio
-# activity to the screenpipe enterprise ingest endpoint scoped by license key.
-# Source for the sync lives under `ee/desktop-rust/enterprise_sync.rs` (EE-licensed).
-# Consumer builds never compile this code.
-# Do NOT add official-build here — enterprise has its own policy-gated updater.
-enterprise-build = ["dep:thiserror", "dep:screenpipe-sync"]
-
 # On-device AI via Apple Foundation Models (macOS 26+ / Xcode 26+ only)
 apple-intelligence = ["screenpipe-engine/apple-intelligence"]
 
@@ -290,21 +268,16 @@ jemalloc = ["tikv-jemallocator"]
 
 
 [dev-dependencies]
-# Used by ee/desktop-rust/enterprise_sync.rs tests (compiled in only when the
-# enterprise-build feature is on).
 tempfile = "3"
-wiremock = "0.6"
 serial_test = "3"
 
 
 [package.metadata.cargo-machete]
 # screenpipe-redact: workspace dep added for async PII reconciliation (PR #3188);
 # wiring lands in a follow-up. Cargo compiles it for the workspace either way.
-# thiserror: gated behind `enterprise-build` via `dep:thiserror`; cargo-machete
-# can't follow `#[path = ...]` imports into ee/desktop-rust/enterprise_sync.rs.
 # eventkit-rs: lib crate is imported as `eventkit` (calendar.rs, permissions.rs);
 # cargo-machete matches the package name `eventkit_rs` so it can't see the use.
-ignored = ["tauri-utils", "screenpipe-redact", "thiserror", "screenpipe-sync", "eventkit-rs"]
+ignored = ["tauri-utils", "screenpipe-redact", "eventkit-rs"]
 
 [patch.crates-io]
 # macOS tray menus can outlive the Rust `Menu` that created them while the

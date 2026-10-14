@@ -579,7 +579,7 @@ fn create_dynamic_menu(
             .item(
                 &MenuItemBuilder::with_id(
                     "version",
-                    if cfg!(feature = "enterprise-build") {
+                    if is_enterprise_build(app) {
                         format!("version {} (Enterprise)", app.package_info().version)
                     } else {
                         format!("version {}", app.package_info().version)
@@ -747,7 +747,7 @@ fn create_dynamic_menu(
 
     // --- Version (below update item) ---
     let is_beta = app.config().identifier.contains("beta");
-    let is_enterprise = cfg!(feature = "enterprise-build");
+    let is_enterprise = is_enterprise_build(app);
     let version_text = match (is_beta, is_enterprise) {
         (_, true) => format!("screenpipe v{} (Enterprise)", app.package_info().version),
         (true, false) => format!("screenpipe v{} (Beta)", app.package_info().version),
