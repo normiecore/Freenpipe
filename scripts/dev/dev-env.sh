@@ -36,6 +36,14 @@ _fp_abs() {
 }
 _fp_real="$(_fp_abs "$HOME/.screenpipe")"
 _fp_dd_abs="$(_fp_abs "$FP_DD")"
+if [ -z "$_fp_real" ] || [ -z "$_fp_dd_abs" ]; then
+  # A failed command substitution (Git Bash fork errors) leaves these empty;
+  # fail closed instead of guessing.
+  echo "dev-env: could not resolve FP_DD or ~/.screenpipe (shell fork failure?); retry" >&2
+  unset FP_DD
+  unset -f _fp_abs
+  return 1 2>/dev/null || exit 1
+fi
 case "$_fp_dd_abs" in
   "$_fp_real"|"$_fp_real"/*)
     echo "dev-env: refusing FP_DD=$FP_DD, it points into ~/.screenpipe" >&2
