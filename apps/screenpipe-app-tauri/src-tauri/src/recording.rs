@@ -71,13 +71,12 @@ fn build_config(app: &tauri::AppHandle) -> Result<RecordingConfig, String> {
     Ok(store.to_recording_config(data_dir))
 }
 
+/// Recording is never gated on a plan in Freenpipe. Kept as a named check so
+/// the start paths read the same as before; it always allows, because
+/// `app_entitled_or_dev` is constant-true.
 fn require_app_entitlement(store: &SettingsStore) -> Result<(), String> {
-    if store.app_entitled_or_dev() {
-        return Ok(());
-    }
-
-    crate::health::set_recording_status(crate::health::RecordingStatus::Paused);
-    Err("subscription_required: active screenpipe plan required to start recording".to_string())
+    debug_assert!(store.app_entitled_or_dev());
+    Ok(())
 }
 
 pub fn notify_audio_engine_fallback(store: &SettingsStore) {

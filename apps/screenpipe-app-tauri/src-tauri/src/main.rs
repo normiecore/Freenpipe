@@ -1425,15 +1425,10 @@ async fn main() {
             // Start server core + capture on a dedicated thread with its own tokio runtime
             // to avoid competing with Tauri's UI runtime.
             // Two-phase startup: ServerCore (DB + HTTP + pipes) then CaptureSession (vision + audio).
-            'start_server: {
+            // Freenpipe has no account or plan gate: the server always auto-starts.
+            {
                 let store_clone = store.clone();
                 let data_dir_clone = data_dir.clone();
-                if !store_clone.app_entitled_or_dev() {
-                    info!("Skipping server auto-start: active screenpipe plan required");
-                    crate::health::set_recording_status(crate::health::RecordingStatus::Paused);
-                    let _ = app_handle.emit("app-entitlement-required", ());
-                    break 'start_server;
-                }
                 let recording_state = app_handle.state::<RecordingState>();
                 recording_state.is_starting.store(true, std::sync::atomic::Ordering::SeqCst);
                 let server_arc = recording_state.server.clone();
