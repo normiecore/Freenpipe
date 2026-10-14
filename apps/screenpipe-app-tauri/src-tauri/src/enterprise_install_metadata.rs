@@ -11,8 +11,8 @@
 
 use serde::{Deserialize, Serialize};
 
-/// Install/update-management facts. Field names are fixed by the generated
-/// TypeScript type and by settings that older builds persisted.
+/// Install and update-management facts. The field names match what older
+/// builds persisted in settings (`enterpriseInstallMetadata`).
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, specta::Type)]
 pub struct EnterpriseInstallMetadata {
     /// Where the install came from (installer, package manager, ...).
@@ -43,8 +43,9 @@ impl Default for EnterpriseInstallMetadata {
     }
 }
 
-/// Report install metadata. Usable both as a Tauri command and as a plain
-/// function (`updates.rs` reads `.managed`).
+// Also called directly as a plain function: updates.rs reads `.managed`.
+/// How this install is updated. Freenpipe always reports an unmanaged,
+/// self-updating install.
 #[tauri::command]
 #[specta::specta]
 pub fn get_enterprise_install_metadata() -> EnterpriseInstallMetadata {

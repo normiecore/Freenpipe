@@ -544,6 +544,10 @@ async getDiskUsage(forceRefresh: boolean | null, dataDir: string | null) : Promi
 async getE2eSeedFlags() : Promise<string[]> {
     return await TAURI_INVOKE("get_e2e_seed_flags");
 },
+/**
+ * How this install is updated. Freenpipe always reports an unmanaged,
+ * self-updating install.
+ */
 async getEnterpriseInstallMetadata() : Promise<EnterpriseInstallMetadata> {
     return await TAURI_INVOKE("get_enterprise_install_metadata");
 },
@@ -1780,7 +1784,8 @@ async setEnhancedAiSuggestions(enabled: boolean, token: string) : Promise<Result
 }
 },
 /**
- * Called by the frontend after fetching the enterprise policy.
+ * Accepts a list of settings sections a managed policy would hide.
+ * Freenpipe has no remote policy source, so the list is ignored.
  */
 async setEnterprisePolicy(hiddenSections: string[]) : Promise<void> {
     await TAURI_INVOKE("set_enterprise_policy", { hiddenSections });
@@ -1813,9 +1818,8 @@ async setSyncEnabled(enabled: boolean) : Promise<Result<null, string>> {
 }
 },
 /**
- * Called by the frontend after fetching the `syncStreams` block from
- * `/api/enterprise/policy`. Flat booleans rather than a struct so the
- * specta-generated TS binding stays trivial.
+ * Accepts per-stream switches for a managed upload channel. Freenpipe
+ * uploads nothing, so the switches are ignored.
  */
 async setSyncStreams(frames: boolean, audio: boolean, uiEvents: boolean, memories: boolean, snapshots: boolean) : Promise<void> {
     await TAURI_INVOKE("set_sync_streams", { frames, audio, uiEvents, memories, snapshots });
@@ -2216,7 +2220,27 @@ export type DiscoveredHost = { host: string; port: number; user: string | null; 
 alias?: string | null }
 export type E2eAgentStreamResult = { emitted_deltas: number; emit_ms: number }
 export type EmbeddedLLM = { enabled: boolean; model: string; port: number }
-export type EnterpriseInstallMetadata = { install_source: string; update_manager: string; managed: boolean; detected_by: string[] }
+/**
+ * Install and update-management facts. The field names match what older
+ * builds persisted in settings (`enterpriseInstallMetadata`).
+ */
+export type EnterpriseInstallMetadata = {
+/**
+ * Where the install came from (installer, package manager, ...).
+ */
+install_source: string;
+/**
+ * Which tool is responsible for updating this install.
+ */
+update_manager: string;
+/**
+ * True when an external manager (MDM, package manager) owns updates.
+ */
+managed: boolean;
+/**
+ * Signals that led to the `managed` verdict, for display only.
+ */
+detected_by: string[] }
 export type ExcludedApp = { bundleId: string; name: string | null; icon: string | null }
 export type HardwareCapability = { hasGpu: boolean; cpuCores: number; totalMemoryGb: number; recommendedEngine: string; reason: string }
 export type IcsCalendarEntry = { name: string; url: string; enabled: boolean }
