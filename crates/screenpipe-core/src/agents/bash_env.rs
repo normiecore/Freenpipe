@@ -154,8 +154,9 @@ pub fn ensure_wrapper(screenpipe_dir: &Path) -> Result<PathBuf> {
 /// then `ensure_wrapper`. Convenience for spawn sites that don't already
 /// know the data dir.
 pub fn ensure_wrapper_in_default_dir() -> Result<PathBuf> {
-    let home = dirs::home_dir().context("home dir not found")?;
-    ensure_wrapper(&home.join(".screenpipe"))
+    // Honours SCREENPIPE_DATA_DIR like every other default-dir reader, so a
+    // dev instance never writes into another install's ~/.screenpipe.
+    ensure_wrapper(&crate::paths::default_screenpipe_data_dir())
 }
 
 #[cfg(test)]

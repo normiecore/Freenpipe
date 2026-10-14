@@ -25,7 +25,7 @@ import {
   EnterpriseAppUpdatePolicy,
   EnterpriseInstallMetadata,
   normalizeEnterpriseAppUpdatePolicy,
-} from "@ee/lib/app-update-policy";
+} from "@/lib/app-update-policy";
 
 interface EnterprisePolicy {
   hiddenSections: string[];

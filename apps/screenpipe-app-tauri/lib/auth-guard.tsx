@@ -19,7 +19,8 @@ let lastToastTime = 0;
 
 function openLogin() {
   // dynamic import to avoid SSR/test crashes from tauri plugins
-  const loginUrl = screenpipeWebUrl("/login", "https://screenpipe.com");
+  const loginUrl = screenpipeWebUrl("/login");
+  if (!loginUrl) return; // no website configured
   import("@tauri-apps/plugin-shell").then(({ open }) => {
     open(loginUrl);
   }).catch(() => {

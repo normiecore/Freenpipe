@@ -5,7 +5,6 @@ members = [
 exclude = [
     "apps/screenpipe-app-tauri/src-tauri",
     "crates/screenpipe-integrations",
-    "ee/sdk",
 ]
 resolver = "2"
 
@@ -74,3 +73,14 @@ opt-level = 0
 [profile.dev.package."*"]
 opt-level = 2      # Optimize all dependencies (faster runtime, same compile time)
 debug = false      # deps don't need debug symbols — keeps target/ from ballooning
+
+# Windows/MSVC: knf-rs-sys chooses its CMake config from its build script's
+# own `debug_assertions`. With them on (the dev default) it compiles the
+# debug CRT (/MDd) while whisper-rs-sys and the other C/C++ deps use the
+# release CRT (/MD), and the link fails with LNK2038/LNK1120. A package
+# override also applies to that package's build script, so switching debug
+# assertions off for knf-rs-sys alone keeps one runtime. (A global
+# [profile.dev.build-override] would also flip proc macros such as
+# tauri-codegen and break `tauri::generate_context!` in the app.)
+[profile.dev.package.knf-rs-sys]
+debug-assertions = false

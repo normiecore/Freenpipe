@@ -19,7 +19,7 @@ import type { SourceCitation } from "@/lib/source-citations";
 import type {
 	EnterpriseAppUpdatePolicy,
 	EnterpriseInstallMetadata,
-} from "@ee/lib/app-update-policy";
+} from "@/lib/app-update-policy";
 import { type FontSize, applyFontSize } from "@/lib/utils/font-size";
 export type VadSensitivity = "low" | "medium" | "high";
 
@@ -1241,7 +1241,9 @@ export const SettingsProvider: React.FC<{ children: React.ReactNode }> = ({ chil
 		// abort the write below instead of resurrecting the cleared session.
 		const generation = authGenerationRef.current;
 		try {
-			const response = await fetch(screenpipeWebUrl("/api/user", "https://screenpi.pe"), {
+			const userUrl = screenpipeWebUrl("/api/user");
+			if (!userUrl) return; // no website configured: nothing to verify against
+			const response = await fetch(userUrl, {
 				method: "POST",
 				headers: {
 					"Content-Type": "application/json",
