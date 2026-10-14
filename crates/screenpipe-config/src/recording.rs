@@ -451,11 +451,14 @@ pub struct RecordingSettings {
     #[serde(rename = "useChineseMirror")]
     pub use_chinese_mirror: bool,
 
-    /// Enable anonymous analytics (PostHog).
+    /// Legacy telemetry opt-in, kept so an existing store.bin still loads.
+    /// Defaults to off, and nothing reads it to send data: Freenpipe has no
+    /// telemetry.
     #[serde(rename = "analyticsEnabled")]
     pub analytics_enabled: bool,
 
-    /// Persistent analytics ID (UUID, stable across sessions).
+    /// Persistent local install ID (UUID, stable across sessions). Never sent
+    /// anywhere.
     #[serde(rename = "analyticsId")]
     pub analytics_id: String,
 
@@ -594,7 +597,7 @@ impl Default for RecordingSettings {
             port: 3030,
             power_mode: None,
             use_chinese_mirror: false,
-            analytics_enabled: true,
+            analytics_enabled: false,
             analytics_id: String::new(),
             enable_workflow_events: false,
             device_tier: None,
@@ -672,6 +675,17 @@ mod tests {
         assert_eq!(settings.video_quality, "balanced");
         assert!(settings.use_system_default_audio);
         assert!(settings.ignore_incognito_windows);
+    }
+
+    #[test]
+    fn telemetry_opt_in_defaults_off() {
+        assert!(!RecordingSettings::default().analytics_enabled);
+        let settings: RecordingSettings = serde_json::from_str("{}").unwrap();
+        assert!(!settings.analytics_enabled);
+        // An explicit legacy value from a screenpipe store.bin still round-trips.
+        let settings: RecordingSettings =
+            serde_json::from_str(r#"{"analyticsEnabled": true}"#).unwrap();
+        assert!(settings.analytics_enabled);
     }
 
     #[test]
