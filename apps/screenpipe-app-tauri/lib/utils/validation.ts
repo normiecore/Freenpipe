@@ -39,6 +39,10 @@ export const userSchema = z.object({
   app_entitled: z.boolean().nullable().optional(),
   subscription_plan: z.string().nullable().optional(),
   entitlement: z.any().nullable().optional(),
+  // Written by newer screenpipe releases; accepted so their store.bin validates.
+  has_payment_method: z.boolean().nullable().optional(),
+  entitlement_source: z.string().nullable().optional(),
+  enterprise_account: z.any().nullable().optional(),
 });
 
 export const aiProviderTypeSchema = z.enum(["openai", "native-ollama", "custom", "screenpipe-cloud", "pi", "anthropic"]);
