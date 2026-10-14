@@ -316,3 +316,12 @@ opt-level = 0
 
 [profile.dev.package."*"]
 opt-level = 2
+
+# Windows/MSVC: knf-rs-sys (via screenpipe-audio) picks its CMake config from
+# its build script's `debug_assertions`; with them on it builds the debug CRT
+# (/MDd) and the link against the release-CRT C++ deps fails (LNK2038). The
+# package override also covers its build script. Do not use a global
+# [profile.dev.build-override] here: tauri-codegen would then generate ACL
+# code without the debug-only `referenced_by` field that tauri-utils expects.
+[profile.dev.package.knf-rs-sys]
+debug-assertions = false
