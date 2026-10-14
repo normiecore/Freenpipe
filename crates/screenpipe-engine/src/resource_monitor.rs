@@ -1,6 +1,5 @@
 use chrono::Local;
-use reqwest::Client;
-use serde_json::{json, Map};
+use serde_json::json;
 use std::env;
 use std::fs::File;
 use std::fs::OpenOptions;
@@ -9,19 +8,14 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 use sysinfo::{CpuExt, PidExt, ProcessExt, System, SystemExt};
 use tracing::debug;
-use tracing::trace;
-use tracing::{error, info, warn};
+use tracing::{error, info};
 
-use crate::telemetry_context::TelemetryContext;
-
+/// Samples the engine's own CPU and memory use. Everything stays local: a
+/// DEBUG log line per sample, plus the optional `SAVE_RESOURCE_USAGE` JSONL
+/// file. Nothing is sent over the network.
 pub struct ResourceMonitor {
     start_time: Instant,
     resource_log_file: Option<String>, // analyse output here: https://colab.research.google.com/drive/1zELlGdzGdjChWKikSqZTHekm5XRxY-1r?usp=sharing
-    posthog_client: Option<Client>,
-    posthog_enabled: bool,
-    distinct_id: String,
-    /// Cached hardware info (collected once at startup, never changes)
-    hw_info: HardwareInfo,
 }
 
 /// Static hardware info collected once at startup.
@@ -59,7 +53,7 @@ impl HardwareInfo {
 /// Best-effort GPU detection using platform tools.
 /// Returns a list of GPU model names (e.g. ["Apple M2 Pro", "AMD Radeon RX 7900"]).
 /// Never panics — returns an empty vec on any failure.
-/// Capped at 8 entries to avoid bloating the analytics payload.
+/// Capped at 8 entries to keep the startup log line short.
 fn detect_gpus() -> Vec<String> {
     let gpus = detect_gpus_platform();
     // Cap to 8 GPUs (more than enough) and truncate long names
@@ -233,7 +227,7 @@ pub enum RestartSignal {
 }
 
 impl ResourceMonitor {
-    pub fn new(telemetry_enabled: bool) -> Arc<Self> {
+    pub fn new() -> Arc<Self> {
         let resource_log_file = if env::var("SAVE_RESOURCE_USAGE").is_ok() {
             let now = Local::now();
             let filename = format!("resource_usage_{}.json", now.format("%Y%m%d_%H%M%S"));
@@ -253,19 +247,6 @@ impl ResourceMonitor {
             None
         };
 
-        // Create client once and reuse instead of Option
-        let posthog_client = telemetry_enabled.then(Client::new);
-
-        if telemetry_enabled {
-            debug!("Telemetry enabled, will send performance data to PostHog");
-        } else {
-            debug!("Telemetry disabled, will not send performance data to PostHog");
-        }
-
-        // Use env-provided analytics/support IDs or generate a random UUID.
-        let distinct_id = TelemetryContext::distinct_id_from_env()
-            .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
-
         // Collect hardware info once (CPU brand, GPU names) — never panics
         let hw_info = HardwareInfo::collect();
         debug!(
@@ -276,78 +257,7 @@ impl ResourceMonitor {
         Arc::new(Self {
             start_time: Instant::now(),
             resource_log_file,
-            posthog_client,
-            posthog_enabled: telemetry_enabled,
-            distinct_id,
-            hw_info,
         })
-    }
-
-    async fn send_to_posthog(
-        &self,
-        total_memory_gb: f64,
-        system_total_memory: f64,
-        total_cpu: f32,
-    ) {
-        let Some(client) = &self.posthog_client else {
-            return;
-        };
-
-        // Create System only when needed
-        let sys = System::new();
-
-        // Avoid unnecessary cloning by using references
-        let mut properties = Map::new();
-        properties.insert("distinct_id".to_string(), json!(&self.distinct_id));
-        properties.insert("$lib".to_string(), json!("rust-reqwest"));
-        properties.insert("total_memory_gb".to_string(), json!(total_memory_gb));
-        properties.insert(
-            "system_total_memory_gb".to_string(),
-            json!(system_total_memory),
-        );
-        properties.insert(
-            "memory_usage_percent".to_string(),
-            json!((total_memory_gb / system_total_memory) * 100.0),
-        );
-        properties.insert("total_cpu_percent".to_string(), json!(total_cpu));
-        properties.insert(
-            "runtime_seconds".to_string(),
-            json!(self.start_time.elapsed().as_secs()),
-        );
-        properties.insert("os_name".to_string(), json!(sys.name().unwrap_or_default()));
-        properties.insert(
-            "os_version".to_string(),
-            json!(sys.os_version().unwrap_or_default()),
-        );
-        properties.insert(
-            "kernel_version".to_string(),
-            json!(sys.kernel_version().unwrap_or_default()),
-        );
-        properties.insert("cpu_count".to_string(), json!(sys.cpus().len()));
-        properties.insert("cpu_brand".to_string(), json!(&self.hw_info.cpu_brand));
-        properties.insert("cpu_arch".to_string(), json!(&self.hw_info.cpu_arch));
-        properties.insert("gpu_count".to_string(), json!(self.hw_info.gpu_names.len()));
-        properties.insert("gpu_names".to_string(), json!(&self.hw_info.gpu_names));
-        properties.insert("release".to_string(), json!(env!("CARGO_PKG_VERSION")));
-        TelemetryContext::from_env().insert_posthog_properties(&mut properties);
-
-        let payload = json!({
-            "api_key": "phc_z7FZXE8vmXtdTQ78LMy3j1BQWW4zP6PGDUP46rgcdnb",
-            "event": "resource_usage",
-            "properties": properties,
-        });
-
-        trace!(target: "resource_monitor", "Sending resource usage to PostHog: {:?}", payload);
-
-        // Send the event to PostHog
-        if let Err(e) = client
-            .post("https://us.i.posthog.com/capture/")
-            .json(&payload)
-            .send()
-            .await
-        {
-            error!("Failed to send resource usage to PostHog: {}", e);
-        }
     }
 
     async fn collect_metrics(&self, sys: &System) -> (f64, f64, f64, f32, f64, Duration) {
@@ -465,26 +375,11 @@ impl ResourceMonitor {
 
         // Log to file
         self.log_to_file(metrics).await;
-
-        // Send to PostHog if enabled
-        if self.posthog_enabled {
-            tokio::select! {
-                _ = self.send_to_posthog(total_memory_gb, system_total_memory, total_cpu) => {},
-                _ = tokio::time::sleep(Duration::from_secs(5)) => {
-                    warn!("PostHog request timed out");
-                }
-            }
-        }
     }
 
-    pub fn start_monitoring(
-        self: &Arc<Self>,
-        interval: Duration,
-        posthog_interval: Option<Duration>,
-    ) {
+    /// Sample every `interval` until the process exits.
+    pub fn start_monitoring(self: &Arc<Self>, interval: Duration) {
         let monitor = Arc::clone(self);
-        let posthog_interval = posthog_interval.unwrap_or(interval);
-        let mut last_posthog_update = Instant::now();
 
         tokio::spawn(async move {
             // Only load process + CPU info — skip disks, networks, components.
@@ -528,48 +423,11 @@ impl ResourceMonitor {
                             }
                             unsafe { malloc_trim(0) };
                         }
-                        let now = Instant::now();
-                        let should_send_to_posthog = now.duration_since(last_posthog_update) >= posthog_interval;
-
-                        if should_send_to_posthog {
-                            last_posthog_update = now;
-                            monitor.log_status(&sys).await;
-                        } else {
-                            // Log status without sending to PostHog
-                            monitor.log_status_local(&sys).await;
-                        }
+                        monitor.log_status(&sys).await;
                     }
                 }
             }
         });
-    }
-
-    // New method for logging without PostHog
-    async fn log_status_local(&self, sys: &System) {
-        let metrics = self.collect_metrics(sys).await;
-        let (
-            total_memory_gb,
-            system_total_memory,
-            memory_usage_percent,
-            total_cpu,
-            total_virtual_memory_gb,
-            runtime,
-        ) = metrics;
-
-        // Log to console with virtual memory
-        let log_message = format!(
-            "Runtime: {}s, Memory: {:.0}% ({:.2} GB / {:.2} GB), Virtual: {:.2} GB, CPU: {:.0}%",
-            runtime.as_secs(),
-            memory_usage_percent,
-            total_memory_gb,
-            system_total_memory,
-            total_virtual_memory_gb,
-            total_cpu
-        );
-        debug!("{}", log_message);
-
-        // Log to file
-        self.log_to_file(metrics).await;
     }
 
     pub async fn shutdown(&self) {
@@ -577,10 +435,6 @@ impl ResourceMonitor {
             if let Ok(mut f) = OpenOptions::new().write(true).open(file) {
                 let _ = f.flush();
             }
-        }
-
-        if self.posthog_client.is_some() {
-            tokio::time::sleep(Duration::from_millis(100)).await;
         }
     }
 }

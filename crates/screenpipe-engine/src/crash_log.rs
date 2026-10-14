@@ -7,13 +7,12 @@
 //! Integrators embed the `screenpipe` binary as a child process inside their
 //! own wrapper (e.g. an Electron app) and, when it dies, observe only its exit
 //! code — which doesn't say *why*. These helpers persist the panic message and
-//! backtrace to `last-panic.log` in the data dir so the parent process (and we,
-//! via Sentry) can read the cause after the child exits.
+//! backtrace to `last-panic.log` in the data dir so the parent process can read
+//! the cause after the child exits.
 //!
-//! The file is written regardless of telemetry, so it also works for customers
-//! who disable analytics — for them it's the *only* crash signal that never
-//! leaves the machine. See `bin/screenpipe-engine.rs` for the panic hook that
-//! calls into here.
+//! This file is the only crash record: there is no crash reporting service,
+//! and nothing in it leaves the machine. See `bin/screenpipe-engine.rs` for
+//! the panic hook that calls into here.
 
 use std::path::Path;
 
