@@ -6,21 +6,23 @@
 
 import React, { useState, useEffect } from "react";
 import { useToast } from "@/components/ui/use-toast";
-import OnboardingLogin from "@/components/onboarding/login-gate";
 import PermissionsStep from "@/components/onboarding/permissions-step";
 import EngineStartup from "@/components/onboarding/engine-startup";
 import ConnectApps from "@/components/onboarding/connect-apps";
 import PickPipe from "@/components/onboarding/pick-pipe";
 import { useOnboarding } from "@/lib/hooks/use-onboarding";
-import { useIsEnterpriseBuild } from "@/lib/hooks/use-is-enterprise-build";
 import posthog from "posthog-js";
 import { commands } from "@/lib/utils/tauri";
 
-type SlideKey = "login" | "permissions" | "engine" | "connect-apps" | "pipe";
+// Freenpipe has no account, so there is no sign-in slide: onboarding opens on
+// permissions. Steps screenpipe stored for its sign-in or welcome screens map
+// to that first slide.
+type SlideKey = "permissions" | "engine" | "connect-apps" | "pipe";
+
+const FIRST_SLIDE: SlideKey = "permissions";
 
 const SLIDE_WINDOW_SIZES: Record<SlideKey, { width: number; height: number }> =
   {
-    login: { width: 500, height: 480 },
     permissions: { width: 500, height: 560 },
     engine: { width: 500, height: 620 },
     "connect-apps": { width: 500, height: 680 },
@@ -38,18 +40,10 @@ const setWindowSizeForSlide = async (slide: SlideKey) => {
 
 export default function OnboardingPage() {
   const { toast } = useToast();
-  const [currentSlide, setCurrentSlide] = useState<SlideKey>("login");
+  const [currentSlide, setCurrentSlide] = useState<SlideKey>(FIRST_SLIDE);
   const [isVisible, setIsVisible] = useState(true);
   const [isTransitioning, setIsTransitioning] = useState(false);
   const { onboardingData, isLoading } = useOnboarding();
-  const isEnterprise = useIsEnterpriseBuild();
-
-  // Enterprise builds skip the login slide
-  useEffect(() => {
-    if (isEnterprise && currentSlide === "login") {
-      setCurrentSlide("permissions");
-    }
-  }, [isEnterprise, currentSlide]);
 
   // Restore saved step on mount
   useEffect(() => {
@@ -62,7 +56,7 @@ export default function OnboardingPage() {
         const step = onboardingData.currentStep as string;
         // Map old and new step names
         const stepMap: Record<string, SlideKey> = {
-          login: "login",
+          login: FIRST_SLIDE,
           permissions: "permissions",
           engine: "engine",
           "connect-apps": "connect-apps",
@@ -73,8 +67,8 @@ export default function OnboardingPage() {
           encrypt: "engine",
           read: "pipe",
           shortcut: "pipe",
-          welcome: "login",
-          intro: "login",
+          welcome: FIRST_SLIDE,
+          intro: FIRST_SLIDE,
           usecases: "permissions",
           status: "permissions",
           setup: "permissions",
@@ -115,7 +109,6 @@ export default function OnboardingPage() {
 
     posthog.capture(`onboarding_${currentSlide}_completed`);
     const stepOrder: SlideKey[] = [
-      "login",
       "permissions",
       "engine",
       "connect-apps",
@@ -162,9 +155,6 @@ export default function OnboardingPage() {
             isVisible ? "opacity-100" : "opacity-0"
           }`}
         >
-          {currentSlide === "login" && (
-            <OnboardingLogin handleNextSlide={handleNextSlide} />
-          )}
           {currentSlide === "permissions" && (
             <PermissionsStep handleNextSlide={handleNextSlide} />
           )}

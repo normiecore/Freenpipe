@@ -1,41 +1,11 @@
-import { Button } from "@/components/ui/button";
-import {
-  Dialog,
-  DialogContent,
-  DialogDescription,
-  DialogHeader,
-  DialogTitle,
-} from "@/components/ui/dialog";
-import { ExternalLinkIcon } from "lucide-react";
 import { create } from "zustand";
-import { commands } from "@/lib/utils/tauri";
 
+// screenpipe showed a "login required" dialog here before cloud-only actions.
+// Freenpipe has no hosted account, so nothing ever needs a login: the dialog
+// renders nothing and `checkLogin` always lets the caller proceed. The exports
+// keep their shape so existing mounts and callers compile unchanged.
 export function LoginDialog() {
-  const { isOpen, setIsOpen } = useLoginDialog();
-
-  return (
-    <Dialog open={isOpen} onOpenChange={setIsOpen}>
-      <DialogContent>
-        <DialogHeader>
-          <DialogTitle>login required</DialogTitle>
-          <DialogDescription>
-            please login to continue. you will be redirected to screenpipe.com
-          </DialogDescription>
-        </DialogHeader>
-        <div className="flex justify-end">
-          <Button
-            variant="default"
-            onClick={() => {
-              commands.openLoginWindow();
-              setIsOpen(false);
-            }}
-          >
-            login <ExternalLinkIcon className="w-4 h-4 ml-2" />
-          </Button>
-        </div>
-      </DialogContent>
-    </Dialog>
-  );
+  return null;
 }
 
 interface LoginDialogState {
@@ -44,16 +14,8 @@ interface LoginDialogState {
   checkLogin: (user: any | null, showDialog?: boolean) => boolean;
 }
 
-export const useLoginDialog = create<LoginDialogState>((set) => ({
+export const useLoginDialog = create<LoginDialogState>(() => ({
   isOpen: false,
-  setIsOpen: (open) => set({ isOpen: open }),
-  checkLogin: (user, showDialog = true) => {
-    if (!user?.token) {
-      if (showDialog) {
-        set({ isOpen: true });
-      }
-      return false;
-    }
-    return true;
-  },
+  setIsOpen: () => {},
+  checkLogin: () => true,
 }));
