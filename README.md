@@ -115,7 +115,7 @@ then ask claude `what did i see in the last 5 mins?` or `summarize today convers
 
 ## sdk
 
-[tauri, electron, swift sdk available today](https://github.com/screenpipe/screenpipe/tree/main/ee/sdk)
+upstream's embeddable sdk lived in its proprietary `ee/` directory and is not part of Freenpipe. integrate through the local HTTP API (`http://localhost:3030`) or the MCP server in [`packages/screenpipe-mcp`](packages/screenpipe-mcp) instead.
 
 <img width="1536" height="1024" alt="image" src="https://github.com/user-attachments/assets/a5b49966-b607-47cb-b0fa-e5f9aec14351" />
 

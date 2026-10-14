@@ -5,7 +5,6 @@ members = [
 exclude = [
     "apps/screenpipe-app-tauri/src-tauri",
     "crates/screenpipe-integrations",
-    "ee/sdk",
 ]
 resolver = "2"
 
