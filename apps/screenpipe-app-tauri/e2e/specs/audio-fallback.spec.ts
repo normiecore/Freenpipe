@@ -58,12 +58,13 @@ async function readNotifications(): Promise<NotificationHistoryEntry[]> {
     expect(alertText).toContain('active now');
     expect(alertText).toContain('whisper turbo (fast)');
 
-    await $('[data-testid="audio-engine-fallback-login"]').waitForExist({
-      timeout: t(5_000),
-    });
     await $('[data-testid="audio-engine-fallback-use-whisper"]').waitForExist({
       timeout: t(5_000),
     });
+    // Freenpipe has no hosted account: the alert must not offer a sign-in or
+    // an upgrade, only the local fallback.
+    expect(await $('[data-testid="audio-engine-fallback-login"]').isExisting()).toBe(false);
+    expect(await $('[data-testid="audio-engine-fallback-upgrade"]').isExisting()).toBe(false);
 
     await browser.waitUntil(
       async () => {
