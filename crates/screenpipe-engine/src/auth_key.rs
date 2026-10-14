@@ -19,7 +19,9 @@ use std::path::Path;
 /// 1. `SCREENPIPE_API_KEY` env var
 /// 2. `settings_key` (non-empty)
 /// 3. plaintext `api_auth_key` in the `db.sqlite` secret store
-/// 4. legacy `~/.screenpipe/auth.json`
+/// 4. legacy `<data_dir>/auth.json` (`~/.screenpipe/auth.json` with the
+///    default data dir; never outside `data_dir`, so `--data-dir` and
+///    `SCREENPIPE_DATA_DIR` keep a dev instance off the real one)
 /// 5. auto-generated `sp-<uuid8>`, persisted to the secret store before return
 pub async fn resolve_api_auth_key(data_dir: &Path, settings_key: Option<&str>) -> Result<String> {
     let store = open_secret_store(data_dir).await.ok();
@@ -64,10 +66,10 @@ pub async fn resolve_api_auth_key(data_dir: &Path, settings_key: Option<&str>) -
         if !k.is_empty() {
             (k, "SCREENPIPE_API_KEY env")
         } else {
-            resolve_without_env(settings_key, &stored_key)
+            resolve_without_env(data_dir, settings_key, &stored_key)
         }
     } else {
-        resolve_without_env(settings_key, &stored_key)
+        resolve_without_env(data_dir, settings_key, &stored_key)
     };
     tracing::info!("api auth: key resolved via {}", source);
 
@@ -93,6 +95,7 @@ pub async fn resolve_api_auth_key(data_dir: &Path, settings_key: Option<&str>) -
 }
 
 fn resolve_without_env(
+    data_dir: &Path,
     settings_key: Option<&str>,
     stored_key: &Option<String>,
 ) -> (String, &'static str) {
@@ -102,7 +105,7 @@ fn resolve_without_env(
     if let Some(k) = stored_key.as_ref() {
         return (k.clone(), "secret store");
     }
-    if let Some(k) = read_legacy_auth_json() {
+    if let Some(k) = read_legacy_auth_json(data_dir) {
         return (k, "legacy auth.json");
     }
     let k = format!("sp-{}", &uuid::Uuid::new_v4().simple().to_string()[..8]);
@@ -120,9 +123,7 @@ pub async fn set_api_auth_key(data_dir: &Path, key: &str) -> Result<()> {
         .set("api_auth_key", key.as_bytes())
         .await
         .map_err(|e| anyhow::anyhow!("failed to persist api auth key: {e}"))?;
-    if let Some(home) = dirs::home_dir() {
-        let _ = std::fs::remove_file(home.join(".screenpipe/auth.json"));
-    }
+    remove_legacy_auth_json(data_dir);
     tracing::info!("api auth: key updated by user");
     Ok(())
 }
@@ -142,9 +143,7 @@ pub async fn regenerate_api_auth_key(data_dir: &Path) -> Result<String> {
         anyhow::bail!("could not open secret store to persist regenerated key");
     }
     // Best-effort cleanup of legacy file so it doesn't shadow the new key.
-    if let Some(home) = dirs::home_dir() {
-        let _ = std::fs::remove_file(home.join(".screenpipe/auth.json"));
-    }
+    remove_legacy_auth_json(data_dir);
     tracing::info!("api auth: key regenerated (new prefix: {})", &new_key[..6]);
     Ok(new_key)
 }
@@ -177,9 +176,20 @@ async fn open_secret_store(data_dir: &Path) -> Result<screenpipe_secrets::Secret
     Ok(store)
 }
 
-fn read_legacy_auth_json() -> Option<String> {
-    let home = dirs::home_dir()?;
-    let content = std::fs::read_to_string(home.join(".screenpipe/auth.json")).ok()?;
+/// The legacy key file lives next to `db.sqlite` in the data dir being used.
+/// Resolving it from the home directory instead would let an instance started
+/// with `--data-dir` (or `SCREENPIPE_DATA_DIR`) read or delete another
+/// install's file.
+fn legacy_auth_json_path(data_dir: &Path) -> std::path::PathBuf {
+    data_dir.join("auth.json")
+}
+
+fn remove_legacy_auth_json(data_dir: &Path) {
+    let _ = std::fs::remove_file(legacy_auth_json_path(data_dir));
+}
+
+fn read_legacy_auth_json(data_dir: &Path) -> Option<String> {
+    let content = std::fs::read_to_string(legacy_auth_json_path(data_dir)).ok()?;
     let json: serde_json::Value = serde_json::from_str(&content).ok()?;
     json["token"]
         .as_str()
@@ -225,5 +235,46 @@ pub async fn find_api_auth_key() -> Option<String> {
         }
     }
 
-    read_legacy_auth_json()
+    read_legacy_auth_json(&data_dir)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn legacy_auth_json_is_read_from_the_given_data_dir_only() {
+        let dir = tempfile::tempdir().unwrap();
+        assert_eq!(read_legacy_auth_json(dir.path()), None);
+
+        std::fs::write(dir.path().join("auth.json"), r#"{"token":"sp-legacy1"}"#).unwrap();
+        assert_eq!(
+            read_legacy_auth_json(dir.path()).as_deref(),
+            Some("sp-legacy1")
+        );
+
+        // Settings and the secret store still win over the legacy file.
+        let (k, src) = resolve_without_env(dir.path(), Some("sp-settings"), &None);
+        assert_eq!((k.as_str(), src), ("sp-settings", "settings"));
+        let (k, src) = resolve_without_env(dir.path(), None, &None);
+        assert_eq!((k.as_str(), src), ("sp-legacy1", "legacy auth.json"));
+    }
+
+    #[test]
+    fn legacy_auth_json_cleanup_stays_inside_the_data_dir() {
+        let outer = tempfile::tempdir().unwrap();
+        let data_dir = outer.path().join("dev-data");
+        std::fs::create_dir_all(&data_dir).unwrap();
+        let sibling = outer.path().join("auth.json");
+        std::fs::write(&sibling, r#"{"token":"other-install"}"#).unwrap();
+        std::fs::write(data_dir.join("auth.json"), r#"{"token":"mine"}"#).unwrap();
+
+        remove_legacy_auth_json(&data_dir);
+
+        assert!(!data_dir.join("auth.json").exists());
+        assert!(
+            sibling.exists(),
+            "a file outside data_dir must not be touched"
+        );
+    }
 }
