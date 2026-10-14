@@ -514,17 +514,14 @@ async getCachedSuggestions() : Promise<Result<CachedSuggestions, string>> {
 }
 },
 /**
- * Read the user's screenpipe cloud session JWT from `~/.screenpipe/
- * auth.json`. Returns None when the file is missing, malformed, or the
- * token field is empty.
+ * Read the token stored in `auth.json` under the screenpipe data dir.
+ * Returns None when the file is missing, malformed, or the token field is
+ * empty.
  *
- * The settings store (`store.bin → user.token`) is the canonical
- * runtime cache for this token but is only populated after a fresh
- * in-app sign-in. `auth.json` is the durable on-disk copy written by
- * the pi-agent configuration flow — it survives store resets and dev-
- * mode launches where the in-memory user object hasn't been hydrated
- * yet. Used by the enterprise-policy hook to send the Bearer header
- * even when the in-app user object is still null.
+ * Freenpipe never signs in to a hosted account, so nothing here comes from
+ * a login flow. The file is kept as local key plumbing: a token placed there
+ * (or pushed with [`set_cloud_token`]) is what the engine forwards to a
+ * user-configured, self-hosted AI gateway.
  */
 async getCloudToken() : Promise<string | null> {
     return await TAURI_INVOKE("get_cloud_token");
@@ -973,11 +970,9 @@ async openGoogleCalendarAuthWindow(authUrl: string) : Promise<Result<null, strin
 }
 },
 /**
- * Open the screenpi.pe login page.
- * On Windows, opens in the system browser (WebView2 has issues with some auth
- * providers; the registered deep-link scheme handles the redirect back).
- * On macOS/Linux, uses an in-app WebView that intercepts the screenpipe://
- * deep-link redirect (Safari blocks custom-scheme redirects).
+ * Formerly opened screenpipe's hosted sign-in page. Freenpipe has no
+ * accounts, so the command stays registered for binding stability but never
+ * opens a window or contacts a website; it always returns an error.
  */
 async openLoginWindow() : Promise<Result<null, string>> {
     try {
@@ -1746,23 +1741,14 @@ async setCloudMediaAnalysisSkill(enabled: boolean) : Promise<Result<null, string
 }
 },
 /**
- * Push a fresh cloud-auth token into the running sidecar.
+ * Push a gateway token into the running engine, or clear it with `None`.
  *
- * The frontend invokes this on every sign-in (after `loadUser` writes
- * `settings.user`) and on sign-out (passing `None`). Without it, the
- * `Server.cloud_token` and `PiExecutor.user_token` captured at engine
- * boot would be permanent for the lifetime of the sidecar process —
- * users who signed in AFTER the engine started would stay on the
- * gateway's anonymous tier (allowed_models = haiku/gemini only) on
- * every pipe run, surfacing as `403 "model_not_allowed"` for any
- * Sonnet/Opus preset even with an active Pro subscription. Logout +
- * log-in from the webview alone does NOT restart the sidecar, which
- * is why the previous user-facing workaround was "fully quit the
- * app from the tray."
- *
- * Both the local `/v1/chat/completions` proxy and the pi-agent's
- * `models.json` apiKey share the same `Arc<ArcSwap<Option<String>>>`,
- * so one write here updates both readers on the next pipe run.
+ * This is local key plumbing only; Freenpipe has no sign-in that calls it.
+ * The token is held in memory so the engine does not have to restart to
+ * pick up a change: the local `/v1/chat/completions` proxy and the
+ * pi-agent's `models.json` apiKey share the same
+ * `Arc<ArcSwap<Option<String>>>`, so one write here updates both readers
+ * on the next request or pipe run.
  */
 async setCloudToken(token: string | null) : Promise<Result<null, string>> {
     try {
@@ -2893,7 +2879,16 @@ export type SyncDeviceInfo = { id: string; deviceId: string; deviceName: string 
  * Sync status response.
  */
 export type SyncStatusResponse = { enabled: boolean; isSyncing: boolean; lastSync: string | null; lastError: string | null; storageUsed: number | null; storageLimit: number | null; deviceCount: number | null; deviceLimit: number | null; syncTier: string | null; machineId: string }
-export type User = { id: string | null; name: string | null; email: string | null; image: string | null; token: string | null; clerk_id: string | null; api_key: string | null; credits: Credits | null; stripe_connected: boolean | null; stripe_account_status: string | null; github_username: string | null; bio: string | null; website: string | null; contact: string | null; cloud_subscribed: boolean | null; credits_balance: number | null; app_entitled: boolean | null; subscription_plan: string | null; entitlement: JsonValue | null }
+/**
+ * Cached screenpipe account record.
+ *
+ * Freenpipe has no accounts: it never fetches this record and never gates a
+ * feature on it. The fields are kept, together with the ones newer screenpipe
+ * releases write (`has_payment_method`, `entitlement_source`,
+ * `enterprise_account`), so a `store.bin` produced by screenpipe loads and
+ * saves back without losing data.
+ */
+export type User = { id: string | null; name: string | null; email: string | null; image: string | null; token: string | null; clerk_id: string | null; api_key: string | null; credits: Credits | null; stripe_connected: boolean | null; stripe_account_status: string | null; github_username: string | null; bio: string | null; website: string | null; contact: string | null; cloud_subscribed: boolean | null; credits_balance: number | null; app_entitled: boolean | null; subscription_plan: string | null; entitlement: JsonValue | null; has_payment_method?: boolean | null; entitlement_source?: string | null; enterprise_account?: JsonValue | null }
 export type ViewerContent = { kind: "text"; text: string; name: string; path: string; truncated: boolean; total_bytes: number } | { kind: "image"; data_url: string; name: string; path: string } |
 /**
  * Non-text, non-image file (random binary). The UI surfaces a
