@@ -1241,7 +1241,9 @@ export const SettingsProvider: React.FC<{ children: React.ReactNode }> = ({ chil
 		// abort the write below instead of resurrecting the cleared session.
 		const generation = authGenerationRef.current;
 		try {
-			const response = await fetch(screenpipeWebUrl("/api/user", "https://screenpi.pe"), {
+			const userUrl = screenpipeWebUrl("/api/user");
+			if (!userUrl) return; // no website configured: nothing to verify against
+			const response = await fetch(userUrl, {
 				method: "POST",
 				headers: {
 					"Content-Type": "application/json",

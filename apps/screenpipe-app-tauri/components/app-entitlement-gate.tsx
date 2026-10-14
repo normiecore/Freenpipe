@@ -117,6 +117,7 @@ export function AppEntitlementGate({ children }: { children: React.ReactNode }) 
     // Hand the Clerk token to the web checkout so it pins customer_email +
     // metadata.user_id to THIS account — prevents the "paid with a different
     // email in Stripe -> still locked" mismatch.
+    if (!PRICING_URL) return;
     const url = user?.token
       ? `${PRICING_URL}${PRICING_URL.includes("?") ? "&" : "?"}token=${encodeURIComponent(user.token)}`
       : PRICING_URL;

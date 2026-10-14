@@ -53,7 +53,8 @@ export type AppUser = User & {
 
 export const APP_ENTITLEMENT_MAX_STALE_MS = 72 * 60 * 60 * 1000;
 export const APP_ENTITLEMENT_CLOCK_SKEW_MS = 5 * 60 * 1000;
-export const PRICING_URL = screenpipeWebUrl("/onboarding", "https://screenpipe.com");
+// null when no website is configured (the Freenpipe default); callers do nothing then.
+export const PRICING_URL: string | null = screenpipeWebUrl("/onboarding");
 
 // localStorage key an e2e spec can set to force the gate ON even in a bypassed
 // build. It can only ever make the gate stricter (never bypass), so it is safe
