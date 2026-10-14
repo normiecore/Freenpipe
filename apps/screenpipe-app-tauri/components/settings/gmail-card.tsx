@@ -9,6 +9,7 @@ import { Button } from "@/components/ui/button";
 import { Loader2, Lock, LogOut, Mail, Plus } from "lucide-react";
 import { commands } from "@/lib/utils/tauri";
 import { useSettings } from "@/lib/hooks/use-settings";
+import { hasCloudEntitlement } from "@/lib/app-entitlement";
 import { notifyConnectionsUpdated } from "@/lib/connections-events";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import posthog from "posthog-js";
@@ -21,7 +22,8 @@ interface GmailAccount {
 
 export function GmailCard() {
   const { settings } = useSettings();
-  const isPro = !!settings.user?.cloud_subscribed;
+  // Freenpipe has no plans: OAuth integrations are never locked.
+  const isPro = hasCloudEntitlement(settings.user);
   const [accounts, setAccounts] = useState<GmailAccount[]>([]);
   const [isConnecting, setIsConnecting] = useState(false);
   const [disconnecting, setDisconnecting] = useState<string | null>(null);

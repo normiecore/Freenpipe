@@ -17,6 +17,7 @@ import {
 } from "lucide-react";
 import { commands } from "@/lib/utils/tauri";
 import { useSettings } from "@/lib/hooks/use-settings";
+import { hasCloudEntitlement } from "@/lib/app-entitlement";
 import { notifyConnectionsUpdated } from "@/lib/connections-events";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import { toast } from "@/components/ui/use-toast";
@@ -44,7 +45,8 @@ interface CalendarAccount {
 
 export function GoogleCalendarCard({ onConnected, onDisconnected }: { onConnected?: () => void; onDisconnected?: () => void } = {}) {
   const { settings } = useSettings();
-  const isPro = !!settings.user?.cloud_subscribed;
+  // Freenpipe has no plans: OAuth integrations are never locked.
+  const isPro = hasCloudEntitlement(settings.user);
   const [accounts, setAccounts] = useState<CalendarAccount[]>([]);
   const [needsAttention, setNeedsAttention] = useState(false);
   const [isConnecting, setIsConnecting] = useState(false);

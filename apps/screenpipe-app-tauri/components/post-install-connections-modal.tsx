@@ -17,6 +17,7 @@ import { Button } from "@/components/ui/button";
 import { Check, ChevronDown, ChevronRight, Loader2, Lock } from "lucide-react";
 import { commands } from "@/lib/utils/tauri";
 import { useSettings } from "@/lib/hooks/use-settings";
+import { hasCloudEntitlement } from "@/lib/app-entitlement";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import {
   ConnectionCredentialForm,
@@ -45,7 +46,8 @@ export function PostInstallConnectionsModal({
   connections,
 }: PostInstallConnectionsModalProps) {
   const { settings } = useSettings();
-  const isPro = !!settings.user?.cloud_subscribed;
+  // Freenpipe has no plans: OAuth integrations are never locked.
+  const isPro = hasCloudEntitlement(settings.user);
   const [statuses, setStatuses] = useState<Record<string, ConnectionStatus>>({});
   const [expanded, setExpanded] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
