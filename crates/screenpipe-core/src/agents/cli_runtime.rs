@@ -203,7 +203,17 @@ fn write_if_changed(path: &Path, content: &str, executable: bool) -> Result<bool
         }
         #[cfg(not(unix))]
         let _ = executable;
-        std::fs::rename(&tmp, path).with_context(|| format!("replacing {}", path.display()))?;
+        // On Windows a scanner or another agent can hold the old launcher
+        // open for a moment; retry briefly before giving up.
+        let mut renamed = std::fs::rename(&tmp, path);
+        for _ in 0..4 {
+            if renamed.is_ok() {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(25));
+            renamed = std::fs::rename(&tmp, path);
+        }
+        renamed.with_context(|| format!("replacing {}", path.display()))?;
         Ok(())
     })();
     if let Err(err) = result {
