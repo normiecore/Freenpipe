@@ -27,7 +27,11 @@
 //! - **Backoff for dead tokens**: after `MAX_CONSECUTIVE_FAILURES` failed
 //!   refreshes for the same key, the scheduler stops trying for
 //!   [`FAILURE_COOLDOWN`]. Resets on success. Stops us pounding the
-//!   proxy with permanently-revoked tokens.
+//!   provider's token endpoint with permanently-revoked tokens.
+//! - **No OAuth app, no attempt**: tokens whose integration has no BYO
+//!   client credentials (`oauth_client:<id>`) are skipped, not counted as
+//!   failures. Refreshing needs the user's client ID/secret, and the user
+//!   fixes that in settings, not by waiting out a cooldown.
 //! - **Connection pooling**: one shared `reqwest::Client` reused for the
 //!   scheduler's lifetime.
 //! - **Cooperative shutdown**: `stop()` flips the flag, the spawned task
@@ -51,7 +55,7 @@ use tokio::task::JoinHandle;
 use tracing::{debug, info, warn};
 
 use crate::connections::{all_integrations, RefreshPolicy};
-use crate::oauth::{refresh_token_instance, STORE_KEY_PREFIX};
+use crate::oauth::{refresh_token_instance, OAuthTokenError, STORE_KEY_PREFIX};
 
 // ---------------------------------------------------------------------------
 // Tunables
@@ -125,9 +129,10 @@ pub fn parse_oauth_key(key: &str) -> Option<(&str, Option<&str>)> {
 // Refresh adapter — injectable for tests
 // ---------------------------------------------------------------------------
 
-/// Abstract the proxy-roundtrip part of a refresh so the loop is testable
-/// without standing up an HTTP server. Default implementation calls the
-/// real [`refresh_token_instance`]; tests substitute a recorder.
+/// Abstract the token-endpoint round trip of a refresh so the loop is
+/// testable without standing up an HTTP server. Default implementation calls
+/// the real [`refresh_token_instance`], which talks to the provider directly
+/// with the user's own OAuth client; tests substitute a recorder.
 #[async_trait]
 pub trait RefreshRunner: Send + Sync {
     async fn refresh(
@@ -138,11 +143,11 @@ pub trait RefreshRunner: Send + Sync {
     ) -> anyhow::Result<()>;
 }
 
-pub struct ProxyRefreshRunner {
+pub struct DirectRefreshRunner {
     client: reqwest::Client,
 }
 
-impl Default for ProxyRefreshRunner {
+impl Default for DirectRefreshRunner {
     fn default() -> Self {
         Self {
             client: reqwest::Client::new(),
@@ -151,7 +156,7 @@ impl Default for ProxyRefreshRunner {
 }
 
 #[async_trait]
-impl RefreshRunner for ProxyRefreshRunner {
+impl RefreshRunner for DirectRefreshRunner {
     async fn refresh(
         &self,
         store: &SecretStore,
@@ -174,6 +179,7 @@ struct MetricsInner {
     refreshes_attempted: AtomicU64,
     refreshes_succeeded: AtomicU64,
     refreshes_failed: AtomicU64,
+    refreshes_skipped: AtomicU64,
     last_tick_unix: AtomicU64,
 }
 
@@ -183,6 +189,8 @@ pub struct RefresherMetrics {
     pub refreshes_attempted: u64,
     pub refreshes_succeeded: u64,
     pub refreshes_failed: u64,
+    /// Due refreshes not attempted because no OAuth app is configured.
+    pub refreshes_skipped: u64,
     pub last_tick_unix: u64,
 }
 
@@ -193,6 +201,7 @@ impl MetricsInner {
             refreshes_attempted: self.refreshes_attempted.load(Ordering::Relaxed),
             refreshes_succeeded: self.refreshes_succeeded.load(Ordering::Relaxed),
             refreshes_failed: self.refreshes_failed.load(Ordering::Relaxed),
+            refreshes_skipped: self.refreshes_skipped.load(Ordering::Relaxed),
             last_tick_unix: self.last_tick_unix.load(Ordering::Relaxed),
         }
     }
@@ -239,7 +248,7 @@ impl OAuthRefreshScheduler {
     /// Start the background refresh loop. Idempotent: a second `start`
     /// call while already running is a no-op (matches `SyncScheduler`).
     pub fn start(&self, store: Arc<SecretStore>) {
-        self.start_with_runner(store, Arc::new(ProxyRefreshRunner::default()));
+        self.start_with_runner(store, Arc::new(DirectRefreshRunner::default()));
     }
 
     /// `start` variant that takes a custom [`RefreshRunner`]. Used by tests
@@ -320,6 +329,7 @@ async fn tick(
     let mut attempted = 0u64;
     let mut succeeded = 0u64;
     let mut failed = 0u64;
+    let mut skipped = 0u64;
 
     for key in keys {
         let (integration_id, instance) = match parse_oauth_key(&key) {
@@ -351,9 +361,9 @@ async fn tick(
             continue;
         }
 
-        attempted += 1;
         match runner.refresh(store, integration_id, instance).await {
             Ok(()) => {
+                attempted += 1;
                 succeeded += 1;
                 failures.lock().await.remove(&key);
                 info!(
@@ -362,7 +372,19 @@ async fn tick(
                     "oauth refresh scheduler: refreshed proactively"
                 );
             }
+            Err(e) if is_missing_client(&e) => {
+                // Not a token problem: the user has not entered their own
+                // OAuth app for this integration (yet). Do not count it or
+                // start a cooldown; pick it up as soon as they do.
+                skipped += 1;
+                debug!(
+                    integration_id = %integration_id,
+                    instance = ?instance,
+                    "oauth refresh scheduler: skipped, no OAuth app configured"
+                );
+            }
             Err(e) => {
+                attempted += 1;
                 failed += 1;
                 let mut g = failures.lock().await;
                 let entry = g.entry(key.clone()).or_default();
@@ -399,12 +421,15 @@ async fn tick(
     metrics
         .refreshes_failed
         .fetch_add(failed, Ordering::Relaxed);
+    metrics
+        .refreshes_skipped
+        .fetch_add(skipped, Ordering::Relaxed);
     metrics.last_tick_unix.store(now, Ordering::Relaxed);
 
     if attempted > 0 {
         info!(
-            "oauth refresh scheduler: tick done — attempted={} succeeded={} failed={}",
-            attempted, succeeded, failed
+            "oauth refresh scheduler: tick done — attempted={} succeeded={} failed={} skipped={}",
+            attempted, succeeded, failed, skipped
         );
     } else {
         debug!("oauth refresh scheduler: tick done — nothing due");
@@ -425,6 +450,14 @@ fn build_policy_table() -> HashMap<String, RefreshPolicy> {
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
+
+/// True when a refresh failed only because no BYO OAuth client is stored.
+fn is_missing_client(e: &anyhow::Error) -> bool {
+    matches!(
+        e.downcast_ref::<OAuthTokenError>(),
+        Some(OAuthTokenError::ClientNotConfigured { .. })
+    )
+}
 
 async fn sleep_cancellable(running: &Arc<AtomicBool>, total: Duration) {
     let steps = total.as_secs();
@@ -455,6 +488,8 @@ mod tests {
     use std::sync::atomic::AtomicU32;
 
     const HOUR: u64 = 3600;
+    /// Recorder outcome standing for "no BYO OAuth client stored".
+    const MISSING_CLIENT: &str = "<missing-client>";
 
     fn token(refresh: bool, expires_at: Option<u64>, last_refreshed_at: Option<u64>) -> Value {
         let mut v = json!({ "access_token": "a" });
@@ -567,6 +602,12 @@ mod tests {
             let outcomes = self.outcomes.lock().await;
             match outcomes.get(i).cloned() {
                 Some(Ok(())) | None => Ok(()),
+                Some(Err(msg)) if msg == MISSING_CLIENT => {
+                    Err(anyhow::Error::new(OAuthTokenError::ClientNotConfigured {
+                        integration_id: integration_id.to_string(),
+                    })
+                    .context("oauth refresh"))
+                }
                 Some(Err(msg)) => Err(anyhow::anyhow!(msg)),
             }
         }
@@ -711,5 +752,60 @@ mod tests {
         tick(&store, &runner, &metrics, &failures, &empty_policies()).await;
 
         assert_eq!(metrics.snapshot().refreshes_attempted, 0);
+    }
+
+    #[tokio::test]
+    async fn tick_skips_tokens_without_an_oauth_app_and_never_cools_down() {
+        let store = mem_store().await;
+        let now = unix_now();
+        store
+            .set_json("oauth:notion", &token(true, Some(now - 60), None))
+            .await
+            .unwrap();
+
+        let runner_inner = Arc::new(RecorderRunner::default());
+        {
+            let mut out = runner_inner.outcomes.lock().await;
+            for _ in 0..(MAX_CONSECUTIVE_FAILURES + 1) {
+                out.push(Err(MISSING_CLIENT.into()));
+            }
+            out.push(Ok(()));
+        }
+        let runner: Arc<dyn RefreshRunner> = runner_inner.clone();
+        let metrics = Arc::new(MetricsInner::default());
+        let failures = Arc::new(Mutex::new(HashMap::new()));
+
+        for _ in 0..(MAX_CONSECUTIVE_FAILURES + 1) {
+            tick(&store, &runner, &metrics, &failures, &empty_policies()).await;
+        }
+        let snap = metrics.snapshot();
+        assert_eq!(snap.refreshes_failed, 0);
+        assert_eq!(snap.refreshes_attempted, 0);
+        assert_eq!(snap.refreshes_skipped, (MAX_CONSECUTIVE_FAILURES + 1) as u64);
+        assert!(failures.lock().await.is_empty(), "no cooldown for a missing app");
+
+        // Once the user adds their OAuth app the very next tick refreshes.
+        tick(&store, &runner, &metrics, &failures, &empty_policies()).await;
+        assert_eq!(metrics.snapshot().refreshes_succeeded, 1);
+    }
+
+    #[tokio::test]
+    async fn tick_ignores_byo_client_rows() {
+        // `oauth_client:<id>` rows hold app credentials, not tokens; the
+        // `oauth:` prefix scan must never treat them as refreshable.
+        let store = mem_store().await;
+        store
+            .set_json(
+                "oauth_client:zoom",
+                &json!({ "client_id": "c", "client_secret": "s" }),
+            )
+            .await
+            .unwrap();
+        let runner: Arc<dyn RefreshRunner> = Arc::new(RecorderRunner::default());
+        let metrics = Arc::new(MetricsInner::default());
+        let failures = Arc::new(Mutex::new(HashMap::new()));
+        tick(&store, &runner, &metrics, &failures, &empty_policies()).await;
+        assert_eq!(metrics.snapshot().refreshes_attempted, 0);
+        assert_eq!(parse_oauth_key("oauth_client:zoom"), None);
     }
 }
