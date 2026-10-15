@@ -23,7 +23,5 @@ windows engine logging::tests::oversized_single_write_lands_in_file  same NTFS d
 windows engine logging::tests::flush_is_idempotent  same NTFS directory-entry size lag (screenpipe-engine, src/logging.rs:721)
 windows engine adapters::rfdetr::tests::default_path_lives_under_screenpipe_dir  asserts a '/'-separated path; Windows paths use '\' (screenpipe-redact, src/adapters/rfdetr.rs:533)
 windows engine adapters::rfdetr_mlx::tests::default_path_under_screenpipe_dir  asserts a '/'-separated path; Windows paths use '\' (screenpipe-redact, src/adapters/rfdetr_mlx.rs:465)
-windows engine worker_skips_already_redacted_rows  timing-based: a 120 ms window with a 20 ms poll is too short on the Windows runner, nothing is redacted yet (screenpipe-redact, tests/worker_integration.rs:193)
-windows engine worker_overwrites_source_columns_destructively  same timing window, raw email still in the source column (screenpipe-redact, tests/worker_integration.rs:226)
 windows engine migration::tests::test_migrate_skips_already_migrated  the second migration re-imports the file: its NTFS mtime compares newer than the store's updated_at (screenpipe-secrets, src/migration.rs:378)
 windows engine destination::local_fs::tests::batch_id_header_overrides_filename  asserts the object URL ends with "/batch-001.jsonl"; the Windows path ends with '\batch-001.jsonl' (screenpipe-sync, src/destination/local_fs.rs:115)

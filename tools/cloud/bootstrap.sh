@@ -166,6 +166,9 @@ _fp_bootstrap_main() {
   _fp_export CARGO_PROFILE_DEV_DEBUG 0
   _fp_export CARGO_PROFILE_TEST_DEBUG 0
   _fp_export CARGO_PROFILE_RELEASE_DEV_DEBUG 0
+  # Coordinator sessions build several worktrees into one target dir; per-worktree incremental
+  # caches multiply quickly on the VM's limited disk, so they are off (as in CI).
+  _fp_export CARGO_INCREMENTAL 0
   # .cargo/config.toml asks for 16 jobs; the VM has 4 vCPUs and 16 GB.
   _fp_export CARGO_BUILD_JOBS "${CARGO_BUILD_JOBS:-4}"
   _fp_export CARGO_NET_GIT_FETCH_WITH_CLI true
