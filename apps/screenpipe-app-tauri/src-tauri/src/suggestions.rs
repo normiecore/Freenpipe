@@ -54,14 +54,104 @@ pub struct CachedSuggestions {
 
 // ─── Enhanced AI config ─────────────────────────────────────────────────────
 
-/// When enabled, uses screenpipe cloud (api.screenpipe.com) instead of Apple
-/// Intelligence for generating suggestions. Produces much better results
-/// but sends recent activity context to the cloud.
+/// When enabled, suggestions are generated with the user's default AI
+/// preset instead of the on-device model. Better results, but recent
+/// activity context goes to whatever provider that preset points at.
 #[derive(Debug, Clone)]
 pub struct EnhancedAIConfig {
     pub enabled: bool,
-    /// User's Clerk JWT token for authenticating with screenpipe cloud.
+    /// Unused. Kept so the command and its TypeScript binding keep their
+    /// shape; the credential comes from the selected preset.
     pub token: String,
+}
+
+/// An OpenAI-compatible chat endpoint for enhanced suggestions, resolved
+/// from the default AI preset.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct EnhancedAiTarget {
+    /// Full `.../chat/completions` URL, or the local engine path
+    /// `/v1/chat/completions` when `via_local_proxy` is set.
+    pub url: String,
+    pub key: Option<String>,
+    pub model: String,
+    /// Route through the local engine, which forwards to the AI gateway.
+    pub via_local_proxy: bool,
+}
+
+/// Resolve the default AI preset (or the first one) into a chat endpoint.
+/// `None` when the preset has no model, lacks a required key or URL, or
+/// uses a provider that does not speak chat completions (ChatGPT OAuth).
+pub fn enhanced_ai_target(store: &crate::store::SettingsStore) -> Option<EnhancedAiTarget> {
+    use crate::store::{AIProviderType, DEFAULT_OLLAMA_URL};
+
+    let preset = store
+        .ai_presets
+        .iter()
+        .find(|p| p.default_preset)
+        .or_else(|| store.ai_presets.first())?;
+    let model = preset.model.trim().to_string();
+    if model.is_empty() {
+        return None;
+    }
+    let key = preset
+        .api_key
+        .as_deref()
+        .map(str::trim)
+        .filter(|k| !k.is_empty())
+        .map(str::to_string);
+    let url = preset.url.trim();
+    let chat_url = |base: &str| screenpipe_core::endpoints::join(base, "chat/completions");
+
+    match preset.provider {
+        AIProviderType::ScreenpipeCloud | AIProviderType::Pi => Some(EnhancedAiTarget {
+            url: "/v1/chat/completions".to_string(),
+            key: None,
+            model,
+            via_local_proxy: true,
+        }),
+        AIProviderType::NativeOllama => Some(EnhancedAiTarget {
+            url: chat_url(if url.is_empty() { DEFAULT_OLLAMA_URL } else { url }),
+            key: None,
+            model,
+            via_local_proxy: false,
+        }),
+        AIProviderType::OpenAI => key.map(|key| EnhancedAiTarget {
+            url: chat_url(if url.is_empty() {
+                "https://api.openai.com/v1"
+            } else {
+                url
+            }),
+            key: Some(key),
+            model,
+            via_local_proxy: false,
+        }),
+        AIProviderType::Anthropic => key.map(|key| {
+            // Anthropic's OpenAI-compatible surface lives under /v1.
+            let base = if url.is_empty() {
+                "https://api.anthropic.com".to_string()
+            } else {
+                url.trim_end_matches('/').to_string()
+            };
+            let base = if base.ends_with("/v1") {
+                base
+            } else {
+                format!("{base}/v1")
+            };
+            EnhancedAiTarget {
+                url: chat_url(&base),
+                key: Some(key),
+                model,
+                via_local_proxy: false,
+            }
+        }),
+        AIProviderType::Custom if !url.is_empty() => Some(EnhancedAiTarget {
+            url: chat_url(url),
+            key,
+            model,
+            via_local_proxy: false,
+        }),
+        AIProviderType::Custom | AIProviderType::OpenAIChatGPT => None,
+    }
 }
 
 // ─── Managed state ──────────────────────────────────────────────────────────
@@ -135,14 +225,16 @@ pub async fn force_regenerate_suggestions(
     app: AppHandle,
 ) -> Result<CachedSuggestions, String> {
     let enhanced = state.enhanced_ai.lock().await.clone();
+    let target = resolve_enhanced_target(&app, enhanced.as_ref());
     let api = local_api_context_from_app(&app);
-    let cached = generate_suggestions(&api, enhanced.as_ref()).await?;
+    let cached = generate_suggestions(&api, target.as_ref()).await?;
     let mut guard = state.cache.lock().await;
     *guard = Some(cached.clone());
     Ok(cached)
 }
 
-/// Enable or disable enhanced AI suggestions (uses screenpipe cloud).
+/// Enable or disable enhanced AI suggestions (uses the default AI preset).
+/// `token` is ignored and kept only for binding compatibility.
 #[tauri::command]
 #[specta::specta]
 pub async fn set_enhanced_ai_suggestions(
@@ -151,12 +243,29 @@ pub async fn set_enhanced_ai_suggestions(
     token: String,
 ) -> Result<(), String> {
     let mut guard = state.enhanced_ai.lock().await;
-    if enabled && !token.is_empty() {
+    if enabled {
         *guard = Some(EnhancedAIConfig { enabled, token });
     } else {
         *guard = None;
     }
     Ok(())
+}
+
+/// The chat target for this cycle: the default preset's endpoint when
+/// enhanced AI is on, else `None` (on-device model or templates).
+fn resolve_enhanced_target(
+    app: &AppHandle,
+    enhanced: Option<&EnhancedAIConfig>,
+) -> Option<EnhancedAiTarget> {
+    if !enhanced.is_some_and(|c| c.enabled) {
+        return None;
+    }
+    let store = crate::store::SettingsStore::get(app).ok().flatten()?;
+    let target = enhanced_ai_target(&store);
+    if target.is_none() {
+        debug!("suggestions: enhanced AI is on but the default preset is not usable yet");
+    }
+    target
 }
 
 // ─── Auto-start ─────────────────────────────────────────────────────────────
@@ -215,10 +324,11 @@ pub async fn auto_start_scheduler(app: AppHandle, state: &SuggestionsState) {
 
             // Read current enhanced AI config (picks up setting changes each cycle)
             let enhanced = enhanced_ai.lock().await.clone();
+            let target = resolve_enhanced_target(&app, enhanced.as_ref());
 
             // Fetch activity & generate suggestions
             let api = local_api_context_from_app(&app);
-            match generate_suggestions(&api, enhanced.as_ref()).await {
+            match generate_suggestions(&api, target.as_ref()).await {
                 Ok(cached) => {
                     debug!(
                         "suggestions scheduler: generated {} suggestions (mode={}, ai={}, trigger={})",
@@ -1428,20 +1538,15 @@ struct AiResult {
     tags: Vec<String>,
 }
 
-/// Screenpipe cloud API endpoint for enhanced AI suggestions.
-const SCREENPIPE_CLOUD_API: &str = "https://api.screenpipe.com/v1";
-
 async fn generate_ai_suggestions(
     api: &LocalApiContext,
     mode: &str,
     apps: &[AppActivity],
     windows: &[WindowActivity],
-    enhanced_ai: Option<&EnhancedAIConfig>,
+    enhanced_target: Option<&EnhancedAiTarget>,
 ) -> Option<AiResult> {
     // Determine which AI backend to use
-    let use_cloud = enhanced_ai
-        .as_ref()
-        .map_or(false, |c| c.enabled && !c.token.is_empty());
+    let use_cloud = enhanced_target.is_some();
 
     if !use_cloud && !check_ai_available(api).await {
         info!("suggestions: Apple Intelligence not available and enhanced AI not enabled, using templates");
@@ -1454,7 +1559,7 @@ async fn generate_ai_suggestions(
         "suggestions: AI prompt ~{} tokens, backend={}",
         context.len() / 4,
         if use_cloud {
-            "screenpipe-cloud"
+            "default-preset"
         } else {
             "apple-intelligence"
         }
@@ -1462,20 +1567,29 @@ async fn generate_ai_suggestions(
 
     let client = reqwest::Client::new();
 
-    let resp = if use_cloud {
-        let config = enhanced_ai.unwrap();
-        client
-            .post(format!("{}/chat/completions", SCREENPIPE_CLOUD_API))
-            .header("Authorization", format!("Bearer {}", config.token))
-            .json(&serde_json::json!({
-                "model": "auto",
-                "messages": [
-                    {"role": "system", "content": AI_SYSTEM_PROMPT},
-                    {"role": "user", "content": format!("Activity mode: {}\n\n{}", mode, context)}
-                ],
-                "temperature": 0.7,
-                "max_tokens": 500
-            }))
+    let resp = if let Some(target) = enhanced_target {
+        let body = serde_json::json!({
+            "model": target.model,
+            "messages": [
+                {"role": "system", "content": AI_SYSTEM_PROMPT},
+                {"role": "user", "content": format!("Activity mode: {}\n\n{}", mode, context)}
+            ],
+            "temperature": 0.7,
+            "max_tokens": 500
+        });
+        let request = if target.via_local_proxy {
+            // The local engine forwards to the user's AI gateway and adds
+            // the gateway key itself.
+            api.apply_auth(client.post(api.url(&target.url)))
+        } else {
+            let request = client.post(&target.url);
+            match target.key.as_deref() {
+                Some(key) => request.bearer_auth(key),
+                None => request,
+            }
+        };
+        request
+            .json(&body)
             .timeout(std::time::Duration::from_secs(30))
             .send()
             .await
@@ -1634,7 +1748,7 @@ fn extract_json_object(content: &str) -> Option<String> {
 
 async fn generate_suggestions(
     api: &LocalApiContext,
-    enhanced_ai: Option<&EnhancedAIConfig>,
+    enhanced_target: Option<&EnhancedAiTarget>,
 ) -> Result<CachedSuggestions, String> {
     let (apps, windows) = tokio::join!(fetch_app_activity(api), fetch_window_activity(api));
     let apps = apps.unwrap_or_default();
@@ -1652,7 +1766,7 @@ async fn generate_suggestions(
 
     // Try AI-powered suggestions + tags in one call
     let (suggestions, tags, ai_generated) =
-        match generate_ai_suggestions(api, mode, &apps, &windows, enhanced_ai).await {
+        match generate_ai_suggestions(api, mode, &apps, &windows, enhanced_target).await {
             Some(result) => {
                 info!(
                     "suggestions: AI generated {} suggestions + {} tags",
@@ -1772,6 +1886,60 @@ async fn store_tags(api: &LocalApiContext, tags: &[String]) -> Result<(), String
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn store_with(preset: serde_json::Value) -> crate::store::SettingsStore {
+        let mut store = crate::store::SettingsStore::default();
+        store.ai_presets = vec![serde_json::from_value(preset).unwrap()];
+        store
+    }
+
+    #[test]
+    fn enhanced_ai_uses_the_default_preset_endpoint() {
+        let ollama = store_with(serde_json::json!({
+            "id": "default", "provider": "native-ollama", "url": "",
+            "model": "llama3.1:8b", "defaultPreset": true, "prompt": "", "maxContextChars": 200000
+        }));
+        let target = enhanced_ai_target(&ollama).unwrap();
+        assert_eq!(target.url, "http://localhost:11434/v1/chat/completions");
+        assert_eq!(target.model, "llama3.1:8b");
+        assert!(!target.via_local_proxy);
+        assert_eq!(target.key, None);
+
+        let anthropic = store_with(serde_json::json!({
+            "id": "c", "provider": "anthropic", "url": "https://api.anthropic.com",
+            "model": "claude-sonnet-4-6", "apiKey": "sk-ant", "defaultPreset": true,
+            "prompt": "", "maxContextChars": 200000
+        }));
+        let target = enhanced_ai_target(&anthropic).unwrap();
+        assert_eq!(target.url, "https://api.anthropic.com/v1/chat/completions");
+        assert_eq!(target.key.as_deref(), Some("sk-ant"));
+
+        let gateway = store_with(serde_json::json!({
+            "id": "g", "provider": "screenpipe-cloud", "url": "", "model": "auto",
+            "defaultPreset": true, "prompt": "", "maxContextChars": 200000
+        }));
+        let target = enhanced_ai_target(&gateway).unwrap();
+        assert!(target.via_local_proxy, "gateway presets go through the local proxy");
+        assert_eq!(target.url, "/v1/chat/completions");
+    }
+
+    #[test]
+    fn enhanced_ai_needs_a_model_and_required_keys() {
+        let no_model = crate::store::SettingsStore::default();
+        assert_eq!(enhanced_ai_target(&no_model), None, "fresh installs pick a model first");
+
+        let openai_without_key = store_with(serde_json::json!({
+            "id": "o", "provider": "openai", "url": "https://api.openai.com/v1",
+            "model": "gpt-4o", "defaultPreset": true, "prompt": "", "maxContextChars": 128000
+        }));
+        assert_eq!(enhanced_ai_target(&openai_without_key), None);
+
+        let chatgpt = store_with(serde_json::json!({
+            "id": "c", "provider": "openai-chatgpt", "url": "https://api.openai.com/v1",
+            "model": "gpt-5.5", "defaultPreset": true, "prompt": "", "maxContextChars": 128000
+        }));
+        assert_eq!(enhanced_ai_target(&chatgpt), None);
+    }
 
     #[test]
     fn test_detect_mode_coding() {
