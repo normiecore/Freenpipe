@@ -9,7 +9,7 @@ development build away from an installed screenpipe on the same machine.
 
 | Tool | Version used | Notes |
 |---|---|---|
-| Rust | pinned by `rust-toolchain.toml` (1.93.1) | `rustup` installs it on first `cargo` call |
+| Rust | pinned by `rust-toolchain.toml` (1.94.1) | `rustup` installs it on first `cargo` call |
 | Visual Studio 2022 Build Tools | 17.x, MSVC v143 14.44, Windows 11 SDK 10.0.26100 | workload "Desktop development with C++" |
 | LLVM | any recent release in `C:\Program Files\LLVM` | `libclang.dll` for bindgen |
 | CMake | the one bundled with VS 2022, or a standalone install | generator must be "Visual Studio 17 2022" |

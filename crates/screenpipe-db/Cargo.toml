@@ -7,17 +7,25 @@ repository.workspace = true
 license.workspace = true
 edition.workspace = true
 
+# Declared with the SQLite toolchain upgrade ahead of the code that uses them:
+# rusqlite (virtual tables), parquet + zstd (hybrid payload files) and sha2
+# (digests). Drop each entry once src/ uses the crate.
+[package.metadata.cargo-machete]
+ignored = ["rusqlite", "parquet", "zstd", "sha2"]
+
 [dependencies]
 chrono = { version = "0.4.31", features = ["serde"] }
 image = { workspace = true }
-sqlx = { version = "0.7", features = [
-  "sqlite",
-  "runtime-tokio-rustls",
-  "chrono",
-  "migrate",
-] }
+sqlx = { workspace = true, features = ["chrono", "migrate"] }
 sqlite-vec = "0.1.3"
-libsqlite3-sys = { version = "0.26", features = ["bundled"] }
+libsqlite3-sys = { workspace = true }
+# Virtual tables over archived rows (screenpipe_elements / screenpipe_bulk) and
+# Parquet payload files for the hybrid storage format. Declared now so the
+# SQLite toolchain is settled in one place; the storage module uses them.
+rusqlite = { workspace = true, features = ["vtab"] }
+parquet = { version = "59.3.0", default-features = false, features = ["zstd"] }
+zstd = "0.13"
+sha2 = "0.10.9"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 futures = { version = "0.3.31", features = ["std"] }
@@ -38,6 +46,7 @@ once_cell = "1.19"
 
 [dev-dependencies]
 screenpipe-core = { path = "../screenpipe-core" }
+tempfile = "3"
 
 [[bench]]
 name = "db_benchmarks"

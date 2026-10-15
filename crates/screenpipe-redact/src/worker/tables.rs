@@ -167,7 +167,10 @@ pub async fn fetch_unredacted(
         extra = extra,
     );
 
-    let rows = sqlx::query(&q).bind(limit as i64).fetch_all(pool).await?;
+    let rows = sqlx::query(sqlx::AssertSqlSafe(q))
+        .bind(limit as i64)
+        .fetch_all(pool)
+        .await?;
     let out = rows
         .into_iter()
         .map(|r| UnredactedRow {
@@ -201,7 +204,7 @@ pub async fn write_redacted(
         redacted_at_col = table.redacted_at_col(),
         pk = table.pk_col(),
     );
-    sqlx::query(&q)
+    sqlx::query(sqlx::AssertSqlSafe(q))
         .bind(redacted)
         .bind(id)
         .execute(pool)

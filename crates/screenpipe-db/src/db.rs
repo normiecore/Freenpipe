@@ -251,7 +251,7 @@ async fn flush_level0_bulk(
         }
         sql.push_str("(?,'ocr','block',?,NULL,0,?,?,?,?,?,?)");
     }
-    let mut q = sqlx::query(&sql);
+    let mut q = sqlx::query(sqlx::AssertSqlSafe(sql));
     for row in chunk {
         q = q
             .bind(frame_id)
@@ -267,6 +267,20 @@ async fn flush_level0_bulk(
     Ok(())
 }
 
+/// Whether a path given to [`DatabaseManager::new`] names an in-memory
+/// database (`:memory:`, `sqlite::memory:`, `file::memory:` or a URI with
+/// `mode=memory`) rather than a file on disk.
+fn is_in_memory_database(database_path: &str) -> bool {
+    let target = database_path
+        .trim_start_matches("sqlite:")
+        .trim_start_matches("//");
+    let (name, query) = target.split_once('?').unwrap_or((target, ""));
+    name.trim_start_matches("file:") == ":memory:"
+        || query
+            .split('&')
+            .any(|pair| pair.eq_ignore_ascii_case("mode=memory"))
+}
+
 impl DatabaseManager {
     pub async fn new(database_path: &str, config: DbConfig) -> Result<Self, sqlx::Error> {
         debug!(
@@ -279,11 +293,17 @@ impl DatabaseManager {
         let connection_string = format!("sqlite:{}", database_path);
 
         unsafe {
-            sqlite3_auto_extension(Some(
-                std::mem::transmute::<*const (), unsafe extern "C" fn()>(
-                    sqlite3_vec_init as *const (),
-                ),
-            ));
+            // sqlite-vec declares its entry point without arguments; SQLite calls it
+            // with the standard extension-init signature, which libsqlite3-sys 0.37
+            // spells out in the sqlite3_auto_extension binding.
+            type ExtensionInit = unsafe extern "C" fn(
+                *mut libsqlite3_sys::sqlite3,
+                *mut *mut std::os::raw::c_char,
+                *const libsqlite3_sys::sqlite3_api_routines,
+            ) -> std::os::raw::c_int;
+            sqlite3_auto_extension(Some(std::mem::transmute::<*const (), ExtensionInit>(
+                sqlite3_vec_init as *const (),
+            )));
         }
 
         // Ensure the data dir exists before opening the file — a missing parent
@@ -393,7 +413,13 @@ impl DatabaseManager {
         // Surface corruption proactively at boot with a recovery hint,
         // instead of only discovering it later via worker query errors
         // (which used to spin a CPU core retrying a malformed DB).
-        db_manager.spawn_startup_integrity_check(Arc::from(database_path));
+        // In-memory databases are skipped: they have no file to be damaged, and
+        // since SQLite 3.44 quick_check also runs each FTS5 table's integrity
+        // check, which never returns on the shared-cache connections sqlx opens
+        // for in-memory pools (seen with the bundled 3.51.3).
+        if !is_in_memory_database(database_path) {
+            Self::spawn_startup_integrity_check(Arc::from(database_path));
+        }
 
         Ok(db_manager)
     }
@@ -546,7 +572,7 @@ impl DatabaseManager {
             if row.0 == 0 {
                 tracing::info!("Adding missing column frames.{}", col_name);
                 let sql = format!("ALTER TABLE frames ADD COLUMN {} {}", col_name, col_type);
-                sqlx::query(&sql).execute(pool).await?;
+                sqlx::query(sqlx::AssertSqlSafe(sql)).execute(pool).await?;
             }
         }
 
@@ -584,7 +610,7 @@ impl DatabaseManager {
             if row.0 == 0 {
                 tracing::info!("Adding missing column memories.{}", col_name);
                 let sql = format!("ALTER TABLE memories ADD COLUMN {} {}", col_name, col_type);
-                sqlx::query(&sql).execute(pool).await?;
+                sqlx::query(sqlx::AssertSqlSafe(sql)).execute(pool).await?;
             }
         }
         sqlx::query(
@@ -1935,7 +1961,7 @@ impl DatabaseManager {
                ORDER BY ac.timestamp ASC"#,
             placeholders.join(", ")
         );
-        let mut query = sqlx::query_as::<_, AudioChunkInfo>(&sql);
+        let mut query = sqlx::query_as::<_, AudioChunkInfo>(sqlx::AssertSqlSafe(sql));
         for id in ids {
             query = query.bind(id);
         }
@@ -3851,7 +3877,7 @@ impl DatabaseManager {
         // filter via the `json_array_length(?12) = 0` guard above.
         let tags_json = serde_json::to_string(tags).unwrap_or_else(|_| "[]".to_string());
 
-        let query_builder = sqlx::query_as(&sql);
+        let query_builder = sqlx::query_as(sqlx::AssertSqlSafe(sql));
 
         let raw_results: Vec<OCRResultRaw> = query_builder
             .bind(if has_fts { Some(&fts_query) } else { None })
@@ -4124,7 +4150,7 @@ impl DatabaseManager {
             |ids| serde_json::to_string(&ids).unwrap_or_else(|_| "[]".to_string()),
         );
 
-        let mut query_builder = sqlx::query_as::<_, AudioResultRaw>(&sql);
+        let mut query_builder = sqlx::query_as::<_, AudioResultRaw>(sqlx::AssertSqlSafe(sql));
 
         // bind parameters in the same order as added to the where clause
         if !query.is_empty() {
@@ -4972,7 +4998,7 @@ impl DatabaseManager {
                     "SELECT COUNT(*) FROM ui_events WHERE {} AND (? IS NULL OR timestamp >= ?) AND (? IS NULL OR timestamp <= ?)",
                     where_part
                 );
-                let mut qb = sqlx::query_scalar::<_, i64>(&input_sql);
+                let mut qb = sqlx::query_scalar::<_, i64>(sqlx::AssertSqlSafe(input_sql));
                 for val in &bind_values {
                     qb = qb.bind(val);
                 }
@@ -4994,7 +5020,7 @@ impl DatabaseManager {
 
         let count: i64 = match content_type {
             ContentType::OCR | ContentType::Accessibility => {
-                sqlx::query_scalar(&sql)
+                sqlx::query_scalar(sqlx::AssertSqlSafe(sql))
                     .bind(if has_fts { fts_query } else { "*".to_owned() })
                     .bind(start_time)
                     .bind(end_time)
@@ -5012,7 +5038,7 @@ impl DatabaseManager {
                 } else {
                     crate::text_normalizer::sanitize_fts5_query(query)
                 };
-                let mut query_builder = sqlx::query_scalar(&sql)
+                let mut query_builder = sqlx::query_scalar(sqlx::AssertSqlSafe(sql))
                     .bind(&sanitized_audio)
                     .bind(start_time)
                     .bind(end_time)
@@ -5200,7 +5226,7 @@ impl DatabaseManager {
             placeholders.join(",")
         );
 
-        let mut query = sqlx::query_as::<_, (i64, String)>(&query_str);
+        let mut query = sqlx::query_as::<_, (i64, String)>(sqlx::AssertSqlSafe(query_str));
         for id in vision_ids {
             query = query.bind(*id);
         }
@@ -5272,7 +5298,9 @@ impl DatabaseManager {
         Ok(())
     }
     pub async fn execute_raw_sql(&self, query: &str) -> Result<serde_json::Value, sqlx::Error> {
-        let rows = sqlx::query(query).fetch_all(&self.pool).await?;
+        let rows = sqlx::query(sqlx::AssertSqlSafe(query))
+            .fetch_all(&self.pool)
+            .await?;
 
         let result: Vec<serde_json::Map<String, serde_json::Value>> = rows
             .iter()
@@ -5660,7 +5688,7 @@ impl DatabaseManager {
             },
         );
 
-        sqlx::query_as(&sql)
+        sqlx::query_as(sqlx::AssertSqlSafe(sql))
             .bind(if has_fts {
                 combined_query
             } else {
@@ -5749,7 +5777,7 @@ impl DatabaseManager {
         );
 
         let on_screen_int: i64 = if on_screen { 1 } else { 0 };
-        let mut q = sqlx::query_as(&sql)
+        let mut q = sqlx::query_as(sqlx::AssertSqlSafe(sql))
             .bind(on_screen_int)
             .bind(start_time)
             .bind(end_time)
@@ -5802,7 +5830,7 @@ impl DatabaseManager {
         );
 
         let on_screen_int: i64 = if on_screen { 1 } else { 0 };
-        let mut q = sqlx::query_scalar::<_, i64>(&sql)
+        let mut q = sqlx::query_scalar::<_, i64>(sqlx::AssertSqlSafe(sql))
             .bind(on_screen_int)
             .bind(start_time)
             .bind(end_time)
@@ -5883,7 +5911,7 @@ impl DatabaseManager {
             where_clause
         );
 
-        let mut query_builder = sqlx::query_as::<_, UiEventRow>(&sql);
+        let mut query_builder = sqlx::query_as::<_, UiEventRow>(sqlx::AssertSqlSafe(sql));
         for val in &bind_values {
             query_builder = query_builder.bind(val);
         }
@@ -6032,7 +6060,7 @@ impl DatabaseManager {
             base_query, speaker_filter
         );
 
-        let mut db_query = sqlx::query_as::<sqlx::Sqlite, Speaker>(&query);
+        let mut db_query = sqlx::query_as::<sqlx::Sqlite, Speaker>(sqlx::AssertSqlSafe(query));
 
         // Add speaker_id bindings if present
         if let Some(ids) = speaker_ids {
@@ -7621,7 +7649,7 @@ LIMIT ? OFFSET ?
             )
         };
 
-        let mut query_builder = sqlx::query_as::<_, FrameRow>(&sql);
+        let mut query_builder = sqlx::query_as::<_, FrameRow>(sqlx::AssertSqlSafe(sql));
 
         // Bind timestamp parameters first
         if let Some(start) = start_time {
@@ -7774,8 +7802,8 @@ LIMIT ? OFFSET ?
         );
 
         // Build the data query
-        let mut data_query = sqlx::query_as::<_, ElementRow>(&sql);
-        let mut count_query = sqlx::query_scalar::<_, i64>(&count_sql);
+        let mut data_query = sqlx::query_as::<_, ElementRow>(sqlx::AssertSqlSafe(sql));
+        let mut count_query = sqlx::query_scalar::<_, i64>(sqlx::AssertSqlSafe(count_sql));
 
         // Bind parameters in the same order as conditions
         if use_fts {
@@ -7966,7 +7994,7 @@ LIMIT ? OFFSET ?
             )
         };
 
-        let mut query_builder = sqlx::query_as::<_, FrameRowLight>(&sql);
+        let mut query_builder = sqlx::query_as::<_, FrameRowLight>(sqlx::AssertSqlSafe(sql));
 
         if let Some(start) = start_time {
             query_builder = query_builder.bind(start);
@@ -8653,7 +8681,7 @@ LIMIT ? OFFSET ?
             where_clause
         );
 
-        let rows: Vec<UiEventRow> = sqlx::query_as(&sql)
+        let rows: Vec<UiEventRow> = sqlx::query_as(sqlx::AssertSqlSafe(sql))
             .bind(query)
             .bind(limit)
             .fetch_all(&self.pool)
@@ -8705,18 +8733,12 @@ LIMIT ? OFFSET ?
     /// multi-GB database. On failure we log loudly with the exact recovery
     /// command so the user can self-heal via the existing `screenpipe db
     /// recover` path (which backs up the original before rebuilding).
-    fn spawn_startup_integrity_check(&self, database_path: Arc<str>) {
-        let pool = self.pool.clone();
+    fn spawn_startup_integrity_check(database_path: Arc<str>) {
         tokio::spawn(async move {
             // Let boot settle so the scan doesn't compete with migrations
             // and the first capture writes for I/O.
             tokio::time::sleep(Duration::from_secs(10)).await;
-            // quick_check(1) stops after the first error — we only need a
-            // yes/no signal here, not the full corruption inventory.
-            match sqlx::query_scalar::<_, String>("PRAGMA quick_check(1)")
-                .fetch_one(&pool)
-                .await
-            {
+            match Self::run_startup_integrity_check(&database_path).await {
                 Ok(result) if result == "ok" => {
                     debug!("startup integrity check: ok");
                 }
@@ -8744,6 +8766,38 @@ LIMIT ? OFFSET ?
         });
     }
 
+    /// Run `PRAGMA quick_check(1)` against the database file at
+    /// `database_path` and return SQLite's verdict (`"ok"` when healthy).
+    ///
+    /// The check gets its own short-lived, read-only connection instead of a
+    /// pooled one. Since SQLite 3.44 quick_check also calls every FTS5 table's
+    /// integrity method, and in the bundled 3.51.3 that method reads the
+    /// segment layout the connection cached during earlier FTS queries without
+    /// first checking whether another connection has rewritten the index
+    /// since. A read-pool connection that served a search before the writer
+    /// merged FTS segments therefore reports blobs that no longer exist as
+    /// corruption. A connection opened just for the check has nothing cached,
+    /// so its verdict reflects the file. `(1)` stops at the first problem: the
+    /// caller only needs a yes/no answer.
+    pub async fn run_startup_integrity_check(database_path: &str) -> Result<String, sqlx::Error> {
+        let mut conn = format!("sqlite:{}", database_path)
+            .parse::<SqliteConnectOptions>()?
+            .read_only(true)
+            .busy_timeout(Duration::from_secs(5))
+            .connect()
+            .await?;
+        let verdict = sqlx::query_scalar::<_, String>("PRAGMA quick_check(1)")
+            .fetch_one(&mut conn)
+            .await;
+        if let Err(e) = conn.close().await {
+            debug!(
+                "startup integrity check: closing its connection failed: {}",
+                e
+            );
+        }
+        verdict
+    }
+
     /// Run `PRAGMA wal_checkpoint(TRUNCATE)` on demand, flushing WAL into the
     /// main database file so it can be safely copied.
     /// Returns (busy, log_pages, checkpointed_pages).
@@ -8757,9 +8811,12 @@ LIMIT ? OFFSET ?
     /// Create an atomic backup of the database using `VACUUM INTO`.
     /// The destination path must not already exist.
     pub async fn backup_to(&self, dest: &str) -> Result<(), sqlx::Error> {
-        sqlx::query(&format!("VACUUM INTO '{}'", dest.replace('\'', "''")))
-            .execute(&self.pool)
-            .await?;
+        sqlx::query(sqlx::AssertSqlSafe(format!(
+            "VACUUM INTO '{}'",
+            dest.replace('\'', "''")
+        )))
+        .execute(&self.pool)
+        .await?;
         Ok(())
     }
 
@@ -9197,7 +9254,7 @@ LIMIT ? OFFSET ?
         let max_retries = 3;
         let mut last_error = None;
         for attempt in 1..=max_retries {
-            let mut q = sqlx::query_as::<_, MeetingRecord>(&sql);
+            let mut q = sqlx::query_as::<_, MeetingRecord>(sqlx::AssertSqlSafe(sql.as_str()));
             if let Some(st) = start_time {
                 q = q.bind(st);
             }
@@ -9829,7 +9886,7 @@ LIMIT ? OFFSET ?
             sets.len() + 1
         );
         let mut tx = self.begin_immediate_with_retry().await?;
-        let mut query = sqlx::query(&sql);
+        let mut query = sqlx::query(sqlx::AssertSqlSafe(sql));
         if let Some(v) = meeting_start {
             query = query.bind(normalize_timestamp_for_range_query(v));
         }
@@ -9883,7 +9940,7 @@ LIMIT ? OFFSET ?
              ORDER BY meeting_start ASC",
             in_clause
         );
-        let mut fetch_query = sqlx::query_as::<_, MeetingRecord>(&fetch_sql);
+        let mut fetch_query = sqlx::query_as::<_, MeetingRecord>(sqlx::AssertSqlSafe(fetch_sql));
         for id in ids.iter() {
             fetch_query = fetch_query.bind(*id);
         }
@@ -9984,7 +10041,7 @@ LIMIT ? OFFSET ?
                 "DELETE FROM meetings WHERE id IN ({})",
                 loser_placeholders.join(", ")
             );
-            let mut del_query = sqlx::query(&delete_sql);
+            let mut del_query = sqlx::query(sqlx::AssertSqlSafe(delete_sql));
             for &id in &losers {
                 del_query = del_query.bind(id);
             }
@@ -10177,7 +10234,7 @@ LIMIT ? OFFSET ?
 
         let sql = format!("UPDATE memories SET {} WHERE id = ?6", sets.join(", "));
 
-        sqlx::query(&sql)
+        sqlx::query(sqlx::AssertSqlSafe(sql))
             .bind(&now)
             .bind(content)
             .bind(tags)
@@ -10420,7 +10477,7 @@ LIMIT ? OFFSET ?
 
         let fts_query = query.map(crate::text_normalizer::sanitize_fts5_query);
 
-        sqlx::query_as::<_, MemoryRecord>(&sql)
+        sqlx::query_as::<_, MemoryRecord>(sqlx::AssertSqlSafe(sql))
             .bind(fts_query.as_deref())
             .bind(source)
             .bind(tags_filter)
@@ -10487,7 +10544,7 @@ LIMIT ? OFFSET ?
 
         let fts_query = query.map(crate::text_normalizer::sanitize_fts5_query);
 
-        sqlx::query_scalar::<_, i64>(&sql)
+        sqlx::query_scalar::<_, i64>(sqlx::AssertSqlSafe(sql))
             .bind(fts_query.as_deref())
             .bind(source)
             .bind(tags_filter)
@@ -10837,6 +10894,28 @@ pub fn parse_all_text_positions(blocks: &[OcrTextBlock]) -> Vec<TextPosition> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn in_memory_database_paths_are_recognised() {
+        for path in [
+            ":memory:",
+            "sqlite::memory:",
+            "file::memory:?cache=shared",
+            "sqlite://?mode=memory",
+            "file:scratch?mode=memory&cache=shared",
+        ] {
+            assert!(is_in_memory_database(path), "{path} is in memory");
+        }
+        for path in [
+            "/home/user/.screenpipe/db.sqlite",
+            "C:\\Users\\user\\.screenpipe\\db.sqlite",
+            "sqlite:/tmp/db.sqlite",
+            "file:/tmp/db.sqlite?mode=rwc",
+            "memory.sqlite",
+        ] {
+            assert!(!is_in_memory_database(path), "{path} is a file");
+        }
+    }
 
     fn create_test_block(
         text: &str,
