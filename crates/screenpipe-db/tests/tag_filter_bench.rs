@@ -60,7 +60,7 @@ async fn exec(db: &DatabaseManager, sql: &str) {
 }
 
 async fn explain(db: &DatabaseManager, label: &str, sql: &str) {
-    let rows: Vec<(i64, i64, i64, String)> = sqlx::query_as(&format!("EXPLAIN QUERY PLAN {sql}"))
+    let rows: Vec<(i64, i64, i64, String)> = sqlx::query_as(sqlx::AssertSqlSafe(format!("EXPLAIN QUERY PLAN {sql}")))
         .bind("[\"person:ada\"]")
         .fetch_all(&db.pool)
         .await

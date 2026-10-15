@@ -38,7 +38,7 @@ libasound2-dev libpulse-dev libpipewire-0.3-dev libdbus-1-dev \
 libsamplerate-dev libwebrtc-audio-processing-dev libopenblas-dev \
 libglib2.0-dev libgtk-3-dev librsvg2-dev libwebkit2gtk-4.1-dev libayatana-appindicator3-dev \
 libsecret-1-dev"
-FP_RUST_CHANNEL_DEFAULT="1.93.1"
+FP_RUST_CHANNEL_DEFAULT="1.94.1"
 FP_ORT_VERSION="1.22.0"   # must match the ort crate (2.0.0-rc.10 targets ONNX Runtime 1.22)
 FP_OPENBLAS_DIR="/usr/lib/x86_64-linux-gnu/openblas"
 

@@ -279,11 +279,17 @@ impl DatabaseManager {
         let connection_string = format!("sqlite:{}", database_path);
 
         unsafe {
-            sqlite3_auto_extension(Some(
-                std::mem::transmute::<*const (), unsafe extern "C" fn()>(
-                    sqlite3_vec_init as *const (),
-                ),
-            ));
+            // sqlite-vec declares its entry point without arguments; SQLite calls it
+            // with the standard extension-init signature, which libsqlite3-sys 0.37
+            // spells out in the sqlite3_auto_extension binding.
+            type ExtensionInit = unsafe extern "C" fn(
+                *mut libsqlite3_sys::sqlite3,
+                *mut *mut std::os::raw::c_char,
+                *const libsqlite3_sys::sqlite3_api_routines,
+            ) -> std::os::raw::c_int;
+            sqlite3_auto_extension(Some(std::mem::transmute::<*const (), ExtensionInit>(
+                sqlite3_vec_init as *const (),
+            )));
         }
 
         // Ensure the data dir exists before opening the file — a missing parent
@@ -1935,7 +1941,7 @@ impl DatabaseManager {
                ORDER BY ac.timestamp ASC"#,
             placeholders.join(", ")
         );
-        let mut query = sqlx::query_as::<_, AudioChunkInfo>(&sql);
+        let mut query = sqlx::query_as::<_, AudioChunkInfo>(sqlx::AssertSqlSafe(sql));
         for id in ids {
             query = query.bind(id);
         }
@@ -3851,7 +3857,7 @@ impl DatabaseManager {
         // filter via the `json_array_length(?12) = 0` guard above.
         let tags_json = serde_json::to_string(tags).unwrap_or_else(|_| "[]".to_string());
 
-        let query_builder = sqlx::query_as(&sql);
+        let query_builder = sqlx::query_as(sqlx::AssertSqlSafe(sql));
 
         let raw_results: Vec<OCRResultRaw> = query_builder
             .bind(if has_fts { Some(&fts_query) } else { None })
@@ -4124,7 +4130,7 @@ impl DatabaseManager {
             |ids| serde_json::to_string(&ids).unwrap_or_else(|_| "[]".to_string()),
         );
 
-        let mut query_builder = sqlx::query_as::<_, AudioResultRaw>(&sql);
+        let mut query_builder = sqlx::query_as::<_, AudioResultRaw>(sqlx::AssertSqlSafe(sql));
 
         // bind parameters in the same order as added to the where clause
         if !query.is_empty() {
@@ -4972,7 +4978,7 @@ impl DatabaseManager {
                     "SELECT COUNT(*) FROM ui_events WHERE {} AND (? IS NULL OR timestamp >= ?) AND (? IS NULL OR timestamp <= ?)",
                     where_part
                 );
-                let mut qb = sqlx::query_scalar::<_, i64>(&input_sql);
+                let mut qb = sqlx::query_scalar::<_, i64>(sqlx::AssertSqlSafe(input_sql));
                 for val in &bind_values {
                     qb = qb.bind(val);
                 }
@@ -4994,7 +5000,7 @@ impl DatabaseManager {
 
         let count: i64 = match content_type {
             ContentType::OCR | ContentType::Accessibility => {
-                sqlx::query_scalar(&sql)
+                sqlx::query_scalar(sqlx::AssertSqlSafe(sql))
                     .bind(if has_fts { fts_query } else { "*".to_owned() })
                     .bind(start_time)
                     .bind(end_time)
@@ -5012,7 +5018,7 @@ impl DatabaseManager {
                 } else {
                     crate::text_normalizer::sanitize_fts5_query(query)
                 };
-                let mut query_builder = sqlx::query_scalar(&sql)
+                let mut query_builder = sqlx::query_scalar(sqlx::AssertSqlSafe(sql))
                     .bind(&sanitized_audio)
                     .bind(start_time)
                     .bind(end_time)
@@ -5200,7 +5206,7 @@ impl DatabaseManager {
             placeholders.join(",")
         );
 
-        let mut query = sqlx::query_as::<_, (i64, String)>(&query_str);
+        let mut query = sqlx::query_as::<_, (i64, String)>(sqlx::AssertSqlSafe(query_str));
         for id in vision_ids {
             query = query.bind(*id);
         }
@@ -5660,7 +5666,7 @@ impl DatabaseManager {
             },
         );
 
-        sqlx::query_as(&sql)
+        sqlx::query_as(sqlx::AssertSqlSafe(sql))
             .bind(if has_fts {
                 combined_query
             } else {
@@ -5749,7 +5755,7 @@ impl DatabaseManager {
         );
 
         let on_screen_int: i64 = if on_screen { 1 } else { 0 };
-        let mut q = sqlx::query_as(&sql)
+        let mut q = sqlx::query_as(sqlx::AssertSqlSafe(sql))
             .bind(on_screen_int)
             .bind(start_time)
             .bind(end_time)
@@ -5802,7 +5808,7 @@ impl DatabaseManager {
         );
 
         let on_screen_int: i64 = if on_screen { 1 } else { 0 };
-        let mut q = sqlx::query_scalar::<_, i64>(&sql)
+        let mut q = sqlx::query_scalar::<_, i64>(sqlx::AssertSqlSafe(sql))
             .bind(on_screen_int)
             .bind(start_time)
             .bind(end_time)
@@ -5883,7 +5889,7 @@ impl DatabaseManager {
             where_clause
         );
 
-        let mut query_builder = sqlx::query_as::<_, UiEventRow>(&sql);
+        let mut query_builder = sqlx::query_as::<_, UiEventRow>(sqlx::AssertSqlSafe(sql));
         for val in &bind_values {
             query_builder = query_builder.bind(val);
         }
@@ -6032,7 +6038,7 @@ impl DatabaseManager {
             base_query, speaker_filter
         );
 
-        let mut db_query = sqlx::query_as::<sqlx::Sqlite, Speaker>(&query);
+        let mut db_query = sqlx::query_as::<sqlx::Sqlite, Speaker>(sqlx::AssertSqlSafe(query));
 
         // Add speaker_id bindings if present
         if let Some(ids) = speaker_ids {
@@ -7621,7 +7627,7 @@ LIMIT ? OFFSET ?
             )
         };
 
-        let mut query_builder = sqlx::query_as::<_, FrameRow>(&sql);
+        let mut query_builder = sqlx::query_as::<_, FrameRow>(sqlx::AssertSqlSafe(sql));
 
         // Bind timestamp parameters first
         if let Some(start) = start_time {
@@ -7774,8 +7780,8 @@ LIMIT ? OFFSET ?
         );
 
         // Build the data query
-        let mut data_query = sqlx::query_as::<_, ElementRow>(&sql);
-        let mut count_query = sqlx::query_scalar::<_, i64>(&count_sql);
+        let mut data_query = sqlx::query_as::<_, ElementRow>(sqlx::AssertSqlSafe(sql));
+        let mut count_query = sqlx::query_scalar::<_, i64>(sqlx::AssertSqlSafe(count_sql));
 
         // Bind parameters in the same order as conditions
         if use_fts {
@@ -7966,7 +7972,7 @@ LIMIT ? OFFSET ?
             )
         };
 
-        let mut query_builder = sqlx::query_as::<_, FrameRowLight>(&sql);
+        let mut query_builder = sqlx::query_as::<_, FrameRowLight>(sqlx::AssertSqlSafe(sql));
 
         if let Some(start) = start_time {
             query_builder = query_builder.bind(start);
@@ -8653,7 +8659,7 @@ LIMIT ? OFFSET ?
             where_clause
         );
 
-        let rows: Vec<UiEventRow> = sqlx::query_as(&sql)
+        let rows: Vec<UiEventRow> = sqlx::query_as(sqlx::AssertSqlSafe(sql))
             .bind(query)
             .bind(limit)
             .fetch_all(&self.pool)
@@ -9197,7 +9203,7 @@ LIMIT ? OFFSET ?
         let max_retries = 3;
         let mut last_error = None;
         for attempt in 1..=max_retries {
-            let mut q = sqlx::query_as::<_, MeetingRecord>(&sql);
+            let mut q = sqlx::query_as::<_, MeetingRecord>(sqlx::AssertSqlSafe(sql.as_str()));
             if let Some(st) = start_time {
                 q = q.bind(st);
             }
@@ -9883,7 +9889,7 @@ LIMIT ? OFFSET ?
              ORDER BY meeting_start ASC",
             in_clause
         );
-        let mut fetch_query = sqlx::query_as::<_, MeetingRecord>(&fetch_sql);
+        let mut fetch_query = sqlx::query_as::<_, MeetingRecord>(sqlx::AssertSqlSafe(fetch_sql));
         for id in ids.iter() {
             fetch_query = fetch_query.bind(*id);
         }
@@ -10420,7 +10426,7 @@ LIMIT ? OFFSET ?
 
         let fts_query = query.map(crate::text_normalizer::sanitize_fts5_query);
 
-        sqlx::query_as::<_, MemoryRecord>(&sql)
+        sqlx::query_as::<_, MemoryRecord>(sqlx::AssertSqlSafe(sql))
             .bind(fts_query.as_deref())
             .bind(source)
             .bind(tags_filter)
@@ -10487,7 +10493,7 @@ LIMIT ? OFFSET ?
 
         let fts_query = query.map(crate::text_normalizer::sanitize_fts5_query);
 
-        sqlx::query_scalar::<_, i64>(&sql)
+        sqlx::query_scalar::<_, i64>(sqlx::AssertSqlSafe(sql))
             .bind(fts_query.as_deref())
             .bind(source)
             .bind(tags_filter)

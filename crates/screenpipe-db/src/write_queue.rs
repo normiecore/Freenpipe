@@ -1409,7 +1409,7 @@ async fn execute_single_write(
         }
 
         WriteOp::PipeUpdateExecution { sql, binds } => {
-            let mut query = sqlx::query(sql);
+            let mut query = sqlx::query(sqlx::AssertSqlSafe(sql.as_str()));
             for bind in binds {
                 match bind {
                     PipeBindValue::Text(v) => {

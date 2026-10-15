@@ -7,6 +7,12 @@ repository.workspace = true
 license.workspace = true
 edition.workspace = true
 
+# Declared with the SQLite toolchain upgrade ahead of the code that uses them:
+# rusqlite (virtual tables), parquet + zstd (hybrid payload files) and sha2
+# (digests). Drop each entry once src/ uses the crate.
+[package.metadata.cargo-machete]
+ignored = ["rusqlite", "parquet", "zstd", "sha2"]
+
 [dependencies]
 chrono = { version = "0.4.31", features = ["serde"] }
 image = { workspace = true }
