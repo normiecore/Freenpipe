@@ -15,11 +15,11 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { Button } from "@/components/ui/button";
-import { Badge } from "@/components/ui/badge";
 import { useToast } from "@/components/ui/use-toast";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Lock, CloudUpload, AlertTriangle, Loader2, Play } from "lucide-react";
 import { open as openUrl } from "@tauri-apps/plugin-shell";
+import { freenpipeLink } from "@/lib/web-url";
 import { localFetch } from "@/lib/api";
 
 interface ArchiveStatus {
@@ -190,18 +190,12 @@ export function ArchiveSettings() {
         <p className="text-muted-foreground text-sm mb-4">
           Encrypt and archive old data to the cloud to free disk space.{" "}
           <button
-            onClick={() => openUrl("https://docs.screenpi.pe/cloud-archive")}
+            onClick={() => openUrl(freenpipeLink("docs"))}
             className="underline underline-offset-2 hover:text-foreground transition-colors"
           >
             Learn more
           </button>
         </p>
-        <div className="flex items-center gap-2">
-            <Badge variant="secondary" className="text-[10px]">
-              pro
-            </Badge>
-        </div>
-
         <Card>
           <CardContent className="p-5">
             <div className="flex items-center gap-3 mb-3">
@@ -218,12 +212,6 @@ export function ArchiveSettings() {
 
   return (
     <div className="space-y-6">
-      <div className="flex items-center gap-2">
-          <Badge variant="secondary" className="text-[10px]">
-            pro
-          </Badge>
-      </div>
-
       {/* Retention selector */}
       <p className="text-sm text-muted-foreground">
           Encrypt and archive data older than{" "}
@@ -244,7 +232,7 @@ export function ArchiveSettings() {
           </Select>{" "}
           to free disk space.{" "}
           <button
-            onClick={() => openUrl("https://docs.screenpi.pe/cloud-archive")}
+            onClick={() => openUrl(freenpipeLink("docs"))}
             className="underline underline-offset-2 hover:text-foreground transition-colors"
           >
             Learn more

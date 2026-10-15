@@ -59,9 +59,10 @@ const ALLOWED: { path: string; rules: string[]; reason: string }[] = [
 
 /**
  * Commerce and promotion surfaces: checkout and billing, referral, the hosted
- * team and enterprise consoles, sales booking links, plan and upgrade rows,
- * and the vendor's later trial, paywall, card-ask, annual-plan, announcement,
- * remote-control and hosted-quota features.
+ * team and enterprise consoles, sales booking links, the vendor's community
+ * invite, plan and upgrade rows, and the vendor's later trial, paywall,
+ * card-ask, annual-plan, announcement, remote-control and hosted-quota
+ * features.
  *
  * W0-05 removed every one of these that the MIT base had. The target-only
  * ones are never ported: Freenpipe has nothing to sell, so they have no
@@ -76,6 +77,7 @@ export const COMMERCE_RULES: Rule[] = [
   { id: "team-endpoint", pattern: /\/api\/team(?![\w-])/ },
   { id: "enterprise-endpoint", pattern: /\/api\/enterprise\/(policy|heartbeat|v1)(?![\w-])/ },
   { id: "booking-link", pattern: /cal\.com\/team\//i },
+  { id: "community-invite", pattern: /discord\.(com\/invite|gg)\/screenpipe\b/i },
   { id: "purchase-deep-link", pattern: /purchase-successful|stripe-connect/ },
   { id: "tray-upgrade", pattern: /tray-upgrade|upgrade to business/i },
   // Target-only (v2.7.x); never ported.
@@ -400,6 +402,7 @@ describe("vendor-host guard", () => {
       'fetch(base + "/api/referral/invite")',
       'const API = base + "/api/team";',
       'openUrl("https://cal.com/team/acme/chat")',
+      'openUrl("https://discord.com/invite/screenpipe")',
       'let _ = app.emit("tray-upgrade", ());',
       'step: "trial-activation-v1-paywall"',
       'localStorage.getItem("screenpipe-announcements-dismissed-v1")',
@@ -407,13 +410,14 @@ describe("vendor-host guard", () => {
       'if (code === "free_pipe_limit_reached") {}',
     ].join("\n");
     const hit = scanSource("x.ts", sample, COMMERCE_RULES).map((h) => h.line);
-    expect(hit).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9, 10]);
+    expect(hit).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11]);
 
     const innocent = [
       "git checkout main",
       'fetch("/api/teams-meeting/status")',
       'const plan = "upgrade the parser";',
       'route("/api/billing-address-autofill")',
+      'const help = "https://discord.com/channels/@me/123";',
     ].join("\n");
     expect(scanSource("x.ts", innocent, COMMERCE_RULES)).toEqual([]);
   });
