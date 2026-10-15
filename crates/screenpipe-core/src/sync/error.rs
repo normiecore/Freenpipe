@@ -59,6 +59,10 @@ pub enum SyncError {
     /// Database/storage error
     #[error("database error: {0}")]
     Database(String),
+
+    /// No sync server URL was supplied, so nothing can be sent anywhere.
+    #[error("cloud sync is not configured: no sync server URL was provided")]
+    NotConfigured,
 }
 
 impl From<reqwest::Error> for SyncError {
