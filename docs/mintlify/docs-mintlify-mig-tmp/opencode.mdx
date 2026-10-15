@@ -16,7 +16,7 @@ OpenCode discovers skills from multiple locations. copy the Freenpipe skills to 
 ```bash
 # copy to current project
 mkdir -p .opencode/skills
-cp -r /path/to/screenpipe/.claude/agents/* .opencode/skills/
+cp -r /path/to/Freenpipe/.claude/skills/* .opencode/skills/
 ```
 
 ### option 2: user-level (global)
@@ -24,7 +24,7 @@ cp -r /path/to/screenpipe/.claude/agents/* .opencode/skills/
 ```bash
 # copy to home directory for all projects
 mkdir -p ~/.opencode/skills
-cp -r /path/to/screenpipe/.claude/agents/* ~/.opencode/skills/
+cp -r /path/to/Freenpipe/.claude/skills/* ~/.opencode/skills/
 ```
 
 ### option 3: clone directly
@@ -36,7 +36,7 @@ ln -s ~/Freenpipe/.claude/skills ~/.opencode/skills/screenpipe
 ```
 
 <Note>
-OpenCode uses the same Agent Skills format as Claude Code. files in `.claude/agents/` work in `.opencode/skills/` and vice versa.
+OpenCode uses the same Agent Skills format as Claude Code. files in `.claude/skills/` work in `.opencode/skills/` and vice versa.
 </Note>
 
 ## available skills

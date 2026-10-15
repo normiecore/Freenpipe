@@ -183,12 +183,12 @@ this makes pipes significantly more accurate and useful.
 
 ### Google OAuth: "app isn't verified" or "unsafe"
 
-when connecting Gmail, Google Calendar, or Google Docs, you may see a warning that says the app is "unverified" or "unsafe." this is normal — Freenpipe is a local app and Google requires additional verification steps for third-party apps.
+when connecting Gmail, Google Calendar, or Google Docs, you may see a warning that says the app is "unverified" or "unsafe." this is expected: the OAuth client you registered for Freenpipe has not been through Google's app verification, which is meant for published apps.
 
 **how to proceed:**
 1. on the Google warning screen, click **Advanced** (bottom-left corner)
-2. click **Go to Freenpipe (unsafe)** to continue with the connection
-3. Freenpipe will not be marked unsafe once you verify the connection — this is a standard OAuth security flow
+2. click **Go to ... (unsafe)**, which shows the name of your OAuth client, to continue with the connection
+3. this is Google's standard flow for unverified apps; it does not change how the connection works
 
 if the page closes or doesn't load, check that:
 - you have internet connectivity
@@ -198,7 +198,7 @@ if the page closes or doesn't load, check that:
 ### connection fails silently
 
 if a connection appears to connect but then disappears:
-- check that Pro is active (OAuth requires a Pro subscription)
+- check the OAuth client ID and secret you entered for that provider
 - verify the app credentials are correct by disconnecting and reconnecting
 - check app permissions in the original service (e.g., Notion workspace settings, Slack workspace admin console) — you may need to re-approve access
 
@@ -216,7 +216,7 @@ if a pipe reports that a connection isn't available:
 - CLI-like environments can fall back to local `~/.screenpipe/connections.json`
 - connected app data stays on your device
 - you can disconnect any app at any time in **settings → connections**
-- Freenpipe never sends your connected app data to our servers
-- OAuth connections require a Pro subscription
+- Freenpipe has no servers of its own: connected app data goes only between your machine and the app's API
+- OAuth connections use client credentials you register with each provider, so no upstream account or subscription is involved (work package W0-07)
 
 questions? open a [GitHub issue](https://github.com/normiecore/Freenpipe/issues).

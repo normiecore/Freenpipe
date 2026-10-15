@@ -11,10 +11,10 @@ icon: "terminal"
 
 ## setup
 
-before setting up, make sure Freenpipe is running on your machine:
+before setting up, make sure Freenpipe is running on your machine (build it first, see [getting started](/getting-started)):
 
 ```bash
-npx screenpipe@latest record
+screenpipe record
 ```
 
 check that it's running:
@@ -122,7 +122,7 @@ ask Copilot CLI to use Freenpipe naturally:
 
 ## requirements
 
-- Freenpipe running on localhost:3030 (start with `npx screenpipe@latest record`)
+- Freenpipe running on localhost:3030 (start with `screenpipe record`)
 - GitHub Copilot CLI installed
 - Node.js >= 18.0.0
 
@@ -130,17 +130,13 @@ ask Copilot CLI to use Freenpipe naturally:
 
 **how do I check I'm on the latest Freenpipe CLI?**
 
-always invoke Freenpipe with the `@latest` npm tag — it pulls the freshest build from npm each time:
-
-```bash
-npx screenpipe@latest record
-```
-
 check the version you're running:
 
 ```bash
-npx screenpipe@latest --version
+screenpipe --version
 ```
+
+to update, pull the latest commits and rebuild (see [getting started](/getting-started)). `npx screenpipe@latest` runs the upstream vendor's npm package, not Freenpipe.
 
 **MCP not connecting?**
 

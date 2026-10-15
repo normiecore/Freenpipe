@@ -33,7 +33,7 @@ the MCP server talks to the local Freenpipe API. if MCP works but returns empty 
 
 open the **Freenpipe app** → **settings** → **connections** → click **"install extension"**
 
-Claude will open and prompt you to confirm. click **install** — done!
+Claude will open and prompt you to confirm. click **install**.
 
 try asking Claude: *"what did I do in the last 5 minutes?"*
 
@@ -147,7 +147,11 @@ any editor that supports MCP works with Freenpipe. the server command is:
 npx -y screenpipe-mcp
 ```
 
-add this as a stdio MCP server in your editor's MCP settings. see also:
+add this as a stdio MCP server in your editor's MCP settings.
+
+<Note>the `screenpipe-mcp` package on npm is published by the upstream vendor, not by Freenpipe. it queries the same local API on port 3030. to run the server from this repository instead, build it from source (see [manual config](#manual-config-advanced)) and point your client at `node /path/to/screenpipe-mcp/dist/index.js`.</Note>
+
+see also:
 - [continue setup](/continue)
 - [cline setup](/cline)
 
@@ -295,7 +299,7 @@ if the one-click methods above don't work, you can manually edit config files.
 ```bash
 git clone https://github.com/normiecore/Freenpipe
 cd Freenpipe/packages/screenpipe-mcp
-npm install && npm run build
+bun install && bun run build
 ```
 
 then point your editor to `node /path/to/screenpipe-mcp/dist/index.js`.
