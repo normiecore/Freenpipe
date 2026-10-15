@@ -11,25 +11,27 @@ import {
   PLACEHOLDER_MCP_LAUNCH,
   withoutEnv,
   type McpLaunch,
+  type McpRuntimePaths,
 } from "@/lib/mcp-config";
 
 /**
  * Launch for the MCP server bundled with this install, or `null` when the
- * build has none. With `includeApiKey`, the local API key (and a non-default
- * port) go into the launch so the server can authenticate without asking
- * the CLI; use that only for configs written to the user's own files.
+ * build has none. A non-default local API port is always passed. With
+ * `includeApiKey`, the local API key goes into the launch env so the server
+ * can authenticate without asking the CLI; use that only for configs written
+ * to the user's own files, never for text shown on screen.
  */
 export async function resolveMcpLaunch(
   opts: { includeApiKey?: boolean } = {},
 ): Promise<McpLaunch | null> {
-  let runtime;
+  let runtime: McpRuntimePaths | null = null;
   try {
     const res = await commands.mcpRuntimeCheck();
-    if (res.status !== "ok" || !res.data.available) return null;
-    runtime = res.data;
+    if (res.status === "ok" && res.data.available) runtime = res.data;
   } catch {
-    return null;
+    /* command unavailable: treat as not bundled */
   }
+  if (!runtime) return null;
 
   let apiKey: string | null = null;
   let port: number | null = null;
