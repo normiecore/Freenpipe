@@ -107,6 +107,21 @@ Wave 0 ran on the PC before the cloud phase. Tick anything you already checked t
   - Steps: open the tray menu.
   - Expected: no plan, upgrade or subscription entry.
   - Result:
+- [ ] **SMK-W0-05-3** (UI smoke) Help links and the changelog go to GitHub
+  - Setup: app dev run; network available.
+  - Steps: 1. Home > Help. 2. Click Documentation, Discussions, Feature ideas, Bug reports and Changelog in turn. 3. Open the changelog dialog (overlay window, or a `screenpipe://changelog` deep link). 4. Disconnect the network, clear `freenpipe:changelog-cache` from the webview's localStorage (devtools) and open the dialog again.
+  - Expected: every Help link opens a page under github.com/normiecore/Freenpipe; there is no Discord, YouTube or booking link. The dialog lists GitHub releases (or the empty-state link to the releases page when none are published); offline with no cache it shows the bundled CHANGELOG.md.
+  - Result:
+- [ ] **SMK-W0-05-4** (UI smoke) No plan lock or upgrade prompt on connections and onboarding
+  - Setup: fresh `FP_DD`; app dev run through onboarding.
+  - Steps: 1. On the "connect your world" onboarding step, look at the Notion card. 2. Open Connections and expand Gmail, Google Calendar, Google Sheets and Google Docs. 3. With the engine stopped, open the overlay window and click "get help".
+  - Expected: no lock overlay, "pro required" button or "upgrade to pro" link anywhere; every OAuth card shows its connect button; "get help" opens the GitHub Discussions page.
+  - Result:
+- [ ] **SMK-W0-05-5** (Runtime) The CLI has no team command and no vendor links
+  - Setup: release-dev engine build.
+  - Steps: 1. `screenpipe.exe team devices`. 2. `screenpipe.exe survey`. 3. Run `screenpipe.exe record --port 3035 --data-dir "$FP_DD"` for 6 minutes with a network monitor (Resource Monitor) open.
+  - Expected: 1 fails with a clap "unrecognized subcommand" error. 2 prints the GitHub Discussions and new-issue links and opens nothing. 3 prints at most a tip pointing at github.com/normiecore/Freenpipe; no connection to registry.npmjs.org or any vendor host.
+  - Result:
 
 ### W0-06 AI gateway, transcription, PII backend and media analysis to bring-your-own
 
