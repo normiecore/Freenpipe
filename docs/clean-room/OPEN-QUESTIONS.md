@@ -193,12 +193,15 @@ work package.
     directory or the owner can delete it.
 
 12. **What does `/search?filter_pii=true` do without an enclave?**
-    Decision: it redacts on the device with the deterministic `screenpipe-redact` regex pass (emails,
+    Decision: it redacts on the device. The deterministic `screenpipe-redact` regex pass (emails,
     phone numbers, cards, national IDs, connection strings, API-key and private-key shapes, every class
-    it detects). The local AI model is not loaded at search time; with "AI PII removal" on, the
-    background worker has already rewritten stored text with it. A configured enclave
-    (`SCREENPIPE_PRIVACY_FILTER_ENCLAVE` or `_URL` plus `_REPO`) is used instead and still fails closed
-    with 503 `privacy_filter_unavailable` on enclave errors.
+    it detects) runs on every text. When the "AI PII removal" worker has loaded the local ONNX text
+    model, the engine registers it with the search filter and it also runs on the regex output, every
+    class it detects, cached per text and limited to a 1 s budget per request (texts it does not reach,
+    or fails on, keep the regex result). No model is downloaded or loaded at search time, and the OPF
+    fallback model is never used here (too slow and too large to load inside a request). This path
+    cannot fail. A configured enclave (`SCREENPIPE_PRIVACY_FILTER_ENCLAVE` or `_URL` plus `_REPO`) is
+    used instead and still fails closed with 503 `privacy_filter_unavailable` on enclave errors.
     Reason: specs/api.md says "implement locally (`screenpipe-redact` regex/NER)". Failing closed when
     nothing is configured would break the onboarding live feed, every pipe whose manifest sets
     `privacy_filter: true` (DECISIONS #1) and the e2e search contract (no 5xx for `filter_pii=true`).

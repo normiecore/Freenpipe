@@ -1707,6 +1707,9 @@ async fn main() -> anyhow::Result<()> {
                          desktop app + Tinfoil container, sub-10 ms p50 on CPU"
                     );
                     let ai: Arc<dyn Redactor> = Arc::new(adapter);
+                    // `/search?filter_pii=true` reuses the loaded model
+                    // (the slower OPF fallback below is not offered to it).
+                    screenpipe_engine::privacy_filter::register_local_model(ai.clone());
                     Pipeline::regex_then_ai(
                         ai,
                         PipelineConfig {
@@ -1754,8 +1757,7 @@ async fn main() -> anyhow::Result<()> {
                                 );
                                 let ai: Arc<dyn Redactor> =
                                     Arc::new(TinfoilRedactor::new(TinfoilConfig {
-                                        enclave:
-                                            screenpipe_core::endpoints::privacy_filter_base(),
+                                        enclave: screenpipe_core::endpoints::privacy_filter_base(),
                                         labels: labels.clone(),
                                         ..Default::default()
                                     }));

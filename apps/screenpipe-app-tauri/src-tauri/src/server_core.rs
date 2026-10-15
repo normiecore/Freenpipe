@@ -749,6 +749,10 @@ impl ServerCore {
                                 "starting async text-PII reconciliation worker (backend=local)"
                             );
                             let ai: Arc<dyn Redactor> = Arc::new(adapter);
+                            // `/search?filter_pii=true` reuses the loaded
+                            // model (the slower OPF fallback below is not
+                            // offered to it).
+                            screenpipe_engine::privacy_filter::register_local_model(ai.clone());
                             Pipeline::regex_then_ai(
                                 ai,
                                 PipelineConfig {
