@@ -77,7 +77,11 @@ impl fmt::Debug for OAuthClientCredentials {
             .field("client_id", &self.client_id)
             .field(
                 "client_secret",
-                &if self.has_secret() { "<redacted>" } else { "<none>" },
+                &if self.has_secret() {
+                    "<redacted>"
+                } else {
+                    "<none>"
+                },
             )
             .field("redirect_uri", &self.redirect_uri)
             .finish()
@@ -123,9 +127,7 @@ pub enum OAuthClientError {
     TooLong { field: &'static str },
     #[error("the redirect URI is not a valid absolute URL ({0})")]
     InvalidRedirect(String),
-    #[error(
-        "the redirect URI must use https, or plain http on localhost, 127.0.0.1 or [::1]"
-    )]
+    #[error("the redirect URI must use https, or plain http on localhost, 127.0.0.1 or [::1]")]
     InsecureRedirect,
     #[error(
         "this provider does not accept loopback redirects: enter the HTTPS address of a relay \
@@ -501,7 +503,10 @@ mod tests {
     #[test]
     fn redirect_defaults_to_loopback_unless_the_provider_needs_https() {
         let c = creds("id", None, None);
-        assert_eq!(resolve_redirect_uri(&PLAIN, &c, LOOPBACK).unwrap(), LOOPBACK);
+        assert_eq!(
+            resolve_redirect_uri(&PLAIN, &c, LOOPBACK).unwrap(),
+            LOOPBACK
+        );
         assert_eq!(
             resolve_redirect_uri(&HTTPS_ONLY, &c, LOOPBACK).unwrap_err(),
             OAuthClientError::RedirectRequired {
@@ -580,15 +585,19 @@ mod tests {
             OAuthClientError::InvalidCharacters { field: "client ID" }
         );
         assert_eq!(
-            apply_client_update(None, upd("id", Some("x\ny"), None), &PLAIN, LOOPBACK)
-                .unwrap_err(),
+            apply_client_update(None, upd("id", Some("x\ny"), None), &PLAIN, LOOPBACK).unwrap_err(),
             OAuthClientError::InvalidCharacters {
                 field: "client secret"
             }
         );
         assert_eq!(
-            apply_client_update(None, upd("id", None, Some("http://evil.example/cb")), &PLAIN, LOOPBACK)
-                .unwrap_err(),
+            apply_client_update(
+                None,
+                upd("id", None, Some("http://evil.example/cb")),
+                &PLAIN,
+                LOOPBACK
+            )
+            .unwrap_err(),
             OAuthClientError::InsecureRedirect
         );
         assert!(matches!(
@@ -596,8 +605,13 @@ mod tests {
             OAuthClientError::RedirectRequired { .. }
         ));
         assert_eq!(
-            apply_client_update(None, upd(&"x".repeat(MAX_FIELD_LEN + 1), None, None), &PLAIN, LOOPBACK)
-                .unwrap_err(),
+            apply_client_update(
+                None,
+                upd(&"x".repeat(MAX_FIELD_LEN + 1), None, None),
+                &PLAIN,
+                LOOPBACK
+            )
+            .unwrap_err(),
             OAuthClientError::TooLong { field: "client ID" }
         );
     }
@@ -675,7 +689,10 @@ mod tests {
 
         // Tokens and clients live in separate key families.
         let token_keys = store.list(crate::oauth::STORE_KEY_PREFIX).await.unwrap();
-        assert!(token_keys.is_empty(), "client row leaked into oauth: keys: {token_keys:?}");
+        assert!(
+            token_keys.is_empty(),
+            "client row leaked into oauth: keys: {token_keys:?}"
+        );
 
         delete_oauth_client(&store, "_t_byo").await.unwrap();
         assert!(load_oauth_client(Some(&store), "_t_byo").await.is_none());

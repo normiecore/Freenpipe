@@ -401,9 +401,7 @@ fn loopback_port_from_host(headers: &HeaderMap) -> u16 {
         return DEFAULT_CALLBACK_PORT;
     };
     match reqwest::Url::parse(&format!("http://{host}/")) {
-        Ok(url) if screenpipe_connect::oauth::is_loopback_http(&url) => {
-            url.port().unwrap_or(80)
-        }
+        Ok(url) if screenpipe_connect::oauth::is_loopback_http(&url) => url.port().unwrap_or(80),
         _ => DEFAULT_CALLBACK_PORT,
     }
 }
@@ -413,17 +411,13 @@ fn loopback_port_from_host(headers: &HeaderMap) -> u16 {
 /// non-default port) but nothing else: remote or HTTPS relays, other paths
 /// and app-scheme hand-offs are refused, so authorization codes never leave
 /// the machine.
-fn mcp_oauth_redirect_uri(
-    id: &str,
-    supplied: Option<&str>,
-    port: u16,
-) -> Result<String, String> {
+fn mcp_oauth_redirect_uri(id: &str, supplied: Option<&str>, port: u16) -> Result<String, String> {
     let expected_path = format!("/mcp-servers/{}/oauth/callback", url_path_segment(id));
     let Some(raw) = supplied.map(str::trim).filter(|s| !s.is_empty()) else {
         return Ok(format!("http://localhost:{port}{expected_path}"));
     };
-    let url = reqwest::Url::parse(raw)
-        .map_err(|e| format!("redirect_uri is not a valid URL: {e}"))?;
+    let url =
+        reqwest::Url::parse(raw).map_err(|e| format!("redirect_uri is not a valid URL: {e}"))?;
     if !screenpipe_connect::oauth::is_loopback_http(&url) {
         return Err(
             "redirect_uri must be this engine's loopback callback (http://localhost, 127.0.0.1 or [::1])"

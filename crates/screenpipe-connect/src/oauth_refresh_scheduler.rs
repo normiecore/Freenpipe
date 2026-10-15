@@ -781,8 +781,14 @@ mod tests {
         let snap = metrics.snapshot();
         assert_eq!(snap.refreshes_failed, 0);
         assert_eq!(snap.refreshes_attempted, 0);
-        assert_eq!(snap.refreshes_skipped, (MAX_CONSECUTIVE_FAILURES + 1) as u64);
-        assert!(failures.lock().await.is_empty(), "no cooldown for a missing app");
+        assert_eq!(
+            snap.refreshes_skipped,
+            (MAX_CONSECUTIVE_FAILURES + 1) as u64
+        );
+        assert!(
+            failures.lock().await.is_empty(),
+            "no cooldown for a missing app"
+        );
 
         // Once the user adds their OAuth app the very next tick refreshes.
         tick(&store, &runner, &metrics, &failures, &empty_policies()).await;

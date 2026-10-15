@@ -382,7 +382,13 @@ pub async fn request_refresh(
     creds: &OAuthClientCredentials,
     refresh_token: &str,
 ) -> Result<Value, OAuthTokenError> {
-    post_token_request(client, endpoint, creds, Grant::RefreshToken { refresh_token }).await
+    post_token_request(
+        client,
+        endpoint,
+        creds,
+        Grant::RefreshToken { refresh_token },
+    )
+    .await
 }
 
 /// Minimal `application/x-www-form-urlencoded` decoder, so this crate does
@@ -448,7 +454,11 @@ mod tests {
         }
     }
 
-    fn endpoint(server: &MockServer, auth: TokenAuth, body: TokenBody) -> (String, TokenAuth, TokenBody) {
+    fn endpoint(
+        server: &MockServer,
+        auth: TokenAuth,
+        body: TokenBody,
+    ) -> (String, TokenAuth, TokenBody) {
         (format!("{}/oauth/token", server.uri()), auth, body)
     }
 
@@ -530,13 +540,16 @@ mod tests {
     #[test]
     fn invalid_client_maps_to_invalid_client() {
         let e = interpret_token_response(401, r#"{"error":"invalid_client"}"#).unwrap_err();
-        assert!(matches!(e, OAuthTokenError::InvalidClient { status: 401, .. }));
+        assert!(matches!(
+            e,
+            OAuthTokenError::InvalidClient { status: 401, .. }
+        ));
     }
 
     #[test]
     fn slack_ok_false_on_http_200_is_an_error() {
-        let e = interpret_token_response(200, r#"{"ok":false,"error":"invalid_code"}"#)
-            .unwrap_err();
+        let e =
+            interpret_token_response(200, r#"{"ok":false,"error":"invalid_code"}"#).unwrap_err();
         assert!(e.is_invalid_grant(), "{e:?}");
         let e = interpret_token_response(200, r#"{"ok":false,"error":"bad_client_secret"}"#)
             .unwrap_err();
@@ -575,9 +588,14 @@ mod tests {
                 description: Some("app not approved".into()),
             }
         );
-        let e = interpret_token_response(400, r#"{"reason":"Invalid Token!","error":"invalid_request"}"#)
-            .unwrap_err();
-        assert!(matches!(e, OAuthTokenError::Provider { ref code, .. } if code == "invalid_request"));
+        let e = interpret_token_response(
+            400,
+            r#"{"reason":"Invalid Token!","error":"invalid_request"}"#,
+        )
+        .unwrap_err();
+        assert!(
+            matches!(e, OAuthTokenError::Provider { ref code, .. } if code == "invalid_request")
+        );
     }
 
     #[test]
@@ -649,7 +667,10 @@ mod tests {
                 present: vec![
                     ("grant_type", "authorization_code"),
                     ("code", "auth-code"),
-                    ("redirect_uri", "http://localhost:3030/connections/oauth/callback"),
+                    (
+                        "redirect_uri",
+                        "http://localhost:3030/connections/oauth/callback",
+                    ),
                     ("code_verifier", "verifier-xyz"),
                     ("client_id", "client-123"),
                     ("client_secret", "shh"),
@@ -667,7 +688,11 @@ mod tests {
             .await;
 
         let (url, auth, body) = endpoint(&server, TokenAuth::ClientSecretPost, TokenBody::Form);
-        let ep = TokenEndpoint { url: &url, auth, body };
+        let ep = TokenEndpoint {
+            url: &url,
+            auth,
+            body,
+        };
         let v = exchange_code(
             &reqwest::Client::new(),
             ep,
@@ -691,9 +716,7 @@ mod tests {
                 present: vec![("client_id", "client-123"), ("code_verifier", "v")],
                 absent: vec!["client_secret"],
             })
-            .respond_with(
-                ResponseTemplate::new(200).set_body_json(json!({ "access_token": "at" })),
-            )
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({ "access_token": "at" })))
             .expect(1)
             .mount(&server)
             .await;
@@ -701,10 +724,21 @@ mod tests {
         // Basic auth is configured, but with no secret the client id goes in
         // the body and no Authorization header is sent.
         let (url, auth, body) = endpoint(&server, TokenAuth::ClientSecretBasic, TokenBody::Form);
-        let ep = TokenEndpoint { url: &url, auth, body };
-        exchange_code(&reqwest::Client::new(), ep, &creds(None), "c", "http://localhost/cb", Some("v"))
-            .await
-            .unwrap();
+        let ep = TokenEndpoint {
+            url: &url,
+            auth,
+            body,
+        };
+        exchange_code(
+            &reqwest::Client::new(),
+            ep,
+            &creds(None),
+            "c",
+            "http://localhost/cb",
+            Some("v"),
+        )
+        .await
+        .unwrap();
         let reqs = server.received_requests().await.unwrap();
         assert!(reqs[0].headers.get("authorization").is_none());
     }
@@ -727,7 +761,11 @@ mod tests {
             .await;
 
         let (url, auth, body) = endpoint(&server, TokenAuth::ClientSecretBasic, TokenBody::Form);
-        let ep = TokenEndpoint { url: &url, auth, body };
+        let ep = TokenEndpoint {
+            url: &url,
+            auth,
+            body,
+        };
         let v = request_refresh(&reqwest::Client::new(), ep, &creds(Some("shh")), "rt-1")
             .await
             .unwrap();
@@ -755,7 +793,11 @@ mod tests {
             .await;
 
         let (url, auth, body) = endpoint(&server, TokenAuth::ClientSecretBasic, TokenBody::Json);
-        let ep = TokenEndpoint { url: &url, auth, body };
+        let ep = TokenEndpoint {
+            url: &url,
+            auth,
+            body,
+        };
         let v = exchange_code(
             &reqwest::Client::new(),
             ep,
@@ -782,7 +824,11 @@ mod tests {
             .await;
 
         let (url, auth, body) = endpoint(&server, TokenAuth::ClientSecretPost, TokenBody::Form);
-        let ep = TokenEndpoint { url: &url, auth, body };
+        let ep = TokenEndpoint {
+            url: &url,
+            auth,
+            body,
+        };
         let e = request_refresh(&reqwest::Client::new(), ep, &creds(Some("shh")), "dead")
             .await
             .unwrap_err();
@@ -804,11 +850,25 @@ mod tests {
             .await;
 
         let (url, auth, body) = endpoint(&server, TokenAuth::ClientSecretPost, TokenBody::Form);
-        let ep = TokenEndpoint { url: &url, auth, body };
-        let e = exchange_code(&reqwest::Client::new(), ep, &creds(Some("wrong")), "c", "http://localhost/cb", None)
-            .await
-            .unwrap_err();
-        assert!(matches!(e, OAuthTokenError::InvalidClient { status: 401, .. }), "{e:?}");
+        let ep = TokenEndpoint {
+            url: &url,
+            auth,
+            body,
+        };
+        let e = exchange_code(
+            &reqwest::Client::new(),
+            ep,
+            &creds(Some("wrong")),
+            "c",
+            "http://localhost/cb",
+            None,
+        )
+        .await
+        .unwrap_err();
+        assert!(
+            matches!(e, OAuthTokenError::InvalidClient { status: 401, .. }),
+            "{e:?}"
+        );
     }
 
     #[tokio::test]

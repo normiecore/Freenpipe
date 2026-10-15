@@ -1966,7 +1966,11 @@ mod tests {
             assert!(shown.contains(id) && shown.contains("expired or revoked"));
             assert!(!shown.contains("byo-secret") && !shown.contains("dead-rt"));
 
-            let kept: Value = store.get_json(&format!("oauth:{id}")).await.unwrap().unwrap();
+            let kept: Value = store
+                .get_json(&format!("oauth:{id}"))
+                .await
+                .unwrap()
+                .unwrap();
             assert_eq!(kept, original);
         }
 

@@ -15,8 +15,7 @@
 use base64::Engine;
 use screenpipe_connect::connections::all_integrations;
 use screenpipe_connect::oauth::{
-    self, OAuthClientCredentials, OAuthClientUpdate, OAuthConfig, PendingOAuth, Pkce,
-    PENDING_OAUTH,
+    self, OAuthClientCredentials, OAuthClientUpdate, OAuthConfig, PendingOAuth, Pkce, PENDING_OAUTH,
 };
 use serde::{Deserialize, Serialize};
 use tauri::AppHandle;
@@ -163,9 +162,9 @@ pub async fn oauth_client_save(
     input: OAuthClientInput,
 ) -> Result<OAuthClientInfo, String> {
     let config = find_oauth_config(&integration_id)?;
-    let store = open_secret_store()
-        .await
-        .ok_or_else(|| "the secret store is unavailable, so the OAuth app cannot be saved".to_string())?;
+    let store = open_secret_store().await.ok_or_else(|| {
+        "the secret store is unavailable, so the OAuth app cannot be saved".to_string()
+    })?;
     let loopback = default_redirect_uri(&app_handle);
     let existing = oauth::load_oauth_client(Some(&store), &integration_id).await;
     let creds = oauth::apply_client_update(
