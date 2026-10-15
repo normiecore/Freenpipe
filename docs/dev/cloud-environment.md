@@ -145,6 +145,12 @@ Notes:
   block with `bash tools/cloud/bootstrap.sh --print-setup-script`, and paste the new script into the
   environment. Changing the script or the allowed domains rebuilds the cache. The cache also expires
   after about seven days, and the script then runs again.
+- When `rust-toolchain.toml` moves to a new Rust release (it moved from 1.93.1 to 1.94.1 with
+  W0-11), paste the regenerated script into the environment again. Until then the cached snapshot
+  holds only the old toolchain, and every session's `bootstrap.sh` downloads the new one with all
+  four std targets. Build output from the old compiler cannot be reused either: once the change is on
+  `main`, clear the shared `$FP_STATE/target` once (the coordinator does this after the merge), and
+  expect the next CI runs to start without a Rust cache.
 
 ## 3. Check the environment
 

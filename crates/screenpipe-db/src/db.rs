@@ -418,7 +418,7 @@ impl DatabaseManager {
         // check, which never returns on the shared-cache connections sqlx opens
         // for in-memory pools (seen with the bundled 3.51.3).
         if !is_in_memory_database(database_path) {
-            db_manager.spawn_startup_integrity_check(Arc::from(database_path));
+            Self::spawn_startup_integrity_check(Arc::from(database_path));
         }
 
         Ok(db_manager)
@@ -8733,18 +8733,12 @@ LIMIT ? OFFSET ?
     /// multi-GB database. On failure we log loudly with the exact recovery
     /// command so the user can self-heal via the existing `screenpipe db
     /// recover` path (which backs up the original before rebuilding).
-    fn spawn_startup_integrity_check(&self, database_path: Arc<str>) {
-        let pool = self.pool.clone();
+    fn spawn_startup_integrity_check(database_path: Arc<str>) {
         tokio::spawn(async move {
             // Let boot settle so the scan doesn't compete with migrations
             // and the first capture writes for I/O.
             tokio::time::sleep(Duration::from_secs(10)).await;
-            // quick_check(1) stops after the first error — we only need a
-            // yes/no signal here, not the full corruption inventory.
-            match sqlx::query_scalar::<_, String>("PRAGMA quick_check(1)")
-                .fetch_one(&pool)
-                .await
-            {
+            match Self::run_startup_integrity_check(&database_path).await {
                 Ok(result) if result == "ok" => {
                     debug!("startup integrity check: ok");
                 }
@@ -8770,6 +8764,38 @@ LIMIT ? OFFSET ?
                 }
             }
         });
+    }
+
+    /// Run `PRAGMA quick_check(1)` against the database file at
+    /// `database_path` and return SQLite's verdict (`"ok"` when healthy).
+    ///
+    /// The check gets its own short-lived, read-only connection instead of a
+    /// pooled one. Since SQLite 3.44 quick_check also calls every FTS5 table's
+    /// integrity method, and in the bundled 3.51.3 that method reads the
+    /// segment layout the connection cached during earlier FTS queries without
+    /// first checking whether another connection has rewritten the index
+    /// since. A read-pool connection that served a search before the writer
+    /// merged FTS segments therefore reports blobs that no longer exist as
+    /// corruption. A connection opened just for the check has nothing cached,
+    /// so its verdict reflects the file. `(1)` stops at the first problem: the
+    /// caller only needs a yes/no answer.
+    pub async fn run_startup_integrity_check(database_path: &str) -> Result<String, sqlx::Error> {
+        let mut conn = format!("sqlite:{}", database_path)
+            .parse::<SqliteConnectOptions>()?
+            .read_only(true)
+            .busy_timeout(Duration::from_secs(5))
+            .connect()
+            .await?;
+        let verdict = sqlx::query_scalar::<_, String>("PRAGMA quick_check(1)")
+            .fetch_one(&mut conn)
+            .await;
+        if let Err(e) = conn.close().await {
+            debug!(
+                "startup integrity check: closing its connection failed: {}",
+                e
+            );
+        }
+        verdict
     }
 
     /// Run `PRAGMA wal_checkpoint(TRUNCATE)` on demand, flushing WAL into the

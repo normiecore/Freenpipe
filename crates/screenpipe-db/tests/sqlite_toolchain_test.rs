@@ -11,16 +11,19 @@
 //! * the `sqlite_dbpage` virtual table, which the page-level recover extension
 //!   reads from, is compiled in (set through `LIBSQLITE3_FLAGS` in
 //!   `.cargo/config.toml`);
-//! * rusqlite's `vtab` feature works against that shared build.
+//! * rusqlite's `vtab` feature works against that shared build;
+//! * the startup integrity check, which on this SQLite also checks FTS5
+//!   indexes, does not report a healthy database as corrupt.
 
 use std::os::raw::c_int;
+use std::sync::Arc;
 
 use rusqlite::vtab::{
     eponymous_only_module, sqlite3_vtab, sqlite3_vtab_cursor, Context, Filters, IndexInfo, VTab,
     VTabConnection, VTabCursor,
 };
 use screenpipe_config::DbConfig;
-use screenpipe_db::DatabaseManager;
+use screenpipe_db::{DatabaseManager, FrameWindowData, OcrEngine};
 use sqlx::sqlite::{SqliteConnectOptions, SqliteConnection};
 use sqlx::{ConnectOptions, Row};
 
@@ -208,6 +211,93 @@ async fn recover_prerequisites_are_compiled_in() {
         .await
         .unwrap();
     assert!(first_page.starts_with(b"SQLite format 3\0"));
+}
+
+/// Records `count` one-window frames whose text contains "alpha", starting at
+/// frame offset `first`. Each call to the batch insert is its own transaction,
+/// so every frame adds a segment to `frames_fts` and FTS5 merges them as they
+/// pile up.
+async fn record_frames(db: &DatabaseManager, first: i64, count: i64) {
+    let start = chrono::Utc::now() - chrono::Duration::hours(1);
+    for offset in first..first + count {
+        let windows = [FrameWindowData {
+            app_name: Some(format!("App{}", offset % 5)),
+            window_name: Some(format!("Window {offset}")),
+            browser_url: None,
+            focused: offset % 2 == 0,
+            text: format!("alpha beta gamma {offset} {}", "filler words ".repeat(40)),
+            text_json: String::new(),
+        }];
+        db.insert_frames_with_ocr_batch(
+            "integrity_device",
+            Some(start + chrono::Duration::seconds(offset)),
+            offset,
+            &windows,
+            Arc::new(OcrEngine::Tesseract),
+        )
+        .await
+        .expect("insert frame");
+    }
+}
+
+// Regression: a read-pool connection that ran an FTS5 query keeps that
+// index's segment layout cached. After the writer merges segments, a
+// quick_check on that connection (which since SQLite 3.44 also checks FTS5
+// indexes) reported the healthy frames_fts as corrupt. The startup check
+// therefore runs on its own connection and must say "ok" here.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn startup_integrity_check_passes_after_searches_and_fts_merges() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("db.sqlite");
+    let path = path.to_str().unwrap();
+    let db = Arc::new(
+        DatabaseManager::new(path, DbConfig::default())
+            .await
+            .expect("open database"),
+    );
+    db.insert_video_chunk("integrity.mp4", "integrity_device")
+        .await
+        .unwrap();
+    record_frames(&db, 0, 100).await;
+
+    // Concurrent searches spread the cached FTS5 layout over several
+    // read-pool connections.
+    let searches: Vec<_> = (0..8)
+        .map(|_| {
+            let db = Arc::clone(&db);
+            tokio::spawn(async move {
+                sqlx::query_scalar::<_, i64>(
+                    "SELECT count(*) FROM frames_fts WHERE frames_fts MATCH 'alpha'",
+                )
+                .fetch_one(&db.pool)
+                .await
+                .expect("search frames_fts")
+            })
+        })
+        .collect();
+    for search in searches {
+        assert_eq!(search.await.unwrap(), 100);
+    }
+
+    // Recording continues; the new segments get merged into the old ones.
+    record_frames(&db, 100, 100).await;
+
+    let verdict = DatabaseManager::run_startup_integrity_check(path)
+        .await
+        .expect("integrity check runs");
+    assert_eq!(verdict, "ok");
+
+    // FTS5's own check agrees that the index is sound, so "ok" is the right
+    // verdict and not a check that skipped the FTS tables.
+    let mut conn = SqliteConnectOptions::new()
+        .filename(path)
+        .connect()
+        .await
+        .expect("open a separate connection");
+    sqlx::query("INSERT INTO frames_fts(frames_fts) VALUES('integrity-check')")
+        .execute(&mut conn)
+        .await
+        .expect("frames_fts integrity-check");
 }
 
 // A tiny eponymous virtual table, `probe_squares`, yielding (n, n*n) for

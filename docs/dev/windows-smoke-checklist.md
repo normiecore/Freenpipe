@@ -149,8 +149,8 @@ Wave 0 ran on the PC before the cloud phase. Tick anything you already checked t
 
 - [ ] **SMK-W0-11-1** (Runtime) The release-dev engine on the new SQLite toolchain records, restarts and searches
   - Setup: release-dev engine built from `main` (Rust 1.94.1 from `rust-toolchain.toml`), a fresh `$FP_DD`, port `$FP_PORT`.
-  - Steps: 1. Start the engine and let it record for two minutes. 2. Stop it and start it again on the same `$FP_DD`. 3. `GET /search?limit=5` and `GET /health`.
-  - Expected: both starts reach a healthy state; the second start logs no migration error and no "checksum mismatch" repair; `/search` returns 200 with the recorded content.
+  - Steps: 1. Start the engine and let it record for two minutes, running `GET /search?q=<a word on screen>&limit=5` a few times while it records. 2. Stop it and start it again on the same `$FP_DD`; within its first 10 seconds run the same search twice, then leave it recording for at least another minute (the startup integrity check runs 10 seconds after start, while recording keeps merging the search index). 3. `GET /search?limit=5` and `GET /health`. 4. Search the engine log for `DATABASE CORRUPTION DETECTED` and `startup integrity check`.
+  - Expected: both starts reach a healthy state; the second start logs no migration error and no "checksum mismatch" repair; `/search` returns 200 with the recorded content; the engine log has no `DATABASE CORRUPTION DETECTED` and no `startup integrity check could not run` line from either start.
   - Result:
 - [ ] **SMK-W0-11-2** (UI smoke) The app on the new SQLite toolchain opens the engine database
   - Setup: installed screenpipe quit; isolated dev setup from windows-build.md.

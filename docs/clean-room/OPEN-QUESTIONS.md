@@ -56,11 +56,29 @@
 
 6. **The bundled SQLite makes `PRAGMA quick_check` run FTS5 integrity checks.**
    Decision: keep the startup `quick_check(1)` for file databases (db-016 keeps it in the target,
-   which links the same SQLite), and skip it for in-memory databases.
+   which links the same SQLite), run it on its own short-lived read-only connection
+   (`DatabaseManager::run_startup_integrity_check`) instead of a pooled one, and skip it for
+   in-memory databases.
    Reason: since SQLite 3.44, integrity_check and quick_check call each virtual table's xIntegrity,
-   and FTS5 ignores the quick flag. On the shared-cache connections sqlx opens for `sqlite::memory:`
-   pools, that check never returns with 3.51.3 (reproduced with a one-row FTS5 table); file
-   databases are unaffected. In-memory databases have no file that could be damaged, and the
-   hang froze screenpipe-db's timeline performance test ten seconds after startup. On large file
-   databases the check now also walks the FTS5 indexes, so it takes longer; it still runs in the
-   background.
+   and FTS5 ignores the quick flag. With 3.51.3 that causes two problems.
+   - False corruption on healthy file databases. FTS5's integrity method reads the segment layout
+     the connection cached during earlier FTS queries, and unlike an ordinary FTS read
+     (`fts5NewTransaction` from xOpen/xBegin) it does not first check whether another connection
+     has rewritten the index. A read-pool connection that served a `frames_fts` search before the
+     writer merged segments therefore reported `fts5: corruption found reading blob ... from table
+     "frames_fts"`, and the engine logged "DATABASE CORRUPTION DETECTED" for a sound database (found
+     in review; 10 of 10 pooled checks in the reviewer's probe). A connection opened only for the
+     check has nothing cached; its verdict matches FTS5's own `integrity-check` command. db-019
+     builds quarantine and fail-closed writer admission on this check, so it must not raise false
+     alarms. `sqlite_toolchain_test::startup_integrity_check_passes_after_searches_and_fts_merges`
+     pins this (searches through the pool, more frames so segments merge, then the check says
+     "ok"); a pooled quick_check in the same state reports the corruption. The engine CLI's
+     `db check` runs the sqlite3 shell, a fresh connection, so it is not affected. The upstream
+     `repair_database` still verifies on a pooled connection but has no callers; whoever revives it
+     should switch it to a fresh connection too.
+   - A hang on in-memory databases. On the shared-cache connections sqlx opens for
+     `sqlite::memory:` pools, the check never returns (reproduced with a one-row FTS5 table).
+     In-memory databases have no file that could be damaged, and the hang froze screenpipe-db's
+     timeline performance test ten seconds after startup.
+   On large file databases the check now also walks the FTS5 indexes, so it takes longer; it still
+   runs in the background.
