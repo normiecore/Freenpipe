@@ -43,14 +43,23 @@ describe('pyannote model table', () => {
 		}
 	})
 
-	it('downloads from the Freenpipe release mirror unless overridden', () => {
+	it('downloads from the Freenpipe LFS mirror unless overridden', () => {
 		const m = PYANNOTE_MODELS[1]
 		expect(pyannoteModelUrl(m)).toBe(`${DEFAULT_PYANNOTE_BASE_URL}/${m.asset}`)
 		expect(pyannoteModelUrl(m, 'https://mirror.example.test/models/')).toBe(
 			`https://mirror.example.test/models/${m.asset}`,
 		)
 		expect(pyannoteModelUrl(m, 'file:///tmp')).toBe(`${DEFAULT_PYANNOTE_BASE_URL}/${m.asset}`)
-		expect(DEFAULT_PYANNOTE_BASE_URL).toStartWith('https://github.com/normiecore/Freenpipe/')
+		expect(DEFAULT_PYANNOTE_BASE_URL).toMatch(
+			/^https:\/\/media\.githubusercontent\.com\/media\/normiecore\/Freenpipe\/[0-9a-f]{40}\/crates\/screenpipe-audio\/models\/pyannote$/,
+		)
+	})
+
+	it('names each file on the mirror after the repository copy', () => {
+		for (const m of PYANNOTE_MODELS) {
+			expect(decodeURIComponent(m.asset)).toBe(m.filename)
+			expect(encodeURIComponent(m.filename)).toBe(m.asset)
+		}
 	})
 
 	it('accepts only the exact pinned bytes', () => {

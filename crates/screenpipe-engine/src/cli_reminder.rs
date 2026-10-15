@@ -213,8 +213,14 @@ mod tests {
     fn release_version_strips_the_tag_prefix() {
         let release = serde_json::json!({ "tag_name": "v2.7.104", "name": "Freenpipe" });
         assert_eq!(release_version(&release), Some("2.7.104"));
-        assert_eq!(release_version(&serde_json::json!({ "tag_name": "" })), None);
-        assert_eq!(release_version(&serde_json::json!({ "version": "1.0.0" })), None);
+        assert_eq!(
+            release_version(&serde_json::json!({ "tag_name": "" })),
+            None
+        );
+        assert_eq!(
+            release_version(&serde_json::json!({ "version": "1.0.0" })),
+            None
+        );
     }
 
     #[test]

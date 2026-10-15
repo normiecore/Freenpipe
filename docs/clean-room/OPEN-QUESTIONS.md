@@ -5,19 +5,22 @@ decision taken and the reason. The owner can overturn any of them; the code poin
 
 ## W0-09
 
-1. **Where is the "Freenpipe-controlled mirror" for the pyannote models, and what are the asset names?**
-   - Decision: release assets of `normiecore/Freenpipe` under the tag `pyannote-models-v1`, named
-     `pyannote-segmentation-3.0.onnx` and `wespeaker-en-voxceleb-campp.onnx`
-     (`DEFAULT_MODEL_BASE_URL` in `crates/screenpipe-audio/src/speaker/models.rs`, mirrored in
-     `apps/screenpipe-app-tauri/scripts/stage_bundled_runtime.js`). Downloads are checked against the
-     size and SHA-256 recorded in the repository's Git LFS pointers.
-   - Reason: a release asset is immutable and needs no LFS bandwidth; GitHub renames asset files with
-     special characters, so `CAM++` cannot be used as an asset name. The local file names stay as
-     before, so existing caches keep working.
-   - **Owner action:** create that release and upload the two files (the LFS objects of
-     `crates/screenpipe-audio/models/pyannote/`, renamed to the asset names). Until it exists, the
-     installer gets the models from an LFS checkout only, and a fresh install without bundled models
-     cannot download them (the URL answers 404).
+1. **Where is the "Freenpipe-controlled mirror" for the pyannote models, and what are the file names?**
+   - Decision: this repository's own Git LFS storage, read through GitHub's media endpoint at the
+     import commit:
+     `https://media.githubusercontent.com/media/normiecore/Freenpipe/bcef0bcde5e6ea12db811a27047ef63869b7374a/crates/screenpipe-audio/models/pyannote/`
+     followed by the repository file name, percent-encoded (`segmentation-3.0.onnx`,
+     `wespeaker_en_voxceleb_CAM%2B%2B.onnx`). `DEFAULT_MODEL_BASE_URL` in
+     `crates/screenpipe-audio/src/speaker/models.rs` and `scripts/stage_bundled_runtime.js` use the same
+     base. Downloads are checked against the size and SHA-256 in the Git LFS pointers. An HTTP 404 or
+     410 is treated as permanent: the downloader does not retry it, and callers waiting for the model
+     get the error at once instead of after the two-minute timeout.
+   - Reason: those LFS objects were imported with the fork, the endpoint serves them byte-identical to
+     the pointers, and a commit id cannot move, so no release has to be created. An earlier draft of
+     this WP pointed at a release (`pyannote-models-v1`) that did not exist; the engine then spent about
+     four minutes retrying 404s before it started its server. The local file names are unchanged, so
+     existing caches keep working.
+   - No owner action is needed.
 
 2. **How do users override the model sources?**
    - Decision: environment variables only, for now: `SCREENPIPE_PYANNOTE_BASE_URL` (mirror base URL),
@@ -64,7 +67,8 @@ decision taken and the reason. The owner can overturn any of them; the code poin
    - Decision: the latest GitHub release of `normiecore/Freenpipe` (`tag_name`), instead of the npm
      registry entry of the upstream `screenpipe` package.
    - Reason: the upstream package version says nothing about Freenpipe releases, and querying it
-     resolves a vendor package (cloud-M02).
+     resolves a vendor package (cloud-M02). W0-05 owns `cli_reminder.rs` and removes the update check
+     altogether; once both are merged, W0-05's version of the file applies.
 
 8. **Which SKILL.md do the agent cards serve?**
    - Decision: `scripts/gen-skill-content.js` now reads the product copies under

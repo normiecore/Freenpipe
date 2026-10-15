@@ -165,8 +165,20 @@ mod tests {
                 .file_url_with(Some(endpoint), None, "f")
                 .starts_with("https://huggingface.co/"));
         }
-        for repo in ["noslash", "a/b/c", "../etc", "a/", "/b", "a b/c", "a/.hidden"] {
-            assert_eq!(IMAGE_REDACTOR.repo_with(Some(repo)), IMAGE_REDACTOR.default_repo, "{repo:?}");
+        for repo in [
+            "noslash",
+            "a/b/c",
+            "../etc",
+            "a/",
+            "/b",
+            "a b/c",
+            "a/.hidden",
+        ] {
+            assert_eq!(
+                IMAGE_REDACTOR.repo_with(Some(repo)),
+                IMAGE_REDACTOR.default_repo,
+                "{repo:?}"
+            );
         }
     }
 

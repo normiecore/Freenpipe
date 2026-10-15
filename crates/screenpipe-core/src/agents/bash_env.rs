@@ -314,7 +314,10 @@ mod tests {
             .output()
             .unwrap();
         assert!(out.status.success(), "{out:?}");
-        assert_eq!(String::from_utf8_lossy(&out.stdout).trim(), "bundled:pipe list");
+        assert_eq!(
+            String::from_utf8_lossy(&out.stdout).trim(),
+            "bundled:pipe list"
+        );
 
         let out = Command::new("bash")
             .env("PATH", &path)
@@ -324,7 +327,10 @@ mod tests {
             .arg("screenpipe pipe list")
             .output()
             .unwrap();
-        assert_eq!(String::from_utf8_lossy(&out.stdout).trim(), "other:pipe list");
+        assert_eq!(
+            String::from_utf8_lossy(&out.stdout).trim(),
+            "other:pipe list"
+        );
     }
 
     /// End-to-end: the shim adds `x-screenpipe-session: <id>` to local API

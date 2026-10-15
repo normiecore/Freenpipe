@@ -11,10 +11,11 @@
 //!    root, see [`bundled_model_dirs`]) or in a directory named by
 //!    `SCREENPIPE_PYANNOTE_DIR`; accepted only when its size matches the
 //!    pinned model, so a Git LFS pointer is never mistaken for a model;
-//! 3. the download cache, filled from the Freenpipe model mirror (a GitHub
-//!    release of the Freenpipe repository, overridable with
-//!    `SCREENPIPE_PYANNOTE_BASE_URL`). Downloads are checked against the
-//!    pinned SHA-256 before use.
+//! 3. the download cache, filled from the Freenpipe model mirror (the Git
+//!    LFS storage of the Freenpipe repository, read at a pinned commit;
+//!    overridable with `SCREENPIPE_PYANNOTE_BASE_URL`). Downloads are checked
+//!    against the pinned SHA-256 before use. A mirror that answers 404 is
+//!    not retried, so startup is never held up by a missing file.
 
 use anyhow::{anyhow, Context, Result};
 use std::collections::HashSet;
@@ -30,9 +31,10 @@ use crate::speaker::create_session;
 
 const MAX_RECOVERY_RETRIES: u8 = 1;
 
-/// Default download location: release assets of the Freenpipe repository.
-pub const DEFAULT_MODEL_BASE_URL: &str =
-    "https://github.com/normiecore/Freenpipe/releases/download/pyannote-models-v1";
+/// Default download location: GitHub's Git LFS media endpoint for this
+/// repository's `crates/screenpipe-audio/models/pyannote/` folder, addressed
+/// by the import commit (not a branch), so the files behind it cannot change.
+pub const DEFAULT_MODEL_BASE_URL: &str = "https://media.githubusercontent.com/media/normiecore/Freenpipe/bcef0bcde5e6ea12db811a27047ef63869b7374a/crates/screenpipe-audio/models/pyannote";
 
 /// Overrides [`DEFAULT_MODEL_BASE_URL`]; the asset name is appended.
 pub const MODEL_BASE_URL_ENV: &str = "SCREENPIPE_PYANNOTE_BASE_URL";
@@ -49,7 +51,8 @@ pub const BUNDLED_RELATIVE_DIR: &str = "models/pyannote";
 pub struct ModelSpec {
     /// Local file name (in the install dir and the download cache).
     pub filename: &'static str,
-    /// Name of the release asset on the mirror (URL-safe).
+    /// File name on the mirror, percent-encoded for use in a URL path (the
+    /// mirror keeps the original names, so `+` becomes `%2B`).
     pub asset_name: &'static str,
     pub size: u64,
     pub sha256: &'static str,
@@ -57,14 +60,14 @@ pub struct ModelSpec {
 
 pub const SEGMENTATION_SPEC: ModelSpec = ModelSpec {
     filename: "segmentation-3.0.onnx",
-    asset_name: "pyannote-segmentation-3.0.onnx",
+    asset_name: "segmentation-3.0.onnx",
     size: 5_983_836,
     sha256: "b78fc48113bb46fd247ae6a9aea737079550c647638db961df7e0e1e9f4ba62e",
 };
 
 pub const EMBEDDING_SPEC: ModelSpec = ModelSpec {
     filename: "wespeaker_en_voxceleb_CAM++.onnx",
-    asset_name: "wespeaker-en-voxceleb-campp.onnx",
+    asset_name: "wespeaker_en_voxceleb_CAM%2B%2B.onnx",
     size: 29_292_684,
     sha256: "c46fad10b5f81e1aa4a60c162714208577093655076c5450f8c469e522ec54ef",
 };
@@ -466,21 +469,50 @@ mod tests {
         }
     }
 
+    /// Minimal percent-decoder for the test below.
+    fn percent_decode(raw: &str) -> String {
+        let bytes = raw.as_bytes();
+        let mut out = Vec::with_capacity(bytes.len());
+        let mut i = 0;
+        while i < bytes.len() {
+            if bytes[i] == b'%' && i + 2 < bytes.len() {
+                let hex = std::str::from_utf8(&bytes[i + 1..i + 3]).unwrap();
+                out.push(u8::from_str_radix(hex, 16).unwrap());
+                i += 3;
+            } else {
+                out.push(bytes[i]);
+                i += 1;
+            }
+        }
+        String::from_utf8(out).unwrap()
+    }
+
     #[test]
     fn default_download_source_is_the_freenpipe_mirror() {
+        let prefix = "https://media.githubusercontent.com/media/normiecore/Freenpipe/";
+        assert!(DEFAULT_MODEL_BASE_URL.starts_with(prefix));
+        // Pinned to a full commit id, never a branch or tag that can move.
+        let commit = DEFAULT_MODEL_BASE_URL[prefix.len()..]
+            .split('/')
+            .next()
+            .unwrap();
+        assert_eq!(commit.len(), 40, "{commit}");
+        assert!(commit.chars().all(|c| c.is_ascii_hexdigit()), "{commit}");
+        assert!(DEFAULT_MODEL_BASE_URL.ends_with("/crates/screenpipe-audio/models/pyannote"));
         for spec in [&SEGMENTATION_SPEC, &EMBEDDING_SPEC] {
             let url = model_download_url_with(spec, None);
+            assert_eq!(url, format!("{DEFAULT_MODEL_BASE_URL}/{}", spec.asset_name));
             assert!(
-                url.starts_with("https://github.com/normiecore/Freenpipe/releases/download/"),
-                "{url}"
+                !url.contains("/refs/heads/"),
+                "never a moving branch: {url}"
             );
-            assert!(url.ends_with(spec.asset_name));
-            assert!(!url.contains("/refs/heads/"), "never a moving branch: {url}");
             assert!(
                 url.chars()
-                    .all(|c| c.is_ascii_alphanumeric() || ":/._-".contains(c)),
-                "asset URL must not need escaping: {url}"
+                    .all(|c| c.is_ascii_alphanumeric() || ":/._-%".contains(c)),
+                "URL must need no further escaping: {url}"
             );
+            // The mirror serves the repository files under their own names.
+            assert_eq!(percent_decode(spec.asset_name), spec.filename);
         }
     }
 
@@ -492,7 +524,15 @@ mod tests {
         );
         assert_eq!(
             url,
-            "https://models.example.test/pyannote/pyannote-segmentation-3.0.onnx"
+            "https://models.example.test/pyannote/segmentation-3.0.onnx"
+        );
+        let embedding = model_download_url_with(
+            &EMBEDDING_SPEC,
+            Some("https://models.example.test/pyannote"),
+        );
+        assert_eq!(
+            embedding,
+            "https://models.example.test/pyannote/wespeaker_en_voxceleb_CAM%2B%2B.onnx"
         );
         let fallback = model_download_url_with(&SEGMENTATION_SPEC, Some("ftp://nope"));
         assert!(fallback.starts_with(DEFAULT_MODEL_BASE_URL));
@@ -567,7 +607,10 @@ mod tests {
             !DOWNLOADING.load(Ordering::SeqCst),
             "no download may start when an installed copy exists"
         );
-        assert!(!cache_dir.exists(), "the download cache must stay untouched");
+        assert!(
+            !cache_dir.exists(),
+            "the download cache must stay untouched"
+        );
         assert_eq!(LOCK.lock().await.as_deref(), Some(bundled.as_path()));
 
         // A failed load of the installed copy keeps the file and stops using it.

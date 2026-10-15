@@ -27,7 +27,10 @@ fn locate_bundled_mcp() -> Option<BundledMcp> {
     let entry = cli_runtime::bundled_mcp_entry(&[])?;
     let bun = std::env::current_exe()
         .ok()
-        .and_then(|exe| exe.parent().map(|dir| dir.join(cli_runtime::bun_file_name())))
+        .and_then(|exe| {
+            exe.parent()
+                .map(|dir| dir.join(cli_runtime::bun_file_name()))
+        })
         .filter(|p| p.is_file())
         .or_else(|| screenpipe_core::agents::pi::find_bun_executable().map(PathBuf::from))?;
     Some(BundledMcp { bun, entry })
@@ -200,8 +203,12 @@ mod tests {
     async fn config_is_written_and_rewritten() {
         let tmp = tempfile::tempdir().unwrap();
         let dir = tmp.path().join("mcp");
-        let first = write_config(&dir, &mcp_config(&sample(), 3030)).await.unwrap();
-        let second = write_config(&dir, &mcp_config(&sample(), 3035)).await.unwrap();
+        let first = write_config(&dir, &mcp_config(&sample(), 3030))
+            .await
+            .unwrap();
+        let second = write_config(&dir, &mcp_config(&sample(), 3035))
+            .await
+            .unwrap();
         assert_eq!(first, second);
         let written: Value =
             serde_json::from_str(&std::fs::read_to_string(&second).unwrap()).unwrap();

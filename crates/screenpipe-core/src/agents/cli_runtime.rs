@@ -236,7 +236,11 @@ pub struct AgentCliEnv {
 
 /// Build the agent environment for `cli`, writing launchers under
 /// `data_dir`. `current_path` is the `PATH` the child would otherwise get.
-pub fn agent_cli_env_for(cli: PathBuf, data_dir: &Path, current_path: Option<&OsStr>) -> AgentCliEnv {
+pub fn agent_cli_env_for(
+    cli: PathBuf,
+    data_dir: &Path,
+    current_path: Option<&OsStr>,
+) -> AgentCliEnv {
     let path = match ensure_shims(data_dir, &cli) {
         Ok(dir) => prepend_to_path(&dir, current_path),
         Err(e) => {
@@ -350,11 +354,8 @@ mod tests {
         let root = abs(&["apps", "Freenpipe"]);
         let bundled = root.join(cli_file_name());
         for bad in ["relative/screenpipe", ""] {
-            let found = resolve_cli_with(
-                Some(OsStr::new(bad)),
-                &[root.clone()],
-                files(&[&bundled]),
-            );
+            let found =
+                resolve_cli_with(Some(OsStr::new(bad)), &[root.clone()], files(&[&bundled]));
             assert_eq!(found.as_deref(), Some(bundled.as_path()), "{bad:?}");
         }
         let missing = abs(&["nowhere", cli_file_name()]);
@@ -372,11 +373,8 @@ mod tests {
         let a = abs(&["a"]);
         let b = abs(&["b"]);
         let entry_b = b.join(MCP_ENTRY_RELATIVE);
-        let found = resolve_bundled_file_with(
-            Path::new(MCP_ENTRY_RELATIVE),
-            &[a, b],
-            files(&[&entry_b]),
-        );
+        let found =
+            resolve_bundled_file_with(Path::new(MCP_ENTRY_RELATIVE), &[a, b], files(&[&entry_b]));
         assert_eq!(found, Some(entry_b));
     }
 
@@ -390,7 +388,10 @@ mod tests {
 
     #[test]
     fn posix_shim_uses_forward_slashes_for_windows_paths() {
-        let shim = posix_shim(Path::new(r"C:\Program Files\Freenpipe\screenpipe.exe"), true);
+        let shim = posix_shim(
+            Path::new(r"C:\Program Files\Freenpipe\screenpipe.exe"),
+            true,
+        );
         assert!(shim.contains("'C:/Program Files/Freenpipe/screenpipe.exe'"));
         assert!(!shim.contains('\\'));
     }
@@ -469,7 +470,11 @@ mod tests {
         let fake_cli = tmp.path().join("fake cli");
         std::fs::write(&fake_cli, "#!/bin/sh\nprintf '%s|' \"$@\"\n").unwrap();
         std::fs::set_permissions(&fake_cli, std::fs::Permissions::from_mode(0o755)).unwrap();
-        let env = agent_cli_env_for(fake_cli.clone(), tmp.path(), Some(OsStr::new("/usr/bin:/bin")));
+        let env = agent_cli_env_for(
+            fake_cli.clone(),
+            tmp.path(),
+            Some(OsStr::new("/usr/bin:/bin")),
+        );
         let out = std::process::Command::new("sh")
             .env("PATH", env.path.unwrap())
             .arg("-c")

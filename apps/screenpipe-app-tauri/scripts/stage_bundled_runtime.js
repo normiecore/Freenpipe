@@ -11,8 +11,9 @@
 // Nothing here resolves a package from a registry at app run time: the MCP
 // server is bundled from packages/screenpipe-mcp in this repository, the CLI
 // is the engine binary built from this repository, and the speaker models
-// come from the repository (Git LFS) or the Freenpipe release mirror, checked
-// against pinned SHA-256 values.
+// come from the repository checkout (when Git LFS content is present) or from
+// the repository's LFS storage at a pinned commit, checked against pinned
+// SHA-256 values.
 //
 // Each step is best effort so a plain `bun run dev` keeps working offline; the
 // app then falls back at run time (REST API instead of the CLI, model
@@ -31,21 +32,24 @@ import { createHash } from 'crypto'
 import fs from 'fs/promises'
 import path from 'path'
 
+// GitHub's LFS media endpoint for crates/screenpipe-audio/models/pyannote/,
+// addressed by the import commit so the files cannot change.
 export const DEFAULT_PYANNOTE_BASE_URL =
-	'https://github.com/normiecore/Freenpipe/releases/download/pyannote-models-v1'
+	'https://media.githubusercontent.com/media/normiecore/Freenpipe/bcef0bcde5e6ea12db811a27047ef63869b7374a/crates/screenpipe-audio/models/pyannote'
 
 // Same values as crates/screenpipe-audio/src/speaker/models.rs (a test keeps
-// them in sync). Size and hash come from the repository's Git LFS pointers.
+// them in sync). Size and hash come from the repository's Git LFS pointers;
+// `asset` is the file name as it appears in the mirror URL (percent-encoded).
 export const PYANNOTE_MODELS = [
 	{
 		filename: 'segmentation-3.0.onnx',
-		asset: 'pyannote-segmentation-3.0.onnx',
+		asset: 'segmentation-3.0.onnx',
 		size: 5983836,
 		sha256: 'b78fc48113bb46fd247ae6a9aea737079550c647638db961df7e0e1e9f4ba62e',
 	},
 	{
 		filename: 'wespeaker_en_voxceleb_CAM++.onnx',
-		asset: 'wespeaker-en-voxceleb-campp.onnx',
+		asset: 'wespeaker_en_voxceleb_CAM%2B%2B.onnx',
 		size: 29292684,
 		sha256: 'c46fad10b5f81e1aa4a60c162714208577093655076c5450f8c469e522ec54ef',
 	},
