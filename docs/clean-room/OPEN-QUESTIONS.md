@@ -41,9 +41,10 @@ work package.
   configured" error. Removing an OAuth app keeps existing tokens. Reason: the fix is in settings, not in
   waiting; deleting tokens on app removal would lose identity metadata the user may want back.
 - **Google's dedicated cards.** Decision: the OAuth app block is rendered above the Google Calendar, Docs,
-  Sheets and Gmail cards from `connections-section.tsx`, and the cards themselves are unchanged; their
-  connect button reports the backend's "no OAuth app" error. Reason: the cards are outside this WP's
-  owner paths.
+  Sheets and Gmail cards from `connections-section.tsx`. Inside the cards the only change is that the
+  Gmail, Docs and Sheets connect buttons now show the backend error in a toast, as the Calendar card
+  already did. Reason: the cards are outside this WP's owner paths, but with user-entered credentials a
+  missing or rejected OAuth app is the common failure, and those three cards dropped it silently.
 - **Tokens carried over from screenpipe.** Drop-in data dirs can hold `oauth:<id>` tokens that the
   vendor's OAuth apps issued, and a refresh token only works for the client that obtained it. Decision:
   no conversion. Until an OAuth app is entered the scheduler skips them; afterwards the first refresh

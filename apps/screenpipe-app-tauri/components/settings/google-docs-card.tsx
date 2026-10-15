@@ -12,6 +12,7 @@ import { openUrl } from "@tauri-apps/plugin-opener";
 import { useSettings } from "@/lib/hooks/use-settings";
 import { hasCloudEntitlement } from "@/lib/app-entitlement";
 import { notifyConnectionsUpdated } from "@/lib/connections-events";
+import { toast } from "@/components/ui/use-toast";
 import posthog from "posthog-js";
 import { localFetch } from "@/lib/api";
 import { GoogleOAuthUnverifiedAppHint } from "./google-oauth-unverified-app-hint";
@@ -119,6 +120,9 @@ export function GoogleDocsCard() {
         posthog.capture("google_docs_connected");
         await fetchAccounts();
         notifyConnectionsUpdated();
+      } else if (res.status === "error") {
+        // Usually a missing or rejected OAuth app; the backend message says which.
+        toast({ title: "google docs connect failed", description: String(res.error), variant: "destructive" });
       }
     } catch (e) {
       console.error("google docs oauth failed:", e);

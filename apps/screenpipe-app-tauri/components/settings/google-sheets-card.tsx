@@ -9,6 +9,7 @@ import { Card, CardContent } from "@/components/ui/card";
 import { useSettings } from "@/lib/hooks/use-settings";
 import { hasCloudEntitlement } from "@/lib/app-entitlement";
 import { notifyConnectionsUpdated } from "@/lib/connections-events";
+import { toast } from "@/components/ui/use-toast";
 import { commands } from "@/lib/utils/tauri";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import { Loader2, Lock, LogOut, Plus, Table2 } from "lucide-react";
@@ -71,6 +72,9 @@ export function GoogleSheetsCard({
         await fetchAccounts();
         notifyConnectionsUpdated();
         onConnectionChange?.();
+      } else if (res.status === "error") {
+        // Usually a missing or rejected OAuth app; the backend message says which.
+        toast({ title: "google sheets connect failed", description: String(res.error), variant: "destructive" });
       }
     } catch (e) {
       console.error("google sheets oauth failed:", e);
