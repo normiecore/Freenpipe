@@ -5,10 +5,7 @@ import { Sparkles, X } from "lucide-react";
 import { create } from "zustand";
 import { useEffect } from "react";
 import { listen } from "@tauri-apps/api/event";
-import { relaunch } from "@tauri-apps/plugin-process";
 import { commands } from "@/lib/utils/tauri";
-import { check, type Update } from "@tauri-apps/plugin-updater";
-import { platform, arch } from "@tauri-apps/plugin-os";
 import { useToast } from "@/components/ui/use-toast";
 import { cn } from "@/lib/utils";
 
@@ -17,17 +14,10 @@ interface UpdateInfo {
   body: string;
 }
 
-interface AuthRequiredInfo {
-  version: string;
-  message: string;
-}
-
 interface UpdateBannerState {
   isVisible: boolean;
   updateInfo: UpdateInfo | null;
   isInstalling: boolean;
-  pendingUpdate: Update | null;
-  authRequired: AuthRequiredInfo | null;
   // Version the user dismissed in this session. Periodic re-checks and
   // providers-remount hydration would otherwise re-show the same banner
   // immediately after the user clicked X.
@@ -35,8 +25,6 @@ interface UpdateBannerState {
   setIsVisible: (visible: boolean) => void;
   setUpdateInfo: (info: UpdateInfo | null) => void;
   setIsInstalling: (installing: boolean) => void;
-  setPendingUpdate: (update: Update | null) => void;
-  setAuthRequired: (info: AuthRequiredInfo | null) => void;
   dismiss: (version: string) => void;
   resetDismissed: () => void;
 }
@@ -45,15 +33,11 @@ export const useUpdateBanner = create<UpdateBannerState>((set) => ({
   isVisible: false,
   updateInfo: null,
   isInstalling: false,
-  pendingUpdate: null,
-  authRequired: null,
   dismissedVersion: null,
   setIsVisible: (visible) => set({ isVisible: visible }),
   setUpdateInfo: (info) => set({ updateInfo: info }),
   setIsInstalling: (installing) => set({ isInstalling: installing }),
-  setPendingUpdate: (update) => set({ pendingUpdate: update }),
-  setAuthRequired: (info) => set({ authRequired: info }),
-  dismiss: (version) => set({ isVisible: false, authRequired: null, dismissedVersion: version }),
+  dismiss: (version) => set({ isVisible: false, dismissedVersion: version }),
   resetDismissed: () => set({ dismissedVersion: null }),
 }));
 
@@ -65,140 +49,48 @@ interface UpdateBannerProps {
 }
 
 export function UpdateBanner({ className, compact = false, variant = "default" }: UpdateBannerProps) {
-  const { isVisible, updateInfo, isInstalling, setIsInstalling, pendingUpdate, authRequired, dismiss } = useUpdateBanner();
+  const { isVisible, updateInfo, isInstalling, setIsInstalling, dismiss } = useUpdateBanner();
   const { toast } = useToast();
 
   const handleUpdate = async () => {
     setIsInstalling(true);
-    const os = platform();
+    const progress = toast({
+      title: "installing update...",
+      description: "the app restarts by itself once the update is in place",
+      duration: Infinity,
+    });
 
+    // restart_for_update waits (up to 60s) until startup is far enough
+    // along to exit safely (#3622), then downloads if needed, installs and
+    // restarts, so on success this call never returns. Any other answer
+    // means nothing was applied; an error result counts as "errored".
+    let outcome = "errored";
+    let detail: string | null = null;
     try {
-      // #3622: gate restart on boot-ready. Windows downloadAndInstall calls
-      // process::exit internally, and relaunch() does the same on macOS —
-      // both race onnxruntime teardown against still-initializing native
-      // sessions if startup hasn't finished. Backend waits up to 60s and
-      // returns one of "proceed" | "errored" | "pending".
-      const gate = await commands.awaitSafeRestart(60);
-      if (gate !== "proceed") {
-        setIsInstalling(false);
-        toast({
-          title: "screenpipe is still starting up",
-          description:
-            gate === "errored"
-              ? "startup error — open settings to see details before restarting"
-              : "finish startup first, then click update again",
-          variant: "destructive",
-        });
-        return;
-      }
-
-      // On Windows, the update is not pre-downloaded by the backend (unlike macOS/Linux)
-      // We need to check for update, download, and install it before relaunching
-      if (os === "windows") {
-        toast({
-          title: "downloading update...",
-          description: "please wait while the update is downloaded",
-          duration: Infinity,
-        });
-
-        // Stop screenpipe before update on Windows
-        try {
-          await commands.stopScreenpipe();
-        } catch (e) {
-          console.warn("failed to stop screenpipe:", e);
-        }
-
-        // Get or check for the update
-        let update = pendingUpdate;
-        if (!update) {
-          const cpuArch = arch();
-          update = await check({ endpoints: [
-            `https://screenpi.pe/api/app-update/stable/windows-${cpuArch}/{{current_version}}`,
-          ] } as any);
-        }
-
-        if (update?.available) {
-
-
-          await update.downloadAndInstall();
-
-          toast({
-            title: "update complete",
-            description: "relaunching application",
-            duration: 3000,
-          });
-        }
+      const res = await commands.restartForUpdate(60);
+      if (res.status === "ok") {
+        outcome = res.data;
       } else {
-        // On macOS/Linux, the update was already downloaded by the backend
-        toast({
-          title: "installing update...",
-          description: "screenpipe will restart automatically",
-          duration: 10000,
-        });
+        detail = res.error;
       }
-
-      await relaunch();
     } catch (error) {
-      console.error("failed to update:", error);
-      setIsInstalling(false);
-      toast({
-        title: "update failed",
-        description: "please try again or download manually",
-        variant: "destructive",
-      });
+      detail = String(error);
     }
-  };
+    if (outcome === "proceed") return;
 
-  // Show auth-required state — user needs to sign in to download updates
-  if (authRequired) {
-    if (compact) {
-      return (
-        <div className={cn("flex items-center gap-2 text-xs text-muted-foreground", className)}>
-          <Sparkles className="h-3 w-3 text-primary" />
-          <span>v{authRequired.version} available</span>
-          <Button
-            variant="ghost"
-            size="sm"
-            className="h-5 px-2 text-xs"
-            onClick={() => window.location.href = "/home"}
-          >
-            sign in to update
-          </Button>
-        </div>
-      );
-    }
-    return (
-      <div className={cn(
-        "flex items-center justify-between gap-3 px-3 py-2 bg-muted/50 border-b text-sm",
-        className
-      )}>
-        <div className="flex items-center gap-2 flex-1">
-          <Sparkles className="h-4 w-4 text-primary" />
-          <span>
-            screenpipe <span className="font-medium">v{authRequired.version}</span> is available — sign in to download
-          </span>
-        </div>
-        <div className="flex items-center gap-2">
-          <Button
-            variant="default"
-            size="sm"
-            className="h-7 px-3 text-xs"
-            onClick={() => window.location.href = "/home"}
-          >
-            sign in
-          </Button>
-          <Button
-            variant="ghost"
-            size="sm"
-            className="h-7 w-7 p-0"
-            onClick={() => dismiss(authRequired.version)}
-          >
-            <X className="h-4 w-4" />
-          </Button>
-        </div>
-      </div>
-    );
-  }
+    console.error("update not applied:", outcome, detail ?? "");
+    progress.dismiss();
+    setIsInstalling(false);
+    toast({
+      title: detail ? "update failed" : "still starting up",
+      description:
+        detail ??
+        (outcome === "pending"
+          ? "finish startup first, then click update again"
+          : "startup error — open settings to see details before restarting"),
+      variant: "destructive",
+    });
+  };
 
   if (!isVisible || !updateInfo) return null;
 
@@ -254,7 +146,7 @@ export function UpdateBanner({ className, compact = false, variant = "default" }
       <div className="flex items-center gap-2 flex-1">
         <Sparkles className="h-4 w-4 text-primary" />
         <span>
-          screenpipe <span className="font-medium">v{updateInfo.version}</span> is ready
+          update <span className="font-medium">v{updateInfo.version}</span> is ready
         </span>
       </div>
       <div className="flex items-center gap-2">
@@ -280,13 +172,6 @@ export function UpdateBanner({ className, compact = false, variant = "default" }
   );
 }
 
-interface PendingUpdateSnapshot {
-  version: string;
-  body: string;
-  downloaded: boolean;
-  auth_required: boolean;
-}
-
 // Hook to listen for update events from Rust.
 // Mounted globally in app/providers.tsx so it survives route changes and
 // catches the `update-available` event regardless of which page is open
@@ -294,12 +179,11 @@ interface PendingUpdateSnapshot {
 // state from Rust so it can recover if the event fired before this hook
 // registered (boot-time webview race).
 export function useUpdateListener() {
-  const { setIsVisible, setUpdateInfo, setAuthRequired, resetDismissed } = useUpdateBanner();
+  const { setIsVisible, setUpdateInfo, resetDismissed } = useUpdateBanner();
 
   useEffect(() => {
     let unlistenAvailable: (() => void) | undefined;
     let unlistenClick: (() => void) | undefined;
-    let unlistenAuth: (() => void) | undefined;
 
     // Rust re-emits update-available on every periodic check, and providers
     // hydration runs on every remount — both would otherwise resurrect a
@@ -311,15 +195,10 @@ export function useUpdateListener() {
         setIsVisible(true);
       }
     };
-    const showAuthIfNotDismissed = (info: AuthRequiredInfo) => {
-      if (useUpdateBanner.getState().dismissedVersion !== info.version) {
-        setAuthRequired(info);
-      }
-    };
 
     const setupListeners = async () => {
       // Download happens silently in the background. Banner only appears
-      // when the download is complete and the app is ready to restart.
+      // when the update is ready to install.
       unlistenAvailable = await listen<UpdateInfo>("update-available", (event) => {
         showIfNotDismissed(event.payload);
       });
@@ -331,21 +210,12 @@ export function useUpdateListener() {
         setIsVisible(true);
       });
 
-      // Listen for auth-required (user needs to sign in to download update)
-      unlistenAuth = await listen<AuthRequiredInfo>("update-auth-required", (event) => {
-        showAuthIfNotDismissed(event.payload);
-      });
-
       // Hydrate from Rust in case the event fired before we mounted.
       try {
         const resPending = await commands.getPendingUpdate();
-  const pending = resPending.status === "ok" ? resPending.data : null;
-        if (pending) {
-          if (pending.auth_required) {
-            showAuthIfNotDismissed({ version: pending.version, message: "sign in to get the latest update" });
-          } else if (pending.downloaded) {
-            showIfNotDismissed({ version: pending.version, body: pending.body });
-          }
+        const pending = resPending.status === "ok" ? resPending.data : null;
+        if (pending?.downloaded) {
+          showIfNotDismissed({ version: pending.version, body: pending.body });
         }
       } catch (e) {
         // Command not registered yet (older Rust side) or app not ready.
@@ -358,7 +228,6 @@ export function useUpdateListener() {
     return () => {
       unlistenAvailable?.();
       unlistenClick?.();
-      unlistenAuth?.();
     };
-  }, [setIsVisible, setUpdateInfo, setAuthRequired, resetDismissed]);
+  }, [setIsVisible, setUpdateInfo, resetDismissed]);
 }
