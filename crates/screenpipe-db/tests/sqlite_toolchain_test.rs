@@ -130,11 +130,12 @@ async fn fts5_contentless_delete_table_supports_delete() {
         .await
         .expect("contentless_delete=1 tables accept DELETE");
 
-    let beta: Vec<i64> =
-        sqlx::query_scalar("SELECT rowid FROM probe_fts WHERE probe_fts MATCH 'beta' ORDER BY rowid")
-            .fetch_all(&mut conn)
-            .await
-            .unwrap();
+    let beta: Vec<i64> = sqlx::query_scalar(
+        "SELECT rowid FROM probe_fts WHERE probe_fts MATCH 'beta' ORDER BY rowid",
+    )
+    .fetch_all(&mut conn)
+    .await
+    .unwrap();
     assert_eq!(beta, vec![1]);
 
     let gamma: Vec<i64> = sqlx::query_scalar(
@@ -238,7 +239,10 @@ unsafe impl<'vtab> VTab<'vtab> for SquaresTable {
             base: sqlite3_vtab::default(),
             limit: aux.copied().unwrap_or(0),
         };
-        Ok(("CREATE TABLE x(n INTEGER, square INTEGER)".to_owned(), table))
+        Ok((
+            "CREATE TABLE x(n INTEGER, square INTEGER)".to_owned(),
+            table,
+        ))
     }
 
     fn best_index(&self, info: &mut IndexInfo) -> rusqlite::Result<()> {
@@ -308,11 +312,9 @@ fn rusqlite_vtab_feature_runs_on_shared_sqlite() {
     assert_eq!(total, 1 + 4 + 9 + 16 + 25);
 
     let largest: i64 = conn
-        .query_row(
-            "SELECT square FROM probe_squares WHERE n = 4",
-            [],
-            |row| row.get(0),
-        )
+        .query_row("SELECT square FROM probe_squares WHERE n = 4", [], |row| {
+            row.get(0)
+        })
         .unwrap();
     assert_eq!(largest, 16);
 }

@@ -104,9 +104,15 @@ async fn embedded_migrator_applies_pending_version_older_than_newest() {
     let _db = open_manager(&path).await;
 
     let after = applied_versions(&mut side).await;
-    assert_eq!(after, before, "the out-of-order version should be re-applied");
+    assert_eq!(
+        after, before,
+        "the out-of-order version should be re-applied"
+    );
     for index in IDEMPOTENT_INDEXES {
-        assert!(index_exists(&mut side, index).await, "{index} not recreated");
+        assert!(
+            index_exists(&mut side, index).await,
+            "{index} not recreated"
+        );
     }
     let success: bool =
         sqlx::query_scalar("SELECT success FROM _sqlx_migrations WHERE version = ?")
@@ -277,8 +283,14 @@ async fn runtime_migrator_out_of_order_and_ignore_missing() {
         .await
         .unwrap();
 
-    write("1_create_first.sql", "CREATE TABLE first_table (id INTEGER);");
-    write("3_create_third.sql", "CREATE TABLE third_table (id INTEGER);");
+    write(
+        "1_create_first.sql",
+        "CREATE TABLE first_table (id INTEGER);",
+    );
+    write(
+        "3_create_third.sql",
+        "CREATE TABLE third_table (id INTEGER);",
+    );
     Migrator::new(migrations.path())
         .await
         .unwrap()
@@ -287,7 +299,10 @@ async fn runtime_migrator_out_of_order_and_ignore_missing() {
         .unwrap();
 
     // Version 2 arrives after 3 was applied.
-    write("2_create_second.sql", "CREATE TABLE second_table (id INTEGER);");
+    write(
+        "2_create_second.sql",
+        "CREATE TABLE second_table (id INTEGER);",
+    );
     Migrator::new(migrations.path())
         .await
         .unwrap()

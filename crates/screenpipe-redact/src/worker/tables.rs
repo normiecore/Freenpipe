@@ -167,7 +167,10 @@ pub async fn fetch_unredacted(
         extra = extra,
     );
 
-    let rows = sqlx::query(sqlx::AssertSqlSafe(q)).bind(limit as i64).fetch_all(pool).await?;
+    let rows = sqlx::query(sqlx::AssertSqlSafe(q))
+        .bind(limit as i64)
+        .fetch_all(pool)
+        .await?;
     let out = rows
         .into_iter()
         .map(|r| UnredactedRow {

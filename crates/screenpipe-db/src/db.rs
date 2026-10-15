@@ -5298,7 +5298,9 @@ impl DatabaseManager {
         Ok(())
     }
     pub async fn execute_raw_sql(&self, query: &str) -> Result<serde_json::Value, sqlx::Error> {
-        let rows = sqlx::query(sqlx::AssertSqlSafe(query)).fetch_all(&self.pool).await?;
+        let rows = sqlx::query(sqlx::AssertSqlSafe(query))
+            .fetch_all(&self.pool)
+            .await?;
 
         let result: Vec<serde_json::Map<String, serde_json::Value>> = rows
             .iter()
@@ -8783,9 +8785,12 @@ LIMIT ? OFFSET ?
     /// Create an atomic backup of the database using `VACUUM INTO`.
     /// The destination path must not already exist.
     pub async fn backup_to(&self, dest: &str) -> Result<(), sqlx::Error> {
-        sqlx::query(sqlx::AssertSqlSafe(format!("VACUUM INTO '{}'", dest.replace('\'', "''"))))
-            .execute(&self.pool)
-            .await?;
+        sqlx::query(sqlx::AssertSqlSafe(format!(
+            "VACUUM INTO '{}'",
+            dest.replace('\'', "''")
+        )))
+        .execute(&self.pool)
+        .await?;
         Ok(())
     }
 

@@ -153,7 +153,10 @@ async fn worker_redacts_all_five_targets() {
             tbl = target.table(),
             extra = extra
         );
-        let rows = sqlx::query(sqlx::AssertSqlSafe(q)).fetch_all(&pool).await.unwrap();
+        let rows = sqlx::query(sqlx::AssertSqlSafe(q))
+            .fetch_all(&pool)
+            .await
+            .unwrap();
         assert!(
             !rows.is_empty(),
             "expected ≥1 redacted row in {} after worker drained",
