@@ -466,9 +466,9 @@ export function PrivacySection() {
   const [enclaveConfigured, setEnclaveConfigured] = useState(false);
   useEffect(() => {
     let cancelled = false;
-    (commands as any)
-      .getPrivacyFilterEnclaveConfigured?.()
-      .then((configured: boolean) => {
+    commands
+      .getPrivacyFilterEnclaveConfigured()
+      .then((configured) => {
         if (!cancelled) setEnclaveConfigured(configured === true);
       })
       .catch(() => {});

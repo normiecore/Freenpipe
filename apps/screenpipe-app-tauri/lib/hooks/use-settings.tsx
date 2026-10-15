@@ -597,8 +597,8 @@ export const saveAndEncrypt = async (store: Store) => {
 async function isAiGatewayConfigured(settings: Settings): Promise<boolean> {
 	if (normalizeGatewayUrl((settings as any).aiGatewayUrl)) return true;
 	try {
-		const res = await (commands as any).getScreenpipeAiGatewayUrl?.();
-		return res?.status === "ok";
+		const res = await commands.getScreenpipeAiGatewayUrl();
+		return res.status === "ok";
 	} catch {
 		return false;
 	}
