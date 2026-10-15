@@ -69,3 +69,18 @@ taken and the reason. Later work packages may revisit a decision; say so under t
   **Decision:** changed those two OCR samples to `/api/cloud-sync/status` (and its OCR misread).
   **Reason:** both are non-URL path strings with no expected URLs, so the benchmark measures the
   same thing; its results are unchanged.
+
+- **Question:** cloud-044 lists `/api/cloud-sync/subscription` among the billing calls, and the
+  base Sync panel still asks it whether the user has a sync plan. W0-05 lists `sync-settings.tsx`
+  for its checkout links only, while W0-08 owns the rest of the file. Remove the lookup here too?
+  **Decision:** no. W0-05 removes the checkout, the plan card and the subscribe flow; the plan
+  lookup is left to W0-08, which removes it and hides the Sync and Archive tabs.
+  **Reason:** both packages would otherwise rewrite the same hunk of the same function in the
+  same wave. Once both merge, nothing in the panel names a vendor endpoint.
+
+- **Question:** the crash screen (`app/global-error.tsx`) sent "get help" to the vendor's Discord
+  invite. The file is in no work package's owner paths.
+  **Decision:** W0-05 points it at a new issue on the Freenpipe repository, and the vendor guard's
+  commerce rules now include the vendor's Discord invite (`community-invite`).
+  **Reason:** the WP text sends every Discord link to GitHub, and an issue is where a crash report
+  belongs. The help panel already lists Discussions for questions.
