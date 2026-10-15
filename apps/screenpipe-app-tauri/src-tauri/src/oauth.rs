@@ -18,7 +18,7 @@ use screenpipe_connect::oauth::{
     self, OAuthClientCredentials, OAuthClientUpdate, OAuthConfig, PendingOAuth, Pkce, PENDING_OAUTH,
 };
 use serde::{Deserialize, Serialize};
-use tauri::AppHandle;
+use tauri::{AppHandle, Manager};
 use tauri_plugin_opener::OpenerExt;
 use tokio::sync::oneshot;
 use tracing::{error, info};
@@ -101,14 +101,45 @@ fn find_oauth_config(integration_id: &str) -> Result<&'static OAuthConfig, Strin
         .ok_or_else(|| format!("{} does not use OAuth", integration_id))
 }
 
-/// Loopback callback for the port the engine is configured to listen on.
-fn default_redirect_uri(app_handle: &AppHandle) -> String {
-    let port = crate::store::SettingsStore::get(app_handle)
+/// Port the loopback callback should name, most authoritative first: the
+/// port the embedded engine was started on, then a `SCREENPIPE_PORT`
+/// override (parsed as `to_recording_config` parses it, so it is what the
+/// engine binds on its next start), then the stored setting, then 3030.
+/// Port 0 never counts: it only asks the OS for a random port.
+fn callback_port(
+    engine_port: Option<u16>,
+    env_override: Option<&str>,
+    settings_port: Option<u16>,
+) -> u16 {
+    let usable = |p: u16| (p != 0).then_some(p);
+    engine_port
+        .and_then(usable)
+        .or_else(|| env_override?.parse::<u16>().ok().and_then(usable))
+        .or_else(|| settings_port.and_then(usable))
+        .unwrap_or(3030)
+}
+
+/// Port of the running embedded engine, if it has been started.
+async fn engine_port(app_handle: &AppHandle) -> Option<u16> {
+    let state = app_handle.try_state::<crate::recording::RecordingState>()?;
+    let guard = state.server.lock().await;
+    let core = guard.as_ref()?;
+    Some(core.port)
+}
+
+/// Loopback callback on the port the engine listens on (see [`callback_port`]).
+async fn default_redirect_uri(app_handle: &AppHandle) -> String {
+    let engine_port = engine_port(app_handle).await;
+    let env_override = std::env::var("SCREENPIPE_PORT").ok();
+    let settings_port = crate::store::SettingsStore::get(app_handle)
         .ok()
         .flatten()
-        .map(|s| s.recording.port)
-        .unwrap_or(3030);
-    oauth::loopback_redirect_uri(port)
+        .map(|s| s.recording.port);
+    oauth::loopback_redirect_uri(callback_port(
+        engine_port,
+        env_override.as_deref(),
+        settings_port,
+    ))
 }
 
 fn client_info(
@@ -149,7 +180,7 @@ pub async fn oauth_client_get(
         &integration_id,
         config,
         creds.as_ref(),
-        default_redirect_uri(&app_handle),
+        default_redirect_uri(&app_handle).await,
     ))
 }
 
@@ -165,7 +196,7 @@ pub async fn oauth_client_save(
     let store = open_secret_store().await.ok_or_else(|| {
         "the secret store is unavailable, so the OAuth app cannot be saved".to_string()
     })?;
-    let loopback = default_redirect_uri(&app_handle);
+    let loopback = default_redirect_uri(&app_handle).await;
     let existing = oauth::load_oauth_client(Some(&store), &integration_id).await;
     let creds = oauth::apply_client_update(
         existing.as_ref(),
@@ -210,7 +241,7 @@ pub async fn oauth_client_delete(
         &integration_id,
         config,
         None,
-        default_redirect_uri(&app_handle),
+        default_redirect_uri(&app_handle).await,
     ))
 }
 
@@ -236,9 +267,9 @@ pub async fn oauth_connect(
             }
             .to_string()
         })?;
+    let loopback = default_redirect_uri(&app_handle).await;
     let redirect_uri =
-        oauth::resolve_redirect_uri(config, &creds, &default_redirect_uri(&app_handle))
-            .map_err(|e| e.to_string())?;
+        oauth::resolve_redirect_uri(config, &creds, &loopback).map_err(|e| e.to_string())?;
     let pkce = config.uses_pkce.then(Pkce::generate);
 
     let state = uuid::Uuid::new_v4().simple().to_string();
@@ -874,4 +905,35 @@ async fn fetch_supabase_project_credentials(
 
     let project_url = format!("{}.supabase.co", project_ref);
     Ok((project_url, service_key, project_name.to_string()))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::callback_port;
+
+    #[test]
+    fn callback_port_follows_the_running_engine_first() {
+        // Dev isolation: SCREENPIPE_PORT=3035 while settings still say 3030.
+        assert_eq!(callback_port(Some(3035), Some("3035"), Some(3030)), 3035);
+        // The engine's own port wins even over a later env change.
+        assert_eq!(callback_port(Some(3040), Some("3035"), Some(3030)), 3040);
+    }
+
+    #[test]
+    fn callback_port_falls_back_to_env_then_settings_then_default() {
+        assert_eq!(callback_port(None, Some("3035"), Some(3030)), 3035);
+        assert_eq!(callback_port(None, None, Some(4040)), 4040);
+        assert_eq!(callback_port(None, None, None), 3030);
+    }
+
+    #[test]
+    fn callback_port_ignores_unusable_values() {
+        // Parsed exactly like the engine's override: no trimming, no port 0.
+        assert_eq!(callback_port(None, Some("not-a-port"), Some(4040)), 4040);
+        assert_eq!(callback_port(None, Some(" 3035"), Some(4040)), 4040);
+        assert_eq!(callback_port(None, Some("70000"), None), 3030);
+        assert_eq!(callback_port(None, Some("0"), Some(4040)), 4040);
+        assert_eq!(callback_port(Some(0), Some("3035"), Some(4040)), 3035);
+        assert_eq!(callback_port(None, None, Some(0)), 3030);
+    }
 }
