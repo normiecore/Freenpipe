@@ -9,7 +9,7 @@
 //! credentials and connection state.
 
 use axum::extract::{Path, Query, State};
-use axum::http::StatusCode;
+use axum::http::{header::HOST, HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::{Json, Router};
@@ -81,8 +81,12 @@ pub struct CallBody {
     pub arguments: Value,
 }
 
+/// Body of `POST /mcp-servers/:id/oauth/start`. Unknown fields (such as an
+/// `app_scheme` asking for a hosted relay) are ignored: the callback is always
+/// the local one.
 #[derive(Deserialize)]
 pub struct OAuthStartBody {
+    /// Optional loopback override; see `mcp_oauth_redirect_uri`.
     #[serde(default)]
     pub redirect_uri: Option<String>,
     #[serde(default)]
@@ -386,18 +390,63 @@ async fn oauth_status(State(state): State<McpServersState>, Path(id): Path<Strin
     }
 }
 
+/// Port used for the MCP OAuth callback when the request does not reveal one.
+const DEFAULT_CALLBACK_PORT: u16 = 3030;
+
+/// The port this engine was reached on, read from a loopback `Host` header
+/// (the UI and the pi bridge always call over loopback). Anything else falls
+/// back to the default port.
+fn loopback_port_from_host(headers: &HeaderMap) -> u16 {
+    let Some(host) = headers.get(HOST).and_then(|h| h.to_str().ok()) else {
+        return DEFAULT_CALLBACK_PORT;
+    };
+    match reqwest::Url::parse(&format!("http://{host}/")) {
+        Ok(url) if screenpipe_connect::oauth::is_loopback_http(&url) => url.port().unwrap_or(80),
+        _ => DEFAULT_CALLBACK_PORT,
+    }
+}
+
+/// MCP OAuth always comes back to this engine's own loopback callback. A
+/// caller may pick the loopback host and port (e.g. 127.0.0.1 on a
+/// non-default port) but nothing else: remote or HTTPS relays, other paths
+/// and app-scheme hand-offs are refused, so authorization codes never leave
+/// the machine.
+fn mcp_oauth_redirect_uri(id: &str, supplied: Option<&str>, port: u16) -> Result<String, String> {
+    let expected_path = format!("/mcp-servers/{}/oauth/callback", url_path_segment(id));
+    let Some(raw) = supplied.map(str::trim).filter(|s| !s.is_empty()) else {
+        return Ok(format!("http://localhost:{port}{expected_path}"));
+    };
+    let url =
+        reqwest::Url::parse(raw).map_err(|e| format!("redirect_uri is not a valid URL: {e}"))?;
+    if !screenpipe_connect::oauth::is_loopback_http(&url) {
+        return Err(
+            "redirect_uri must be this engine's loopback callback (http://localhost, 127.0.0.1 or [::1])"
+                .to_string(),
+        );
+    }
+    if url.path() != expected_path || url.query().is_some() || url.fragment().is_some() {
+        return Err(format!(
+            "redirect_uri must point at {expected_path} on the loopback interface"
+        ));
+    }
+    Ok(url.to_string())
+}
+
 /// POST /mcp-servers/:id/oauth/start — create PKCE state and return provider URL.
 async fn oauth_start(
     State(state): State<McpServersState>,
     Path(id): Path<String>,
+    headers: HeaderMap,
     Json(body): Json<OAuthStartBody>,
 ) -> Response {
-    let redirect_uri = body.redirect_uri.unwrap_or_else(|| {
-        format!(
-            "http://localhost:3030/mcp-servers/{}/oauth/callback",
-            url_path_segment(&id)
-        )
-    });
+    let redirect_uri = match mcp_oauth_redirect_uri(
+        &id,
+        body.redirect_uri.as_deref(),
+        loopback_port_from_host(&headers),
+    ) {
+        Ok(uri) => uri,
+        Err(msg) => return bad_request(&msg),
+    };
     let result = if let Some(url) = body.url.as_deref().map(str::trim).filter(|u| !u.is_empty()) {
         let name = body.name.as_deref().unwrap_or("").trim().to_string();
         if name.is_empty() {
@@ -718,5 +767,72 @@ mod tests {
         let input = vec![h("X-Token", "  raw value  ")];
         let out = normalise_supplied(input);
         assert_eq!(out[0].value, "  raw value  ");
+    }
+
+    // -- MCP OAuth stays on the loopback callback ---------------------------
+
+    fn host(value: &str) -> HeaderMap {
+        let mut h = HeaderMap::new();
+        h.insert(HOST, value.parse().unwrap());
+        h
+    }
+
+    #[test]
+    fn mcp_redirect_defaults_to_local_callback_on_the_request_port() {
+        assert_eq!(
+            mcp_oauth_redirect_uri("srv-1", None, 3030).unwrap(),
+            "http://localhost:3030/mcp-servers/srv-1/oauth/callback"
+        );
+        assert_eq!(
+            mcp_oauth_redirect_uri("a b", Some("  "), 3035).unwrap(),
+            "http://localhost:3035/mcp-servers/a%20b/oauth/callback"
+        );
+        assert_eq!(loopback_port_from_host(&host("localhost:3035")), 3035);
+        assert_eq!(loopback_port_from_host(&host("127.0.0.1:4040")), 4040);
+        assert_eq!(loopback_port_from_host(&host("[::1]:3036")), 3036);
+        assert_eq!(loopback_port_from_host(&host("localhost")), 80);
+        assert_eq!(loopback_port_from_host(&host("evil.example:9999")), 3030);
+        assert_eq!(loopback_port_from_host(&HeaderMap::new()), 3030);
+    }
+
+    #[test]
+    fn mcp_redirect_accepts_explicit_loopback_callbacks() {
+        for ok in [
+            "http://localhost:3035/mcp-servers/srv-1/oauth/callback",
+            "http://127.0.0.1:3030/mcp-servers/srv-1/oauth/callback",
+            "http://[::1]:3030/mcp-servers/srv-1/oauth/callback",
+        ] {
+            assert_eq!(mcp_oauth_redirect_uri("srv-1", Some(ok), 3030).unwrap(), ok);
+        }
+    }
+
+    #[test]
+    fn mcp_redirect_refuses_relays_and_other_targets() {
+        for bad in [
+            "https://relay.example.com/api/oauth/mcp/srv-1/callback?app_scheme=freenpipe",
+            "https://localhost:3030/mcp-servers/srv-1/oauth/callback",
+            "http://192.168.1.10:3030/mcp-servers/srv-1/oauth/callback",
+            "http://localhost:3030/mcp-servers/other/oauth/callback",
+            "http://localhost:3030/connections/oauth/callback",
+            "http://localhost:3030/mcp-servers/srv-1/oauth/callback?next=https://x.example",
+            "freenpipe://mcp-oauth",
+            "not a url",
+        ] {
+            assert!(
+                mcp_oauth_redirect_uri("srv-1", Some(bad), 3030).is_err(),
+                "{bad} should be refused"
+            );
+        }
+    }
+
+    #[test]
+    fn app_scheme_in_the_start_body_is_ignored() {
+        let body: OAuthStartBody =
+            serde_json::from_value(json!({ "app_scheme": "screenpipe" })).unwrap();
+        assert!(body.redirect_uri.is_none());
+        assert_eq!(
+            mcp_oauth_redirect_uri("srv-1", body.redirect_uri.as_deref(), 3030).unwrap(),
+            "http://localhost:3030/mcp-servers/srv-1/oauth/callback"
+        );
     }
 }
