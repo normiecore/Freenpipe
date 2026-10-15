@@ -16,7 +16,7 @@ import { useToast } from "@/components/ui/use-toast";
 import { Button } from "@/components/ui/button";
 import { Settings } from "@/lib/hooks/use-settings";
 import { getVersion } from "@tauri-apps/api/app";
-import { commands } from "@/lib/utils/tauri";
+import { commands, type UpdaterStatus } from "@/lib/utils/tauri";
 import { UpdateBanner } from "@/components/update-banner";
 import type { SettingsField } from "./settings-search";
 
@@ -44,21 +44,34 @@ export default function GeneralSettings() {
   const { toast } = useToast();
   const [currentVersion, setCurrentVersion] = useState<string | null>(null);
   const [isCheckingForUpdate, setIsCheckingForUpdate] = useState(false);
+  const [updaterStatus, setUpdaterStatus] = useState<UpdaterStatus | null>(null);
+
+  const openExternal = async (url: string) => {
+    try {
+      await openUrl(url);
+    } catch {
+      window.open(url, "_blank");
+    }
+  };
 
   const handleCheckForUpdates = async () => {
     setIsCheckingForUpdate(true);
     try {
+      // In-app updates stay off until a build ships an update signing key;
+      // until then "check" means "show me the releases page".
+      const status = updaterStatus ?? (await commands.getUpdaterStatus());
+      if (!status.enabled) {
+        await openExternal(status.releases_url);
+        toast({
+          title: "opened the releases page",
+          description: "in-app updates are off in this build — download new versions there",
+        });
+        return;
+      }
+
       const pendingRes = await commands.getPendingUpdate();
       if (pendingRes.status === "ok" && pendingRes.data) {
         const pending = pendingRes.data;
-        if (pending.auth_required) {
-          toast({
-            title: "update available",
-            description: `v${pending.version} is available — sign in to download it`,
-          });
-          return;
-        }
-
         if (pending.downloaded) {
           toast({
             title: "update ready",
@@ -96,6 +109,7 @@ export default function GeneralSettings() {
 
   useEffect(() => {
     getVersion().then(setCurrentVersion).catch(() => {});
+    commands.getUpdaterStatus().then(setUpdaterStatus).catch(() => {});
   }, []);
 
   const handleSettingsChange = (newSettings: Partial<Settings>) => {
@@ -128,36 +142,14 @@ export default function GeneralSettings() {
   );
   const enterpriseInstallMetadata = settings?.enterpriseInstallMetadata;
 
-  const getDesktopPlatform = async () => {
-    try {
-      const { arch, type: osType } = await import("@tauri-apps/plugin-os").then(m => ({ arch: m.arch(), type: m.type() }));
-      if (osType === "macos") return arch === "x86_64" ? "darwin-x86_64" : "darwin-aarch64";
-      if (osType === "windows") return "windows-x86_64";
-      if (osType === "linux") return "linux-x86_64";
-    } catch {
-      return null;
-    }
-    return null;
-  };
-
   const handleOpenVersions = async () => {
-    const params = new URLSearchParams({ source: "desktop" });
-    if (currentVersion) params.set("app_version", currentVersion);
-
-    const platform = await getDesktopPlatform();
-    if (platform) params.set("platform", platform);
-
-    const path = isEnterprise ? "/enterprise" : "/account/versions";
-    if (isEnterprise) params.set("tab", "builds");
-    const url = `https://screenpipe.com${path}?${params.toString()}`;
-
     try {
-      await openUrl(url);
+      const status = updaterStatus ?? (await commands.getUpdaterStatus());
+      await openExternal(status.releases_url);
     } catch (e: any) {
-      window.open(url, "_blank");
       toast({
-        title: "opened in browser",
-        description: e?.toString() || "check your browser for version downloads",
+        title: "could not open the releases page",
+        description: e?.toString() || "please try again",
         variant: "destructive",
       });
     }
@@ -230,6 +222,9 @@ export default function GeneralSettings() {
                     <h3 className="text-sm font-medium text-foreground">Check for updates</h3>
                     <p className="text-xs text-muted-foreground">
                       {currentVersion ? `Running v${currentVersion}` : "Look for a new version now"}
+                      {updaterStatus && !updaterStatus.enabled
+                        ? " · in-app updates are off in this build"
+                        : ""}
                     </p>
                   </div>
                 </div>
@@ -240,7 +235,11 @@ export default function GeneralSettings() {
                   disabled={isCheckingForUpdate}
                   className="ml-4 h-8"
                 >
-                  {isCheckingForUpdate ? "checking..." : "check now"}
+                  {isCheckingForUpdate
+                    ? "checking..."
+                    : updaterStatus && !updaterStatus.enabled
+                      ? "open releases"
+                      : "check now"}
                 </Button>
               </div>
             </CardContent>
@@ -364,7 +363,7 @@ export default function GeneralSettings() {
                   <p className="text-xs text-muted-foreground">
                     {isEnterprise
                       ? "Open builds managed by your organization"
-                      : "Open recent stable versions on screenpipe.com"}
+                      : "Open the releases page"}
                   </p>
                 </div>
               </div>

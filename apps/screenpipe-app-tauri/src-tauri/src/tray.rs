@@ -10,7 +10,7 @@ use crate::health::{
 };
 use crate::recording::{local_api_context_from_app, RecordingState};
 use crate::store::{OnboardingStore, SettingsStore};
-use crate::updates::{is_enterprise_build, is_source_build};
+use crate::updates::is_enterprise_build;
 use crate::window::ShowRewindWindow;
 use anyhow::Result;
 use once_cell::sync::Lazy;
@@ -27,7 +27,6 @@ use tauri::{
     },
     AppHandle, Manager, Wry,
 };
-use tauri_plugin_dialog::{DialogExt, MessageDialogButtons};
 use tauri_plugin_opener::OpenerExt;
 
 use tracing::{debug, error, info};
@@ -1239,9 +1238,8 @@ fn handle_menu_event(app_handle: &AppHandle, event: tauri::menu::MenuEvent) {
         "releases" => {
             let app = app_handle.clone();
             let _ = app_handle.run_on_main_thread(move || {
-                let _ = app
-                    .opener()
-                    .open_url("https://screenpi.pe/changelog", None::<&str>);
+                let url = crate::updates::releases_page_url(&app);
+                let _ = app.opener().open_url(url, None::<&str>);
             });
         }
         "update_now" => {
@@ -1251,45 +1249,11 @@ fn handle_menu_event(app_handle: &AppHandle, event: tauri::menu::MenuEvent) {
                 if is_enterprise_build(&app) {
                     return;
                 }
-                // For source builds, show info dialog about updates
-                if is_source_build(&app) {
-                    tauri::async_runtime::spawn(async move {
-                        let dialog = app
-                            .dialog()
-                            .message(
-                                "auto-updates are only available in the pre-built version.\n\n\
-                                source builds require manual updates from github.",
-                            )
-                            .title("source build detected")
-                            .buttons(MessageDialogButtons::OkCancelCustom(
-                                "download pre-built".to_string(),
-                                "view on github".to_string(),
-                            ));
-
-                        dialog.show(move |clicked_download| {
-                            if clicked_download {
-                                let _ = app
-                                    .opener()
-                                    .open_url("https://screenpi.pe/download", None::<&str>);
-                            } else {
-                                let _ = app.opener().open_url(
-                                    "https://github.com/screenpipe/screenpipe/releases",
-                                    None::<&str>,
-                                );
-                            }
-                        });
-                    });
-                } else {
-                    // For production builds, run the authenticated update flow.
-                    tauri::async_runtime::spawn(async move {
-                        let state = app.state::<std::sync::Arc<crate::updates::UpdatesManager>>();
-                        if state.has_update_installed().await {
-                            let _ = app.emit("update-now-clicked", ());
-                        } else if let Err(e) = state.check_for_updates(true).await {
-                            tracing::error!("tray menu: check for updates failed: {}", e);
-                        }
-                    });
-                }
+                // updates.rs decides: restart into a ready update, run a
+                // check, or (updates disabled) open the releases page.
+                tauri::async_runtime::spawn(async move {
+                    crate::updates::on_update_menu_click(&app).await;
+                });
             });
         }
         "open_app" => {

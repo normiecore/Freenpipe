@@ -61,6 +61,9 @@ jobs:
     needs: check_commit
     if: needs.check_commit.outputs.should_release == 'true'
     runs-on: macos-latest
+    env:
+      # Signing and notarization run only when the Developer ID secrets exist.
+      HAS_APPLE_CERT: ${{ secrets.APPLE_CERTIFICATE != '' }}
     strategy:
       matrix:
         target: [x86_64-apple-darwin, aarch64-apple-darwin]
@@ -130,15 +133,8 @@ jobs:
             cargo build --release -p screenpipe-engine --bin screenpipe --features metal,redact-onnx-coreml --target ${{ matrix.target }}
           fi
 
-      - name: Upload debug symbols to Sentry
-        env:
-          SENTRY_AUTH_TOKEN: ${{ secrets.SENTRY_AUTH_TOKEN }}
-          SENTRY_ORG: mediar
-        run: |
-          curl -sL https://sentry.io/get-cli/ | bash
-          sentry-cli debug-files upload --org $SENTRY_ORG --project screenpipe-cli target/${{ matrix.target }}/release/
-
       - name: Codesign binary
+        if: env.HAS_APPLE_CERT == 'true'
         env:
           APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
           APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
@@ -169,6 +165,7 @@ jobs:
           echo "codesign: verified"
 
       - name: Notarize binary
+        if: env.HAS_APPLE_CERT == 'true'
         env:
           APPLE_ID: ${{ secrets.APPLE_ID }}
           APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
@@ -202,18 +199,25 @@ jobs:
           echo "Set version to: $VERSION"
 
       - name: Create deployment package
+        env:
+          # Prebuilt mlx.metallib to bundle (repository variable). Unset: the
+          # CLI ships without it and MLX acceleration is unavailable.
+          MLX_METALLIB_URL: ${{ vars.MLX_METALLIB_URL }}
         run: |
           mkdir -p screenpipe-${{ env.VERSION }}-${{ matrix.target }}/bin
           cp target/${{ matrix.target }}/release/screenpipe screenpipe-${{ env.VERSION }}-${{ matrix.target }}/bin/
 
           # Bundle mlx.metallib next to CLI binary (macOS aarch64 only)
           # MLX searches for mlx.metallib next to the binary at runtime.
-          # CI cmake uses JIT mode so metallib isn't compiled — download pre-built from GitHub releases.
+          # CI cmake uses JIT mode so metallib isn't compiled.
           if [[ "${{ matrix.target }}" == "aarch64-apple-darwin" ]]; then
-            curl -L -f -o screenpipe-${{ env.VERSION }}-${{ matrix.target }}/bin/mlx.metallib \
-              "https://github.com/screenpipe/screenpipe/releases/download/mlx-metallib-v0.2.0/mlx.metallib" \
-              && echo "✅ Bundled mlx.metallib for CLI ($(du -h screenpipe-${{ env.VERSION }}-${{ matrix.target }}/bin/mlx.metallib | cut -f1))" \
-              || echo "⚠️ Failed to download mlx.metallib"
+            if [[ -n "$MLX_METALLIB_URL" ]]; then
+              curl -L -f -o screenpipe-${{ env.VERSION }}-${{ matrix.target }}/bin/mlx.metallib "$MLX_METALLIB_URL" \
+                && echo "✅ Bundled mlx.metallib for CLI ($(du -h screenpipe-${{ env.VERSION }}-${{ matrix.target }}/bin/mlx.metallib | cut -f1))" \
+                || echo "⚠️ Failed to download mlx.metallib"
+            else
+              echo "::warning::MLX_METALLIB_URL is not set; packaging the CLI without mlx.metallib"
+            fi
           fi
 
           tar -czf screenpipe-${{ env.VERSION }}-${{ matrix.target }}.tar.gz -C screenpipe-${{ env.VERSION }}-${{ matrix.target }} .
@@ -347,15 +351,6 @@ jobs:
           AWS_LC_SYS_PREBUILT_NASM: "1"
         run: |
           cargo build --release -p screenpipe-engine --bin screenpipe --features directml,redact-onnx-directml --target x86_64-pc-windows-msvc
-
-      - name: Upload debug symbols to Sentry
-        shell: powershell
-        env:
-          SENTRY_AUTH_TOKEN: ${{ secrets.SENTRY_AUTH_TOKEN }}
-          SENTRY_ORG: mediar
-        run: |
-          Invoke-WebRequest -Uri "https://release-registry.services.sentry.io/apps/sentry-cli/latest?response=download&arch=x86_64&platform=Windows&package=sentry-cli" -OutFile sentry-cli.exe
-          .\sentry-cli.exe debug-files upload --org $env:SENTRY_ORG --project screenpipe-cli target/x86_64-pc-windows-msvc/release/
 
       - name: Install CodeSignTool for SSL.com EV signing (Windows)
         shell: powershell
@@ -545,14 +540,6 @@ jobs:
         run: |
           cargo build --release -p screenpipe-engine --bin screenpipe --features redact-onnx-cpu --target ${{ matrix.target }}
 
-      - name: Upload debug symbols to Sentry
-        env:
-          SENTRY_AUTH_TOKEN: ${{ secrets.SENTRY_AUTH_TOKEN }}
-          SENTRY_ORG: mediar
-        run: |
-          curl -sL https://sentry.io/get-cli/ | bash
-          sentry-cli debug-files upload --org $SENTRY_ORG --project screenpipe-cli target/${{ matrix.target }}/release/
-
       - name: Set version
         run: |
           if [[ $GITHUB_REF == refs/tags/* ]]; then
@@ -583,9 +570,13 @@ jobs:
           name: screenpipe-linux-${{ matrix.target }}
           path: screenpipe-*.tar.gz
 
+  # The npm wrapper still carries the upstream package names, which this
+  # project cannot publish to. Off unless the repository variable
+  # PUBLISH_NPM is "true" (after the packages are renamed).
   publish-npm:
     runs-on: ubuntu-latest
     needs: [build-macos, build-windows, build-linux]
+    if: vars.PUBLISH_NPM == 'true'
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
