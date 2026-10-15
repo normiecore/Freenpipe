@@ -44,3 +44,13 @@ work package.
   Sheets and Gmail cards from `connections-section.tsx`, and the cards themselves are unchanged; their
   connect button reports the backend's "no OAuth app" error. Reason: the cards are outside this WP's
   owner paths.
+- **Tokens carried over from screenpipe.** Drop-in data dirs can hold `oauth:<id>` tokens that the
+  vendor's OAuth apps issued, and a refresh token only works for the client that obtained it. Decision:
+  no conversion. Until an OAuth app is entered the scheduler skips them; afterwards the first refresh
+  fails with the provider's grant or client error, the normal failure cooldown applies, and the user
+  reconnects. Reason: nothing local can re-bind a grant to another client, and the vendor's secrets are
+  not available.
+- **Errors when no OAuth app is stored.** Decision: `describe_oauth_error` (used by the Gmail, Google
+  Calendar and proxy routes) adds a sentence saying no OAuth app is configured, except in the
+  multiple-accounts case, and only when a SecretStore is available to check. Reason: "reconnect it" alone
+  sends the user round a loop that cannot succeed without an app; the CLI has no store, so it cannot tell.

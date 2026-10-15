@@ -511,6 +511,9 @@ pub async fn list_connected_oauth_instances(
 /// - one instance, default lookup unhealthy    → "instance X token can't refresh, reconnect"
 /// - multiple instances, none specified        → "ambiguous: pick one of [X, Y]"
 /// - explicit instance specified but unhealthy → "instance X token can't refresh, reconnect"
+///
+/// Except in the ambiguous case, the message also says when no BYO OAuth app
+/// is stored for the integration, because reconnecting cannot help until one is.
 pub async fn describe_oauth_error(
     store: Option<&SecretStore>,
     integration_id: &str,
@@ -522,7 +525,7 @@ pub async fn describe_oauth_error(
         .into_iter()
         .flatten()
         .collect();
-    match (instance, instances.as_slice()) {
+    let message = match (instance, instances.as_slice()) {
         (Some(inst), _) => format!(
             "{display_name} account '{inst}' is not connected or its token can't be refreshed — reconnect it in Settings > Connections"
         ),
@@ -532,12 +535,34 @@ pub async fn describe_oauth_error(
         (None, [only]) => format!(
             "{display_name} account '{only}' token can't be refreshed — reconnect it in Settings > Connections"
         ),
-        (None, many) => format!(
-            "multiple {display_name} accounts connected ({}) — specify which one with `instance`. On JSON-body endpoints add `\"instance\": \"<email>\"` to the request body; on proxy/query endpoints add `?instance=<email>` (e.g. instance=\"{}\")",
-            many.join(", "),
-            many[0],
-        ),
+        (None, many) => {
+            // Ambiguity is the problem to report here; the accounts may
+            // well hold valid tokens, so no OAuth app hint.
+            return format!(
+                "multiple {display_name} accounts connected ({}) — specify which one with `instance`. On JSON-body endpoints add `\"instance\": \"<email>\"` to the request body; on proxy/query endpoints add `?instance=<email>` (e.g. instance=\"{}\")",
+                many.join(", "),
+                many[0],
+            );
+        }
+    };
+    if oauth_app_missing(store, integration_id).await {
+        format!(
+            "{message}. No {display_name} OAuth app is configured yet, so connecting and \
+             refreshing cannot work: first enter the client ID (and secret) of your own app \
+             in the same place"
+        )
+    } else {
+        message
     }
+}
+
+/// True when `integration_id` authorizes through OAuth and the SecretStore
+/// holds no BYO client for it. Without a store (CLI) the answer is unknown,
+/// so this reports `false` rather than guess.
+async fn oauth_app_missing(store: Option<&SecretStore>, integration_id: &str) -> bool {
+    store.is_some()
+        && oauth_config_for(integration_id).is_some()
+        && load_oauth_client(store, integration_id).await.is_none()
 }
 
 // ---------------------------------------------------------------------------
@@ -1984,5 +2009,70 @@ mod tests {
                 Some(OAuthTokenError::UnknownIntegration { .. })
             ));
         }
+    }
+
+    // ---- describe_oauth_error and the missing OAuth app hint -------------
+    //
+    // "notion" is used because the hint needs a registered OAuth integration.
+    // Only the explicit-instance and ambiguous arms are asserted on, since the
+    // other arms also count legacy token files in the data dir.
+
+    async fn save_notion_app(store: &SecretStore) {
+        save_oauth_client(
+            store,
+            "notion",
+            &OAuthClientCredentials {
+                client_id: "cid".into(),
+                client_secret: Some("never-shown".into()),
+                redirect_uri: None,
+            },
+        )
+        .await
+        .unwrap();
+    }
+
+    #[tokio::test]
+    async fn oauth_app_missing_only_for_oauth_integrations_without_an_app() {
+        let store = mem_store().await;
+        assert!(oauth_app_missing(Some(&store), "notion").await);
+        assert!(!oauth_app_missing(Some(&store), "_t_not_oauth").await);
+        // Without a store nothing can be checked, so nothing is claimed.
+        assert!(!oauth_app_missing(None, "notion").await);
+        save_notion_app(&store).await;
+        assert!(!oauth_app_missing(Some(&store), "notion").await);
+    }
+
+    #[tokio::test]
+    async fn describe_error_points_at_a_missing_oauth_app() {
+        let store = mem_store().await;
+        let msg = describe_oauth_error(Some(&store), "notion", "Notion", Some("x@y.z")).await;
+        assert!(msg.starts_with("Notion account 'x@y.z'"), "{msg}");
+        assert!(msg.contains("No Notion OAuth app is configured"), "{msg}");
+
+        save_notion_app(&store).await;
+        let msg = describe_oauth_error(Some(&store), "notion", "Notion", Some("x@y.z")).await;
+        assert!(msg.starts_with("Notion account 'x@y.z'"), "{msg}");
+        assert!(!msg.contains("OAuth app"), "{msg}");
+        assert!(!msg.contains("never-shown"), "{msg}");
+    }
+
+    #[tokio::test]
+    async fn describe_error_keeps_the_ambiguity_message_without_a_hint() {
+        let store = mem_store().await;
+        for inst in ["a@x.com", "b@x.com"] {
+            store
+                .set_json(
+                    &format!("oauth:notion:{inst}"),
+                    &json!({ "access_token": "a", "refresh_token": "r" }),
+                )
+                .await
+                .unwrap();
+        }
+        let msg = describe_oauth_error(Some(&store), "notion", "Notion", None).await;
+        assert!(
+            msg.starts_with("multiple Notion accounts connected"),
+            "{msg}"
+        );
+        assert!(!msg.contains("OAuth app"), "{msg}");
     }
 }
