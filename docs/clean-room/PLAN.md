@@ -1,6 +1,6 @@
 # Freenpipe implementation plan: BASE 892199f to parity with screenpipe v2.7.104
 
-Generated 2026-10-15 from the verified delta in `specs/*.md` by `python -I tools/plan_build.py` (data in `tools/plan_data.py`). Edit the data file and regenerate rather than editing the work-package sections by hand.
+First generated 2026-10-15 from the verified delta in `docs/clean-room/specs/*.md` by `python3 tools/plan/plan_build.py` (data in `tools/plan/plan_data.py`, `plan_head.md` and `plan_tail.md`). Edit those files and regenerate rather than editing this file by hand. Spec paths written `specs/<name>.md` below refer to `docs/clean-room/specs/<name>.md`.
 
 ## 1. Inputs and scope
 
@@ -113,7 +113,7 @@ Several large files are edited by more than one WP in the same wave. Each WP edi
 | 8 | Final UI pieces and surface audit | 3 | 2 L, 1 XL |
 | total | | 154 | 107 L, 30 M, 1 S, 16 XL |
 
-Coverage: 412 live delta items, each in exactly one WP (checked by `python -I tools/plan_build.py`); 38 verifier-dropped items are mapped in section 9.
+Coverage: 412 live delta items, each in exactly one WP (checked by `python3 tools/plan/plan_build.py`); 38 verifier-dropped items are mapped in section 9.
 
 ## 8. Work packages
 
@@ -486,7 +486,7 @@ Acceptance:
 
 - **Items:** (owner decision 2) vendor git deps
 - **Depends on:** W0-11
-- **Specs:** specs/DECISIONS.md decision 2
+- **Specs:** docs/clean-room/DECISIONS.md decision 2
 
 Copy every git dependency hosted under the vendor's org or its contributors into third_party/<name>/ at its pinned revision (licence-checked; screenpipe-org revisions must predate 2026-06-10), switch to path deps / [patch], keep Cargo.lock consistent, and document name, upstream URL, revision, licence, date and local changes in third_party/README.md. Established third-party git deps may stay but are listed.
 
@@ -3900,7 +3900,9 @@ Implementers must choose sensible values and document them in code comments.
 
 ## 13. Regenerating this plan
 
-`python -I <re-workspace>/tools/plan_build.py` validates the following and rewrites this file and `tools/plan_wps.json`:
+`python3 tools/plan/plan_build.py` validates the following and rewrites this file and `docs/clean-room/plan_wps.json`:
 - every live item is in exactly one WP;
 - every dropped item is mapped in section 9;
 - dependencies point to known WPs in the same or an earlier wave.
+
+`python3 tools/plan/plan_build.py --check` only validates and fails when either output is out of date. Work-package status (merged, in review, claimed, ready, blocked) is not part of this plan; `python3 tools/plan/status.py` derives it from git and GitHub and the merger publishes it as `docs/clean-room/STATUS.md`.
