@@ -1,8 +1,8 @@
 # Coordinator handoff
 
-Paused 2026-10-15 23:40 UTC at the owner's weekly usage limit. The hourly check-in routine
-"freenpipe coordinator check-in" is **disabled**; re-enable it (or start a coordinator session with
-the prompt in [cloud-coordinator.md](cloud-coordinator.md)) to resume. Every branch below is pushed.
+Resumed 2026-10-15 23:41 UTC on the owner's instruction to action all open PRs; the hourly check-in
+routine "freenpipe coordinator check-in" is enabled again. If it is disabled, re-enable it (or start a
+coordinator session with the prompt in [cloud-coordinator.md](cloud-coordinator.md)) to resume. Every branch below is pushed.
 This file is a snapshot; git and the PRs are the source of truth.
 
 ## Wave 0 state
@@ -15,9 +15,9 @@ This file is a snapshot; git and the PRs are the source of truth.
 | docs branding scrub | #8 | merged (935f5ed) | - |
 | W0-05 | #1 | approved; CI green at 8f99d28; conflicts with main after W0-07 (6 TSX files: Gmail/Google cards, connections-section, post-install modal) | run `tools/cloud/workflows/sync-resolve.js` (an earlier run was stopped mid-merge and aborted cleanly), then approve with the resolution reviews and merge |
 | W0-11 | #4 | approved; CI green at 4134aa3 (Rust 1.94.1, sqlx 0.9) | merge **last** in wave 0 (it moves the toolchain), then `cargo clean --target-dir ~/.cache/freenpipe/target` to drop the 1.93.1 cache |
-| W0-06 | #5 | review round 0 asked for changes; worker was in fix round 1 (branch at d3120a5) | rerun `wp-batch.js` for W0-06 (impl mode resumes the branch), review, publish |
-| W0-09 | #2 | review round 0 asked for changes; worker was in fix round 1 (WIP checkpoint fcb1097); model URL now points at this repo's LFS media (verified) | as W0-06 |
-| W0-10 | #3 | implementation done (4c6fc1e: bindings regenerated, test fixes); review round 0 was running | rerun `wp-batch.js` for W0-10 |
+| W0-06 | #5 | one major finding open (privacy_filter.rs: filter_pii fails closed without an enclave) | fix round running via `wp-batch.js` |
+| W0-09 | #2 | one major finding open (cli_reminder.rs: unrequested GitHub release check); model URL verified | fix round running via `wp-batch.js` |
+| W0-10 | #3 | both reviewers approved 4c6fc1e; review record being published to the PR; conflicts with main | after W0-05 merges: `sync-resolve.js`, then approve with the resolution reviews and merge |
 | W0-13 | - | blocked on W0-11 | after W0-11 |
 | W0-12 | - | blocked on all of wave 0 | last; README and docs already rebranded, app identity remains |
 
