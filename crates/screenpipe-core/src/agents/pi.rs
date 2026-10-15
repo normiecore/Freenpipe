@@ -1184,6 +1184,10 @@ impl PiExecutor {
             cmd.env("BASH_ENV", p);
         }
 
+        // Bundled CLI: SCREENPIPE_CLI plus a `screenpipe` launcher on PATH.
+        // After the BASH_ENV/PATH setup above so it extends that PATH.
+        crate::agents::cli_runtime::apply_to_tokio_command(&mut cmd);
+
         cmd.stdout(std::process::Stdio::piped());
         cmd.stderr(std::process::Stdio::piped());
 
@@ -1315,6 +1319,10 @@ impl PiExecutor {
         if let Ok(p) = crate::agents::bash_env::ensure_wrapper_in_default_dir() {
             cmd.env("BASH_ENV", p);
         }
+
+        // Bundled CLI: SCREENPIPE_CLI plus a `screenpipe` launcher on PATH.
+        // After the BASH_ENV/PATH setup above so it extends that PATH.
+        crate::agents::cli_runtime::apply_to_tokio_command(&mut cmd);
 
         cmd.stdout(std::process::Stdio::piped());
         cmd.stderr(std::process::Stdio::piped());

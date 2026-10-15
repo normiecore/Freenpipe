@@ -61,6 +61,13 @@ pub const WRAPPER_SCRIPT: &str = r#"# screenpipe — auto-injected by pi-agent b
 # the agent can see is SCREENPIPE_LOCAL_API_KEY, which is correct.
 unset SCREENPIPE_API_KEY
 
+# Freenpipe: `screenpipe` always means the CLI installed with the desktop
+# app (SCREENPIPE_CLI, exported by the spawn path). A function beats any
+# other `screenpipe` on PATH, and nothing is fetched from a package registry.
+if [ -n "${SCREENPIPE_CLI:-}" ]; then
+  screenpipe() { "$SCREENPIPE_CLI" "$@"; }
+fi
+
 _sp_auth_key() {
   # spawn paths guarantee SCREENPIPE_LOCAL_API_KEY is set (see pi.rs).
   printf '%s' "${SCREENPIPE_LOCAL_API_KEY:-}"
@@ -259,6 +266,62 @@ mod tests {
             WRAPPER_SCRIPT.contains("x-screenpipe-session"),
             "wrapper must send the owner header so navigations route to the right chat"
         );
+    }
+
+    #[test]
+    fn wrapper_script_binds_screenpipe_to_the_bundled_cli() {
+        assert!(WRAPPER_SCRIPT.contains("SCREENPIPE_CLI"));
+        for banned in ["screenpipe@latest", "bun x screenpipe", "npx screenpipe"] {
+            assert!(
+                !WRAPPER_SCRIPT.contains(banned),
+                "wrapper must not resolve the CLI from a registry ({banned})"
+            );
+        }
+    }
+
+    /// End-to-end: with SCREENPIPE_CLI set, `screenpipe ...` in an agent
+    /// subshell runs that binary even when another `screenpipe` is on PATH;
+    /// without it, PATH lookup is left alone.
+    #[test]
+    #[cfg(unix)]
+    fn shim_routes_screenpipe_to_the_bundled_cli() {
+        use std::os::unix::fs::PermissionsExt;
+        use std::process::Command;
+
+        let tmp = tempfile::tempdir().unwrap();
+        let wrapper = ensure_wrapper(tmp.path()).unwrap();
+        let write_exe = |path: &Path, body: &str| {
+            std::fs::write(path, body).unwrap();
+            std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o755)).unwrap();
+        };
+
+        let bundled = tmp.path().join("bundled-screenpipe");
+        write_exe(&bundled, "#!/bin/sh\necho \"bundled:$*\"\n");
+        let other_dir = tmp.path().join("other");
+        std::fs::create_dir_all(&other_dir).unwrap();
+        write_exe(&other_dir.join("screenpipe"), "#!/bin/sh\necho \"other:$*\"\n");
+        let path = format!("{}:/usr/bin:/bin", other_dir.display());
+
+        let out = Command::new("bash")
+            .env("PATH", &path)
+            .env("BASH_ENV", &wrapper)
+            .env("SCREENPIPE_CLI", &bundled)
+            .arg("-c")
+            .arg("screenpipe pipe list")
+            .output()
+            .unwrap();
+        assert!(out.status.success(), "{out:?}");
+        assert_eq!(String::from_utf8_lossy(&out.stdout).trim(), "bundled:pipe list");
+
+        let out = Command::new("bash")
+            .env("PATH", &path)
+            .env("BASH_ENV", &wrapper)
+            .env_remove("SCREENPIPE_CLI")
+            .arg("-c")
+            .arg("screenpipe pipe list")
+            .output()
+            .unwrap();
+        assert_eq!(String::from_utf8_lossy(&out.stdout).trim(), "other:pipe list");
     }
 
     /// End-to-end: the shim adds `x-screenpipe-session: <id>` to local API

@@ -8,14 +8,11 @@ import {
   SCREENPIPE_API_SKILL_MD,
   SCREENPIPE_CLI_SKILL_MD,
 } from "./agent-card";
+import { hermesYaml } from "@/lib/mcp-config";
 
-const HERMES_MCP_SNIPPET = `mcp_servers:
-  screenpipe:
-    command: npx
-    args:
-      - "-y"
-      - screenpipe-mcp@latest
-`;
+// Skills are read from this repository's product copies (the same files
+// the app installs into its own agent sessions).
+const SKILLS_SOURCE = "github:normiecore/Freenpipe/crates/screenpipe-core/assets/skills";
 
 export function HermesCard() {
   return (
@@ -27,7 +24,7 @@ export function HermesCard() {
       mcp={{
         format: "yaml",
         configPath: "~/.hermes/config.yaml",
-        snippet: HERMES_MCP_SNIPPET,
+        snippet: hermesYaml,
       }}
       skills={[
         {
@@ -38,8 +35,7 @@ export function HermesCard() {
           md: SCREENPIPE_API_SKILL_MD,
           downloadName: "screenpipe-api-SKILL.md",
           localPath: "~/.hermes/skills/screenpipe-api/SKILL.md",
-          cliInstall:
-            "hermes skills install github:screenpipe/screenpipe/.claude/skills/screenpipe-api",
+          cliInstall: `hermes skills install ${SKILLS_SOURCE}/screenpipe-api`,
         },
         {
           id: "cli",
@@ -49,8 +45,7 @@ export function HermesCard() {
           md: SCREENPIPE_CLI_SKILL_MD,
           downloadName: "screenpipe-cli-SKILL.md",
           localPath: "~/.hermes/skills/screenpipe-cli/SKILL.md",
-          cliInstall:
-            "hermes skills install github:screenpipe/screenpipe/.claude/skills/screenpipe-cli",
+          cliInstall: `hermes skills install ${SKILLS_SOURCE}/screenpipe-cli`,
         },
       ]}
       sync={{

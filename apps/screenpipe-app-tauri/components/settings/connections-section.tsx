@@ -44,6 +44,17 @@ import { VoiceMemosCard } from "./voice-memos-card";
 import { InputMonitoringPanel } from "./input-monitoring-card";
 import { CustomMcpCard } from "./custom-mcp-card";
 import { SkillsCard } from "./skills-card";
+import {
+  claudeCodeAddCommand,
+  codexMcpToml,
+  launchJson,
+  mcpServersJson,
+  mergeMcpServer,
+  MCP_NOT_BUNDLED_MESSAGE,
+  PLACEHOLDER_MCP_LAUNCH,
+  warpServerJson,
+} from "@/lib/mcp-config";
+import { requireMcpLaunch, resolveMcpLaunch, useMcpDisplayLaunch } from "@/lib/mcp-runtime";
 import posthog from "posthog-js";
 
 // ---------------------------------------------------------------------------
@@ -378,58 +389,24 @@ async function detectInstalledConnectionIds(): Promise<Set<string>> {
 }
 
 /**
- * MCP install config for screenpipe.
- *
- * Prefers the `bun` binary we ship with the desktop app over `npx`:
- *  - no Node.js dependency (many Claude Desktop users don't have node)
- *  - ~3× faster cold start than npx (avoids first-run download stalling
- *    Claude's MCP startup timeout)
- *  - absolute path → no PATH lookup races
- *
- * Falls back to `npx` for copy-paste configs targeting users without our
- * desktop app installed (Claude Code CLI block, AnythingLLM, MstyStudio).
- *
- * Always pins `@latest` so npx/bunx don't lock onto a stale cached
- * version forever — without `@latest`, the first install caches and
- * never updates.
+ * MCP launch for the server bundled with the app: `<bun> <install>/mcp/
+ * screenpipe-mcp.js` by absolute path, with the local API key in env. Shared
+ * with onboarding through `lib/mcp-config.ts`, so both write identical
+ * configs. Throws a readable error when this build has no bundled server.
  */
-async function buildMcpConfig(opts?: { forceNpx?: boolean }): Promise<McpCommand> {
-  const apiKey = await (commands.getLocalApiConfig() as Promise<{ key: string | null }>)
-    .then(r => r.key ?? undefined)
-    .catch(() => undefined);
-
-  const env: Record<string, string> | undefined = apiKey
-    ? { SCREENPIPE_LOCAL_API_KEY: apiKey }
-    : undefined;
-
-  if (opts?.forceNpx) return { command: "npx", args: ["-y", "screenpipe-mcp@latest"], env };
-  try {
-    const res = await commands.bunCheck();
-    if (res.status === "ok" && res.data.available && res.data.path) {
-      return { command: res.data.path, args: ["x", "screenpipe-mcp@latest"], env };
-    }
-  } catch { /* fall through to npx */ }
-  return { command: "npx", args: ["-y", "screenpipe-mcp@latest"], env };
+async function buildMcpConfig(): Promise<McpCommand> {
+  return requireMcpLaunch({ includeApiKey: true });
 }
 
 async function installCursorMcp(): Promise<void> {
   const configPath = await getCursorMcpConfigPath();
   let config: Record<string, unknown> = {};
   try { config = JSON.parse(await readTextFile(configPath)); } catch { /* fresh */ }
-  if (!config.mcpServers || typeof config.mcpServers !== "object") config.mcpServers = {};
-  (config.mcpServers as Record<string, unknown>).screenpipe = await buildMcpConfig();
-  await writeFile(configPath, new TextEncoder().encode(JSON.stringify(config, null, 2)));
+  const next = mergeMcpServer(config, await buildMcpConfig());
+  await writeFile(configPath, new TextEncoder().encode(JSON.stringify(next, null, 2)));
 }
 
 const CODEX_SCREENPIPE_TABLE = /(?:^|\n)\[mcp_servers\.screenpipe\][\s\S]*?(?=\n\[(?!mcp_servers\.screenpipe(?:\.|\]))[^\]]+\]|\s*$)/;
-
-function tomlString(value: string): string {
-  return JSON.stringify(value);
-}
-
-function tomlKey(value: string): string {
-  return /^[A-Za-z0-9_-]+$/.test(value) ? value : tomlString(value);
-}
 
 function removeCodexMcpConfig(content: string): string {
   return content
@@ -440,22 +417,7 @@ function removeCodexMcpConfig(content: string): string {
 }
 
 function buildCodexMcpToml(config: McpCommand): string {
-  const lines = [
-    "[mcp_servers.screenpipe]",
-    `command = ${tomlString(config.command)}`,
-    `args = [${config.args.map(tomlString).join(", ")}]`,
-    "enabled = true",
-  ];
-
-  const envEntries = Object.entries(config.env ?? {});
-  if (envEntries.length > 0) {
-    lines.push("", "[mcp_servers.screenpipe.env]");
-    for (const [key, value] of envEntries) {
-      lines.push(`${tomlKey(key)} = ${tomlString(value)}`);
-    }
-  }
-
-  return lines.join("\n");
+  return codexMcpToml(config);
 }
 
 async function installCodexMcp(): Promise<void> {
@@ -1182,16 +1144,18 @@ function ClaudePanel({ onConnected, onDisconnected }: { onConnected?: () => void
       if (!configPath) throw new Error("unsupported platform");
       let config: Record<string, unknown> = {};
       try { config = JSON.parse(await readTextFile(configPath)); } catch { /* fresh */ }
-      if (!config.mcpServers || typeof config.mcpServers !== "object") config.mcpServers = {};
-      (config.mcpServers as Record<string, unknown>).screenpipe = await buildMcpConfig();
+      const next = mergeMcpServer(config, await buildMcpConfig());
       await mkdir(await dirname(configPath), { recursive: true });
-      await writeFile(configPath, new TextEncoder().encode(JSON.stringify(config, null, 2)));
+      await writeFile(configPath, new TextEncoder().encode(JSON.stringify(next, null, 2)));
       setState("connected");
       onConnected?.();
     } catch (error) {
-      console.error("failed to install claude mcp:", error instanceof Error ? error.message : String(error));
+      const detail = error instanceof Error ? error.message : String(error);
+      console.error("failed to install claude mcp:", detail);
       await message(
-        "could not write Claude Desktop config.\n\nmake sure claude desktop is installed and has been opened at least once, then try again.\n\ndownload: https://claude.ai/download",
+        detail === MCP_NOT_BUNDLED_MESSAGE
+          ? detail
+          : "could not write Claude Desktop config.\n\nmake sure claude desktop is installed and has been opened at least once, then try again.\n\ndownload: https://claude.ai/download",
         { title: "claude mcp setup", kind: "error" }
       );
       setState("idle");
@@ -1285,9 +1249,10 @@ function CursorPanel({ onConnected, onDisconnected }: { onConnected?: () => void
       onConnected?.();
     } catch (error) {
       console.error("failed to install cursor mcp:", error);
+      const launch = (await resolveMcpLaunch()) ?? PLACEHOLDER_MCP_LAUNCH;
       await message(
         "Failed to write Cursor MCP config.\n\nManually add to ~/.cursor/mcp.json:\n\n" +
-        JSON.stringify({ mcpServers: { screenpipe: { command: "npx", args: ["-y", "screenpipe-mcp@latest"] } } }, null, 2),
+        mcpServersJson(launch),
         { title: "Cursor MCP Setup", kind: "error" }
       );
       setState("idle");
@@ -1340,10 +1305,8 @@ function CodexPanel({ onConnected, onDisconnected }: { onConnected?: () => void;
   const [state, setState] = useState<"idle" | "installing" | "installed">("idle");
   useEffect(() => { isCodexMcpInstalled().then(ok => { if (ok) setState("installed"); }); }, []);
 
-  const manualConfig = useMemo(() => buildCodexMcpToml({
-    command: "npx",
-    args: ["-y", "screenpipe-mcp@latest"],
-  }), []);
+  const { launch: displayLaunch } = useMcpDisplayLaunch();
+  const manualConfig = useMemo(() => buildCodexMcpToml(displayLaunch), [displayLaunch]);
 
   const handleConnect = async () => {
     try {
@@ -1354,7 +1317,7 @@ function CodexPanel({ onConnected, onDisconnected }: { onConnected?: () => void;
     } catch (error) {
       console.error("failed to install codex mcp:", error);
       await message(
-        "Failed to write Codex MCP config.\n\nManually add a [mcp_servers.screenpipe] block to ~/.codex/config.toml with command npx and args [\"-y\", \"screenpipe-mcp@latest\"].",
+        "Failed to write Codex MCP config.\n\nManually add this block to ~/.codex/config.toml:\n\n" + manualConfig,
         { title: "Codex MCP Setup", kind: "error" }
       );
       setState("idle");
@@ -1413,14 +1376,15 @@ function CodexPanel({ onConnected, onDisconnected }: { onConnected?: () => void;
 
 function ClaudeCodePanel() {
   const [copied, setCopied] = useState(false);
-  const cmd = "claude mcp add screenpipe -- npx -y screenpipe-mcp@latest";
+  const { launch: displayLaunch } = useMcpDisplayLaunch();
+  const cmd = claudeCodeAddCommand(displayLaunch);
   const handleCopy = useCallback(async () => {
     try {
       await navigator.clipboard.writeText(cmd);
       setCopied(true);
       setTimeout(() => setCopied(false), 2000);
     } catch {}
-  }, []);
+  }, [cmd]);
 
   return (
     <div className="space-y-3">
@@ -1643,14 +1607,8 @@ function MemorySyncSubsection({
 
 function AnythingLLMPanel() {
   const [copied, setCopied] = useState(false);
-  const config = JSON.stringify({
-    mcpServers: {
-      screenpipe: {
-        command: "npx",
-        args: ["-y", "screenpipe-mcp@latest"],
-      },
-    },
-  }, null, 2);
+  const { launch: displayLaunch } = useMcpDisplayLaunch();
+  const config = mcpServersJson(displayLaunch);
   const handleCopy = useCallback(async () => {
     try {
       await navigator.clipboard.writeText(config);
@@ -1685,10 +1643,8 @@ function AnythingLLMPanel() {
 
 function MstyPanel() {
   const [copied, setCopied] = useState(false);
-  const config = JSON.stringify({
-    command: "npx",
-    args: ["-y", "screenpipe-mcp@latest"],
-  }, null, 2);
+  const { launch: displayLaunch } = useMcpDisplayLaunch();
+  const config = launchJson(displayLaunch);
   const handleCopy = useCallback(async () => {
     try {
       await navigator.clipboard.writeText(config);
@@ -1728,13 +1684,8 @@ function WarpPanel() {
   const [copied, setCopied] = useState(false);
   // Warp's MCP schema is per-server: no wrapping `mcpServers` object,
   // just one `{ name: { command, args, ... } }` block pasted in the UI.
-  const config = JSON.stringify({
-    screenpipe: {
-      command: "npx",
-      args: ["-y", "screenpipe-mcp@latest"],
-      start_on_launch: true,
-    },
-  }, null, 2);
+  const { launch: displayLaunch } = useMcpDisplayLaunch();
+  const config = warpServerJson(displayLaunch);
   const handleCopy = useCallback(async () => {
     try {
       await navigator.clipboard.writeText(config);

@@ -151,11 +151,11 @@ curl "http://localhost:3030/search?limit=20&content_type=all&start_time=<ISO8601
 
 ## after creating the file
 
-IMPORTANT: always use "bun x screenpipe@latest" (not "bun x screenpipe" or "screenpipe") to ensure the latest CLI version:
+use the screenpipe CLI that came with the app. in your shell it is the \`screenpipe\` command (its full path is in $SCREENPIPE_CLI); never fetch a CLI with npx or bun x:
 
-install: bun x screenpipe@latest pipe install ~/.screenpipe/pipes/my-pipe
-enable:  bun x screenpipe@latest pipe enable my-pipe
-test:    bun x screenpipe@latest pipe run my-pipe
+install: screenpipe pipe install ~/.screenpipe/pipes/my-pipe
+enable:  screenpipe pipe enable my-pipe
+test:    screenpipe pipe run my-pipe
 
 ## important formatting rules
 

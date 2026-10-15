@@ -15,6 +15,7 @@ import {
 import * as fs from "fs";
 import * as path from "path";
 import * as os from "os";
+import { cliCandidates } from "./cli-locator.js";
 
 // Parse command line arguments
 const args = process.argv.slice(2);
@@ -29,109 +30,62 @@ const SCREENPIPE_API = `http://localhost:${port}`;
 
 // Discover the local API key, in priority order:
 //
-//   1. env vars set by the launcher (Claude Desktop config, terminal, etc.)
-//   2. CLI via bundled `bun` from screenpipe.app at a deterministic absolute
-//      path. Runs `bun x screenpipe@latest auth token` → goes through the
-//      Rust CLI's `find_api_auth_key` resolver, which handles the encrypted
-//      keychain-backed secret store. This is the canonical path: same
-//      contract as `screenpipe auth token` in a terminal, no PATH needed.
-//   3. CLI via node-adjacent npx — for dev environments that have node but
-//      not the desktop app.
-//   4. CLI via PATH-based npx — last CLI fallback.
-//   5. Direct sqlite3 read of ~/.screenpipe/db.sqlite — plaintext entries
+//   1. env vars set by the launcher (Claude Desktop config, terminal, etc.).
+//      The desktop app writes SCREENPIPE_LOCAL_API_KEY into the configs it
+//      generates, so this is the usual path.
+//   2. The `screenpipe` CLI shipped with the desktop app, run as
+//      `<cli> auth token`. The CLI's resolver handles the keychain-encrypted
+//      secret store. It is found, in order, at $SCREENPIPE_CLI, next to this
+//      script's install folder (the app ships this file as
+//      <install>/mcp/screenpipe-mcp.js and the CLI as <install>/screenpipe),
+//      at the app's standard install paths, and finally as `screenpipe` on
+//      PATH. Nothing is ever fetched from a package registry.
+//   3. Direct sqlite3 read of ~/.screenpipe/db.sqlite — plaintext entries
 //      only (encrypted entries need the keychain, which only the CLI can
-//      reach). Kept as a final last-resort for users who have screenpipe
-//      *data* but no working CLI install (rare). Demoted below the CLI
-//      paths because it reimplements logic that lives in `auth_key.rs` and
-//      can silently drift on storage-format changes.
+//      reach). Last resort for users who have the data but no CLI.
 //
-// If all 5 miss we log a loud stderr warning so it surfaces in the host's
-// MCP log instead of the user just seeing 403s with no explanation.
+// If everything misses we log a loud stderr warning so it surfaces in the
+// host's MCP log instead of the user just seeing 403s with no explanation.
+
 function discoverApiKey(): string {
   const envKey = process.env.SCREENPIPE_LOCAL_API_KEY || process.env.SCREENPIPE_API_KEY;
   if (envKey) return envKey;
 
   // eslint-disable-next-line @typescript-eslint/no-var-requires
-  const os = require("os");
-  // eslint-disable-next-line @typescript-eslint/no-var-requires
-  const path = require("path");
-  // eslint-disable-next-line @typescript-eslint/no-var-requires
-  const fs = require("fs");
-  // eslint-disable-next-line @typescript-eslint/no-var-requires
-  const { execFileSync, execSync } = require("child_process");
+  const { execFileSync } = require("child_process");
 
   const home = os.homedir();
-
-  // 2. CLI via bundled `bun` shipped with the desktop app. The Tauri
-  //    externalBin config places `bun` next to the main app exe at a
-  //    deterministic install path on each OS, so we don't need PATH —
-  //    which Claude Desktop's MCP launcher strips. The CLI's `auth
-  //    token` goes through `find_api_auth_key` and decrypts via
-  //    keychain when needed.
-  const bunCandidates: string[] =
-    process.platform === "darwin"
-      ? [
-          // Standard system-wide install
-          "/Applications/screenpipe.app/Contents/MacOS/bun",
-          // Per-user install
-          path.join(home, "Applications", "screenpipe.app", "Contents", "MacOS", "bun"),
-        ]
-      : process.platform === "win32"
-      ? [
-          // NSIS per-user (default on Windows)
-          path.join(home, "AppData", "Local", "screenpipe", "bun.exe"),
-          // Per-user under "screenpipe-app" (older builds)
-          path.join(home, "AppData", "Local", "screenpipe-app", "bun.exe"),
-          // System-wide install
-          "C:\\Program Files\\screenpipe\\bun.exe",
-        ]
-      : [
-          // Linux .deb
-          "/opt/screenpipe/bun",
-          "/usr/lib/screenpipe/bun",
-          "/usr/bin/bun",
-        ];
-  for (const bunPath of bunCandidates) {
-    if (!fs.existsSync(bunPath)) continue;
+  const runAuthToken = (cli: string): string | null => {
     try {
-      const token = execFileSync(bunPath, ["x", "screenpipe@latest", "auth", "token"], {
-        timeout: 30000, // first run downloads the package; subsequent runs are cached
+      const token = execFileSync(cli, ["auth", "token"], {
+        timeout: 15000,
         encoding: "utf-8",
         stdio: ["pipe", "pipe", "pipe"],
       }).trim();
-      if (token && token.startsWith("sp-")) return token;
+      return token && token.startsWith("sp-") ? token : null;
     } catch {
-      // try next candidate
+      return null;
     }
+  };
+
+  // 2a. Bundled / installed CLI at a known absolute path.
+  const candidates = cliCandidates({
+    platform: process.platform,
+    home,
+    env: process.env,
+    scriptPath: process.argv[1] ? path.resolve(process.argv[1]) : undefined,
+  });
+  for (const cli of candidates) {
+    if (!fs.existsSync(cli)) continue;
+    const token = runAuthToken(cli);
+    if (token) return token;
   }
 
-  // 3. CLI via npx adjacent to the running node. Works for dev
-  //    environments without the desktop app.
-  try {
-    const npxName = process.platform === "win32" ? "npx.cmd" : "npx";
-    const npxPath = path.join(path.dirname(process.execPath), npxName);
-    if (fs.existsSync(npxPath)) {
-      const token = execFileSync(npxPath, ["screenpipe@latest", "auth", "token"], {
-        timeout: 30000,
-        encoding: "utf-8",
-        stdio: ["pipe", "pipe", "pipe"],
-      }).trim();
-      if (token && token.startsWith("sp-")) return token;
-    }
-  } catch {}
+  // 2b. A `screenpipe` CLI on PATH (e.g. built from source).
+  const onPath = runAuthToken(process.platform === "win32" ? "screenpipe.exe" : "screenpipe");
+  if (onPath) return onPath;
 
-  // 4. CLI via PATH-based npx. Last CLI try; works on raw shells with
-  //    npx on PATH.
-  try {
-    const token = execSync("npx screenpipe@latest auth token", {
-      timeout: 30000,
-      encoding: "utf-8",
-      stdio: ["pipe", "pipe", "pipe"],
-    }).trim();
-    if (token && token.startsWith("sp-")) return token;
-  } catch {}
-
-  // 5. Direct sqlite3 read of the secret store (last-resort). Plaintext
+  // 3. Direct sqlite3 read of the secret store (last-resort). Plaintext
   //    entries only — encrypted ones live behind the keychain, which the
   //    CLI paths above already cover. Used when the user has screenpipe
   //    data on disk but no working CLI install.
@@ -173,18 +127,17 @@ function discoverApiKey(): string {
     }
   } catch {}
 
-  // All five paths missed. Log loudly to stderr so the host's MCP
-  // panel surfaces this instead of the user seeing cryptic 403s from
-  // the screenpipe server on every tool call.
+  // Every source missed. Log loudly to stderr so the host's MCP panel
+  // surfaces this instead of the user seeing cryptic 403s from the local
+  // server on every tool call.
   process.stderr.write(
     [
       "[screenpipe-mcp] could not discover SCREENPIPE_LOCAL_API_KEY from any source.",
       "  - env vars (SCREENPIPE_LOCAL_API_KEY / SCREENPIPE_API_KEY) not set",
-      "  - bundled `bun` from screenpipe.app not found at any known install path",
-      "  - npx fallback unavailable",
+      "  - no screenpipe CLI found ($SCREENPIPE_CLI, the app install folder, PATH)",
       "  - direct sqlite3 read of ~/.screenpipe/db.sqlite failed",
-      "Fix: set SCREENPIPE_LOCAL_API_KEY in your MCP launcher's env block,",
-      "or install the screenpipe desktop app (https://screenpi.pe).",
+      "Fix: set SCREENPIPE_LOCAL_API_KEY in your MCP launcher's env block, or",
+      "reconnect this tool from the Freenpipe app (Settings > Connections).",
       "",
     ].join("\n"),
   );
