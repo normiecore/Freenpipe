@@ -1501,7 +1501,7 @@ export const AIPresetsSelector = ({
               <TooltipContent>
                 {selectedPresetRequiresLogin ? (
                   <p className="text-muted-foreground">
-                    Needs an AI gateway (Settings > AI)
+                    Needs an AI gateway (Settings &gt; AI)
                   </p>
                 ) : (
                   <p className="flex items-center gap-2">
