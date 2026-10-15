@@ -1,8 +1,7 @@
 name: Close inactive issues and PRs
 
 on:
-  schedule:
-    - cron: "17 9 * * *"
+  # Freenpipe: schedule disabled (upstream automation); run manually if needed.
   workflow_dispatch:
 
 permissions:

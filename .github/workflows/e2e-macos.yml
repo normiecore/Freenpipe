@@ -1,9 +1,7 @@
 name: macOS E2E Tests
 
 on:
-  schedule:
-    # Run every 4 hours to catch regressions (not on every release — hogs self-hosted runner)
-    - cron: '0 */4 * * *'
+  # Freenpipe: schedule disabled (upstream automation); run manually if needed.
   workflow_dispatch:
 
 concurrency:

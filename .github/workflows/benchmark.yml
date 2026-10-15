@@ -1,8 +1,7 @@
 name: Rust Benchmark
 
 on:
-  schedule:
-    - cron: '0 8 * * *'  # Daily at midnight PST (8 AM UTC)
+  # Freenpipe: schedule disabled (upstream automation); run manually if needed.
   workflow_dispatch:
 
 concurrency:
