@@ -2000,6 +2000,143 @@ mod tests {
         }
 
         #[tokio::test]
+        async fn invalid_grant_retries_once_with_a_token_synced_meanwhile() {
+            // Another device won a rotation race: our refresh token is dead,
+            // but while our request is in flight a sync writes that device's
+            // newer refresh token to the store. One retry with it must succeed.
+            let store = mem_store().await;
+            let id = "_t_direct_refresh_race";
+            let key = format!("oauth:{id}:me@example.com");
+            with_client(&store, id).await;
+            store
+                .set_json(
+                    &key,
+                    &json!({
+                        "access_token": "old-at",
+                        "refresh_token": "rt-lost",
+                        "email": "me@example.com",
+                        "expires_at": 1u64,
+                    }),
+                )
+                .await
+                .unwrap();
+
+            let server = MockServer::start().await;
+            Mock::given(method("POST"))
+                .and(path("/token"))
+                .and(body_string_contains("refresh_token=rt-lost"))
+                .respond_with(
+                    ResponseTemplate::new(400)
+                        .set_body_json(json!({ "error": "invalid_grant" }))
+                        // Room for the "sync" below to land before we read the reply.
+                        .set_delay(std::time::Duration::from_millis(500)),
+                )
+                .expect(1)
+                .mount(&server)
+                .await;
+            Mock::given(method("POST"))
+                .and(path("/token"))
+                .and(body_string_contains("refresh_token=rt-synced"))
+                .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                    "access_token": "fresh-at",
+                    "expires_in": 3600,
+                })))
+                .expect(1)
+                .mount(&server)
+                .await;
+
+            let url = format!("{}/token", server.uri());
+            let http = reqwest::Client::new();
+            let refresh =
+                refresh_token_instance_with(Some(&store), &http, endpoint(&url), id, None);
+            let sync = async {
+                // Wait until the first request is on the wire, then write the
+                // row the way a cross-device sync would.
+                for _ in 0..200 {
+                    if !server
+                        .received_requests()
+                        .await
+                        .unwrap_or_default()
+                        .is_empty()
+                    {
+                        break;
+                    }
+                    tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+                }
+                store
+                    .set_json(
+                        &key,
+                        &json!({
+                            "access_token": "other-device-at",
+                            "refresh_token": "rt-synced",
+                            "email": "me@example.com",
+                            "expires_at": 1u64,
+                        }),
+                    )
+                    .await
+                    .unwrap();
+            };
+            let (result, ()) = tokio::join!(refresh, sync);
+            assert_eq!(result.unwrap(), "fresh-at");
+
+            let bodies: Vec<String> = server
+                .received_requests()
+                .await
+                .unwrap()
+                .iter()
+                .map(|r| String::from_utf8_lossy(&r.body).into_owned())
+                .collect();
+            assert_eq!(bodies.len(), 2, "exactly one retry: {bodies:?}");
+            assert!(bodies[0].contains("refresh_token=rt-lost"));
+            assert!(bodies[1].contains("refresh_token=rt-synced"));
+
+            // The merge is built on the synced row and written back to it.
+            let saved: Value = store.get_json(&key).await.unwrap().unwrap();
+            assert_eq!(saved["access_token"], "fresh-at");
+            assert_eq!(saved["refresh_token"], "rt-synced");
+            assert_eq!(saved["email"], "me@example.com");
+            assert!(saved["expires_at"].as_u64().unwrap() > unix_now());
+        }
+
+        #[tokio::test]
+        async fn invalid_grant_without_a_newer_stored_token_is_not_retried() {
+            let store = mem_store().await;
+            let id = "_t_direct_refresh_no_race";
+            with_client(&store, id).await;
+            store
+                .set_json(
+                    &format!("oauth:{id}"),
+                    &json!({ "access_token": "a", "refresh_token": "rt-same" }),
+                )
+                .await
+                .unwrap();
+
+            let server = MockServer::start().await;
+            Mock::given(method("POST"))
+                .and(path("/token"))
+                .respond_with(
+                    ResponseTemplate::new(400).set_body_json(json!({ "error": "invalid_grant" })),
+                )
+                .mount(&server)
+                .await;
+
+            let url = format!("{}/token", server.uri());
+            let err = refresh_token_instance_with(
+                Some(&store),
+                &reqwest::Client::new(),
+                endpoint(&url),
+                id,
+                None,
+            )
+            .await
+            .unwrap_err();
+            assert!(err
+                .downcast_ref::<OAuthTokenError>()
+                .is_some_and(OAuthTokenError::is_invalid_grant));
+            assert_eq!(server.received_requests().await.unwrap().len(), 1);
+        }
+
+        #[tokio::test]
         async fn unknown_integration_is_rejected_before_any_io() {
             let err = refresh_token_instance(None, &reqwest::Client::new(), "_t_not_oauth", None)
                 .await

@@ -372,15 +372,17 @@ async fn tick(
                     "oauth refresh scheduler: refreshed proactively"
                 );
             }
-            Err(e) if is_missing_client(&e) => {
-                // Not a token problem: the user has not entered their own
-                // OAuth app for this integration (yet). Do not count it or
-                // start a cooldown; pick it up as soon as they do.
+            Err(e) if is_not_refreshable_here(&e) => {
+                // Not a token problem: either the user has not entered their
+                // own OAuth app for this integration (yet), or the row belongs
+                // to a flow outside the registry (e.g. `oauth:chatgpt`) that
+                // refreshes itself. Do not count it or start a cooldown; an
+                // app added later is picked up on the next tick.
                 skipped += 1;
                 debug!(
                     integration_id = %integration_id,
                     instance = ?instance,
-                    "oauth refresh scheduler: skipped, no OAuth app configured"
+                    "oauth refresh scheduler: skipped: {e:#}"
                 );
             }
             Err(e) => {
@@ -451,11 +453,16 @@ fn build_policy_table() -> HashMap<String, RefreshPolicy> {
 // Helpers
 // ---------------------------------------------------------------------------
 
-/// True when a refresh failed only because no BYO OAuth client is stored.
-fn is_missing_client(e: &anyhow::Error) -> bool {
+/// True when a refresh failed before any request because this scheduler has
+/// nothing to refresh with: no BYO OAuth client is stored, or the `oauth:`
+/// row is not a registry OAuth integration at all.
+fn is_not_refreshable_here(e: &anyhow::Error) -> bool {
     matches!(
         e.downcast_ref::<OAuthTokenError>(),
-        Some(OAuthTokenError::ClientNotConfigured { .. })
+        Some(
+            OAuthTokenError::ClientNotConfigured { .. }
+                | OAuthTokenError::UnknownIntegration { .. }
+        )
     )
 }
 
@@ -793,6 +800,35 @@ mod tests {
         // Once the user adds their OAuth app the very next tick refreshes.
         tick(&store, &runner, &metrics, &failures, &empty_policies()).await;
         assert_eq!(metrics.snapshot().refreshes_succeeded, 1);
+    }
+
+    #[tokio::test]
+    async fn tick_skips_oauth_rows_outside_the_registry_without_cooldown() {
+        // `oauth:chatgpt` holds a refresh token but is refreshed by its own
+        // flow, not by a registry integration. The real runner rejects it
+        // before any request; the scheduler must neither count that as a
+        // failure nor put the row into cooldown.
+        let store = mem_store().await;
+        let now = unix_now();
+        store
+            .set_json("oauth:chatgpt", &token(true, Some(now - 60), None))
+            .await
+            .unwrap();
+
+        let runner: Arc<dyn RefreshRunner> = Arc::new(DirectRefreshRunner::default());
+        let metrics = Arc::new(MetricsInner::default());
+        let failures = Arc::new(Mutex::new(HashMap::new()));
+        for _ in 0..(MAX_CONSECUTIVE_FAILURES + 1) {
+            tick(&store, &runner, &metrics, &failures, &empty_policies()).await;
+        }
+        let snap = metrics.snapshot();
+        assert_eq!(snap.refreshes_attempted, 0);
+        assert_eq!(snap.refreshes_failed, 0);
+        assert_eq!(
+            snap.refreshes_skipped,
+            (MAX_CONSECUTIVE_FAILURES + 1) as u64
+        );
+        assert!(failures.lock().await.is_empty());
     }
 
     #[tokio::test]

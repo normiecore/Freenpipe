@@ -9,9 +9,10 @@ use async_trait::async_trait;
 use screenpipe_secrets::SecretStore;
 use serde_json::{Map, Value};
 
-// OAuth App registered at https://supabase.com/dashboard/account/integrations
-// Redirect URI: http://localhost:3030/connections/oauth/callback
-// Client secret lives in the website backend (OAUTH_SUPABASE_CLIENT_SECRET).
+// The user registers their own Supabase OAuth app (Dashboard > Organization >
+// OAuth Apps) with redirect URI http://localhost:3030/connections/oauth/callback
+// and enters its client ID and secret in Settings > Connections > Supabase;
+// the code exchange goes straight to api.supabase.com.
 static OAUTH: OAuthConfig = OAuthConfig {
     auth_url: "https://api.supabase.com/v1/oauth/authorize",
     token_url: "https://api.supabase.com/v1/oauth/token",
