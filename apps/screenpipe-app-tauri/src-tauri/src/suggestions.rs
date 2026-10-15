@@ -62,6 +62,7 @@ pub struct EnhancedAIConfig {
     pub enabled: bool,
     /// Unused. Kept so the command and its TypeScript binding keep their
     /// shape; the credential comes from the selected preset.
+    #[allow(dead_code)]
     pub token: String,
 }
 

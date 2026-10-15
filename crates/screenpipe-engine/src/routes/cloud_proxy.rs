@@ -129,6 +129,54 @@ mod tests {
         assert_eq!(v["error"], "cloud_token_missing");
     }
 
+    /// Acceptance: with a gateway pointing at a local mock OpenAI server,
+    /// the call is forwarded there with the gateway key and the body intact.
+    #[tokio::test]
+    async fn configured_gateway_receives_the_request() {
+        use axum::{extract::State as MockState, routing::post, Router};
+        use std::sync::Mutex;
+
+        type Seen = Arc<Mutex<Vec<(Option<String>, String)>>>;
+        let seen: Seen = Arc::default();
+        let mock = Router::new()
+            .route(
+                "/v1/chat/completions",
+                post(
+                    |MockState(seen): MockState<Seen>, headers: HeaderMap, body: String| async move {
+                        let auth = headers
+                            .get(axum::http::header::AUTHORIZATION)
+                            .and_then(|v| v.to_str().ok())
+                            .map(str::to_string);
+                        seen.lock().unwrap().push((auth, body));
+                        axum::Json(json!({ "id": "mock-completion", "choices": [] }))
+                    },
+                ),
+            )
+            .with_state(seen.clone());
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            let _ = axum::serve(listener, mock).await;
+        });
+
+        let body = r#"{"model":"x","messages":[]}"#;
+        let resp = forward_chat_completions(
+            Some(format!("http://{addr}/v1")),
+            Some("gw-key".into()),
+            axum::body::Bytes::from(body),
+        )
+        .await;
+        assert_eq!(resp.status(), StatusCode::OK);
+        let out = to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+        let v: serde_json::Value = serde_json::from_slice(&out).unwrap();
+        assert_eq!(v["id"], "mock-completion");
+
+        let seen = seen.lock().unwrap();
+        assert_eq!(seen.len(), 1, "the mock gateway logs exactly one request");
+        assert_eq!(seen[0].0.as_deref(), Some("Bearer gw-key"));
+        assert_eq!(seen[0].1, body);
+    }
+
     #[tokio::test]
     async fn unreachable_gateway_is_a_502() {
         // Port 9 (discard) on loopback is closed in test environments.

@@ -453,6 +453,14 @@ async forceRegenerateSuggestions() : Promise<Result<CachedSuggestions, string>> 
 }
 },
 /**
+ * Whether an AI gateway credential is available to the engine: the
+ * `aiGatewayApiKey` setting, else `SCREENPIPE_AI_GATEWAY_KEY`. The key itself
+ * is never returned. Gateway transcription needs this and a gateway URL.
+ */
+async getAiGatewayKeyConfigured() : Promise<boolean> {
+    return await TAURI_INVOKE("get_ai_gateway_key_configured");
+},
+/**
  * Return the macOS bundle identifier of the running app
  * (e.g. `screenpi.pe`, `screenpi.pe.beta`, `screenpi.pe.dev`,
  * `screenpi.pe.enterprise`). The onboarding stuck-screen surfaces this so
@@ -657,8 +665,9 @@ async getPendingUpdate() : Promise<Result<PendingUpdateSnapshot | null, null>> {
 }
 },
 /**
- * Whether a remote PII-redaction enclave is fully configured (enclave host,
- * attestation repo and API key in `SCREENPIPE_PRIVACY_FILTER_*`). The
+ * Whether a remote PII-redaction enclave is fully configured: an enclave
+ * host from the endpoint switchboard (`SCREENPIPE_PRIVACY_FILTER_ENCLAVE` or
+ * `_URL`), plus `SCREENPIPE_PRIVACY_FILTER_REPO` and `_API_KEY`. The
  * settings page offers the enclave backend only when this is true.
  */
 async getPrivacyFilterEnclaveConfigured() : Promise<boolean> {
