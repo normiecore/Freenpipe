@@ -271,7 +271,7 @@ mod tests {
     #[test]
     fn wrapper_script_binds_screenpipe_to_the_bundled_cli() {
         assert!(WRAPPER_SCRIPT.contains("SCREENPIPE_CLI"));
-        for banned in ["screenpipe@latest", "bun x screenpipe", "npx screenpipe"] {
+        for banned in ["@latest", "bun x ", "npx "] {
             assert!(
                 !WRAPPER_SCRIPT.contains(banned),
                 "wrapper must not resolve the CLI from a registry ({banned})"
@@ -296,10 +296,13 @@ mod tests {
         };
 
         let bundled = tmp.path().join("bundled-screenpipe");
-        write_exe(&bundled, "#!/bin/sh\necho \"bundled:$*\"\n");
+        write_exe(bundled.as_path(), "#!/bin/sh\necho \"bundled:$*\"\n");
         let other_dir = tmp.path().join("other");
         std::fs::create_dir_all(&other_dir).unwrap();
-        write_exe(&other_dir.join("screenpipe"), "#!/bin/sh\necho \"other:$*\"\n");
+        write_exe(
+            other_dir.join("screenpipe").as_path(),
+            "#!/bin/sh\necho \"other:$*\"\n",
+        );
         let path = format!("{}:/usr/bin:/bin", other_dir.display());
 
         let out = Command::new("bash")

@@ -298,8 +298,8 @@ mod tests {
     use super::*;
     use std::collections::HashSet;
 
-    fn files(paths: &[&Path]) -> impl Fn(&Path) -> bool {
-        let set: HashSet<PathBuf> = paths.iter().map(|p| p.to_path_buf()).collect();
+    fn files<P: AsRef<Path>>(paths: &[P]) -> impl Fn(&Path) -> bool {
+        let set: HashSet<PathBuf> = paths.iter().map(|p| p.as_ref().to_path_buf()).collect();
         move |p: &Path| set.contains(p)
     }
 

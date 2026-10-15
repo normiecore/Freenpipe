@@ -475,7 +475,7 @@ mod tests {
                 "{url}"
             );
             assert!(url.ends_with(spec.asset_name));
-            assert!(!url.contains("raw/refs/heads/main"));
+            assert!(!url.contains("/refs/heads/"), "never a moving branch: {url}");
             assert!(
                 url.chars()
                     .all(|c| c.is_ascii_alphanumeric() || ":/._-".contains(c)),

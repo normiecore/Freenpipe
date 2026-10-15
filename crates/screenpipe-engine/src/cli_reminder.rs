@@ -16,7 +16,11 @@ use std::time::Duration;
 const REMINDER_INTERVAL: Duration = Duration::from_secs(5 * 60);
 const DESKTOP_APP_URL: &str = "https://screenpi.pe";
 const SURVEY_URL: &str = "https://screenpi.pe/survey";
-const NPM_LATEST_URL: &str = "https://registry.npmjs.org/screenpipe/latest";
+/// Latest Freenpipe release (GitHub API). The CLI ships with the app and is
+/// never fetched from a package registry, so updates are announced from the
+/// project's own releases.
+const LATEST_RELEASE_URL: &str =
+    "https://api.github.com/repos/normiecore/Freenpipe/releases/latest";
 
 /// Spawn the background reminder loop. Safe to call once at CLI startup.
 pub fn spawn() {
@@ -51,8 +55,8 @@ async fn run_tip(idx: usize) {
     }
 }
 
-/// Non-blocking update check. Fetches the latest version from the npm registry
-/// and prints a banner if the current binary is outdated. Silent on success or
+/// Non-blocking update check. Fetches the latest Freenpipe release tag and
+/// prints a banner if the current binary is outdated. Silent on success or
 /// any network/parse error so we never noise up the terminal.
 pub async fn check_for_updates() {
     if env::var("SCREENPIPE_NO_UPDATE_CHECK").is_ok() {
@@ -70,8 +74,12 @@ pub async fn check_for_updates() {
     };
 
     let resp = match client
-        .get(NPM_LATEST_URL)
-        .header("Accept", "application/json")
+        .get(LATEST_RELEASE_URL)
+        .header("Accept", "application/vnd.github+json")
+        .header(
+            "User-Agent",
+            screenpipe_core::endpoints::user_agent("freenpipe-cli", env!("CARGO_PKG_VERSION")),
+        )
         .send()
         .await
     {
@@ -84,7 +92,7 @@ pub async fn check_for_updates() {
         Err(_) => return,
     };
 
-    let latest = match json.get("version").and_then(|v| v.as_str()) {
+    let latest = match release_version(&json) {
         Some(v) => v,
         None => return,
     };
@@ -96,7 +104,13 @@ pub async fn check_for_updates() {
             latest.green(),
             current,
         );
-        eprintln!("  run: {}", "npx screenpipe@latest record".cyan());
+        eprintln!(
+            "  get it from: {}",
+            screenpipe_core::endpoints::freenpipe_link(
+                screenpipe_core::endpoints::FreenpipeLink::LatestRelease
+            )
+            .cyan()
+        );
         eprintln!();
     }
 }
@@ -111,18 +125,43 @@ fn print_desktop_app_tip() {
     eprintln!();
 }
 
+/// Version of a GitHub release object (`tag_name`, without a leading `v`).
+fn release_version(release: &serde_json::Value) -> Option<&str> {
+    release
+        .get("tag_name")
+        .and_then(|v| v.as_str())
+        .map(|tag| tag.trim_start_matches('v'))
+        .filter(|v| !v.is_empty())
+}
+
+/// `claude mcp add` command for the MCP server installed next to this CLI,
+/// or `None` when this binary was not installed with the desktop app.
+fn bundled_mcp_add_command() -> Option<String> {
+    use screenpipe_core::agents::cli_runtime;
+    let exe_dir = env::current_exe().ok()?.parent()?.to_path_buf();
+    let bun = exe_dir.join(cli_runtime::bun_file_name());
+    let entry = cli_runtime::bundled_mcp_entry(&[])?;
+    bun.is_file().then(|| {
+        format!(
+            "claude mcp add screenpipe -- \"{}\" \"{}\"",
+            bun.display(),
+            entry.display()
+        )
+    })
+}
+
 fn print_mcp_tip() {
+    // The MCP server ships with the desktop app; without it there is nothing
+    // to register, so this slot stays silent.
+    let Some(command) = bundled_mcp_add_command() else {
+        return;
+    };
     eprintln!();
     eprintln!(
         "  {} wire screenpipe into claude with one command:",
         "tip:".cyan().bold(),
     );
-    eprintln!(
-        "       {}",
-        "claude mcp add screenpipe -- npx -y screenpipe-mcp"
-            .green()
-            .bold(),
-    );
+    eprintln!("       {}", command.green().bold());
     eprintln!(
         "       then ask claude to {} from your screen activity",
         "build a pipe that tracks who you are, your todos, and how you spend your time".italic(),
@@ -164,4 +203,22 @@ fn print_survey_tip() {
     eprintln!("       {}", "npx screenpipe survey".green().bold());
     eprintln!("       {}", SURVEY_URL.green().underline());
     eprintln!();
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn release_version_strips_the_tag_prefix() {
+        let release = serde_json::json!({ "tag_name": "v2.7.104", "name": "Freenpipe" });
+        assert_eq!(release_version(&release), Some("2.7.104"));
+        assert_eq!(release_version(&serde_json::json!({ "tag_name": "" })), None);
+        assert_eq!(release_version(&serde_json::json!({ "version": "1.0.0" })), None);
+    }
+
+    #[test]
+    fn update_source_is_the_freenpipe_repository() {
+        assert!(LATEST_RELEASE_URL.contains("/repos/normiecore/Freenpipe/"));
+    }
 }
