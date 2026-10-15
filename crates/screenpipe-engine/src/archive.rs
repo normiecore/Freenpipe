@@ -15,7 +15,7 @@ use axum::{
 };
 use chrono::{DateTime, Duration, Utc};
 use oasgen::{oasgen, OaSchema};
-use screenpipe_core::sync::{BlobType, SyncClientConfig, SyncManager};
+use screenpipe_core::sync::{BlobType, SyncClientConfig, SyncError, SyncManager};
 use screenpipe_db::DatabaseManager;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -176,6 +176,15 @@ pub async fn archive_init(
             device_name,
             device_os,
         );
+
+        // Archiving uploads to a sync server; without one there is nowhere
+        // to put the data, so refuse instead of starting a loop that fails.
+        if !config.is_configured() {
+            return Err((
+                StatusCode::NOT_IMPLEMENTED,
+                JsonResponse(json!({"error": SyncError::NotConfigured.to_string()})),
+            ));
+        }
 
         let mgr = SyncManager::new(config).map_err(|e| {
             error!("archive: failed to create sync manager: {}", e);

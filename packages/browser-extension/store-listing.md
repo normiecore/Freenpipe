@@ -1,32 +1,32 @@
 # Chrome Web Store Listing
 
 ## Name
-Screenpipe Browser Bridge
+Freenpipe Browser Bridge
 
 ## Short Description (132 chars max)
-Connects your browser to Screenpipe for AI-powered web automation, data sync, and memory capture from authenticated pages.
+Lets the local Freenpipe app run your own pipes in browser tabs you are signed in to. Everything stays on your machine.
 
 ## Detailed Description
-Screenpipe Browser Bridge connects your browser to the Screenpipe desktop app, enabling AI-powered pipes to interact with web pages you're logged into.
+Freenpipe Browser Bridge links your browser to the Freenpipe desktop app on the same computer, so Freenpipe pipes can read from and act on pages where you are already signed in.
 
 HOW IT WORKS
-This extension connects to Screenpipe's local server (localhost:3030) via WebSocket. When a Screenpipe pipe needs to read data from a web page, it sends a request through the local server to this extension, which executes it in the browser tab where you're already authenticated.
+The extension opens a WebSocket to the Freenpipe server on localhost (port 3030 by default). When one of your pipes needs something from a web page, the server passes the request to the extension, which runs it in a matching tab and sends the result back the same way.
 
 USE CASES
-- Sync your ChatGPT and Claude conversation history into Screenpipe memories
-- Extract data from authenticated dashboards and internal tools
-- Automate web workflows triggered by your screen activity
+- Import your ChatGPT and Claude conversation history into Freenpipe memories
+- Read data from dashboards and internal tools that need a login
+- Run web steps as part of a pipe
 
-PRIVACY & SECURITY
-- All communication stays on localhost — no data is sent to external servers
-- The extension only activates when Screenpipe's local server is running
-- JavaScript execution is triggered only by your local Screenpipe pipes
+PRIVACY AND SECURITY
+- Traffic goes only between the extension and localhost; nothing is sent to remote servers
+- The extension does nothing unless the local Freenpipe server is running
+- Code runs in a tab only when one of your local pipes asks for it
 - No tracking, no analytics, no data collection
-- Fully open source: https://github.com/screenpipe/screenpipe
+- Source code (MIT): https://github.com/normiecore/Freenpipe
 
 REQUIREMENTS
-- Screenpipe desktop app (https://screenpi.pe) running on the same machine
-- Works with Chrome, Arc, Brave, Edge, and other Chromium browsers
+- The Freenpipe desktop app running on the same machine
+- Chrome, Arc, Brave, Edge or another Chromium-based browser
 
 ## Category
 Productivity
@@ -35,10 +35,10 @@ Productivity
 English
 
 ## Privacy Policy URL
-https://screenpi.pe/privacy
+https://github.com/normiecore/Freenpipe/blob/main/packages/browser-extension/PRIVACY.md
 
 ## Website
-https://screenpi.pe
+https://github.com/normiecore/Freenpipe
 
 ## Support URL
-https://github.com/screenpipe/screenpipe/issues
+https://github.com/normiecore/Freenpipe/issues

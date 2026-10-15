@@ -39,13 +39,37 @@
 //!      sender by `state`, and delivers the code.
 //!   4. `oauth_connect` receives the code and calls `exchange_code`.
 //!
+//! ## Client credentials (bring your own OAuth app)
+//!
+//! No OAuth app ships with the binary. The user registers one with each
+//! provider and enters its client ID (plus secret and, where needed, an HTTPS
+//! redirect) in Settings > Connections; it is stored in the SecretStore under
+//! `oauth_client:<integration_id>` (see [`client`]). Code exchange and token
+//! refresh POST straight to the provider's `token_url` with those credentials
+//! (see [`token`]); nothing goes through a third-party broker.
+//!
 //! ## Adding a new OAuth integration
-//!   1. Fill in a `static OAUTH: OAuthConfig` in the integration file.
+//!   1. Fill in a `static OAUTH: OAuthConfig` in the integration file with the
+//!      provider's authorization and token endpoints.
 //!   2. Implement `oauth_config()` on the `Integration` trait impl.
-//!   3. Register the redirect URI `http://localhost:3030/connections/oauth/callback`
-//!      in the provider's developer console.
+//!   3. Tell users to register the redirect URI
+//!      `http://localhost:3030/connections/oauth/callback` (or an HTTPS relay
+//!      for providers that set `requires_https_redirect`).
 //!
 //! That's it -- all Tauri commands and frontend rendering are automatic.
+
+mod client;
+mod token;
+
+pub use client::{
+    apply_client_update, build_authorization_url, client_store_key, delete_oauth_client,
+    is_loopback_http, load_oauth_client, loopback_redirect_uri, resolve_redirect_uri,
+    save_oauth_client, validate_redirect_uri, OAuthClientCredentials, OAuthClientError,
+    OAuthClientUpdate, Pkce, CLIENT_STORE_KEY_PREFIX, OAUTH_CALLBACK_PATH,
+};
+pub use token::{
+    exchange_code, interpret_token_response, request_refresh, OAuthTokenError, TokenEndpoint,
+};
 
 use anyhow::Result;
 use once_cell::sync::Lazy;
@@ -81,23 +105,67 @@ pub static PENDING_OAUTH: Lazy<Mutex<HashMap<String, PendingOAuth>>> =
 // Config
 // ---------------------------------------------------------------------------
 
-/// OAuth 2.0 authorization_code flow configuration.
+/// How the client authenticates at the token endpoint (RFC 8414 method names).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TokenAuth {
+    /// `client_id` and `client_secret` travel in the request body.
+    ClientSecretPost,
+    /// `client_id:client_secret` as an HTTP Basic `Authorization` header.
+    /// Falls back to `client_id` in the body when the user's app has no secret.
+    ClientSecretBasic,
+}
+
+/// Encoding of the token request body.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TokenBody {
+    /// `application/x-www-form-urlencoded`, as RFC 6749 specifies.
+    Form,
+    /// `application/json`, for providers that document only JSON.
+    Json,
+}
+
+/// OAuth 2.0 authorization_code flow configuration for one provider.
 ///
-/// Secrets (`client_secret`) are **never** stored in the binary.  The token
-/// exchange is proxied through `https://screenpi.pe/api/oauth/exchange` which
-/// holds the secrets server-side.
+/// Holds only public endpoint facts. The client ID and secret belong to the
+/// user's own OAuth app and are loaded from the SecretStore at request time
+/// ([`load_oauth_client`]); none are compiled in.
 pub struct OAuthConfig {
     /// Browser authorization URL.
     pub auth_url: &'static str,
-    /// Public client ID (safe to ship in the binary).
-    pub client_id: &'static str,
+    /// Token endpoint used for both the code exchange and refreshes.
+    pub token_url: &'static str,
+    /// Send an S256 PKCE challenge with the authorization request and the
+    /// verifier with the code exchange.
+    pub uses_pkce: bool,
+    /// Client authentication at `token_url`.
+    pub token_auth: TokenAuth,
+    /// Body encoding at `token_url`.
+    pub token_body: TokenBody,
     /// Extra query params appended to the authorization URL verbatim.
     /// e.g. `&[("owner", "user")]` for Notion.
     pub extra_auth_params: &'static [(&'static str, &'static str)],
-    /// Override redirect URI for providers that require HTTPS.
-    /// When set, this is used instead of the default localhost callback.
-    /// The website relays the callback to the local server.
-    pub redirect_uri_override: Option<&'static str>,
+    /// The provider refuses `http://localhost` redirects, so there is no
+    /// default: the user must enter the HTTPS address of a relay they control
+    /// that forwards the callback query to the loopback URI.
+    pub requires_https_redirect: bool,
+}
+
+impl OAuthConfig {
+    pub fn token_endpoint(&self) -> TokenEndpoint<'static> {
+        TokenEndpoint {
+            url: self.token_url,
+            auth: self.token_auth,
+            body: self.token_body,
+        }
+    }
+}
+
+/// Look up the OAuth configuration of a registered integration.
+pub fn oauth_config_for(integration_id: &str) -> Option<&'static OAuthConfig> {
+    crate::connections::all_integrations()
+        .into_iter()
+        .find(|i| i.def().id == integration_id)
+        .and_then(|i| i.oauth_config())
 }
 
 // ---------------------------------------------------------------------------
@@ -443,6 +511,9 @@ pub async fn list_connected_oauth_instances(
 /// - one instance, default lookup unhealthy    → "instance X token can't refresh, reconnect"
 /// - multiple instances, none specified        → "ambiguous: pick one of [X, Y]"
 /// - explicit instance specified but unhealthy → "instance X token can't refresh, reconnect"
+///
+/// Except in the ambiguous case, the message also says when no BYO OAuth app
+/// is stored for the integration, because reconnecting cannot help until one is.
 pub async fn describe_oauth_error(
     store: Option<&SecretStore>,
     integration_id: &str,
@@ -454,7 +525,7 @@ pub async fn describe_oauth_error(
         .into_iter()
         .flatten()
         .collect();
-    match (instance, instances.as_slice()) {
+    let message = match (instance, instances.as_slice()) {
         (Some(inst), _) => format!(
             "{display_name} account '{inst}' is not connected or its token can't be refreshed — reconnect it in Settings > Connections"
         ),
@@ -464,12 +535,34 @@ pub async fn describe_oauth_error(
         (None, [only]) => format!(
             "{display_name} account '{only}' token can't be refreshed — reconnect it in Settings > Connections"
         ),
-        (None, many) => format!(
-            "multiple {display_name} accounts connected ({}) — specify which one with `instance`. On JSON-body endpoints add `\"instance\": \"<email>\"` to the request body; on proxy/query endpoints add `?instance=<email>` (e.g. instance=\"{}\")",
-            many.join(", "),
-            many[0],
-        ),
+        (None, many) => {
+            // Ambiguity is the problem to report here; the accounts may
+            // well hold valid tokens, so no OAuth app hint.
+            return format!(
+                "multiple {display_name} accounts connected ({}) — specify which one with `instance`. On JSON-body endpoints add `\"instance\": \"<email>\"` to the request body; on proxy/query endpoints add `?instance=<email>` (e.g. instance=\"{}\")",
+                many.join(", "),
+                many[0],
+            );
+        }
+    };
+    if oauth_app_missing(store, integration_id).await {
+        format!(
+            "{message}. No {display_name} OAuth app is configured yet, so connecting and \
+             refreshing cannot work: first enter the client ID (and secret) of your own app \
+             in the same place"
+        )
+    } else {
+        message
     }
+}
+
+/// True when `integration_id` authorizes through OAuth and the SecretStore
+/// holds no BYO client for it. Without a store (CLI) the answer is unknown,
+/// so this reports `false` rather than guess.
+async fn oauth_app_missing(store: Option<&SecretStore>, integration_id: &str) -> bool {
+    store.is_some()
+        && oauth_config_for(integration_id).is_some()
+        && load_oauth_client(store, integration_id).await.is_none()
 }
 
 // ---------------------------------------------------------------------------
@@ -769,22 +862,9 @@ pub async fn sweep_shadowed_default_slots(store: &SecretStore) -> Result<usize> 
 // Token refresh
 // ---------------------------------------------------------------------------
 
-/// Heuristic: did the token endpoint reject the refresh token *itself* (so a
-/// retry with the same token is pointless), versus a transient/server error?
-/// Per RFC 6749 §5.2 a rotated-out or revoked refresh token comes back as
-/// HTTP 400 with `"error":"invalid_grant"`. We match the code loosely
-/// (case-insensitive substring) because the proxy forwards the provider body
-/// verbatim and providers vary in how they frame it. Used to gate the
-/// rotation-race self-heal retry in [`refresh_token_instance`].
-fn looks_like_invalid_grant(status: reqwest::StatusCode, body: &str) -> bool {
-    if status != reqwest::StatusCode::BAD_REQUEST && status != reqwest::StatusCode::UNAUTHORIZED {
-        return false;
-    }
-    body.to_ascii_lowercase().contains("invalid_grant")
-}
-
-/// Attempt a token refresh via the backend proxy.
-/// Writes the new token on success, returns the new `access_token`.
+/// Refresh the stored token for `integration_id` at the provider's token
+/// endpoint, using the user's own OAuth client. Writes the merged token back
+/// and returns the new `access_token`.
 pub async fn refresh_token(client: &reqwest::Client, integration_id: &str) -> Result<String> {
     refresh_token_instance(None, client, integration_id, None).await
 }
@@ -792,6 +872,29 @@ pub async fn refresh_token(client: &reqwest::Client, integration_id: &str) -> Re
 pub async fn refresh_token_instance(
     store: Option<&SecretStore>,
     client: &reqwest::Client,
+    integration_id: &str,
+    instance: Option<&str>,
+) -> Result<String> {
+    let config =
+        oauth_config_for(integration_id).ok_or_else(|| OAuthTokenError::UnknownIntegration {
+            integration_id: integration_id.to_string(),
+        })?;
+    refresh_token_instance_with(
+        store,
+        client,
+        config.token_endpoint(),
+        integration_id,
+        instance,
+    )
+    .await
+}
+
+/// [`refresh_token_instance`] with an explicit token endpoint, so tests can
+/// point it at a mock server.
+pub(crate) async fn refresh_token_instance_with(
+    store: Option<&SecretStore>,
+    client: &reqwest::Client,
+    endpoint: TokenEndpoint<'_>,
     integration_id: &str,
     instance: Option<&str>,
 ) -> Result<String> {
@@ -803,6 +906,11 @@ pub async fn refresh_token_instance(
         .as_str()
         .ok_or_else(|| anyhow::anyhow!("no refresh_token stored for {}", integration_id))?
         .to_string();
+    let creds = load_oauth_client(store, integration_id)
+        .await
+        .ok_or_else(|| OAuthTokenError::ClientNotConfigured {
+            integration_id: integration_id.to_string(),
+        })?;
 
     // Up to two attempts. The retry only fires when the provider rejects our
     // refresh token as invalid AND a concurrent cross-device sync has since
@@ -815,24 +923,12 @@ pub async fn refresh_token_instance(
     let mut attempt = 0u8;
     let resp: Value = loop {
         attempt += 1;
-        let raw = client
-            .post(EXCHANGE_PROXY_URL)
-            .json(&serde_json::json!({
-                "integration_id": integration_id,
-                "grant_type": "refresh_token",
-                "refresh_token": refresh_tok,
-            }))
-            .send()
-            .await?;
-        let status = raw.status();
-        let body = raw.text().await.unwrap_or_default();
-        if status.is_success() {
-            break serde_json::from_str(&body).map_err(|e| {
-                anyhow::anyhow!("oauth refresh returned non-JSON body: {e}: {body}")
-            })?;
-        }
+        let err = match request_refresh(client, endpoint, &creds, &refresh_tok).await {
+            Ok(v) => break v,
+            Err(e) => e,
+        };
 
-        if attempt < 2 && looks_like_invalid_grant(status, &body) {
+        if attempt < 2 && err.is_invalid_grant() {
             if let Some(fresh) =
                 load_oauth_json_exact(store, integration_id, effective_instance.as_deref()).await
             {
@@ -851,12 +947,7 @@ pub async fn refresh_token_instance(
             }
         }
 
-        return Err(anyhow::anyhow!(
-            "oauth refresh for {} returned {}: {}",
-            integration_id,
-            status,
-            body
-        ));
+        return Err(anyhow::Error::new(err).context(format!("oauth refresh for {integration_id}")));
     };
 
     // Merge response over stored, then write back to the SAME instance we
@@ -964,14 +1055,7 @@ pub async fn get_valid_token_instance(
     }
 }
 
-// ---------------------------------------------------------------------------
-// Token exchange (via backend proxy — secrets stay server-side)
-// ---------------------------------------------------------------------------
-
-const EXCHANGE_PROXY_URL: &str = "https://screenpi.pe/api/oauth/exchange";
-
 #[cfg(test)]
-#[allow(clippy::items_after_test_module)]
 mod tests {
     //! Covers the instance fallback added to `load_oauth_json`. The fallback
     //! is the safety net for callers that predate multi-account support —
@@ -1012,26 +1096,21 @@ mod tests {
 
     #[test]
     fn invalid_grant_detection_gates_retry() {
-        use reqwest::StatusCode;
-        assert!(looks_like_invalid_grant(
-            StatusCode::BAD_REQUEST,
+        let dead = |status: u16, body: &str| {
+            interpret_token_response(status, body)
+                .err()
+                .is_some_and(|e| e.is_invalid_grant())
+        };
+        assert!(dead(
+            400,
             r#"{"error":"invalid_grant","error_description":"expired"}"#
         ));
-        // Case-insensitive and tolerant of the proxy wrapping the body.
-        assert!(looks_like_invalid_grant(
-            StatusCode::UNAUTHORIZED,
-            "upstream said INVALID_GRANT"
-        ));
+        // Case-insensitive on plain-text bodies.
+        assert!(dead(401, "upstream said INVALID_GRANT"));
         // A server-side hiccup is not the token's fault — not retryable.
-        assert!(!looks_like_invalid_grant(
-            StatusCode::INTERNAL_SERVER_ERROR,
-            "invalid_grant"
-        ));
+        assert!(!dead(500, "invalid_grant"));
         // 400 without the marker is some other client error — not retryable.
-        assert!(!looks_like_invalid_grant(
-            StatusCode::BAD_REQUEST,
-            r#"{"error":"invalid_scope"}"#
-        ));
+        assert!(!dead(400, r#"{"error":"invalid_scope"}"#));
     }
 
     // Each test uses a unique fake integration_id so the filesystem fallback
@@ -1700,42 +1779,437 @@ mod tests {
             .unwrap();
         assert_eq!(inst.as_deref(), Some("alice@x.com"));
     }
-}
 
-/// Exchange an authorization `code` for tokens via the screenpipe backend
-/// proxy at `screenpi.pe`.  The backend holds `client_secret` — the desktop
-/// app never sees it.
-///
-/// On failure, includes the raw response body in the error so callers can
-/// surface the upstream provider message (AADSTS, invalid_grant, …) instead
-/// of just the HTTP status. Without this, every OAuth failure logged the
-/// same opaque `400 Bad Request` and we had no way to tell the cause.
-pub async fn exchange_code(
-    client: &reqwest::Client,
-    integration_id: &str,
-    code: &str,
-    redirect_uri: &str,
-) -> Result<Value> {
-    let resp = client
-        .post(EXCHANGE_PROXY_URL)
-        .json(&serde_json::json!({
-            "integration_id": integration_id,
-            "code":           code,
-            "redirect_uri":   redirect_uri,
-        }))
-        .send()
-        .await?;
-    let status = resp.status();
-    let body = resp.text().await.unwrap_or_default();
-    if !status.is_success() {
-        return Err(anyhow::anyhow!(
-            "oauth exchange for {} returned {}: {}",
-            integration_id,
-            status,
-            body
-        ));
+    // ---- BYO client: registry facts and direct refresh -------------------
+
+    #[test]
+    fn every_oauth_integration_has_a_direct_https_token_endpoint() {
+        let mut https_only = Vec::new();
+        for integ in crate::connections::all_integrations() {
+            let Some(cfg) = integ.oauth_config() else {
+                continue;
+            };
+            let id = integ.def().id;
+            for url in [cfg.auth_url, cfg.token_url] {
+                let parsed = reqwest::Url::parse(url)
+                    .unwrap_or_else(|e| panic!("{id}: bad endpoint {url}: {e}"));
+                assert_eq!(parsed.scheme(), "https", "{id}: {url}");
+            }
+            assert_ne!(cfg.auth_url, cfg.token_url, "{id}");
+            if cfg.requires_https_redirect {
+                https_only.push(id);
+            }
+            assert!(std::ptr::eq(oauth_config_for(id).unwrap(), cfg), "{id}");
+        }
+        https_only.sort_unstable();
+        assert_eq!(https_only, ["calendly", "quickbooks", "slack", "zoom"]);
+        assert!(oauth_config_for("telegram").is_none());
+        assert!(oauth_config_for("no-such-integration").is_none());
     }
-    let json: Value = serde_json::from_str(&body)
-        .map_err(|e| anyhow::anyhow!("oauth exchange returned non-JSON body: {e}: {body}"))?;
-    Ok(json)
+
+    #[test]
+    fn known_providers_use_their_documented_token_endpoints() {
+        let google = oauth_config_for("google-calendar").unwrap();
+        assert_eq!(google.token_url, "https://oauth2.googleapis.com/token");
+        assert!(google.uses_pkce);
+        assert_eq!(google.token_auth, TokenAuth::ClientSecretPost);
+
+        let notion = oauth_config_for("notion").unwrap();
+        assert_eq!(notion.token_auth, TokenAuth::ClientSecretBasic);
+        assert_eq!(notion.token_body, TokenBody::Json);
+
+        let quickbooks = oauth_config_for("quickbooks").unwrap();
+        assert_eq!(
+            quickbooks.token_url,
+            "https://oauth.platform.intuit.com/oauth2/v1/tokens/bearer"
+        );
+        assert_eq!(quickbooks.token_auth, TokenAuth::ClientSecretBasic);
+    }
+
+    mod direct_refresh {
+        use super::*;
+        use wiremock::matchers::{body_string_contains, method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        fn endpoint(url: &str) -> TokenEndpoint<'_> {
+            TokenEndpoint {
+                url,
+                auth: TokenAuth::ClientSecretPost,
+                body: TokenBody::Form,
+            }
+        }
+
+        async fn with_client(store: &SecretStore, id: &str) {
+            save_oauth_client(
+                store,
+                id,
+                &OAuthClientCredentials {
+                    client_id: "byo-client".into(),
+                    client_secret: Some("byo-secret".into()),
+                    redirect_uri: None,
+                },
+            )
+            .await
+            .unwrap();
+        }
+
+        #[tokio::test]
+        async fn refresh_posts_to_the_provider_and_merges_the_response() {
+            let store = mem_store().await;
+            let id = "_t_direct_refresh_ok";
+            with_client(&store, id).await;
+            store
+                .set_json(
+                    &format!("oauth:{id}:me@example.com"),
+                    &json!({
+                        "access_token": "old-at",
+                        "refresh_token": "rt-1",
+                        "email": "me@example.com",
+                        "expires_at": 1u64,
+                    }),
+                )
+                .await
+                .unwrap();
+
+            let server = MockServer::start().await;
+            Mock::given(method("POST"))
+                .and(path("/token"))
+                .and(body_string_contains("grant_type=refresh_token"))
+                .and(body_string_contains("refresh_token=rt-1"))
+                .and(body_string_contains("client_id=byo-client"))
+                .and(body_string_contains("client_secret=byo-secret"))
+                .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                    "access_token": "new-at",
+                    "expires_in": 3600,
+                    "token_type": "Bearer",
+                })))
+                .expect(1)
+                .mount(&server)
+                .await;
+
+            let url = format!("{}/token", server.uri());
+            // instance=None resolves to the sole named instance and writes back there.
+            let at = refresh_token_instance_with(
+                Some(&store),
+                &reqwest::Client::new(),
+                endpoint(&url),
+                id,
+                None,
+            )
+            .await
+            .unwrap();
+            assert_eq!(at, "new-at");
+
+            let saved: Value = store
+                .get_json(&format!("oauth:{id}:me@example.com"))
+                .await
+                .unwrap()
+                .unwrap();
+            assert_eq!(saved["access_token"], "new-at");
+            assert_eq!(saved["refresh_token"], "rt-1");
+            assert_eq!(saved["email"], "me@example.com");
+            assert!(saved["expires_at"].as_u64().unwrap() > unix_now());
+            assert!(store
+                .get_json::<Value>(&format!("oauth:{id}"))
+                .await
+                .unwrap()
+                .is_none());
+        }
+
+        #[tokio::test]
+        async fn refresh_without_a_byo_client_never_calls_out() {
+            let store = mem_store().await;
+            let id = "_t_direct_refresh_no_client";
+            store
+                .set_json(
+                    &format!("oauth:{id}"),
+                    &json!({ "access_token": "a", "refresh_token": "r" }),
+                )
+                .await
+                .unwrap();
+            let server = MockServer::start().await;
+            Mock::given(method("POST"))
+                .respond_with(ResponseTemplate::new(500))
+                .expect(0)
+                .mount(&server)
+                .await;
+
+            let url = format!("{}/token", server.uri());
+            let err = refresh_token_instance_with(
+                Some(&store),
+                &reqwest::Client::new(),
+                endpoint(&url),
+                id,
+                None,
+            )
+            .await
+            .unwrap_err();
+            assert!(
+                matches!(
+                    err.downcast_ref::<OAuthTokenError>(),
+                    Some(OAuthTokenError::ClientNotConfigured { .. })
+                ),
+                "{err:#}"
+            );
+        }
+
+        #[tokio::test]
+        async fn rejected_refresh_token_is_reported_and_left_in_place() {
+            let store = mem_store().await;
+            let id = "_t_direct_refresh_dead";
+            with_client(&store, id).await;
+            let original = json!({ "access_token": "a", "refresh_token": "dead-rt" });
+            store
+                .set_json(&format!("oauth:{id}"), &original)
+                .await
+                .unwrap();
+
+            let server = MockServer::start().await;
+            Mock::given(method("POST"))
+                .and(path("/token"))
+                .respond_with(ResponseTemplate::new(400).set_body_json(json!({
+                    "error": "invalid_grant",
+                    "error_description": "Token has been expired or revoked.",
+                })))
+                .expect(1)
+                .mount(&server)
+                .await;
+
+            let url = format!("{}/token", server.uri());
+            let err = refresh_token_instance_with(
+                Some(&store),
+                &reqwest::Client::new(),
+                endpoint(&url),
+                id,
+                None,
+            )
+            .await
+            .unwrap_err();
+            let typed = err.downcast_ref::<OAuthTokenError>().expect("typed error");
+            assert!(typed.is_invalid_grant());
+            let shown = format!("{err:#}");
+            assert!(shown.contains(id) && shown.contains("expired or revoked"));
+            assert!(!shown.contains("byo-secret") && !shown.contains("dead-rt"));
+
+            let kept: Value = store
+                .get_json(&format!("oauth:{id}"))
+                .await
+                .unwrap()
+                .unwrap();
+            assert_eq!(kept, original);
+        }
+
+        #[tokio::test]
+        async fn invalid_grant_retries_once_with_a_token_synced_meanwhile() {
+            // Another device won a rotation race: our refresh token is dead,
+            // but while our request is in flight a sync writes that device's
+            // newer refresh token to the store. One retry with it must succeed.
+            let store = mem_store().await;
+            let id = "_t_direct_refresh_race";
+            let key = format!("oauth:{id}:me@example.com");
+            with_client(&store, id).await;
+            store
+                .set_json(
+                    &key,
+                    &json!({
+                        "access_token": "old-at",
+                        "refresh_token": "rt-lost",
+                        "email": "me@example.com",
+                        "expires_at": 1u64,
+                    }),
+                )
+                .await
+                .unwrap();
+
+            let server = MockServer::start().await;
+            Mock::given(method("POST"))
+                .and(path("/token"))
+                .and(body_string_contains("refresh_token=rt-lost"))
+                .respond_with(
+                    ResponseTemplate::new(400)
+                        .set_body_json(json!({ "error": "invalid_grant" }))
+                        // Room for the "sync" below to land before we read the reply.
+                        .set_delay(std::time::Duration::from_millis(500)),
+                )
+                .expect(1)
+                .mount(&server)
+                .await;
+            Mock::given(method("POST"))
+                .and(path("/token"))
+                .and(body_string_contains("refresh_token=rt-synced"))
+                .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                    "access_token": "fresh-at",
+                    "expires_in": 3600,
+                })))
+                .expect(1)
+                .mount(&server)
+                .await;
+
+            let url = format!("{}/token", server.uri());
+            let http = reqwest::Client::new();
+            let refresh =
+                refresh_token_instance_with(Some(&store), &http, endpoint(&url), id, None);
+            let sync = async {
+                // Wait until the first request is on the wire, then write the
+                // row the way a cross-device sync would.
+                for _ in 0..200 {
+                    if !server
+                        .received_requests()
+                        .await
+                        .unwrap_or_default()
+                        .is_empty()
+                    {
+                        break;
+                    }
+                    tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+                }
+                store
+                    .set_json(
+                        &key,
+                        &json!({
+                            "access_token": "other-device-at",
+                            "refresh_token": "rt-synced",
+                            "email": "me@example.com",
+                            "expires_at": 1u64,
+                        }),
+                    )
+                    .await
+                    .unwrap();
+            };
+            let (result, ()) = tokio::join!(refresh, sync);
+            assert_eq!(result.unwrap(), "fresh-at");
+
+            let bodies: Vec<String> = server
+                .received_requests()
+                .await
+                .unwrap()
+                .iter()
+                .map(|r| String::from_utf8_lossy(&r.body).into_owned())
+                .collect();
+            assert_eq!(bodies.len(), 2, "exactly one retry: {bodies:?}");
+            assert!(bodies[0].contains("refresh_token=rt-lost"));
+            assert!(bodies[1].contains("refresh_token=rt-synced"));
+
+            // The merge is built on the synced row and written back to it.
+            let saved: Value = store.get_json(&key).await.unwrap().unwrap();
+            assert_eq!(saved["access_token"], "fresh-at");
+            assert_eq!(saved["refresh_token"], "rt-synced");
+            assert_eq!(saved["email"], "me@example.com");
+            assert!(saved["expires_at"].as_u64().unwrap() > unix_now());
+        }
+
+        #[tokio::test]
+        async fn invalid_grant_without_a_newer_stored_token_is_not_retried() {
+            let store = mem_store().await;
+            let id = "_t_direct_refresh_no_race";
+            with_client(&store, id).await;
+            store
+                .set_json(
+                    &format!("oauth:{id}"),
+                    &json!({ "access_token": "a", "refresh_token": "rt-same" }),
+                )
+                .await
+                .unwrap();
+
+            let server = MockServer::start().await;
+            Mock::given(method("POST"))
+                .and(path("/token"))
+                .respond_with(
+                    ResponseTemplate::new(400).set_body_json(json!({ "error": "invalid_grant" })),
+                )
+                .mount(&server)
+                .await;
+
+            let url = format!("{}/token", server.uri());
+            let err = refresh_token_instance_with(
+                Some(&store),
+                &reqwest::Client::new(),
+                endpoint(&url),
+                id,
+                None,
+            )
+            .await
+            .unwrap_err();
+            assert!(err
+                .downcast_ref::<OAuthTokenError>()
+                .is_some_and(OAuthTokenError::is_invalid_grant));
+            assert_eq!(server.received_requests().await.unwrap().len(), 1);
+        }
+
+        #[tokio::test]
+        async fn unknown_integration_is_rejected_before_any_io() {
+            let err = refresh_token_instance(None, &reqwest::Client::new(), "_t_not_oauth", None)
+                .await
+                .unwrap_err();
+            assert!(matches!(
+                err.downcast_ref::<OAuthTokenError>(),
+                Some(OAuthTokenError::UnknownIntegration { .. })
+            ));
+        }
+    }
+
+    // ---- describe_oauth_error and the missing OAuth app hint -------------
+    //
+    // "notion" is used because the hint needs a registered OAuth integration.
+    // Only the explicit-instance and ambiguous arms are asserted on, since the
+    // other arms also count legacy token files in the data dir.
+
+    async fn save_notion_app(store: &SecretStore) {
+        save_oauth_client(
+            store,
+            "notion",
+            &OAuthClientCredentials {
+                client_id: "cid".into(),
+                client_secret: Some("never-shown".into()),
+                redirect_uri: None,
+            },
+        )
+        .await
+        .unwrap();
+    }
+
+    #[tokio::test]
+    async fn oauth_app_missing_only_for_oauth_integrations_without_an_app() {
+        let store = mem_store().await;
+        assert!(oauth_app_missing(Some(&store), "notion").await);
+        assert!(!oauth_app_missing(Some(&store), "_t_not_oauth").await);
+        // Without a store nothing can be checked, so nothing is claimed.
+        assert!(!oauth_app_missing(None, "notion").await);
+        save_notion_app(&store).await;
+        assert!(!oauth_app_missing(Some(&store), "notion").await);
+    }
+
+    #[tokio::test]
+    async fn describe_error_points_at_a_missing_oauth_app() {
+        let store = mem_store().await;
+        let msg = describe_oauth_error(Some(&store), "notion", "Notion", Some("x@y.z")).await;
+        assert!(msg.starts_with("Notion account 'x@y.z'"), "{msg}");
+        assert!(msg.contains("No Notion OAuth app is configured"), "{msg}");
+
+        save_notion_app(&store).await;
+        let msg = describe_oauth_error(Some(&store), "notion", "Notion", Some("x@y.z")).await;
+        assert!(msg.starts_with("Notion account 'x@y.z'"), "{msg}");
+        assert!(!msg.contains("OAuth app"), "{msg}");
+        assert!(!msg.contains("never-shown"), "{msg}");
+    }
+
+    #[tokio::test]
+    async fn describe_error_keeps_the_ambiguity_message_without_a_hint() {
+        let store = mem_store().await;
+        for inst in ["a@x.com", "b@x.com"] {
+            store
+                .set_json(
+                    &format!("oauth:notion:{inst}"),
+                    &json!({ "access_token": "a", "refresh_token": "r" }),
+                )
+                .await
+                .unwrap();
+        }
+        let msg = describe_oauth_error(Some(&store), "notion", "Notion", None).await;
+        assert!(
+            msg.starts_with("multiple Notion accounts connected"),
+            "{msg}"
+        );
+        assert!(!msg.contains("OAuth app"), "{msg}");
+    }
 }

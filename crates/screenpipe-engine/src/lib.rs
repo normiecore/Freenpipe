@@ -34,6 +34,7 @@ mod meeting_telemetry;
 pub mod meeting_watcher;
 pub mod permission_monitor;
 pub mod pipe_permissions_middleware;
+pub mod pipe_registry;
 pub mod pipe_store;
 pub mod pipes_api;
 pub mod power;
