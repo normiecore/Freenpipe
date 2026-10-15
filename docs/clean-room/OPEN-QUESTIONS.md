@@ -32,6 +32,12 @@
    (`sqlite_dbpage` must be queryable and `PRAGMA compile_options` must list `ENABLE_DBPAGE_VTAB`).
    A build started from outside the repository tree does not read `.cargo/config.toml`; that test
    is what catches it.
+   Note for W4-09: libsqlite3-sys 0.37.0 ships only `sqlite3.c`, `sqlite3.h` and `sqlite3ext.h`.
+   Cargo hands `DEP_SQLITE3_INCLUDE` only to build scripts of crates that depend on libsqlite3-sys
+   directly, so the recovery crate must list it itself (`{ workspace = true }`). The matching
+   public-domain sources are `ext/recover/sqlite3recover.{c,h}` and `ext/misc/dbdata.c` at tag
+   `version-3.51.3` of the official GitHub mirror `sqlite/sqlite`; www.sqlite.org is not reachable
+   through the cloud VM's proxy, the GitHub mirror is.
 
 4. **What replaces sqlx's removed `runtime-tokio-rustls` feature?**
    Decision: `runtime-tokio` with no TLS backend, declared once in `[workspace.dependencies]`.
