@@ -30,9 +30,13 @@ and the reason. Later work packages follow these unless the owner overrules them
    detector from `screenpipe-redact` with labels secret, email, phone, url and id always on, plus the
    user's `piiRedactionLabels`; then user names in home-folder paths, IPv4 addresses other than
    127.x and 0.0.0.0, bearer tokens and `password=`-style values, and the signed-in user's name,
-   e-mail and the computer's host name. `settingsJson` is optional and bad JSON is ignored. No remote
-   or model-based redaction. **Reason:** decloud (no Tinfoil enclave), and a bundle may end up in a
-   public issue.
+   e-mail, the computer's host name and the OS login name. Bare IPv4 addresses, which the shared
+   detector labels `url`, are left to the IPv4 rule so loopback stays readable; URLs with
+   credentials are still removed whole. Host and login names are scrubbed only when they have four
+   or more characters and are not generic (`admin`, `user`, `owner`, `desktop`, ...). `settingsJson`
+   is optional and bad JSON is ignored. No remote or model-based redaction. **Reason:** decloud (no
+   Tinfoil enclave), and a bundle may end up in a public issue; generic names would blank out
+   ordinary words in the logs.
 6. **Does the app open the GitHub issue by itself?** **Decision:** no. The completion event carries
    `issueUrl` and the UI offers "open github issue". The body holds a scrubbed excerpt of the note
    (shortened so the URL stays under 7,000 characters), the version, OS, report source and the bundle

@@ -663,10 +663,11 @@ fn readme(input: &BundleInput) -> String {
          \n\
          Before sharing\n\
          All text files were scrubbed on this computer: e-mail addresses, phone numbers,\n\
-         API keys and tokens, ID and card numbers, IP addresses (except 127.0.0.1), the\n\
-         user name in home-folder paths, and your own name, e-mail and computer name\n\
-         were replaced by placeholders such as [EMAIL] or [USER]. Automatic scrubbing\n\
-         can miss things, so read the text files before you share them.\n\
+         API keys and tokens, ID and card numbers, IP addresses (except loopback), the\n\
+         user name in home-folder paths, your login name, and your own name, e-mail and\n\
+         computer name were replaced by placeholders such as [EMAIL] or [USER].\n\
+         Automatic scrubbing can miss things, so read the text files before you\n\
+         share them.\n\
          Crash dumps, screenshots and recordings are copied as they are and are NOT\n\
          scrubbed; they can show anything that was on screen or in memory.\n",
         created = input.created_at.to_rfc3339(),

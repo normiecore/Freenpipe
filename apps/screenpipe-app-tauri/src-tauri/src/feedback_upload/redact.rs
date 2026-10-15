@@ -306,6 +306,35 @@ impl FeedbackRedactor {
     }
 }
 
+/// Account and machine names so common that scrubbing them would blank out
+/// ordinary words in logs without protecting anyone.
+const GENERIC_NAMES: &[&str] = &[
+    "localhost",
+    "admin",
+    "administrator",
+    "user",
+    "users",
+    "root",
+    "owner",
+    "guest",
+    "default",
+    "public",
+    "home",
+    "desktop",
+    "laptop",
+    "computer",
+];
+
+/// True when a host or login name is specific enough to scrub wherever it
+/// appears: at least four characters and not a generic word.
+pub fn is_distinctive_value(value: &str) -> bool {
+    let value = value.trim();
+    value.chars().count() >= 4
+        && !GENERIC_NAMES
+            .iter()
+            .any(|generic| value.eq_ignore_ascii_case(generic))
+}
+
 /// Parse the `settingsJson` argument of `redact_pii_for_feedback`. Bad or
 /// missing JSON just means "no user preferences".
 pub fn parse_settings_json(settings_json: Option<&str>) -> Option<Value> {
@@ -475,6 +504,20 @@ mod tests {
         assert!(!base.policy.allows(SpanLabel::Date, None));
         assert!(custom.policy.allows(SpanLabel::Date, None));
         assert!(custom.policy.allows(SpanLabel::Person, None));
+    }
+
+    #[test]
+    fn only_distinctive_machine_names_are_scrubbed() {
+        for name in ["DARREN-PC", "darren", "ws-0142", "Ada.Lovelace"] {
+            assert!(is_distinctive_value(name), "{name}");
+        }
+        for name in ["", "abc", "  ab  ", "localhost", "Admin", "USER", "root", "Owner", "DESKTOP"] {
+            assert!(!is_distinctive_value(name), "{name}");
+        }
+        // A login name given as a machine value is removed outside paths too.
+        let r = FeedbackRedactor::new(None, &[("darren".to_string(), "[USER]")]);
+        assert_eq!(r.redact(r"signed in as WORKGROUP\darren"), r"signed in as WORKGROUP\[USER]");
+        assert_eq!(r.redact("darrenx stays"), "darrenx stays");
     }
 
     #[test]

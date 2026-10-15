@@ -1371,6 +1371,18 @@ async readAudioExclusions() : Promise<Result<ExcludedApp[], string>> {
 }
 },
 /**
+ * Last `max_bytes` (default 100 KB, at most 8 MB) of a log file inside the
+ * data directory, prefixed with a truncation marker when cut.
+ */
+async readLogTail(path: string, maxBytes: number | null) : Promise<Result<string, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("read_log_tail", { path, maxBytes }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
  * Read a file for the viewer. Returns text for text-like files, a
  * base64 data URL for images. Files larger than `MAX_VIEWER_FILE_BYTES`
  * are truncated for text or refused for images, since both would blow
@@ -1379,6 +1391,19 @@ async readAudioExclusions() : Promise<Result<ExcludedApp[], string>> {
 async readViewerFile(path: string) : Promise<Result<ViewerContent, string>> {
     try {
     return { status: "ok", data: await TAURI_INVOKE("read_viewer_file", { path }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
+ * Scrub `text` with the local redactor. `settingsJson` (the app settings
+ * as a JSON string) adds the user's `piiRedactionLabels` and their own
+ * name and e-mail to what is removed.
+ */
+async redactPiiForFeedback(text: string, settingsJson: string | null) : Promise<Result<string, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("redact_pii_for_feedback", { text, settingsJson }) };
 } catch (e) {
     if(e instanceof Error) throw e;
     else return { status: "error", error: e  as any };
@@ -1968,6 +1993,18 @@ async startCapture() : Promise<Result<null, string>> {
 }
 },
 /**
+ * Write a local diagnostics bundle in the background. Returns `{ jobId }`
+ * immediately; the result arrives as `feedback-upload-completed`.
+ */
+async startFeedbackUpload(request: FeedbackUploadRequest) : Promise<Result<FeedbackUploadStarted, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("start_feedback_upload", { request }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
  * Stop recording without killing the server.
  * Pipes, memories, search, and the HTTP API remain accessible.
  */
@@ -2264,6 +2301,44 @@ managed: boolean;
  */
 detected_by: string[] }
 export type ExcludedApp = { bundleId: string; name: string | null; icon: string | null }
+/**
+ * What the UI hands over. Every field is optional on the wire.
+ */
+export type FeedbackUploadRequest = {
+/**
+ * What the user wrote.
+ */
+feedbackText?: string;
+/**
+ * Where the report was started: `feedback`, `server-not-running`,
+ * `onboarding-stuck`, ...
+ */
+source?: string | null;
+/**
+ * Recent browser console output kept by the frontend.
+ */
+consoleLog?: string | null;
+/**
+ * Recent chat history, when the user opted in.
+ */
+chatHistory?: string | null;
+/**
+ * `data:image/(png|jpeg|webp);base64,...`
+ */
+screenshotDataUrl?: string | null;
+/**
+ * A local `.mp4`/`.mov` screen recording (50 MB at most).
+ */
+videoPath?: string | null;
+/**
+ * Masked settings snapshot from the UI. Only used when the settings
+ * store cannot be read; it is masked again either way.
+ */
+appSettings?: JsonValue | null }
+/**
+ * Returned as soon as the job is queued.
+ */
+export type FeedbackUploadStarted = { jobId: string }
 export type HardwareCapability = { hasGpu: boolean; cpuCores: number; totalMemoryGb: number; recommendedEngine: string; reason: string }
 export type IcsCalendarEntry = { name: string; url: string; enabled: boolean }
 /**

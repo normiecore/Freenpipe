@@ -190,9 +190,14 @@ pub async fn redact_pii_for_feedback(
 fn machine_values() -> Vec<(String, &'static str)> {
     let mut values = Vec::new();
     let host = tauri_plugin_os::hostname();
-    // Short or generic host names would match ordinary words.
-    if host.chars().count() >= 4 && !host.eq_ignore_ascii_case("localhost") {
+    if redact::is_distinctive_value(&host) {
         values.push((host, "[HOST]"));
+    }
+    // The login name also shows up outside home-folder paths
+    // (`DOMAIN\name`, `name@host`, OneDrive folder names).
+    let login = std::env::var(if cfg!(windows) { "USERNAME" } else { "USER" }).unwrap_or_default();
+    if redact::is_distinctive_value(&login) {
+        values.push((login, "[USER]"));
     }
     values
 }
@@ -261,6 +266,15 @@ async fn run_job(app: &AppHandle, job_id: &str, request: FeedbackUploadRequest) 
 
     let written = tokio::task::spawn_blocking(move || {
         let summary = bundle::write_bundle(&input, &redactor)?;
+        info!(
+            "diagnostics bundle {}: {} file(s), {} left out",
+            summary.file_name,
+            summary.entries.len(),
+            summary.skipped.len()
+        );
+        for item in &summary.skipped {
+            info!("diagnostics bundle left out {}: {}", item.name, item.reason);
+        }
         let pruned = bundle::prune_bundles(&input.data_dir.join(FEEDBACK_DIR), KEEP_BUNDLES);
         if !pruned.is_empty() {
             info!("removed {} old diagnostics bundle(s)", pruned.len());
@@ -301,12 +315,13 @@ async fn health_snapshot(app: &AppHandle) -> Value {
         .collect();
 
     let api = crate::recording::local_api_context_from_app(app);
-    let engine = match api
-        .apply_auth(reqwest::Client::new().get(api.url("/health")))
+    // Loopback only: never route the request through a system proxy.
+    let client = reqwest::Client::builder()
+        .no_proxy()
         .timeout(Duration::from_secs(3))
-        .send()
-        .await
-    {
+        .build()
+        .unwrap_or_default();
+    let engine = match api.apply_auth(client.get(api.url("/health"))).send().await {
         Ok(response) => {
             let status = response.status().as_u16();
             match response.json::<Value>().await {
