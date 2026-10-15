@@ -1,7 +1,15 @@
 //! Sync API client for cloud sync operations.
 //!
-//! This module provides the HTTP client for communicating with the
-//! Screenpipe cloud sync API.
+//! This module provides the HTTP client for a sync server that speaks the
+//! sync wire protocol (`/init`, `/upload`, `/download`, `/search`, `/status`,
+//! `/devices`, `/data`).
+//!
+//! There is no built-in server. A [`SyncClientConfig`] starts out without a
+//! server URL, and every call that would reach the sync API fails with
+//! [`SyncError::NotConfigured`] before any network traffic happens, until the
+//! caller supplies an explicit URL with [`SyncClientConfig::with_api_url`].
+//! Presigned blob transfers (`upload_to_s3`, `download_from_s3`) only ever go
+//! to URLs that such a configured server handed out.
 
 use std::collections::BTreeMap;
 use std::time::Duration;
@@ -16,14 +24,12 @@ use super::blob::{BlobMetadata, BlobType};
 use super::error::{SyncError, SyncResult};
 use super::keys::{ExistingUserKeyData, NewUserKeyData, SyncKeys};
 
-/// Default API base URL
-const DEFAULT_API_URL: &str = "https://screenpi.pe/api/sync";
-
 /// Configuration for the sync client.
 #[derive(Debug, Clone)]
 pub struct SyncClientConfig {
-    /// Base URL for the sync API
-    pub api_url: String,
+    /// Base URL of the sync API. `None` until the caller supplies one; there
+    /// is deliberately no default server.
+    pub api_url: Option<String>,
     /// Authentication token (Clerk JWT)
     pub auth_token: String,
     /// Device ID (unique identifier for this device)
@@ -37,7 +43,10 @@ pub struct SyncClientConfig {
 }
 
 impl SyncClientConfig {
-    /// Create a new config with default API URL.
+    /// Create a new config without a sync server. Until
+    /// [`with_api_url`](Self::with_api_url) supplies one, the config reports
+    /// [`is_configured`](Self::is_configured) `== false` and the client
+    /// refuses every sync API call.
     pub fn new(
         auth_token: String,
         device_id: String,
@@ -45,7 +54,7 @@ impl SyncClientConfig {
         device_os: String,
     ) -> Self {
         Self {
-            api_url: DEFAULT_API_URL.to_string(),
+            api_url: None,
             auth_token,
             device_id,
             device_name,
@@ -54,10 +63,17 @@ impl SyncClientConfig {
         }
     }
 
-    /// Set the API URL.
-    pub fn with_api_url(mut self, url: String) -> Self {
-        self.api_url = url;
+    /// Point the client at a sync server. The value is trimmed and loses
+    /// trailing slashes. Anything that is not an absolute `http(s)://` URL
+    /// leaves the config unconfigured instead of guessing.
+    pub fn with_api_url(mut self, url: impl Into<String>) -> Self {
+        self.api_url = normalize_api_url(&url.into());
         self
+    }
+
+    /// Whether a sync server URL has been supplied.
+    pub fn is_configured(&self) -> bool {
+        self.api_url.is_some()
     }
 
     /// Set the app version.
@@ -65,6 +81,21 @@ impl SyncClientConfig {
         self.app_version = Some(version);
         self
     }
+}
+
+/// Trim a user-supplied sync server URL and accept it only when it is an
+/// absolute `http` or `https` URL with a host part.
+fn normalize_api_url(raw: &str) -> Option<String> {
+    let value = raw.trim().trim_end_matches('/');
+    let accepted = value.split_once("://").is_some_and(|(scheme, rest)| {
+        (scheme.eq_ignore_ascii_case("http") || scheme.eq_ignore_ascii_case("https"))
+            && !rest.is_empty()
+    }) && !value.chars().any(char::is_whitespace);
+    if !accepted {
+        warn!("sync: ignoring unusable sync server URL {:?}", raw);
+        return None;
+    }
+    Some(value.to_string())
 }
 
 /// Client for sync API operations.
@@ -104,6 +135,21 @@ impl SyncClient {
     /// Get the device ID.
     pub fn device_id(&self) -> &str {
         &self.config.device_id
+    }
+
+    /// Whether this client has a sync server to talk to.
+    pub fn is_configured(&self) -> bool {
+        self.config.is_configured()
+    }
+
+    /// Absolute URL of a sync API path, or [`SyncError::NotConfigured`] when
+    /// no server URL was supplied.
+    fn endpoint(&self, path: &str) -> SyncResult<String> {
+        self.config
+            .api_url
+            .as_deref()
+            .map(|base| crate::endpoints::join(base, path))
+            .ok_or(SyncError::NotConfigured)
     }
 
     // =========================================================================
@@ -496,11 +542,12 @@ impl SyncClient {
 
     /// Remove a device.
     pub async fn remove_device(&self, device_id: &str) -> SyncResult<()> {
-        let url = format!("{}/devices?device_id={}", self.config.api_url, device_id);
+        let url = self.endpoint("/devices")?;
 
         let response = self
             .http
             .delete(&url)
+            .query(&[("device_id", device_id)])
             .header(
                 "Authorization",
                 format!("Bearer {}", self.config.auth_token),
@@ -529,7 +576,7 @@ impl SyncClient {
 
     /// Delete all cloud data for this user.
     pub async fn delete_all_data(&self) -> SyncResult<()> {
-        let url = format!("{}/data", self.config.api_url);
+        let url = self.endpoint("/data")?;
 
         let response = self
             .http
@@ -565,7 +612,7 @@ impl SyncClient {
         path: &str,
         body: &T,
     ) -> SyncResult<R> {
-        let url = format!("{}{}", self.config.api_url, path);
+        let url = self.endpoint(path)?;
         let mut last_err = None;
 
         for attempt in 0..MAX_RETRIES {
@@ -605,7 +652,7 @@ impl SyncClient {
     }
 
     async fn get<R: for<'de> Deserialize<'de>>(&self, path: &str) -> SyncResult<R> {
-        let url = format!("{}{}", self.config.api_url, path);
+        let url = self.endpoint(path)?;
         let mut last_err = None;
 
         for attempt in 0..MAX_RETRIES {
@@ -1067,10 +1114,11 @@ mod tests {
             "My MacBook".to_string(),
             "macos".to_string(),
         )
-        .with_api_url("https://custom.api.com".to_string())
+        .with_api_url("https://custom.api.com/".to_string())
         .with_app_version("1.0.0".to_string());
 
-        assert_eq!(config.api_url, "https://custom.api.com");
+        assert_eq!(config.api_url.as_deref(), Some("https://custom.api.com"));
+        assert!(config.is_configured());
         assert_eq!(config.app_version, Some("1.0.0".to_string()));
     }
 
@@ -1194,5 +1242,144 @@ mod tests {
             ),
             other => panic!("expected Server, got {other:?}"),
         }
+    }
+
+    fn unconfigured() -> SyncClientConfig {
+        SyncClientConfig::new(
+            "tok".into(),
+            "dev-1".into(),
+            "host".into(),
+            "windows".into(),
+        )
+    }
+
+    #[test]
+    fn a_new_config_has_no_sync_server() {
+        let config = unconfigured();
+        assert_eq!(config.api_url, None);
+        assert!(!config.is_configured());
+    }
+
+    #[test]
+    fn unusable_server_urls_leave_the_config_unconfigured() {
+        for bad in [
+            "",
+            "   ",
+            "localhost:8080/api/sync",
+            "ftp://files.example.test",
+            "https://",
+            "http://has space.example.test",
+        ] {
+            let config = unconfigured().with_api_url(bad);
+            assert!(!config.is_configured(), "{bad:?} should be rejected");
+        }
+        let config = unconfigured().with_api_url("  HTTPS://sync.example.test/api/sync// ");
+        assert_eq!(
+            config.api_url.as_deref(),
+            Some("HTTPS://sync.example.test/api/sync")
+        );
+    }
+
+    /// Without a server URL every sync API call fails straight away with
+    /// `NotConfigured`: no request is built, so there is no host to reach
+    /// and no retry backoff to wait through.
+    #[tokio::test]
+    async fn unconfigured_client_refuses_every_api_call_without_network() {
+        let client = SyncClient::new(unconfigured()).unwrap();
+        assert!(!client.is_configured());
+        let started = std::time::Instant::now();
+
+        let results: Vec<(&str, SyncError)> = vec![
+            (
+                "init",
+                client.init("password").await.err().expect("call must fail"),
+            ),
+            (
+                "status",
+                client.get_status().await.err().expect("call must fail"),
+            ),
+            (
+                "devices",
+                client.list_devices().await.err().expect("call must fail"),
+            ),
+            (
+                "remove_device",
+                client
+                    .remove_device("other-device")
+                    .await
+                    .err()
+                    .expect("call must fail"),
+            ),
+            (
+                "delete_all_data",
+                client
+                    .delete_all_data()
+                    .await
+                    .err()
+                    .expect("call must fail"),
+            ),
+            (
+                "search",
+                client
+                    .search(SearchRequest {
+                        search_tokens: vec!["dG9rZW4=".into()],
+                        time_range: None,
+                        blob_types: None,
+                        limit: Some(1),
+                    })
+                    .await
+                    .err()
+                    .expect("call must fail"),
+            ),
+            (
+                "complete_upload",
+                client
+                    .complete_upload("blob-1")
+                    .await
+                    .err()
+                    .expect("call must fail"),
+            ),
+        ];
+        for (call, err) in results {
+            assert!(
+                matches!(err, SyncError::NotConfigured),
+                "{call}: expected NotConfigured, got {err:?}"
+            );
+        }
+        assert!(
+            started.elapsed() < Duration::from_secs(1),
+            "refusals must not wait for retries"
+        );
+    }
+
+    #[tokio::test]
+    async fn configured_client_talks_only_to_the_supplied_server() {
+        use wiremock::matchers::{header, method, path, query_param};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/api/sync/devices"))
+            .and(header("x-device-id", "dev-1"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_json(serde_json::json!({"success": true, "devices": []})),
+            )
+            .expect(1)
+            .mount(&server)
+            .await;
+        Mock::given(method("DELETE"))
+            .and(path("/api/sync/devices"))
+            .and(query_param("device_id", "laptop & co"))
+            .respond_with(ResponseTemplate::new(200))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let config = unconfigured().with_api_url(format!("{}/api/sync/", server.uri()));
+        let client = SyncClient::new(config).unwrap();
+        assert!(client.is_configured());
+        assert!(client.list_devices().await.unwrap().is_empty());
+        client.remove_device("laptop & co").await.unwrap();
     }
 }

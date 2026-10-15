@@ -16,7 +16,8 @@ use axum::{
 };
 use oasgen::{oasgen, OaSchema};
 use screenpipe_core::sync::{
-    BlobType, SyncClientConfig, SyncManager, SyncService, SyncServiceConfig, SyncServiceHandle,
+    BlobType, SyncClientConfig, SyncError, SyncManager, SyncService, SyncServiceConfig,
+    SyncServiceHandle,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -118,6 +119,14 @@ pub async fn sync_init(
         device_name,
         device_os,
     );
+
+    // There is no default sync server; refuse before any key work happens.
+    if !config.is_configured() {
+        return Err((
+            StatusCode::NOT_IMPLEMENTED,
+            JsonResponse(json!({"error": SyncError::NotConfigured.to_string()})),
+        ));
+    }
 
     let manager = SyncManager::new(config).map_err(|e| {
         error!("failed to create sync manager: {}", e);

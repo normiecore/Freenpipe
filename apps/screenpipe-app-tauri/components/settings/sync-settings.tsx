@@ -58,6 +58,10 @@ import {
 } from "@/components/ui/select";
 import { Input } from "@/components/ui/input";
 import { useSettings, getStore, saveAndEncrypt } from "@/lib/hooks/use-settings";
+import {
+  cloudStorageAvailability,
+  cloudStorageUnavailableMessage,
+} from "@/lib/cloud-storage";
 import { motion } from "framer-motion";
 import Lottie from "lottie-react";
 import cloudSyncAnimation from "@/public/animations/cloud-sync.json";
@@ -721,7 +725,20 @@ function ActiveSyncSettings({
 }
 
 export function SyncSettings() {
-  const { settings, isSettingsLoaded, updateSettings } = useSettings();
+  // Cloud sync needs a sync server. Without one there is nothing to set up,
+  // and the storage settings hide this tab (see lib/cloud-storage.ts).
+  if (!cloudStorageAvailability.sync) {
+    return (
+      <p className="text-sm text-muted-foreground" data-testid="cloud-sync-unavailable">
+        {cloudStorageUnavailableMessage("sync")}
+      </p>
+    );
+  }
+  return <CloudSyncPanel />;
+}
+
+function CloudSyncPanel() {
+  const { settings, isSettingsLoaded } = useSettings();
   const [step, setStep] = useState<"loading" | "onboarding" | "password" | "active">("loading");
   const [subscription, setSubscription] = useState<SubscriptionStatus | null>(null);
   const [status, setStatus] = useState<SyncStatus | null>(null);
@@ -738,38 +755,6 @@ export function SyncSettings() {
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [isSettingsLoaded]);
-
-  // Auto-poll for subscription when on onboarding step (exponential backoff)
-  useEffect(() => {
-    if (step !== "onboarding") return;
-
-    let delay = 2000;
-    let timer: ReturnType<typeof setTimeout> | null = null;
-    let cancelled = false;
-
-    const poll = async () => {
-      if (cancelled) return;
-      const hasSubscription = await checkSubscriptionAndLoad();
-      if (hasSubscription) {
-        toast({
-          title: "subscription detected",
-          description: "setting up cloud sync...",
-        });
-        return;
-      }
-      if (!cancelled) {
-        delay = Math.min(delay * 1.5, 30000);
-        timer = setTimeout(poll, delay);
-      }
-    };
-    timer = setTimeout(poll, delay);
-
-    return () => {
-      cancelled = true;
-      if (timer) clearTimeout(timer);
-    };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [step]);
 
   const tryAutoInitSync = async (): Promise<boolean> => {
     console.log("[sync] tryAutoInitSync called, userId:", settings.user?.id);
@@ -949,90 +934,16 @@ export function SyncSettings() {
     }
   };
 
+  // There is no hosted subscription to look up: cloud sync can be set up
+  // exactly when a sync server is configured. The name is kept because the
+  // handlers below call it to re-enter the setup flow.
   const checkSubscriptionAndLoad = async (): Promise<boolean> => {
-    try {
-      const token = settings.user?.token;
-      const userId = settings.user?.id;
-
-      if (!token || !userId) {
-        console.log("no token or userId, showing onboarding");
-        setStep("onboarding");
-        return false;
-      }
-
-      const email = settings.user?.email || "";
-      const response = await fetch(`https://screenpi.pe/api/cloud-sync/subscription?userId=${userId}&email=${encodeURIComponent(email)}`, {
-        headers: {
-          "Authorization": `Bearer ${token}`,
-        },
-      });
-
-      if (response.ok) {
-        const data = await response.json();
-        console.log("cloud sync subscription check:", data);
-
-        // Treat trialing subscriptions as active (API returns hasSubscription: false for trials)
-        const subscriptionStatus = data.subscription?.status;
-        const hasSubscription = data.hasSubscription ||
-          subscriptionStatus === "trialing" ||
-          subscriptionStatus === "active";
-        setSubscription({
-          hasSubscription,
-          tier: data.subscription?.tier || null,
-          status: data.subscription?.status || null,
-        });
-
-        if (hasSubscription) {
-          if (settings.user && !settings.user.cloud_subscribed) {
-            const engineUpdate: Record<string, any> = {
-              user: { ...settings.user, cloud_subscribed: true },
-            };
-            // Auto-switch to cloud transcription for new subscribers
-            if (settings.audioTranscriptionEngine !== "screenpipe-cloud") {
-              engineUpdate.audioTranscriptionEngine = "screenpipe-cloud";
-            }
-            await updateSettings(engineUpdate);
-          }
-          return await initSyncBackend();
-        } else {
-          // Subscription expired/cancelled — clear cloud flag and revert engine
-          // only if it's still set to cloud (don't touch disabled or other engines)
-          if (settings.user?.cloud_subscribed) {
-            const revertUpdate: Record<string, any> = {
-              user: { ...settings.user, cloud_subscribed: false },
-            };
-            if (settings.audioTranscriptionEngine === "screenpipe-cloud") {
-              const { platform: getPlatform } = await import("@tauri-apps/plugin-os");
-              const os = getPlatform();
-              revertUpdate.audioTranscriptionEngine = os === "macos"
-                ? "whisper-large-v3-turbo-quantized"
-                : "parakeet";
-            }
-            await updateSettings(revertUpdate);
-          }
-          setStep("onboarding");
-          return false;
-        }
-      } else {
-        console.log("subscription API returned non-ok status:", response.status);
-        if (settings.user?.cloud_subscribed) {
-          console.log("cloud-sync API failed but user is cloud_subscribed, proceeding");
-          setSubscription({ hasSubscription: true, tier: null, status: null });
-          return await initSyncBackend();
-        }
-        setStep("onboarding");
-        return false;
-      }
-    } catch (error) {
-      console.error("failed to check subscription:", error);
-      if (settings.user?.cloud_subscribed) {
-        console.log("cloud-sync check failed but user is cloud_subscribed, proceeding");
-        setSubscription({ hasSubscription: true, tier: null, status: null });
-        return await initSyncBackend();
-      }
+    if (!cloudStorageAvailability.sync) {
       setStep("onboarding");
       return false;
     }
+    setSubscription({ hasSubscription: true, tier: null, status: null });
+    return await initSyncBackend();
   };
 
   const handleSubscribe = async (isAnnual: boolean = true) => {
