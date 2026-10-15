@@ -47,3 +47,14 @@
    lean parquet feature set keeps build time down; W5-07 can enable `arrow` if its writer needs it.
    parquet 59.3.1 and the newest twox-hash and zstd-sys releases were younger than two weeks, so the
    lockfiles pin parquet 59.3.0, twox-hash 2.1.4 and zstd-sys 2.1.0+zstd.1.5.7.
+
+6. **The bundled SQLite makes `PRAGMA quick_check` run FTS5 integrity checks.**
+   Decision: keep the startup `quick_check(1)` for file databases (db-016 keeps it in the target,
+   which links the same SQLite), and skip it for in-memory databases.
+   Reason: since SQLite 3.44, integrity_check and quick_check call each virtual table's xIntegrity,
+   and FTS5 ignores the quick flag. On the shared-cache connections sqlx opens for `sqlite::memory:`
+   pools, that check never returns with 3.51.3 (reproduced with a one-row FTS5 table); file
+   databases are unaffected. In-memory databases have no file that could be damaged, and the
+   hang froze screenpipe-db's timeline performance test ten seconds after startup. On large file
+   databases the check now also walks the FTS5 indexes, so it takes longer; it still runs in the
+   background.
