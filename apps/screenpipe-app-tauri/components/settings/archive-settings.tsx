@@ -22,6 +22,10 @@ import { Lock, CloudUpload, AlertTriangle, Loader2, Play } from "lucide-react";
 import { open as openUrl } from "@tauri-apps/plugin-shell";
 import { commands } from "@/lib/utils/tauri";
 import { localFetch } from "@/lib/api";
+import {
+  cloudStorageAvailability,
+  cloudStorageUnavailableMessage,
+} from "@/lib/cloud-storage";
 
 interface ArchiveStatus {
   enabled: boolean;
@@ -68,6 +72,19 @@ function formatRelativeTime(isoString: string): string {
 }
 
 export function ArchiveSettings() {
+  // Archiving uploads old data to a sync server. Without one the archive tab
+  // is hidden (see lib/cloud-storage.ts) and nothing here may run.
+  if (!cloudStorageAvailability.archive) {
+    return (
+      <p className="text-sm text-muted-foreground" data-testid="cloud-archive-unavailable">
+        {cloudStorageUnavailableMessage("archive")}
+      </p>
+    );
+  }
+  return <CloudArchivePanel />;
+}
+
+function CloudArchivePanel() {
   const { settings, updateSettings } = useSettings();
   const { toast } = useToast();
   const [status, setStatus] = useState<ArchiveStatus | null>(null);

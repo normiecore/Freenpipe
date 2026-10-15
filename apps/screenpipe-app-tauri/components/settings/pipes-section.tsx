@@ -24,8 +24,7 @@ import {
   Plus,
   Search,
   Share2,
-  Link,
-  Upload,
+  Download,
   ArrowUpCircle,
   MessageSquare,
   AlertCircle,
@@ -79,7 +78,9 @@ import { useQueryState } from "nuqs";
 import { HelpTooltip } from "@/components/ui/help-tooltip";
 import { pipeExecutionToConversation } from "@/lib/pipe-ndjson-to-chat";
 import { saveConversationFile } from "@/lib/chat-storage";
-import { PublishDialog } from "@/components/pipe-store";
+import { buildPipeExport } from "@/lib/pipe-export";
+import { save as saveDialog } from "@tauri-apps/plugin-dialog";
+import { writeTextFile } from "@tauri-apps/plugin-fs";
 import {
   Dialog,
   DialogContent,
@@ -684,8 +685,7 @@ export function PipesSection() {
   const { settings, updateSettings } = useSettings();
   const { toast } = useToast();
   const [, setSection] = useQueryState("section");
-  const [sharingPublic, setSharingPublic] = useState<string | null>(null);
-  const [publishPipeName, setPublishPipeName] = useState<string | null>(null);
+  const [exportingPipe, setExportingPipe] = useState<string | null>(null);
   const [searchQuery, setSearchQuery] = useState("");
   const [pipeTypeFilter, setPipeTypeFilter] = useState<"scheduled" | "triggered" | "manual">("scheduled");
   // Favorites — per-machine preference persisted via /pipes/favorites.
@@ -769,28 +769,40 @@ export function PipesSection() {
     return "no starred scheduled pipes";
   }, [pipeFavorites.showOnly, pipeTypeFilter]);
 
-  const sharePipePublic = async (pipe: PipeStatus) => {
-    setSharingPublic(pipe.config.name);
-    try {
-      const res = await fetch("https://screenpi.pe/api/pipes/share", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          raw_content: pipe.raw_content,
-          name: pipe.config.name,
-          author_id: settings.user?.id || null,
-          author_email: settings.user?.email || null,
-        }),
+  // Pipes are shared as files: there is no hosted store to publish to.
+  const exportPipeFile = async (pipe: PipeStatus) => {
+    if (!pipe.raw_content) {
+      toast({
+        title: "nothing to export",
+        description: "this pipe has no pipe.md content",
+        variant: "destructive",
       });
-      const data = await res.json();
-      if (data.error) throw new Error(data.error);
-      await commands.copyTextToClipboard(data.url);
-      posthog.capture("pipe_shared_public", { pipe_name: pipe.config.name, pipe_id: data.id });
-      toast({ title: "link copied!", description: data.url });
+      return;
+    }
+    setExportingPipe(pipe.config.name);
+    try {
+      const exported = buildPipeExport(pipe.config.name, pipe.raw_content);
+      const path = await saveDialog({
+        defaultPath: exported.fileName,
+        filters: [{ name: "Pipe", extensions: ["md"] }],
+      });
+      if (!path) return;
+      await writeTextFile(path, exported.content);
+      toast({
+        title: "pipe exported",
+        description:
+          exported.redactedCount > 0
+            ? `masked ${exported.redactedCount} secret(s). check the file before sharing it.`
+            : "check the file before sharing it. install it with \"screenpipe pipe install <file>\".",
+      });
     } catch (err: any) {
-      toast({ title: "failed to share pipe", description: err.message, variant: "destructive" });
+      toast({
+        title: "failed to export pipe",
+        description: err?.message ?? String(err),
+        variant: "destructive",
+      });
     } finally {
-      setSharingPublic(null);
+      setExportingPipe(null);
     }
   };
 
@@ -1705,17 +1717,6 @@ export function PipesSection() {
                     </Button>
                   )}
 
-                  {/* Publish button */}
-                  <Button
-                    variant="ghost"
-                    size="icon"
-                    className="h-7 w-7"
-                    onClick={() => setPublishPipeName(pipe.config.name)}
-                    title="publish to store"
-                  >
-                    <Upload className="h-3.5 w-3.5" />
-                  </Button>
-
                   {/* Overflow menu */}
                   <DropdownMenu>
                     <DropdownMenuTrigger asChild>
@@ -1738,15 +1739,15 @@ export function PipesSection() {
                         optimize with ai
                       </DropdownMenuItem>
                       <DropdownMenuItem
-                        disabled={sharingPublic === pipe.config.name}
-                        onClick={() => sharePipePublic(pipe)}
+                        disabled={exportingPipe === pipe.config.name}
+                        onClick={() => exportPipeFile(pipe)}
                       >
-                        {sharingPublic === pipe.config.name ? (
+                        {exportingPipe === pipe.config.name ? (
                           <Loader2 className="h-3.5 w-3.5 mr-2 animate-spin" />
                         ) : (
-                          <Link className="h-3.5 w-3.5 mr-2" />
+                          <Download className="h-3.5 w-3.5 mr-2" />
                         )}
-                        copy share link
+                        export pipe file
                       </DropdownMenuItem>
                       {(pipe.source_slug || (pipe.config as any).config?.source_slug) && (
                         <DropdownMenuItem
@@ -1759,12 +1760,6 @@ export function PipesSection() {
                           check for updates
                         </DropdownMenuItem>
                       )}
-                      <DropdownMenuItem
-                        onClick={() => setPublishPipeName(pipe.config.name)}
-                      >
-                        <Upload className="h-3.5 w-3.5 mr-2" />
-                        publish to store
-                      </DropdownMenuItem>
                       <DropdownMenuSeparator />
                       <DropdownMenuItem
                         className="text-destructive"
@@ -2732,17 +2727,6 @@ export function PipesSection() {
           connections={connectionModal.connections}
         />
       )}
-
-      <PublishDialog
-        open={!!publishPipeName}
-        onOpenChange={(v) => { if (!v) setPublishPipeName(null); }}
-        token={settings.user?.token}
-        onPublished={() => {
-          setPublishPipeName(null);
-          toast({ title: "pipe published to store" });
-        }}
-        defaultPipe={publishPipeName || undefined}
-      />
 
       <Dialog open={!!updateDialog} onOpenChange={(open) => !open && setUpdateDialog(null)}>
         <DialogContent>

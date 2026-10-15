@@ -1,19 +1,19 @@
 ---
 title: "obsidian - sync screen history to your notes"
 sidebarTitle: "obsidian"
-description: "Sync screenpipe's screen history and meeting transcripts into Obsidian via the Copilot plugin so you can query your activity from your local notes vault."
+description: "Sync Freenpipe's screen history and meeting transcripts into Obsidian via the Copilot plugin so you can query your activity from your local notes vault."
 icon: "gem"
 ---
 
-[Obsidian](https://obsidian.md) is a powerful knowledge base that works on local markdown files. with screenpipe, you can query your screen history and meeting transcriptions directly from Obsidian using AI plugins.
+[Obsidian](https://obsidian.md) is a powerful knowledge base that works on local markdown files. with Freenpipe, you can query your screen history and meeting transcriptions directly from Obsidian using AI plugins.
 
 ## setup with copilot plugin
 
-the [Obsidian Copilot](https://github.com/logancyang/obsidian-copilot) plugin supports MCP servers, letting you query screenpipe from within Obsidian.
+the [Obsidian Copilot](https://github.com/logancyang/obsidian-copilot) plugin supports MCP servers, letting you query Freenpipe from within Obsidian.
 
 1. install the Copilot plugin from Obsidian community plugins
 2. open Copilot settings → MCP Servers
-3. add screenpipe:
+3. add Freenpipe:
 
 ```json
 {
@@ -33,7 +33,7 @@ now you can ask Copilot things like:
 
 ## manual workflow
 
-if you prefer not to use plugins, you can query screenpipe's API and paste results into notes:
+if you prefer not to use plugins, you can query Freenpipe's API and paste results into notes:
 
 ```bash
 # search recent screen content
@@ -52,8 +52,8 @@ curl "http://localhost:3030/search?content_type=audio&limit=20"
 
 ## requirements
 
-- screenpipe running on localhost:3030
+- Freenpipe running on localhost:3030
 - Obsidian with Copilot plugin (for MCP integration)
 - Node.js >= 18.0.0
 
-need help? [join our discord](https://discord.gg/screenpipe).
+need help? open a [GitHub issue](https://github.com/normiecore/Freenpipe/issues).

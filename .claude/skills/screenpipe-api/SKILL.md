@@ -5,7 +5,7 @@ description: Query the user's screen recordings, audio, UI elements, and usage a
 
 # Screenpipe API
 
-Local REST API at `http://localhost:3030`. Full reference (60+ endpoints): https://docs.screenpi.pe/llms-full.txt
+Local REST API at `http://localhost:3030`. Full reference (60+ endpoints): the engine serves its OpenAPI spec at `/openapi.json` and `/openapi.yaml`.
 
 ## Authentication
 
@@ -474,7 +474,7 @@ curl -X POST http://localhost:11435/notify \
 | `actions` | array | No | Action buttons |
 
 **Supported link types in body markdown:**
-- Web URLs: `[docs](https://docs.screenpi.pe)` — opens in browser
+- Web URLs: `[repo](https://github.com/normiecore/Freenpipe)`: opens in browser
 - File paths: `[notes](~/notes/file.md)` or `[log](/var/log/app.log)` — opens in default app
 - Deeplinks: `[timeline](screenpipe://timeline)` — navigates within screenpipe
 

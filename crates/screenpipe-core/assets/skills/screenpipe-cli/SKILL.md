@@ -146,10 +146,22 @@ Credentials are stored locally at `~/.screenpipe/connections.json`.
 
 **Per-integration details**: don't guess API shapes from this skill. Run `connection list` or `connection get <id>` — each entry includes a self-describing `description` with credential fields, endpoints, and example bodies. Only fetch the integration you need.
 
-## Publishing pipes to the store
+## Sharing pipes
+
+There is no hosted pipe store to upload to, so `screenpipe pipe publish <pipe-name>` only prints how to share the pipe instead.
+
+A pipe travels as one file: its `~/.screenpipe/pipes/<pipe-name>/pipe.md`, saved as `<pipe-name>.md` (the desktop app's "export pipe file" menu item does this and masks values that look like API keys or tokens). Whoever receives it runs:
 
 ```bash
-screenpipe pipe publish <pipe-name>
+screenpipe pipe install <pipe-name>.md   # the file name becomes the pipe name
 ```
 
-Reads `~/.screenpipe/pipes/<pipe-name>/pipe.md`, extracts title/description/icon/category from YAML frontmatter, and publishes to the screenpipe pipe store. Requires auth (SCREENPIPE_API_KEY env var or `~/.screenpipe/auth.json`).
+If `SCREENPIPE_API_BASE_URL` names a pipe registry (a registry server, or a static `.json` index), these read from it:
+
+```bash
+screenpipe pipe search <query>
+screenpipe pipe info <slug>
+screenpipe pipe install <slug>
+```
+
+Without a registry they explain that none is configured; local and URL installs keep working.

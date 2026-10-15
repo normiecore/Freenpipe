@@ -4,6 +4,7 @@
 
 use super::presets::{self, PresetInput, PresetPatch, Provider};
 use super::{ModelCommand, PipeCommand};
+use crate::pipe_registry::{self, RegistryClient, StoreQuery};
 use screenpipe_core::agents::pi::PiExecutor;
 use screenpipe_core::agents::AgentExecutor;
 use screenpipe_core::pipes::PipeManager;
@@ -57,10 +58,17 @@ pub async fn handle_pipe_command(command: &PipeCommand) -> anyhow::Result<()> {
                 }
             }
         }
-        PipeCommand::Install { source } => match manager.install_pipe(source).await {
-            Ok(name) => println!("installed pipe: {}", name),
-            Err(e) => anyhow::bail!("failed to install pipe: {}", e),
-        },
+        PipeCommand::Install { source } => {
+            let installed = if is_registry_source(source) {
+                install_from_registry(&manager, source).await
+            } else {
+                manager.install_pipe(source).await
+            };
+            match installed {
+                Ok(name) => println!("installed pipe: {}", name),
+                Err(e) => anyhow::bail!("failed to install pipe: {}", e),
+            }
+        }
         PipeCommand::Enable { name } => {
             manager.enable_pipe(name, true).await?;
             println!("enabled pipe: {}", name);
@@ -133,7 +141,7 @@ pub async fn handle_pipe_command(command: &PipeCommand) -> anyhow::Result<()> {
             handle_model_command(subcommand)?;
         }
         PipeCommand::Publish { name } => {
-            handle_publish_command(name, &pipes_dir).await?;
+            handle_publish_command(name, &pipes_dir)?;
         }
         PipeCommand::Search { query } => {
             handle_search_command(query).await?;
@@ -142,7 +150,7 @@ pub async fn handle_pipe_command(command: &PipeCommand) -> anyhow::Result<()> {
             handle_info_command(slug).await?;
         }
         PipeCommand::Status { slug } => {
-            handle_status_command(slug).await?;
+            handle_status_command(slug)?;
         }
         PipeCommand::SetPreset { name, preset } => {
             handle_set_preset_command(&manager, name, preset).await?;
@@ -150,12 +158,6 @@ pub async fn handle_pipe_command(command: &PipeCommand) -> anyhow::Result<()> {
     }
 
     Ok(())
-}
-
-/// Get the API base URL from env or default.
-pub fn api_base_url() -> String {
-    std::env::var("SCREENPIPE_API_BASE_URL")
-        .unwrap_or_else(|_| "https://screenpipe.com".to_string())
 }
 
 /// Get the auth token, checking in order:
@@ -178,11 +180,10 @@ pub fn get_auth_token() -> Option<String> {
     None
 }
 
-/// Publish a local pipe to the registry.
-async fn handle_publish_command(name: &str, pipes_dir: &std::path::Path) -> anyhow::Result<()> {
-    let pipe_dir = pipes_dir.join(name);
-    let pipe_md_path = pipe_dir.join("pipe.md");
-
+/// `pipe publish`: registries are read-only, so instead of uploading, point
+/// the user at the file that carries the whole pipe.
+fn handle_publish_command(name: &str, pipes_dir: &std::path::Path) -> anyhow::Result<()> {
+    let pipe_md_path = pipes_dir.join(name).join("pipe.md");
     if !pipe_md_path.exists() {
         anyhow::bail!(
             "pipe.md not found at {}\nhint: make sure the pipe '{}' exists in ~/.screenpipe/pipes/",
@@ -190,221 +191,100 @@ async fn handle_publish_command(name: &str, pipes_dir: &std::path::Path) -> anyh
             name
         );
     }
-
-    let source_md = std::fs::read_to_string(&pipe_md_path)?;
-
-    // Check for README.md alongside pipe.md
-    let readme_md_path = pipe_dir.join("README.md");
-    let readme_md = if readme_md_path.exists() {
-        let content = std::fs::read_to_string(&readme_md_path)?;
-        println!("including README.md");
-        Some(content)
-    } else {
-        println!("no README.md found, pipe.md body will be used as description");
-        None
-    };
-
-    // Parse YAML frontmatter if present (between --- delimiters)
-    let (title, description, icon, category) = parse_frontmatter(&source_md);
-
-    let title = title.unwrap_or_else(|| name.to_string());
-    let description = description.unwrap_or_default();
-
-    let token = get_auth_token().ok_or_else(|| {
-        anyhow::anyhow!(
-            "no auth token found. set SCREENPIPE_API_KEY env var or create ~/.screenpipe/auth.json"
-        )
-    })?;
-
-    let base = api_base_url();
-    let client = reqwest::Client::new();
-
-    let payload = json!({
-        "source_md": source_md,
-        "title": title,
-        "description": description,
-        "icon": icon,
-        "category": category,
-        "readme_md": readme_md,
-    });
-
-    let url = format!("{}/api/pipes/store/publish", base);
-    let resp = client
-        .post(&url)
-        .bearer_auth(&token)
-        .json(&payload)
-        .send()
-        .await?;
-
-    let status = resp.status();
-    let body: Value = resp.json().await.unwrap_or(json!({}));
-
-    if status.is_success() {
-        println!("published pipe '{}' to the registry", name);
-        if let Some(slug) = body.get("slug").and_then(|v| v.as_str()) {
-            println!("slug: {}", slug);
-            println!("view at: {}/pipes/{}", base, slug);
-        }
-    } else {
-        let msg = body
-            .get("error")
-            .and_then(|v| v.as_str())
-            .unwrap_or("unknown error");
-        eprintln!("error: {} ({})", msg, status);
-    }
-
-    Ok(())
+    anyhow::bail!(
+        "publishing to a pipe registry is not supported: registries are read-only here.\n\
+         to share '{name}', copy {} to a file named {name}.md and send that file;\n\
+         the recipient installs it with: screenpipe pipe install {name}.md",
+        pipe_md_path.display()
+    )
 }
 
-/// Parse YAML frontmatter from pipe.md content.
-fn parse_frontmatter(
-    content: &str,
-) -> (
-    Option<String>,
-    Option<String>,
-    Option<String>,
-    Option<String>,
-) {
-    let trimmed = content.trim_start();
-    if !trimmed.starts_with("---") {
-        return (None, None, None, None);
-    }
-
-    // Find the closing ---
-    let after_first = &trimmed[3..];
-    let end = match after_first.find("---") {
-        Some(pos) => pos,
-        None => return (None, None, None, None),
-    };
-
-    let frontmatter = &after_first[..end];
-
-    let mut title = None;
-    let mut description = None;
-    let mut icon = None;
-    let mut category = None;
-
-    for line in frontmatter.lines() {
-        let line = line.trim();
-        if let Some((key, value)) = line.split_once(':') {
-            let key = key.trim();
-            let value = value.trim().trim_matches('"').trim_matches('\'');
-            match key {
-                "title" => title = Some(value.to_string()),
-                "description" => description = Some(value.to_string()),
-                "icon" => icon = Some(value.to_string()),
-                "category" => category = Some(value.to_string()),
-                _ => {}
-            }
-        }
-    }
-
-    (title, description, icon, category)
-}
-
-/// Search the pipe registry and display results.
+/// Search the configured pipe registry and print a table of matches.
 async fn handle_search_command(query: &str) -> anyhow::Result<()> {
-    let base = api_base_url();
-    let client = reqwest::Client::new();
-
-    let url = format!("{}/api/pipes/store", base);
-    let resp = client.get(&url).query(&[("q", query)]).send().await?;
-
-    let body: Value = resp.json().await?;
-
-    let pipes = body
+    let client = RegistryClient::from_config()?;
+    let result = client
+        .search(&StoreQuery {
+            q: Some(query.to_string()),
+            ..Default::default()
+        })
+        .await?;
+    let pipes = result
         .get("data")
-        .and_then(|v| v.as_array())
-        .or_else(|| body.as_array());
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default();
 
-    match pipes {
-        Some(pipes) if !pipes.is_empty() => {
-            println!(
-                "{:<30} {:<15} {:<10} {:<40}",
-                "SLUG", "CATEGORY", "INSTALLS", "DESCRIPTION"
-            );
-            println!("{}", "-".repeat(95));
-            for pipe in pipes {
-                let slug = pipe.get("slug").and_then(|v| v.as_str()).unwrap_or("?");
-                let category = pipe.get("category").and_then(|v| v.as_str()).unwrap_or("-");
-                let installs = pipe
-                    .get("install_count")
-                    .or_else(|| pipe.get("installs"))
-                    .and_then(|v| v.as_u64())
-                    .unwrap_or(0);
-                let desc = pipe
-                    .get("description")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("");
-                // Truncate description to fit
-                let desc_truncated = if desc.len() > 38 {
-                    format!("{}...", &desc[..35])
-                } else {
-                    desc.to_string()
-                };
-                println!(
-                    "{:<30} {:<15} {:<10} {:<40}",
-                    slug, category, installs, desc_truncated
-                );
-            }
-            println!("\n{} pipe(s) found", pipes.len());
-        }
-        _ => {
-            println!("no pipes found for '{}'", query);
-        }
+    if pipes.is_empty() {
+        println!("no pipes found for '{}'", query);
+        return Ok(());
     }
 
+    println!(
+        "{:<30} {:<15} {:<10} {:<40}",
+        "SLUG", "CATEGORY", "INSTALLS", "DESCRIPTION"
+    );
+    println!("{}", "-".repeat(95));
+    for pipe in &pipes {
+        let slug = pipe.get("slug").and_then(Value::as_str).unwrap_or("?");
+        let category = pipe.get("category").and_then(Value::as_str).unwrap_or("-");
+        let installs = install_count(pipe);
+        let desc = pipe
+            .get("description")
+            .and_then(Value::as_str)
+            .unwrap_or("");
+        println!(
+            "{:<30} {:<15} {:<10} {:<40}",
+            slug,
+            category,
+            installs,
+            truncate_chars(desc, 38)
+        );
+    }
+    println!("\n{} pipe(s) found", pipes.len());
     Ok(())
 }
 
-/// Show detailed info about a pipe from the registry.
+/// Show one pipe from the configured registry.
 async fn handle_info_command(slug: &str) -> anyhow::Result<()> {
-    let base = api_base_url();
-    let client = reqwest::Client::new();
+    let client = RegistryClient::from_config()?;
+    let body = client.detail(slug).await?;
+    // An API registry may wrap the pipe in "data"; a static index never does.
+    let pipe = body.get("data").filter(|d| d.is_object()).unwrap_or(&body);
 
-    let url = format!("{}/api/pipes/store/{}", base, slug);
-    let resp = client.get(&url).send().await?;
-
-    if !resp.status().is_success() {
-        anyhow::bail!("pipe '{}' not found in the registry", slug);
-    }
-
-    let body: Value = resp.json().await?;
-
-    // The pipe data might be nested under "data" or at top level
-    let pipe = body.get("data").unwrap_or(&body);
-
-    let title = pipe.get("title").and_then(|v| v.as_str()).unwrap_or(slug);
+    let title = pipe.get("title").and_then(Value::as_str).unwrap_or(slug);
     let description = pipe
         .get("description")
-        .and_then(|v| v.as_str())
+        .and_then(Value::as_str)
         .unwrap_or("-");
-    let category = pipe.get("category").and_then(|v| v.as_str()).unwrap_or("-");
-    let installs = pipe
-        .get("install_count")
-        .or_else(|| pipe.get("installs"))
-        .and_then(|v| v.as_u64())
-        .unwrap_or(0);
+    let category = pipe.get("category").and_then(Value::as_str).unwrap_or("-");
+    let author = pipe.get("author").and_then(Value::as_str).unwrap_or("-");
     let rating = pipe
         .get("average_rating")
         .or_else(|| pipe.get("rating"))
-        .and_then(|v| v.as_f64());
-    let author = pipe.get("author").and_then(|v| v.as_str()).unwrap_or("-");
+        .and_then(Value::as_f64);
 
     println!("{}", title);
-    println!("{}", "=".repeat(title.len()));
+    println!("{}", "=".repeat(title.chars().count()));
     println!();
     println!("slug:        {}", slug);
     println!("author:      {}", author);
     println!("category:    {}", category);
-    println!("installs:    {}", installs);
+    println!("installs:    {}", install_count(pipe));
+    if let Some(version) = pipe.get("version") {
+        println!(
+            "version:     {}",
+            version
+                .as_str()
+                .map(str::to_string)
+                .unwrap_or_else(|| version.to_string())
+        );
+    }
     if let Some(r) = rating {
         println!("rating:      {:.1}/5", r);
     }
     println!();
     println!("{}", description);
 
-    // Show permissions summary if available
     if let Some(permissions) = pipe.get("permissions") {
         println!();
         println!("permissions:");
@@ -413,88 +293,68 @@ async fn handle_info_command(slug: &str) -> anyhow::Result<()> {
                 println!("  {}: {}", key, value);
             }
         } else if let Some(perms) = permissions.as_array() {
-            for perm in perms {
-                if let Some(s) = perm.as_str() {
-                    println!("  - {}", s);
-                }
+            for perm in perms.iter().filter_map(Value::as_str) {
+                println!("  - {}", perm);
             }
         }
     }
 
     println!();
     println!("install with: screenpipe pipe install {}", slug);
-
     Ok(())
 }
 
-/// Check the publish/review status of a pipe you own.
-async fn handle_status_command(slug: &str) -> anyhow::Result<()> {
-    let token = get_auth_token().ok_or_else(|| {
+/// `pipe status`: publish and review state only exists on a hosted store,
+/// which Freenpipe does not use.
+fn handle_status_command(slug: &str) -> anyhow::Result<()> {
+    anyhow::bail!(
+        "publish and review status is not available for '{}': pipe registries are read-only here.\n\
+         use `screenpipe pipe info {}` to see what the configured registry lists",
+        slug,
+        slug
+    )
+}
+
+/// Install `slug` from the configured registry with update tracking.
+async fn install_from_registry(manager: &PipeManager, slug: &str) -> anyhow::Result<String> {
+    let client = RegistryClient::from_config().map_err(|_| {
         anyhow::anyhow!(
-            "no auth token found. set SCREENPIPE_API_KEY env var or create ~/.screenpipe/auth.json"
+            "'{}' is not a local path or an https:// URL, and no pipe registry is configured \
+             to look it up (set SCREENPIPE_API_BASE_URL)",
+            slug
         )
     })?;
+    let pipe = client.fetch_pipe(slug).await?;
+    let name = manager
+        .install_pipe_from_store(&pipe.source_md, &pipe.slug, pipe.version)
+        .await?;
+    client.record_install(&pipe.slug).await;
+    Ok(name)
+}
 
-    let base = api_base_url();
-    let client = reqwest::Client::new();
+/// Whether a `pipe install` source should be looked up in the registry: it is
+/// not an existing path, not a URL, and has the shape of a registry slug.
+fn is_registry_source(source: &str) -> bool {
+    !source.contains("://")
+        && !std::path::Path::new(source).exists()
+        && pipe_registry::is_valid_slug(source)
+        && !source.to_ascii_lowercase().ends_with(".md")
+}
 
-    let url = format!("{}/api/pipes/store/{}", base, slug);
-    let resp = client.get(&url).bearer_auth(&token).send().await?;
-
-    if !resp.status().is_success() {
-        anyhow::bail!("pipe '{}' not found in the registry", slug);
-    }
-
-    let body: Value = resp.json().await?;
-    let pipe = body.get("data").unwrap_or(&body);
-
-    let title = pipe.get("title").and_then(|v| v.as_str()).unwrap_or(slug);
-    let version = pipe.get("version").and_then(|v| v.as_str()).unwrap_or("-");
-    let review_status = pipe
-        .get("review_status")
-        .and_then(|v| v.as_str())
-        .unwrap_or("unknown");
-    let installs = pipe
-        .get("install_count")
+fn install_count(pipe: &Value) -> u64 {
+    pipe.get("install_count")
         .or_else(|| pipe.get("installs"))
-        .and_then(|v| v.as_u64())
-        .unwrap_or(0);
-    let rating = pipe
-        .get("average_rating")
-        .or_else(|| pipe.get("rating"))
-        .and_then(|v| v.as_f64());
+        .and_then(Value::as_u64)
+        .unwrap_or(0)
+}
 
-    println!("{}", title);
-    println!("{}", "=".repeat(title.len()));
-    println!();
-    println!("slug:           {}", slug);
-    println!("version:        {}", version);
-    println!("review_status:  {}", review_status);
-    println!("install_count:  {}", installs);
-    if let Some(r) = rating {
-        println!("avg_rating:     {:.1}/5", r);
+/// Shorten `text` to at most `max` characters, marking the cut with "...".
+fn truncate_chars(text: &str, max: usize) -> String {
+    if text.chars().count() <= max {
+        return text.to_string();
     }
-
-    match review_status {
-        "rejected" => {
-            if let Some(note) = pipe.get("review_note").and_then(|v| v.as_str()) {
-                println!();
-                println!("rejection reason: {}", note);
-            }
-        }
-        "pending" => {
-            if let Some(flags) = pipe.get("ai_review_flags") {
-                println!();
-                println!("ai review flags: {}", flags);
-            }
-            if let Some(reason) = pipe.get("ai_review_reason").and_then(|v| v.as_str()) {
-                println!("ai review reason: {}", reason);
-            }
-        }
-        _ => {}
-    }
-
-    Ok(())
+    let kept: String = text.chars().take(max.saturating_sub(3)).collect();
+    format!("{kept}...")
 }
 
 /// Handle `pipe models …` subcommands. Pure presentation — store IO and
@@ -821,5 +681,56 @@ fn first_line(s: &str) -> String {
         format!("{}…", line)
     } else {
         line.to_string()
+    }
+}
+
+#[cfg(test)]
+mod registry_command_tests {
+    use super::*;
+
+    #[test]
+    fn truncation_counts_characters_not_bytes() {
+        assert_eq!(truncate_chars("short", 38), "short");
+        assert_eq!(truncate_chars("abcdefghij", 8), "abcde...");
+        // Multi-byte text must not be cut inside a character.
+        assert_eq!(truncate_chars("ééééééééééé", 6), "ééé...");
+    }
+
+    #[test]
+    fn only_slug_shaped_sources_go_to_the_registry() {
+        assert!(is_registry_source("daily-summary"));
+        assert!(!is_registry_source("https://example.test/pipe.md"));
+        assert!(!is_registry_source("http://example.test/pipe.md"));
+        assert!(!is_registry_source("my-pipe.md"));
+        assert!(!is_registry_source("./relative/dir"));
+        assert!(!is_registry_source("../escape"));
+        let dir = tempfile::tempdir().unwrap();
+        let existing = dir.path().join("local-pipe");
+        std::fs::create_dir_all(&existing).unwrap();
+        assert!(!is_registry_source(existing.to_str().unwrap()));
+    }
+
+    #[test]
+    fn publish_points_at_the_pipe_file_instead_of_uploading() {
+        let dir = tempfile::tempdir().unwrap();
+        let pipe_dir = dir.path().join("standup");
+        std::fs::create_dir_all(&pipe_dir).unwrap();
+        std::fs::write(pipe_dir.join("pipe.md"), "---\nschedule: manual\n---\nhi").unwrap();
+
+        let message = handle_publish_command("standup", dir.path())
+            .unwrap_err()
+            .to_string();
+        assert!(message.contains("not supported"), "{message}");
+        assert!(message.contains("standup.md"), "{message}");
+
+        let missing = handle_publish_command("absent", dir.path())
+            .unwrap_err()
+            .to_string();
+        assert!(missing.contains("pipe.md not found"), "{missing}");
+    }
+
+    #[test]
+    fn status_is_refused() {
+        assert!(handle_status_command("anything").is_err());
     }
 }
