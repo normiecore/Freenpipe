@@ -109,11 +109,5 @@
     "og:site_name": "screenpipe docs",
     "og:image": "https://screenpi.pe/og-image.png",
     "twitter:site": "@screenpipe"
-  },
-  "integrations": {
-    "posthog": {
-      "apiKey": "phc_Bt8GoTBPgkCpDrbaIZzJIEYt0CrJjhBiuLaBck1clce",
-      "apiHost": "https://eu.i.posthog.com"
-    }
   }
 }
