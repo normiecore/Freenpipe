@@ -78,13 +78,16 @@ function CursorIcon({ className = "w-5 h-5" }: { className?: string }) {
 
 /**
  * Launch for the MCP server bundled with the app (`<bun> <install>/mcp/
- * screenpipe-mcp.js`, absolute paths, local API key in env). The generators
- * live in `lib/mcp-config.ts` and are shared with Settings → Connections, so
- * both screens write identical configs. Throws when this build has no
- * bundled server, which the card surfaces as an error.
+ * screenpipe-mcp.js`, absolute paths). The generators live in
+ * `lib/mcp-config.ts` and are shared with Settings → Connections. The local
+ * API key is written into the tool's config only when this build ships no
+ * CLI; otherwise the server reads it from the secret store through the
+ * bundled CLI, so no plain-text copy lands in third-party config files.
+ * Throws when this build has no bundled server, which the card surfaces as
+ * an error.
  */
 async function buildMcpConfig(): Promise<McpLaunch> {
-  return requireMcpLaunch({ includeApiKey: true });
+  return requireMcpLaunch({ apiKey: "cli-or-env" });
 }
 
 async function readMcpConfig(configPath: string): Promise<Record<string, unknown>> {

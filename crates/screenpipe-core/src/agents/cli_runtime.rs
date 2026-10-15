@@ -176,11 +176,45 @@ pub fn cmd_shim(cli: &Path) -> String {
     )
 }
 
-fn write_if_changed(path: &Path, content: &str) -> Result<bool> {
+/// Replace `path` with `content` unless it already holds exactly that. The
+/// new content goes to a temporary file in the same directory that is then
+/// renamed over `path`, so an agent starting at the same moment runs either
+/// the old launcher or the new one, never a half-written file.
+fn write_if_changed(path: &Path, content: &str, executable: bool) -> Result<bool> {
     if std::fs::read_to_string(path).ok().as_deref() == Some(content) {
         return Ok(false);
     }
-    std::fs::write(path, content).with_context(|| format!("writing {}", path.display()))?;
+    static COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let file_name = path
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    let tmp = path.with_file_name(format!(
+        ".{file_name}.{}.{}.tmp",
+        std::process::id(),
+        COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+    ));
+    let result = (|| -> Result<()> {
+        std::fs::write(&tmp, content).with_context(|| format!("writing {}", tmp.display()))?;
+        #[cfg(unix)]
+        if executable {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&tmp, std::fs::Permissions::from_mode(0o755))?;
+        }
+        #[cfg(not(unix))]
+        let _ = executable;
+        std::fs::rename(&tmp, path).with_context(|| format!("replacing {}", path.display()))?;
+        Ok(())
+    })();
+    if let Err(err) = result {
+        let _ = std::fs::remove_file(&tmp);
+        // Another process may have written the same launcher first (on
+        // Windows a file in use cannot be replaced); that is success too.
+        if std::fs::read_to_string(path).ok().as_deref() == Some(content) {
+            return Ok(false);
+        }
+        return Err(err);
+    }
     Ok(true)
 }
 
@@ -191,7 +225,7 @@ pub fn ensure_shims(data_dir: &Path, cli: &Path) -> Result<PathBuf> {
     std::fs::create_dir_all(&dir).with_context(|| format!("creating {}", dir.display()))?;
 
     let posix = dir.join("screenpipe");
-    write_if_changed(&posix, &posix_shim(cli, cfg!(windows)))?;
+    write_if_changed(&posix, &posix_shim(cli, cfg!(windows)), true)?;
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
@@ -202,7 +236,7 @@ pub fn ensure_shims(data_dir: &Path, cli: &Path) -> Result<PathBuf> {
         }
     }
     if cfg!(windows) {
-        write_if_changed(&dir.join("screenpipe.cmd"), &cmd_shim(cli))?;
+        write_if_changed(&dir.join("screenpipe.cmd"), &cmd_shim(cli), false)?;
     }
     Ok(dir)
 }
@@ -434,6 +468,52 @@ mod tests {
             mtime,
             "unchanged launcher must not be rewritten"
         );
+    }
+
+    #[test]
+    fn stale_launchers_are_replaced_whole_and_leave_no_temp_files() {
+        let tmp = tempfile::tempdir().unwrap();
+        let cli = tmp.path().join("install").join(cli_file_name());
+        let dir = tmp.path().join(SHIM_RELATIVE_DIR);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(
+            dir.join("screenpipe"),
+            "#!/bin/sh\nexec /old/screenpipe \"$@\"\n",
+        )
+        .unwrap();
+
+        // Agents starting together all get a complete launcher.
+        let handles: Vec<_> = (0..8)
+            .map(|_| {
+                let (data, cli) = (tmp.path().to_path_buf(), cli.clone());
+                std::thread::spawn(move || ensure_shims(&data, &cli).unwrap())
+            })
+            .collect();
+        for handle in handles {
+            handle.join().unwrap();
+        }
+
+        let posix = dir.join("screenpipe");
+        assert_eq!(
+            std::fs::read_to_string(&posix).unwrap(),
+            posix_shim(&cli, cfg!(windows))
+        );
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mode = std::fs::metadata(&posix).unwrap().permissions().mode();
+            assert_eq!(mode & 0o111, 0o111, "launcher must be executable");
+        }
+        let mut names: Vec<String> = std::fs::read_dir(&dir)
+            .unwrap()
+            .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+            .collect();
+        names.sort();
+        let mut expected = vec!["screenpipe".to_string()];
+        if cfg!(windows) {
+            expected.push("screenpipe.cmd".to_string());
+        }
+        assert_eq!(names, expected);
     }
 
     #[test]

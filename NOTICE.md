@@ -13,3 +13,7 @@ Freenpipe is a fork of [screenpipe](https://github.com/screenpipe/screenpipe).
 Behaviour added upstream after the relicense (screenpipe v2.5.27 → v2.7.104) was reimplemented clean-room from static analysis of the shipped v2.7.104 Windows binary, without access to post-relicense source. Only interoperability identifiers (API routes, JSON fields, SQL schema names, CLI flags, settings keys) intentionally match upstream.
 
 "screenpipe" is a name used by its respective owners. Freenpipe is not affiliated with or endorsed by them.
+
+## Third-party model weights
+
+The Windows installer redistributes two speaker-diarization models (pyannote segmentation-3.0, MIT; a WeSpeaker CAM++ VoxCeleb embedding model, CC BY 4.0). Their sources, licences and credits are in `crates/screenpipe-audio/models/pyannote/NOTICE.md`, which ships next to them in `<install>/models/pyannote/`.

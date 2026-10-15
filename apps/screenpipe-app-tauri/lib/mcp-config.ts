@@ -25,7 +25,30 @@ export type McpLaunch = {
 export type McpRuntimePaths = {
   bunPath: string | null;
   entryPath: string | null;
+  /** The bundled `screenpipe` CLI, when this build ships one. */
+  cliPath?: string | null;
 };
+
+/**
+ * How a generated config gives the server the local API key:
+ * - `"env"`: always written into the config's env block (plain text in the
+ *   tool's config file);
+ * - `"cli-or-env"`: left out when the app ships the CLI, which the server
+ *   runs as `<install>/screenpipe auth token` at start to read the key from
+ *   the secret store; written only when there is no CLI to ask;
+ * - `"none"`: never (text shown on screen).
+ */
+export type McpApiKeyMode = "env" | "cli-or-env" | "none";
+
+/** Whether a config built in `mode` should carry the API key. */
+export function shouldEmbedApiKey(
+  mode: McpApiKeyMode,
+  cliPath: string | null | undefined,
+): boolean {
+  if (mode === "env") return true;
+  if (mode === "cli-or-env") return !isAbsolutePath(cliPath);
+  return false;
+}
 
 /** Key under which tools list the server (kept for existing configs). */
 export const MCP_SERVER_NAME = "screenpipe";

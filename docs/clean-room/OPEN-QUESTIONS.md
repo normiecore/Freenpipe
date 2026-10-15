@@ -148,6 +148,12 @@ work package.
      REST API, MCP snippets show placeholders, models download on first use).
    - Reason: the CLI must sit beside the DLLs it loads; an `externalBin` would make every Windows dev
      build depend on a release build of the engine.
+   - Hand-off to the release pipeline (`.github/workflows/release-app.yml`, W0-03, already merged):
+     the Windows "Run pre_build.js" step should set `FREENPIPE_BUILD_CLI=1` (or build the CLI in an
+     earlier step and pass `FREENPIPE_CLI_BINARY`) and `FREENPIPE_REQUIRE_BUNDLED_RUNTIME=1`. Until it
+     does, a Windows installer built the default way ships without the CLI. Agents then fall back to
+     the REST API: the screenpipe-cli skill and the pipe-creation prompts say so. In required mode the
+     staging step refuses a CLI left over from an earlier run.
 
 5. **Should agents fall back to a `screenpipe` found on `PATH`?**
    - Decision: no. Agents get `SCREENPIPE_CLI`, a launcher directory (`<data dir>/pi-agent/bin`)
@@ -157,19 +163,29 @@ work package.
      acting on the user's data should use the binary that came with this app.
 
 6. **How is the MCP server shipped?**
-   - Decision: `packages/screenpipe-mcp` is bundled by `bun build --target=node --format=cjs` into one
-     file, `mcp/screenpipe-mcp.js`, and every generated MCP config runs `<bundled bun> <that file>`
-     by absolute path (`lib/mcp-config.ts`). The config also carries `SCREENPIPE_LOCAL_API_KEY` and a
-     `--port` when the API does not use 3030.
+   - Decision: `packages/screenpipe-mcp` is installed with `bun install --frozen-lockfile` and
+     bundled by `bun build --target=node --format=cjs` into one file, `mcp/screenpipe-mcp.js`. Every
+     generated MCP config runs `<bundled bun> <that file>` by absolute path (`lib/mcp-config.ts`),
+     with `--port` when the API does not use 3030. The staging step fails if the bundle mentions a
+     registry package (`screenpipe@latest`, `screenpipe-mcp@latest`) or a vendor host
+     (`screenpi.pe`, `screenpipe.com`, `mediar.ai`). To pass that check this branch drops the
+     enterprise `team-*` tools (`TEAM_API`, `fetchTeam`), with deletions identical to W0-05's, so
+     the two branches merge cleanly there.
    - Reason: a single CommonJS file needs no install step and runs under bun or node, and the server
-     always matches the installed app version.
+     always matches the installed app version. The check turns a vendor call that slips back into
+     the package into a failed build instead of a shipped one.
 
 7. **What does the standalone CLI's update notice compare against?**
-   - Decision: the latest GitHub release of `normiecore/Freenpipe` (`tag_name`), instead of the npm
-     registry entry of the upstream `screenpipe` package.
-   - Reason: the upstream package version says nothing about Freenpipe releases, and querying it
-     resolves a vendor package (cloud-M02). W0-05 owns `cli_reminder.rs` and removes the update check
-     altogether; once both are merged, W0-05's version of the file applies.
+   - Decision: nothing by default. `check_for_updates` runs only when the user configures an update
+     manifest (`SCREENPIPE_UPDATER_MANIFEST_URL`, the switchboard's `UpdaterManifest`; Tauri updater
+     format, top-level `version`). The npm registry query for the upstream `screenpipe` package is
+     gone, and so are the `npx screenpipe@latest record` banner line and the `npx -y screenpipe-mcp`
+     tip (now `screenpipe mcp setup`).
+   - Reason: new network calls must be user-configured, and the switchboard's contract is that an
+     unset updater manifest means no update checks (DECISIONS #3). `cli_reminder.rs` belongs to
+     W0-05, whose branch removes the update check and the remaining `npx screenpipe install / login /
+     survey` tips altogether; W0-09 keeps its edit to the lines above, and W0-05's version of the
+     file wins on merge.
 
 8. **Which SKILL.md do the agent cards serve?**
    - Decision: `scripts/gen-skill-content.js` now reads the product copies under
@@ -178,3 +194,30 @@ work package.
      CLI) is no longer read by the app.
    - Reason: the product copies are what the app installs into its own agent sessions, and the
      mirror is edited by other tooling.
+
+9. **Where does the local API key go in MCP configs written by onboarding?**
+   - Decision: when the app ships the CLI (`mcp_runtime_check` reports `cliPath`), onboarding writes
+     no key; the MCP server runs `<install>/screenpipe auth token` at start and reads it from the
+     secret store. Only builds without the CLI write `SCREENPIPE_LOCAL_API_KEY` into the Claude
+     Desktop, Cursor and Codex configs. Settings > Connections keeps writing the key, as the base app
+     did there.
+   - Reason: a plain-text copy of the key in third-party config files is avoidable once the CLI can
+     hand it over; the fallback keeps the tools working on builds without the CLI.
+
+10. **Does the PII model download honour the switchboard's model mirror setting?**
+    - Decision: not yet. `screenpipe-redact` reads `HF_ENDPOINT` directly (`adapters/hf_source.rs`),
+      which is the same variable the switchboard's `Endpoint::ModelMirror` reads, so environment
+      configuration behaves the same. A settings override of `ModelMirror` (W1-02) would not reach
+      it: `screenpipe-redact` does not depend on `screenpipe-core`.
+    - Hand-off to W1-02: when the `ModelMirror` settings key lands, pass
+      `screenpipe_core::endpoints::model_mirror_base()` into `screenpipe-redact` (a small setter or
+      resolver hook in `hf_source.rs`, installed by the engine at start).
+
+11. **What licences cover the bundled speaker models?**
+    - Decision: pyannote segmentation-3.0 is MIT; the WeSpeaker CAM++ VoxCeleb embedding model is
+      CC BY 4.0 (WeSpeaker ties VoxCeleb-trained models to the dataset licence). Attribution is in
+      `crates/screenpipe-audio/models/pyannote/NOTICE.md`, staged next to the models in the installer,
+      and `NOTICE.md` points to it.
+    - Open for the owner: the build VM could not reach the Hugging Face model card, so the MIT
+      declaration for segmentation-3.0 is from memory of that card and should be confirmed before a
+      release.

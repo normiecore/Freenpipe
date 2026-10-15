@@ -222,6 +222,7 @@ impl ModelLocator {
                     "cached {} model at {:?} no longer exists on disk, looking again",
                     self.spec.filename, path
                 );
+                forget_verified(path);
                 *cached = None;
             }
         }
@@ -244,6 +245,7 @@ impl ModelLocator {
         let path = downloader.ensure_model_available().await?;
         if let Err(err) = verify_download(self.spec, &path).await {
             let _ = tokio::fs::remove_file(&path).await;
+            forget_verified(&path);
             *self.model_path_lock.lock().await = None;
             return Err(err);
         }
@@ -256,6 +258,8 @@ impl ModelLocator {
     async fn discard(&self, path: &Path) {
         if self.is_cached_download(path) {
             let _ = tokio::fs::remove_file(path).await;
+            // The next download lands at the same path and must be hashed.
+            forget_verified(path);
         } else {
             self.bundled_rejected.store(true, Ordering::SeqCst);
         }
@@ -308,10 +312,28 @@ fn model_state(
     }
 }
 
+/// A verified download: its path plus the size and modification time it had
+/// when it was hashed, so a file replaced at the same path is hashed again.
+type VerifiedFile = (PathBuf, u64, Option<std::time::SystemTime>);
+
+fn verified_file(path: &Path) -> Option<VerifiedFile> {
+    let meta = std::fs::metadata(path).ok()?;
+    Some((path.to_path_buf(), meta.len(), meta.modified().ok()))
+}
+
 /// Downloads already checked in this process (hashing 30 MB once is enough).
-fn verified_downloads() -> &'static std::sync::Mutex<HashSet<PathBuf>> {
-    static VERIFIED: OnceLock<std::sync::Mutex<HashSet<PathBuf>>> = OnceLock::new();
+fn verified_downloads() -> &'static std::sync::Mutex<HashSet<VerifiedFile>> {
+    static VERIFIED: OnceLock<std::sync::Mutex<HashSet<VerifiedFile>>> = OnceLock::new();
     VERIFIED.get_or_init(|| std::sync::Mutex::new(HashSet::new()))
+}
+
+/// Drop every verification record for `path` (the file was deleted or
+/// replaced).
+fn forget_verified(path: &Path) {
+    verified_downloads()
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .retain(|(verified, _, _)| verified != path);
 }
 
 fn sha256_file(path: &Path) -> Result<String> {
@@ -337,12 +359,15 @@ fn sha256_file(path: &Path) -> Result<String> {
 
 /// Check a downloaded model against its pinned size and SHA-256.
 async fn verify_download(spec: &'static ModelSpec, path: &Path) -> Result<()> {
-    if verified_downloads()
-        .lock()
-        .unwrap_or_else(|e| e.into_inner())
-        .contains(path)
-    {
-        return Ok(());
+    let fingerprint = verified_file(path);
+    if let Some(fingerprint) = &fingerprint {
+        if verified_downloads()
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .contains(fingerprint)
+        {
+            return Ok(());
+        }
     }
     if !is_complete_model_file(path, spec) {
         return Err(anyhow!(
@@ -362,10 +387,13 @@ async fn verify_download(spec: &'static ModelSpec, path: &Path) -> Result<()> {
             spec.sha256
         ));
     }
-    verified_downloads()
-        .lock()
-        .unwrap_or_else(|e| e.into_inner())
-        .insert(path.to_path_buf());
+    if let Some(fingerprint) = fingerprint {
+        let mut verified = verified_downloads()
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        verified.retain(|(verified, _, _)| verified != path);
+        verified.insert(fingerprint);
+    }
     Ok(())
 }
 
@@ -642,6 +670,72 @@ mod tests {
         let short = tmp.path().join("short.onnx");
         std::fs::write(&short, b"ab").unwrap();
         assert!(verify_download(&SPEC, &short).await.is_err());
+    }
+
+    /// A download discarded after a load error is hashed again when the
+    /// retry puts a new file at the same path.
+    #[tokio::test]
+    async fn redownload_after_discard_is_hashed_again() {
+        static SPEC: ModelSpec = ModelSpec {
+            filename: "tiny-retry.onnx",
+            asset_name: "tiny-retry.onnx",
+            size: 3,
+            // sha256("abc")
+            sha256: "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad",
+        };
+        static LOCK: Mutex<Option<PathBuf>> = Mutex::const_new(None);
+        static DOWNLOADING: AtomicBool = AtomicBool::new(false);
+        static REJECTED: AtomicBool = AtomicBool::new(false);
+
+        let tmp = tempdir().unwrap();
+        let cache_dir = tmp.path().join("cache");
+        std::fs::create_dir_all(&cache_dir).unwrap();
+        let path = cache_dir.join(SPEC.filename);
+        std::fs::write(&path, b"abc").unwrap();
+        verify_download(&SPEC, &path).await.unwrap();
+
+        let locator = ModelLocator {
+            spec: &SPEC,
+            bundled_dirs: Vec::new(),
+            cache_dir: cache_dir.clone(),
+            url: "http://127.0.0.1:9/unreachable.onnx".to_string(),
+            model_path_lock: &LOCK,
+            downloading_flag: &DOWNLOADING,
+            bundled_rejected: &REJECTED,
+        };
+        *LOCK.lock().await = Some(path.clone());
+        locator.discard(&path).await;
+        assert!(!path.exists(), "a discarded download is deleted");
+
+        // Same path, same size, different bytes: must fail the pin.
+        std::fs::write(&path, b"abd").unwrap();
+        let err = verify_download(&SPEC, &path).await.unwrap_err();
+        assert!(err.to_string().contains("integrity"), "{err}");
+    }
+
+    #[tokio::test]
+    async fn file_replaced_in_place_is_hashed_again() {
+        static SPEC: ModelSpec = ModelSpec {
+            filename: "tiny-replaced.onnx",
+            asset_name: "tiny-replaced.onnx",
+            size: 3,
+            // sha256("abc")
+            sha256: "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad",
+        };
+        let tmp = tempdir().unwrap();
+        let path = tmp.path().join(SPEC.filename);
+        std::fs::write(&path, b"abc").unwrap();
+        verify_download(&SPEC, &path).await.unwrap();
+
+        // Replace the file without going through discard(); give it a
+        // different modification time so the fingerprint changes even on
+        // file systems with coarse timestamps.
+        std::fs::write(&path, b"abd").unwrap();
+        let file = std::fs::File::options().write(true).open(&path).unwrap();
+        file.set_modified(std::time::SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(1))
+            .unwrap();
+        drop(file);
+        assert!(verify_download(&SPEC, &path).await.is_err());
     }
 
     /// Network check of the default mirror: both models download and match

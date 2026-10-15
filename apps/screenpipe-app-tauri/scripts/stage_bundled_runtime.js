@@ -7,6 +7,7 @@
 //   bundled/cli/screenpipe(.exe)          -> <install>/screenpipe(.exe)
 //   bundled/mcp/screenpipe-mcp.js         -> <install>/mcp/screenpipe-mcp.js
 //   bundled/models/pyannote/<model>.onnx  -> <install>/models/pyannote/
+//   bundled/models/pyannote/NOTICE.md     (sources and licences of the models)
 //
 // Nothing here resolves a package from a registry at app run time: the MCP
 // server is bundled from packages/screenpipe-mcp in this repository, the CLI
@@ -57,6 +58,28 @@ export const PYANNOTE_MODELS = [
 
 export const MCP_ENTRY = path.join('mcp', 'screenpipe-mcp.js')
 
+/** Attribution file staged next to the models (from the repository folder). */
+export const MODEL_NOTICE = 'NOTICE.md'
+
+// Upper bound for one model download, so a stalled connection cannot hang
+// the build (the larger file is about 30 MB).
+export const MODEL_FETCH_TIMEOUT_MS = 10 * 60 * 1000
+
+// Text that must never appear in the shipped MCP bundle: registry packages
+// resolved at run time, and hosts of the upstream vendor's services.
+const FORBIDDEN_IN_MCP_BUNDLE = [
+	[/screenpipe(-mcp)?@latest/, 'a registry package reference'],
+	[/screenpi\.pe|screenpipe\.com|mediar\.ai/i, 'a vendor service host'],
+]
+
+/** Throws when the built MCP bundle text contains anything forbidden. */
+export function assertCleanMcpBundle(text) {
+	for (const [pattern, what] of FORBIDDEN_IN_MCP_BUNDLE) {
+		const hit = text.match(pattern)
+		if (hit) throw new Error(`MCP bundle contains ${what} (${hit[0]})`)
+	}
+}
+
 /** Mirror URL of one model. Rejects anything but http(s) bases. */
 export function pyannoteModelUrl(model, baseOverride) {
 	const raw = (baseOverride ?? '').trim()
@@ -95,11 +118,15 @@ async function writeAtomically(dest, buffer) {
  */
 export async function buildMcpBundle(repoRoot, outFile) {
 	const pkgDir = path.join(repoRoot, 'packages', 'screenpipe-mcp')
-	await $`bun install`.cwd(pkgDir)
+	// --frozen-lockfile: build exactly the versions pinned in bun.lock, and
+	// fail instead of rewriting the lockfile when package.json drifted.
+	await $`bun install --frozen-lockfile`.cwd(pkgDir)
 	await $`bun build ./src/cli.ts --target=node --format=cjs --outfile=${outFile}`.cwd(pkgDir)
-	const text = await fs.readFile(outFile, 'utf8')
-	if (/screenpipe(-mcp)?@latest/.test(text)) {
-		throw new Error('MCP bundle still references a registry package')
+	try {
+		assertCleanMcpBundle(await fs.readFile(outFile, 'utf8'))
+	} catch (error) {
+		await fs.rm(outFile, { force: true })
+		throw error
 	}
 	return outFile
 }
@@ -121,11 +148,14 @@ async function stageCli({ repoRoot, stageRoot, platform }) {
 		source = path.join(targetDir, 'release', exe)
 	}
 	if (!source) {
-		const staged = await fs.stat(dest).then(() => true, () => false)
-		const note = staged ? 'keeping the copy staged earlier' : 'agents will use the REST API instead'
-		if (process.env.FREENPIPE_REQUIRE_BUNDLED_RUNTIME === '1' && !staged) {
+		// A release must ship the CLI built for it, never one left over from
+		// an earlier run, so required mode ignores a previously staged copy.
+		if (process.env.FREENPIPE_REQUIRE_BUNDLED_RUNTIME === '1') {
+			await fs.rm(dest, { force: true })
 			throw new Error('no CLI binary: set FREENPIPE_CLI_BINARY or FREENPIPE_BUILD_CLI=1')
 		}
+		const staged = await fs.stat(dest).then(() => true, () => false)
+		const note = staged ? 'keeping the copy staged earlier' : 'agents will use the REST API instead'
 		console.log(`[bundled-runtime] CLI not provided (FREENPIPE_CLI_BINARY / FREENPIPE_BUILD_CLI); ${note}`)
 		return
 	}
@@ -137,6 +167,8 @@ async function stageCli({ repoRoot, stageRoot, platform }) {
 async function stagePyannote({ repoRoot, stageRoot }) {
 	const destDir = path.join(stageRoot, 'models', 'pyannote')
 	const repoDir = path.join(repoRoot, 'crates', 'screenpipe-audio', 'models', 'pyannote')
+	// Sources and licences of the weights ship next to them.
+	await fs.copyFile(path.join(repoDir, MODEL_NOTICE), path.join(destDir, MODEL_NOTICE))
 	for (const model of PYANNOTE_MODELS) {
 		const dest = path.join(destDir, model.filename)
 		const staged = await readIfSized(dest, model.size)
@@ -150,7 +182,7 @@ async function stagePyannote({ repoRoot, stageRoot }) {
 		}
 
 		const url = pyannoteModelUrl(model, process.env.SCREENPIPE_PYANNOTE_BASE_URL)
-		const res = await fetch(url)
+		const res = await fetch(url, { signal: AbortSignal.timeout(MODEL_FETCH_TIMEOUT_MS) })
 		if (!res.ok) throw new Error(`${model.filename}: HTTP ${res.status} from ${url}`)
 		const body = Buffer.from(await res.arrayBuffer())
 		if (!isExpectedModel(body, model)) {

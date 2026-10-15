@@ -9,20 +9,22 @@ import {
   buildMcpLaunch,
   MCP_NOT_BUNDLED_MESSAGE,
   PLACEHOLDER_MCP_LAUNCH,
+  shouldEmbedApiKey,
   withoutEnv,
+  type McpApiKeyMode,
   type McpLaunch,
   type McpRuntimePaths,
 } from "@/lib/mcp-config";
 
 /**
  * Launch for the MCP server bundled with this install, or `null` when the
- * build has none. A non-default local API port is always passed. With
- * `includeApiKey`, the local API key goes into the launch env so the server
- * can authenticate without asking the CLI; use that only for configs written
- * to the user's own files, never for text shown on screen.
+ * build has none. A non-default local API port is always passed. `apiKey`
+ * (default `"none"`) decides whether the local API key goes into the launch
+ * env, see {@link McpApiKeyMode}; a key belongs only in configs written to
+ * the user's own files, never in text shown on screen.
  */
 export async function resolveMcpLaunch(
-  opts: { includeApiKey?: boolean } = {},
+  opts: { apiKey?: McpApiKeyMode } = {},
 ): Promise<McpLaunch | null> {
   let runtime: McpRuntimePaths | null = null;
   try {
@@ -40,7 +42,7 @@ export async function resolveMcpLaunch(
       key?: string | null;
       port?: number | null;
     } | null;
-    if (opts.includeApiKey) apiKey = cfg?.key ?? null;
+    if (shouldEmbedApiKey(opts.apiKey ?? "none", runtime.cliPath)) apiKey = cfg?.key ?? null;
     port = typeof cfg?.port === "number" ? cfg.port : null;
   } catch {
     /* defaults: no key in the config, default port */
@@ -54,7 +56,7 @@ export async function resolveMcpLaunch(
 
 /** Like {@link resolveMcpLaunch} but throws a user-readable error when absent. */
 export async function requireMcpLaunch(
-  opts: { includeApiKey?: boolean } = {},
+  opts: { apiKey?: McpApiKeyMode } = {},
 ): Promise<McpLaunch> {
   const launch = await resolveMcpLaunch(opts);
   if (!launch) throw new Error(MCP_NOT_BUNDLED_MESSAGE);

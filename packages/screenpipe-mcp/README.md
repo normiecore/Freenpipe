@@ -217,13 +217,11 @@ SQLite database under `~/.screenpipe/` on your device. Retention is
 whatever you configure in Freenpipe, usually in the storage settings.
 
 ### Third-party sharing
-None for the local tools: they only talk to `localhost:3030` and do
-not contact Anthropic, the upstream vendor's servers, or any other
-external service. The team tools are the exception until work package
-W0-05 lands: when a team token is configured they call the upstream
-vendor's enterprise API (`TEAM_API` in `src/index.ts`). If you configure
-a cloud AI provider or another remote service in Freenpipe itself, that
-data flow is governed by the provider you chose, not by this MCP server.
+None: the server only talks to `localhost:3030` and does not contact
+Anthropic, the upstream vendor's servers, or any other external service.
+If you configure a cloud AI provider or another remote service in
+Freenpipe itself, that data flow is governed by the provider you chose,
+not by this MCP server.
 
 ### Retention
 The MCP server has no persistent state. The data Freenpipe captures is

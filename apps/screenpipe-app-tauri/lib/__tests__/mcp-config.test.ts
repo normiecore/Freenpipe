@@ -12,6 +12,7 @@ import {
   launchJson,
   mcpServersJson,
   mergeMcpServer,
+  shouldEmbedApiKey,
   warpServerJson,
   withoutEnv,
   type McpLaunch,
@@ -134,5 +135,25 @@ describe("other tool formats", () => {
     expect(parsed.args).toEqual(display.args);
     expect(parsed.start_on_launch).toBe(true);
     expect(hermesYaml(display)).toContain(`command: ${JSON.stringify(display.command)}`);
+  });
+});
+
+describe("API key placement", () => {
+  const cli = "C:\\Program Files\\Freenpipe\\screenpipe.exe";
+
+  it("onboarding leaves the key to the bundled CLI when there is one", () => {
+    expect(shouldEmbedApiKey("cli-or-env", cli)).toBe(false);
+    expect(shouldEmbedApiKey("cli-or-env", "/Applications/Freenpipe.app/Contents/MacOS/screenpipe")).toBe(false);
+  });
+
+  it("writes the key as a fallback when no CLI ships", () => {
+    expect(shouldEmbedApiKey("cli-or-env", null)).toBe(true);
+    expect(shouldEmbedApiKey("cli-or-env", undefined)).toBe(true);
+    expect(shouldEmbedApiKey("cli-or-env", "screenpipe")).toBe(true); // relative: not usable
+  });
+
+  it("follows the explicit modes", () => {
+    expect(shouldEmbedApiKey("env", cli)).toBe(true);
+    expect(shouldEmbedApiKey("none", null)).toBe(false);
   });
 });

@@ -366,12 +366,13 @@ async function detectInstalledConnectionIds(): Promise<Set<string>> {
 
 /**
  * MCP launch for the server bundled with the app: `<bun> <install>/mcp/
- * screenpipe-mcp.js` by absolute path, with the local API key in env. Shared
- * with onboarding through `lib/mcp-config.ts`, so both write identical
- * configs. Throws a readable error when this build has no bundled server.
+ * screenpipe-mcp.js` by absolute path, with the local API key in env (as the
+ * base app wrote it here). The generators are shared with onboarding through
+ * `lib/mcp-config.ts`; onboarding leaves the key out when the CLI is
+ * bundled. Throws a readable error when this build has no bundled server.
  */
 async function buildMcpConfig(): Promise<McpCommand> {
-  return requireMcpLaunch({ includeApiKey: true });
+  return requireMcpLaunch({ apiKey: "env" });
 }
 
 async function installCursorMcp(): Promise<void> {

@@ -10,6 +10,7 @@ Run commands as `screenpipe <command>`. The CLI is installed with the desktop ap
 - In agent sessions started by the app, `screenpipe` already points at that binary, and its absolute path is in `$SCREENPIPE_CLI`. Use `"$SCREENPIPE_CLI" <command>` if a tool runs without a shell.
 - In your own terminal, call the `screenpipe` executable in the app's install folder (on Windows, next to the app's `.exe`).
 - Do not fetch the CLI from npm (`npx`, `bun x`); those packages are not this app.
+- Some builds ship without the CLI. If `screenpipe` is not found and `$SCREENPIPE_CLI` is empty, do the same work through the local REST API (screenpipe-api skill, same auth header): `GET /pipes`, `POST /pipes/install` with `{"source": "<url-or-path>"}`, `POST /pipes/<name>/enable` with `{"enabled": true}`, `POST /pipes/<name>/run`, `GET /connections`.
 
 ## Shell
 

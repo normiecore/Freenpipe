@@ -158,6 +158,8 @@ install: screenpipe pipe install ~/.screenpipe/pipes/my-pipe
 enable:  screenpipe pipe enable my-pipe
 test:    screenpipe pipe run my-pipe
 
+if \`screenpipe\` is not found and $SCREENPIPE_CLI is empty, this build has no CLI: use the local REST API instead (POST /pipes/install with {"source": "<path>"}, then POST /pipes/my-pipe/enable with {"enabled": true}; send the header "Authorization: Bearer $SCREENPIPE_LOCAL_API_KEY")
+
 ## important formatting rules
 
 the pipe.md file MUST start with --- on the very first line (YAML front-matter). no blank lines or comments before it.

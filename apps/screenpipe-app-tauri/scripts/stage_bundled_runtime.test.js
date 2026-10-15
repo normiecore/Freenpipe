@@ -8,9 +8,11 @@ import { mkdtemp, readFile, rm } from 'fs/promises'
 import os from 'os'
 import path from 'path'
 import {
+	assertCleanMcpBundle,
 	buildMcpBundle,
 	DEFAULT_PYANNOTE_BASE_URL,
 	isExpectedModel,
+	MODEL_NOTICE,
 	PYANNOTE_MODELS,
 	pyannoteModelUrl,
 	sha256Hex,
@@ -62,6 +64,18 @@ describe('pyannote model table', () => {
 		}
 	})
 
+	it('ships an attribution notice naming every model and its hash', async () => {
+		const notice = await readFile(
+			path.join(repoRoot, 'crates/screenpipe-audio/models/pyannote', MODEL_NOTICE),
+			'utf8',
+		)
+		for (const m of PYANNOTE_MODELS) {
+			expect(notice).toContain(m.filename)
+			expect(notice).toContain(m.sha256)
+		}
+		expect(notice).toContain('CC BY 4.0')
+	})
+
 	it('accepts only the exact pinned bytes', () => {
 		const body = Buffer.from('abc')
 		const model = { size: 3, sha256: sha256Hex(body) }
@@ -72,6 +86,13 @@ describe('pyannote model table', () => {
 })
 
 describe('bundled MCP server', () => {
+	it('rejects bundles that reach a registry package or a vendor host', () => {
+		expect(() => assertCleanMcpBundle('const API = "http://localhost:3030"')).not.toThrow()
+		expect(() => assertCleanMcpBundle('spawn("npx", ["screenpipe-mcp@latest"])')).toThrow(/registry/)
+		expect(() => assertCleanMcpBundle('fetch("https://screenpi.pe/api/x")')).toThrow(/vendor/)
+		expect(() => assertCleanMcpBundle('const u = "https://API.SCREENPIPE.COM/v1"')).toThrow(/vendor/)
+	})
+
 	it(
 		'builds into one file that answers tools/list over stdio',
 		async () => {
