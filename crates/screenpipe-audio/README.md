@@ -1,4 +1,3 @@
+# screenpipe-audio
 
-
-
-![image](https://github.com/user-attachments/assets/d27c6f28-7f68-44ba-9e8c-124019daf83a)
+Audio capture and transcription for Freenpipe: device enumeration (`device/`), voice activity detection (`vad/`), speech-to-text engines (`transcription/`), speaker segmentation and identification (`segmentation/`, `speaker/`) and meeting audio handling (`meeting_detector.rs`, `meeting_streaming/`).
