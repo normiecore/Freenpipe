@@ -156,8 +156,8 @@ async function connect(): Promise<void> {
       if (closeWithoutOpen >= AUTH_FAIL_THRESHOLD) {
         setBadge("!", "#dc2626");
         notifyOnce(
-          "Screenpipe extension needs a token",
-          "Open the extension options to paste your screenpipe API token."
+          "Freenpipe extension needs a token",
+          "Open the extension options to paste your Freenpipe API token."
         );
       }
     }

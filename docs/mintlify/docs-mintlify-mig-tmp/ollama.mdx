@@ -1,11 +1,11 @@
 ---
-title: "Ollama — run AI locally with screenpipe"
+title: "Ollama — run AI locally with Freenpipe"
 sidebarTitle: "ollama"
-description: "Run open-source LLMs like Llama, Qwen, and Mistral locally with Ollama and screenpipe — completely free, private, and offline with no API keys required."
+description: "Run open-source LLMs such as Llama, Qwen and Mistral locally with Ollama and Freenpipe, offline and without an API key."
 icon: "ollama-icon.svg"
 ---
 
-[Ollama](https://ollama.com) lets you run AI models locally on your machine. screenpipe integrates natively with Ollama — no API keys, no cloud, completely private.
+[Ollama](https://ollama.com) lets you run AI models locally on your machine. Freenpipe works with Ollama directly: no API key, and nothing leaves your machine.
 
 ## setup
 
@@ -18,15 +18,15 @@ ollama run ministral-3
 
 this downloads the model and starts Ollama. you can use any model — `ministral-3` is a good starting point (fast, works on most machines).
 
-### 2. select Ollama in screenpipe
+### 2. select Ollama in Freenpipe
 
-1. open the **screenpipe app**
+1. open the **Freenpipe app**
 2. click the **AI preset selector** (top of the chat/timeline)
 3. click **Ollama**
-4. pick your model from the dropdown (screenpipe auto-detects pulled models)
+4. pick your model from the dropdown (Freenpipe auto-detects pulled models)
 5. start chatting
 
-that's it. screenpipe talks to Ollama on `localhost:11434` automatically.
+that's it. Freenpipe talks to Ollama on `localhost:11434` automatically.
 
 ## recommended models
 
@@ -47,11 +47,11 @@ ollama pull <model-name>
 
 - [Ollama](https://ollama.com) installed and running
 - at least one model pulled
-- screenpipe running
+- Freenpipe running
 
 ## custom OpenAI-compatible endpoints
 
-if you're running a custom LLM server (Qwen, vLLM, Text Generation WebUI, etc.), screenpipe auto-detects the endpoint format:
+if you're running a custom LLM server (Qwen, vLLM, Text Generation WebUI, etc.), Freenpipe auto-detects the endpoint format:
 
 1. first tries OpenAI-compatible format: `GET {endpoint}/v1/models`
 2. falls back to Ollama format: `GET {endpoint}/api/tags`
@@ -60,9 +60,9 @@ if you're running a custom LLM server (Qwen, vLLM, Text Generation WebUI, etc.),
 
 - check what path your server uses for model listing (`/models`, `/v1/list`, etc.)
 - if unsure, test with curl first: `curl {your-endpoint}/path-to-models`
-- join our [Discord](https://discord.gg/screenpipe) — we can help troubleshoot custom setups
+- open a [GitHub issue](https://github.com/normiecore/Freenpipe/issues) with the details of your setup
 
-example: a Qwen server on `http://localhost:5000` with OpenAI-compatible API should work automatically. if screenpipe can't find models, verify the server responds to: `curl http://localhost:5000/v1/models`
+example: a Qwen server on `http://localhost:5000` with OpenAI-compatible API should work automatically. if Freenpipe can't find models, verify the server responds to: `curl http://localhost:5000/v1/models`
 
 ## troubleshooting
 
@@ -83,7 +83,7 @@ example: a Qwen server on `http://localhost:5000` with OpenAI-compatible API sho
 
 ### Error: "unsupported tool use" or "does not support more than one tool call"
 
-screenpipe sends multiple tool calls to the LLM for agentic features. some models (especially older Azure-hosted models like Phi-4, older Llama versions) don't support this.
+Freenpipe sends multiple tool calls to the LLM for agentic features. some models (especially older Azure-hosted models like Phi-4, older Llama versions) don't support this.
 
 **fixes:**
 - use a model that supports tool use: `gpt-4`, `gpt-4-turbo`, `claude-3-5-sonnet`, `gpt-oss-120b`
@@ -92,18 +92,18 @@ screenpipe sends multiple tool calls to the LLM for agentic features. some model
 
 ### Error: "max tokens is not supported"
 
-your endpoint doesn't recognize the `max_tokens` parameter that screenpipe sends.
+your endpoint doesn't recognize the `max_tokens` parameter that Freenpipe sends.
 
 **fixes:**
 1. verify your endpoint supports OpenAI-compatible API: `curl -H "Authorization: Bearer YOUR_KEY" https://your-endpoint/v1/models`
 2. if using Azure, ensure you're using the OpenAI-compatible endpoint format (not the old REST API format)
 3. try a custom endpoint URL wrapper if your server needs parameter translation
 
-### API key not being passed to screenpipe API
+### API key not being passed to Freenpipe API
 
-if screenpipe says "unauthorized" when accessing the local API, but your custom LLM endpoint is configured:
+if Freenpipe says "unauthorized" when accessing the local API, but your custom LLM endpoint is configured:
 
-**cause:** screenpipe CLI doesn't automatically share API credentials with the local REST API server.
+**cause:** Freenpipe CLI doesn't automatically share API credentials with the local REST API server.
 
 **fix:** configure your pipe or app to use the API key explicitly:
 ```bash
@@ -111,11 +111,11 @@ curl "http://localhost:3030/search?limit=5" \
   -H "Authorization: Bearer YOUR_SCREENPIPE_API_KEY"
 ```
 
-or set the API key in screenpipe settings → API security → enable API key auth, then provide that key in your requests.
+or set the API key in Freenpipe settings → API security → enable API key auth, then provide that key in your requests.
 
 ### Custom endpoint not responding / models not detected
 
-screenpipe tries both OpenAI and Ollama formats. if neither works:
+Freenpipe tries both OpenAI and Ollama formats. if neither works:
 
 1. **test your endpoint manually:**
    ```bash
@@ -137,6 +137,6 @@ screenpipe tries both OpenAI and Ollama formats. if neither works:
    - vLLM: `/v1/models` (OpenAI-compatible)
    - Text Generation WebUI: `/api/v1/models` (may vary)
 
-if stuck, [join our Discord](https://discord.gg/screenpipe) — share your endpoint URL structure and error logs.
+if stuck, open a [GitHub issue](https://github.com/normiecore/Freenpipe/issues) with your endpoint URL structure and error logs.
 
-need help? [join our discord](https://discord.gg/screenpipe) — get recommendations on models and configs from the community.
+need help? open a [GitHub issue](https://github.com/normiecore/Freenpipe/issues).

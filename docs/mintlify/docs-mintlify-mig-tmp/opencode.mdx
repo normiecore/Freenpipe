@@ -1,22 +1,22 @@
 ---
 title: "OpenCode - terminal AI with screen memory"
 sidebarTitle: "opencode"
-description: "Integrate screenpipe with OpenCode to give your terminal AI assistant access to your screen history, audio transcriptions, and app context."
+description: "Integrate Freenpipe with OpenCode to give your terminal AI assistant access to your screen history, audio transcriptions, and app context."
 icon: "code"
 ---
 
-[OpenCode](https://github.com/opencode-ai/opencode) is a powerful terminal-based AI coding assistant written in Go. it implements the [Agent Skills](https://opencode.ai/docs/skills) open standard, which means screenpipe skills work out of the box.
+[OpenCode](https://github.com/opencode-ai/opencode) is a powerful terminal-based AI coding assistant written in Go. it implements the [Agent Skills](https://opencode.ai/docs/skills) open standard, which means Freenpipe skills work out of the box.
 
 ## setup
 
-OpenCode discovers skills from multiple locations. copy the screenpipe skills to any of these:
+OpenCode discovers skills from multiple locations. copy the Freenpipe skills to any of these:
 
 ### option 1: project-level
 
 ```bash
 # copy to current project
 mkdir -p .opencode/skills
-cp -r /path/to/screenpipe/.claude/agents/* .opencode/skills/
+cp -r /path/to/Freenpipe/.claude/skills/* .opencode/skills/
 ```
 
 ### option 2: user-level (global)
@@ -24,19 +24,19 @@ cp -r /path/to/screenpipe/.claude/agents/* .opencode/skills/
 ```bash
 # copy to home directory for all projects
 mkdir -p ~/.opencode/skills
-cp -r /path/to/screenpipe/.claude/agents/* ~/.opencode/skills/
+cp -r /path/to/Freenpipe/.claude/skills/* ~/.opencode/skills/
 ```
 
 ### option 3: clone directly
 
 ```bash
-# clone screenpipe and symlink skills
-git clone https://github.com/screenpipe/screenpipe ~/screenpipe
-ln -s ~/screenpipe/.claude/agents ~/.opencode/skills/screenpipe
+# clone Freenpipe and symlink skills
+git clone https://github.com/normiecore/Freenpipe ~/Freenpipe
+ln -s ~/Freenpipe/.claude/skills ~/.opencode/skills/screenpipe
 ```
 
 <Note>
-OpenCode uses the same Agent Skills format as Claude Code. files in `.claude/agents/` work in `.opencode/skills/` and vice versa.
+OpenCode uses the same Agent Skills format as Claude Code. files in `.claude/skills/` work in `.opencode/skills/` and vice versa.
 </Note>
 
 ## available skills
@@ -45,7 +45,7 @@ OpenCode uses the same Agent Skills format as Claude Code. files in `.claude/age
 |-------|-------------|
 | `screenpipe-query` | search accessibility-first screen text, audio transcriptions, and UI events (keyboard input, clicks, app switches, clipboard) |
 | `screenpipe-health` | check status, diagnose issues, verify permissions |
-| `screenpipe-logs` | retrieve and analyze screenpipe logs |
+| `screenpipe-logs` | retrieve and analyze Freenpipe logs |
 
 ## usage
 
@@ -114,7 +114,7 @@ skills are more token-efficient than MCP. the OpenCode team recommends skills fo
 
 ## skill format reference
 
-screenpipe skills follow the Agent Skills standard:
+Freenpipe skills follow the Agent Skills standard:
 
 ```markdown
 ---
@@ -134,7 +134,7 @@ you can customize these skills or create your own following the same format.
 
 ## requirements
 
-- screenpipe running on localhost:3030
+- Freenpipe running on localhost:3030
 - OpenCode installed (`go install github.com/opencode-ai/opencode@latest`)
 - skills copied to `.opencode/skills/` or `~/.opencode/skills/`
 
@@ -146,12 +146,12 @@ you can customize these skills or create your own following the same format.
 - check skill file ends in `.md`
 
 **queries returning no data?**
-- verify screenpipe is running: `curl http://localhost:3030/health`
+- verify Freenpipe is running: `curl http://localhost:3030/health`
 - check data exists: `curl "http://localhost:3030/search?limit=1"`
-- ensure screenpipe has screen recording permissions
+- ensure Freenpipe has screen recording permissions
 
 **OpenCode not using skills?**
 - mention the skill explicitly: `@screenpipe-query find...`
 - check skill description matches your query intent
 
-still stuck? [ask in our discord](https://discord.gg/screenpipe).
+still stuck? open a [GitHub issue](https://github.com/normiecore/Freenpipe/issues).

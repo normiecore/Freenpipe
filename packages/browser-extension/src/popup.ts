@@ -164,7 +164,7 @@ function setStatusUI(status: ConnStatus): void {
     ok:            "bridge connected",
     bridge_down:   "connecting…",
     auth_required: "not connected",
-    server_down:   "screenpipe not running",
+    server_down:   "Freenpipe not running",
     error:         "connection error",
   };
   text.textContent = labels[status];
@@ -185,7 +185,7 @@ function setStatusUI(status: ConnStatus): void {
   } else if (status === "server_down") {
     openBtn.hidden = false;
     openBtn.disabled = false;
-    hint.textContent = "Open the Screenpipe desktop app first.";
+    hint.textContent = "Open the Freenpipe desktop app first.";
     section.hidden = false;
   }
 }
@@ -238,7 +238,7 @@ async function runPairingFlow(baseUrl: string, existingPair?: PairState): Promis
       await saveSessionPair({ id: pairId, code, baseUrl, startedAt: Date.now() });
     }
 
-    setPairingUI(code, "Switch to Screenpipe and click Allow.");
+    setPairingUI(code, "Switch to Freenpipe and click Allow.");
     bar.dataset.state = "bridge_down";
     text.textContent = "waiting for approval…";
 
@@ -316,7 +316,7 @@ async function tryOpenScreenpipe(baseUrl: string): Promise<void> {
   const btn = $<HTMLButtonElement>("open-btn");
   const hint = $<HTMLSpanElement>("action-hint");
   btn.disabled = true;
-  hint.textContent = "Trying to open Screenpipe…";
+  hint.textContent = "Trying to open Freenpipe…";
 
   await tryFocusScreenpipe();
   await new Promise((r) => setTimeout(r, 1500));
@@ -327,7 +327,7 @@ async function tryOpenScreenpipe(baseUrl: string): Promise<void> {
     setStatusUI(status);
   } else {
     btn.disabled = false;
-    hint.textContent = "Screenpipe is not running — please open it.";
+    hint.textContent = "Freenpipe is not running. Please open it.";
   }
 }
 
