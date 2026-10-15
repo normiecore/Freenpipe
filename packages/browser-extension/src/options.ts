@@ -69,7 +69,7 @@ function setPairCode(code: string | null): void {
   details.hidden = !code;
   details.open = false;
   el.textContent = code
-    ? `match code: ${code}. approve only if the same code appears in screenpipe.`
+    ? `match code: ${code}. approve only if the same code appears in Freenpipe.`
     : "";
 }
 
@@ -81,10 +81,10 @@ function setConnectedUi(connected: boolean): void {
 
   connect.hidden = connected;
   advanced.textContent = connected ? "Troubleshooting" : "Manual setup";
-  title.textContent = connected ? "screenpipe connected" : "connect screenpipe";
+  title.textContent = connected ? "Freenpipe connected" : "connect Freenpipe";
   help.textContent = connected
     ? "you can close this tab. agents can now use your browser when needed."
-    : "click connect, then approve the request in the screenpipe desktop app. no API token copy/paste needed.";
+    : "click connect, then approve the request in the Freenpipe desktop app. no API token copy/paste needed.";
 }
 
 function getBrowserName(): string {
@@ -155,7 +155,7 @@ async function probeConnection(
   } catch (e: any) {
     return {
       status: "server_down",
-      message: `can't reach screenpipe at ${baseUrl} — is the app running?`,
+      message: `can't reach Freenpipe at ${baseUrl}. is the app running?`,
     };
   }
 
@@ -171,7 +171,7 @@ async function probeConnection(
       return {
         status: "auth_required",
         message: token
-          ? "token was rejected — copy a fresh one from screenpipe Settings"
+          ? "token was rejected: copy a fresh one from Freenpipe settings"
           : "this server requires a token — paste one above",
       };
     }
@@ -235,26 +235,26 @@ async function onConnectClick(): Promise<void> {
   connect.disabled = true;
   setPairCode(null);
   const baseUrl = $<HTMLInputElement>("baseUrl").value.trim() || DEFAULT_BASE_URL;
-  setStatus("saving", "checking for screenpipe…");
+  setStatus("saving", "checking for Freenpipe…");
 
   const liveness = await probeConnection("", baseUrl);
   if (liveness.status === "server_down") {
-    setStatus("server_down", `screenpipe is not running at ${baseUrl}`);
+    setStatus("server_down", `Freenpipe is not running at ${baseUrl}`);
     pairingInProgress = false;
     connect.disabled = false;
     return;
   }
 
   try {
-    setStatus("pairing", "opening approval request in screenpipe…");
+    setStatus("pairing", "opening approval request in Freenpipe…");
     const pair = await startPairing(baseUrl);
     setPairCode(pair.code);
     const focused = await openScreenpipeForApproval();
     setStatus(
       "pairing",
       focused
-        ? "screenpipe should come to front. click Allow there"
-        : "approve in screenpipe. if it did not come forward, open the app manually"
+        ? "Freenpipe should come to the front. click Allow there"
+        : "approve in Freenpipe. if it did not come forward, open the app manually"
     );
 
     const approval = await waitForPairApproval(baseUrl, pair.id);
@@ -265,13 +265,13 @@ async function onConnectClick(): Promise<void> {
       await saveSettings(token, baseUrl);
       $<HTMLInputElement>("token").value = token;
       const { status, message } = await probeConnection(token, baseUrl);
-      setStatus(status, status === "ok" ? "connected to screenpipe" : message);
+      setStatus(status, status === "ok" ? "connected to Freenpipe" : message);
       setConnectedUi(status === "ok");
       return;
     }
 
     if (approval.status === "denied") {
-      setStatus("denied", "connection denied in screenpipe");
+      setStatus("denied", "connection denied in Freenpipe");
       return;
     }
 
@@ -317,7 +317,7 @@ async function recheckSavedConnection(): Promise<void> {
   setStatus(
     status,
     status === "auth_required"
-      ? "screenpipe auth changed — connect again"
+      ? "Freenpipe auth changed: connect again"
       : message
   );
 }
@@ -347,7 +347,7 @@ async function init(): Promise<void> {
     setStatus(status, message);
     setConnectedUi(status === "ok");
   } else {
-    setStatus("idle", "click connect, then approve in the screenpipe app");
+    setStatus("idle", "click connect, then approve in the Freenpipe app");
     setConnectedUi(false);
   }
 

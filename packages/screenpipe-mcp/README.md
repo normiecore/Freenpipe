@@ -1,18 +1,14 @@
-# Screenpipe MCP Server
+# Freenpipe MCP Server
 
-<a href="https://www.pulsemcp.com/servers/screenpipe-screenpipe"><img src="https://www.pulsemcp.com/badge/top-pick/screenpipe-screenpipe" width="400" alt="PulseMCP Badge"></a>
+MCP server for Freenpipe: lets AI assistants search your screen recordings and audio transcriptions, and control your computer.
 
-<br/>
-
-https://github.com/user-attachments/assets/7466a689-7703-4f0b-b3e1-b1cb9ed70cff
-
-MCP server for screenpipe - search your screen recordings, audio transcriptions, and control your computer with AI.
+The package keeps its upstream name, `screenpipe-mcp`, and talks to the Freenpipe API on `localhost:3030`, so existing MCP client configurations keep working.
 
 ## Installation
 
-### Option 1: NPX (Recommended)
+### Option 1: NPX
 
-The easiest way to use screenpipe-mcp is with npx. Edit your Claude Desktop config:
+The `screenpipe-mcp` package on npm is published by the upstream screenpipe project, not by Freenpipe. It queries the same local API, so you can use it with Freenpipe. To run the code in this repository instead, use Option 3. Edit your Claude Desktop config:
 
 - **macOS**: `~/Library/Application Support/Claude/claude_desktop_config.json`
 - **Windows**: `%AppData%\Claude\claude_desktop_config.json`
@@ -30,7 +26,7 @@ The easiest way to use screenpipe-mcp is with npx. Edit your Claude Desktop conf
 
 ### Option 2: HTTP Server (Remote / Network Access)
 
-The MCP server can run over HTTP using the [Streamable HTTP transport](https://modelcontextprotocol.io/specification/2025-03-26/basic/transports#streamable-http), allowing remote MCP clients to connect over the network instead of stdio. This is ideal when your AI assistant (e.g., OpenClaw) runs on a different machine than screenpipe.
+The MCP server can run over HTTP using the [Streamable HTTP transport](https://modelcontextprotocol.io/specification/2025-03-26/basic/transports#streamable-http), allowing remote MCP clients to connect over the network instead of stdio. Use it when your AI assistant (e.g., OpenClaw) runs on a different machine than Freenpipe.
 
 ```bash
 # loopback only (default)
@@ -58,7 +54,7 @@ The server exposes:
 | Flag | Description | Default |
 |------|-------------|---------|
 | `--port` | Port for the MCP HTTP server | `3031` |
-| `--screenpipe-port` | Port where screenpipe API is running | `3030` |
+| `--screenpipe-port` | Port where the Freenpipe API is running | `3030` |
 | `--listen-on-lan` | Bind `0.0.0.0` so other devices on the LAN can connect. Requires `--api-key`. | off (binds `127.0.0.1`) |
 | `--api-key <secret>` | Bearer token required for non-loopback requests (`Authorization: Bearer <secret>`). Loopback always allowed. | none |
 
@@ -79,17 +75,17 @@ Point any MCP client that supports HTTP transport at the `/mcp` endpoint:
 }
 ```
 
-If your machines are on different networks, expose port 3031 via Tailscale, SSH tunnel, or similar — see the [OpenClaw integration guide](https://docs.screenpi.pe/openclaw) for detailed examples.
+If your machines are on different networks, expose port 3031 via Tailscale, SSH tunnel, or similar. See the [OpenClaw integration guide](../../docs/mintlify/docs-mintlify-mig-tmp/openclaw.mdx) for detailed examples.
 
-> **Note:** The HTTP server currently exposes `search_content` only. The stdio server has the full tool set (export-video, list-meetings, activity-summary, search-elements, frame-context). We're working on bringing HTTP to full parity.
+> **Note:** The HTTP server currently exposes `search_content` only. The stdio server has the full tool set (export-video, list-meetings, activity-summary, search-elements, frame-context).
 
 ### Option 3: From Source
 
 Clone and build from source:
 
 ```bash
-git clone https://github.com/screenpipe/screenpipe
-cd screenpipe/packages/screenpipe-mcp
+git clone https://github.com/normiecore/Freenpipe
+cd Freenpipe/packages/screenpipe-mcp
 bun install
 bun run build
 ```
@@ -171,7 +167,7 @@ Get accessibility text, parsed tree nodes, and extracted URLs for a specific fra
 
 ## Requirements
 
-- screenpipe must be running on localhost:3030
+- Freenpipe must be running on localhost:3030
 - Node.js >= 18.0.0
 
 ## Notes
@@ -182,49 +178,46 @@ Get accessibility text, parsed tree nodes, and extracted URLs for a specific fra
 
 ## Privacy Policy
 
-The Screenpipe MCP server is a local-only bridge between Claude and your
-local Screenpipe instance. It does not collect, transmit, or store any
+The Freenpipe MCP server is a local-only bridge between Claude and your
+local Freenpipe instance. It does not collect, transmit, or store any
 data on its own.
 
 ### What this MCP server does
 When Claude invokes a tool (`search-content`, `activity-summary`, etc.)
-the MCP server forwards the request to `http://localhost:3030` — the
-Screenpipe daemon running on your machine — and returns the response.
+the MCP server forwards the request to `http://localhost:3030` (the
+Freenpipe engine running on your machine) and returns the response.
 That's the entire data path.
 
 ### Data collection
 **None by this MCP server.** No analytics, no telemetry, no usage tracking.
 
 ### Data usage
-Tool calls are passed straight through to your local Screenpipe daemon
+Tool calls are passed straight through to your local Freenpipe engine
 and the results stream back to Claude. The MCP server doesn't keep
 anything.
 
 ### Data storage
 Nothing is stored by the MCP server itself. Recordings, OCR text,
-audio transcripts, and UI events are stored by the Screenpipe app in a
+audio transcripts, and UI events are stored by Freenpipe in a
 SQLite database under `~/.screenpipe/` on your device. Retention is
-whatever you configure inside the Screenpipe app — typically you
-control it via the storage settings panel.
+whatever you configure in Freenpipe, usually in the storage settings.
 
 ### Third-party sharing
 None. The MCP server only talks to `localhost:3030`. It does not
-contact Anthropic, Screenpipe's servers, or any other external service.
-If you choose to enable optional cloud features inside the Screenpipe
-app itself (e.g. cloud sync, cloud AI), those are governed by the
-Screenpipe app's privacy policy, not this MCP server's data flow.
+contact Anthropic, the upstream vendor's servers, or any other external
+service. If you configure a cloud AI provider or another remote service
+in Freenpipe itself, that data flow is governed by the provider you chose,
+not by this MCP server.
 
 ### Retention
-The MCP server has no persistent state. The data your Screenpipe app
-captures is retained according to your Screenpipe storage configuration
-and is deletable at any time (`rm -rf ~/.screenpipe` removes everything).
+The MCP server has no persistent state. The data Freenpipe captures is
+retained according to your Freenpipe storage configuration and is
+deletable at any time (`rm -rf ~/.screenpipe` removes everything).
 
 ### Source code
-The Screenpipe MCP server is MIT-licensed and the entire source is
-public at <https://github.com/screenpipe/screenpipe/tree/main/packages/screenpipe-mcp>.
-Every line is auditable.
+The Freenpipe MCP server is MIT-licensed and the entire source is
+public at <https://github.com/normiecore/Freenpipe/tree/main/packages/screenpipe-mcp>.
 
 ### Contact
 Questions or concerns: open an issue at
-<https://github.com/screenpipe/screenpipe/issues> or reach out via
-<https://screenpi.pe>.
+<https://github.com/normiecore/Freenpipe/issues>.
