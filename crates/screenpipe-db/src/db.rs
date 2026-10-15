@@ -267,6 +267,20 @@ async fn flush_level0_bulk(
     Ok(())
 }
 
+/// Whether a path given to [`DatabaseManager::new`] names an in-memory
+/// database (`:memory:`, `sqlite::memory:`, `file::memory:` or a URI with
+/// `mode=memory`) rather than a file on disk.
+fn is_in_memory_database(database_path: &str) -> bool {
+    let target = database_path
+        .trim_start_matches("sqlite:")
+        .trim_start_matches("//");
+    let (name, query) = target.split_once('?').unwrap_or((target, ""));
+    name.trim_start_matches("file:") == ":memory:"
+        || query
+            .split('&')
+            .any(|pair| pair.eq_ignore_ascii_case("mode=memory"))
+}
+
 impl DatabaseManager {
     pub async fn new(database_path: &str, config: DbConfig) -> Result<Self, sqlx::Error> {
         debug!(
@@ -399,7 +413,13 @@ impl DatabaseManager {
         // Surface corruption proactively at boot with a recovery hint,
         // instead of only discovering it later via worker query errors
         // (which used to spin a CPU core retrying a malformed DB).
-        db_manager.spawn_startup_integrity_check(Arc::from(database_path));
+        // In-memory databases are skipped: they have no file to be damaged, and
+        // since SQLite 3.44 quick_check also runs each FTS5 table's integrity
+        // check, which never returns on the shared-cache connections sqlx opens
+        // for in-memory pools (seen with the bundled 3.51.3).
+        if !is_in_memory_database(database_path) {
+            db_manager.spawn_startup_integrity_check(Arc::from(database_path));
+        }
 
         Ok(db_manager)
     }
@@ -10843,6 +10863,28 @@ pub fn parse_all_text_positions(blocks: &[OcrTextBlock]) -> Vec<TextPosition> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn in_memory_database_paths_are_recognised() {
+        for path in [
+            ":memory:",
+            "sqlite::memory:",
+            "file::memory:?cache=shared",
+            "sqlite://?mode=memory",
+            "file:scratch?mode=memory&cache=shared",
+        ] {
+            assert!(is_in_memory_database(path), "{path} is in memory");
+        }
+        for path in [
+            "/home/user/.screenpipe/db.sqlite",
+            "C:\\Users\\user\\.screenpipe\\db.sqlite",
+            "sqlite:/tmp/db.sqlite",
+            "file:/tmp/db.sqlite?mode=rwc",
+            "memory.sqlite",
+        ] {
+            assert!(!is_in_memory_database(path), "{path} is a file");
+        }
+    }
 
     fn create_test_block(
         text: &str,
