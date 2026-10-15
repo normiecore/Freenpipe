@@ -1,16 +1,8 @@
 name: Docs
 
 on:
-  push:
-    paths:
-      - 'docs/**'
-      - '.github/workflows/docs.yml'
-      - 'crates/screenpipe-connect/src/connections/**'
-  pull_request:
-    paths:
-      - 'docs/**'
-      - '.github/workflows/docs.yml'
-      - 'crates/screenpipe-connect/src/connections/**'
+  # Freenpipe: dispatch-only; it validates upstream's Mintlify site, which the fork does not publish.
+  workflow_dispatch:
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.event_name == 'push' && github.ref == 'refs/heads/main' && github.sha || github.ref }}

@@ -40,16 +40,7 @@
 name: Audio Eval
 
 on:
-  pull_request:
-    paths:
-      - 'crates/screenpipe-audio/src/speaker/**'
-      - 'crates/screenpipe-audio/src/audio_manager/**'
-      - 'crates/screenpipe-audio/src/transcription/**'
-      - 'crates/screenpipe-audio/src/segmentation/**'
-      - 'crates/screenpipe-audio/src/core/stream.rs'
-      - 'crates/screenpipe-audio-eval/**'
-      - 'crates/screenpipe-db/src/db.rs'
-      - '.github/workflows/eval-diarization.yml'
+  # Freenpipe: dispatch-only; it pulls the pyannote models through Git LFS (limited bandwidth) plus ~2.2 GB of datasets per cold run.
   workflow_dispatch:
     inputs:
       fixtures:

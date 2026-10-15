@@ -1,16 +1,8 @@
 name: Test CLI npm e2e
 
 on:
-  pull_request:
-    paths:
-      - "packages/cli/**"
-      - ".github/workflows/test-cli-npm-e2e.yml"
-  push:
-    branches:
-      - main
-    paths:
-      - "packages/cli/**"
-      - ".github/workflows/test-cli-npm-e2e.yml"
+  # Freenpipe: dispatch-only; a macOS-only test of the npm CLI wrapper, which the fork does not publish yet.
+  workflow_dispatch:
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}

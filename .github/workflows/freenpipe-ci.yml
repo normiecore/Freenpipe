@@ -1,0 +1,308 @@
+# Freenpipe — local-first screen & audio memory (fork of screenpipe @ 892199f, MIT)
+# https://github.com/normiecore/Freenpipe
+#
+# The merge gate for work-package PRs. Cloud sessions cannot build for Windows,
+# so this workflow is where Windows compiles and runs the tests. What runs,
+# typical durations and how to read results over the REST API: docs/dev/ci.md.
+
+name: Freenpipe CI
+
+on:
+  pull_request:
+  push:
+    branches: [main, "ci/**"]
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  # A newer push cancels the running check of the same PR or ci/** branch. On
+  # main the running check finishes (it saves the caches PRs restore from);
+  # GitHub still drops superseded runs that are only pending.
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+
+permissions:
+  contents: read
+
+env:
+  GIT_LFS_SKIP_SMUDGE: "1"
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: "0"
+  # .cargo/config.toml asks for 16 jobs; hosted runners have 4 vCPUs / 16 GB.
+  CARGO_BUILD_JOBS: "4"
+  # No debug info anywhere (the dev profile is only used if someone runs bun's
+  # bindings scripts). CI binaries are never shipped, so release-dev drops its
+  # thin LTO here: it would be paid again for every test binary.
+  CARGO_PROFILE_DEV_DEBUG: "0"
+  CARGO_PROFILE_TEST_DEBUG: "0"
+  CARGO_PROFILE_RELEASE_DEV_DEBUG: "0"
+  CARGO_PROFILE_RELEASE_DEV_LTO: "off"
+  CARGO_PROFILE_RELEASE_DEV_INCREMENTAL: "false"
+  BUN_VERSION: "1.3.10"
+  ORT_VERSION: "1.22.0"
+  # Rust caches are written by main and ci/** pushes only; PRs restore them.
+  SAVE_RUST_CACHE: ${{ github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/heads/ci/') }}
+
+jobs:
+  windows:
+    name: windows
+    runs-on: windows-2022
+    timeout-minutes: 240
+    env:
+      LIBCLANG_PATH: C:\Program Files\LLVM\bin
+    steps:
+      - name: Git settings (keep LF endings, long paths)
+        run: |
+          git config --global core.autocrlf false
+          git config --global core.longpaths true
+
+      - uses: actions/checkout@v4
+        with:
+          lfs: false
+
+      - name: Rust toolchain from rust-toolchain.toml
+        shell: bash
+        run: |
+          rustup toolchain install || rustup show active-toolchain
+          rustc --version
+          cargo --version
+
+      - name: Rust cache (engine workspace)
+        uses: Swatinem/rust-cache@v2
+        with:
+          key: engine
+          workspaces: ". -> target"
+          cache-on-failure: true
+          save-if: ${{ env.SAVE_RUST_CACHE }}
+
+      - name: Rust cache (app crate)
+        uses: Swatinem/rust-cache@v2
+        with:
+          key: app
+          workspaces: "apps/screenpipe-app-tauri/src-tauri -> target"
+          cache-on-failure: true
+          save-if: ${{ env.SAVE_RUST_CACHE }}
+
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: ${{ env.BUN_VERSION }}
+
+      - name: MSVC environment
+        uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: x64
+
+      # tauri.windows.conf.json bundles onnxruntime*\lib\onnxruntime.dll, so the
+      # app build script needs it; ort is load-dynamic on Windows x64 and finds
+      # it at test time through ORT_DYLIB_PATH (System32 can hold an older one).
+      - name: ONNX Runtime ${{ env.ORT_VERSION }} (CPU)
+        shell: pwsh
+        run: |
+          $dir = "apps/screenpipe-app-tauri/src-tauri"
+          $name = "onnxruntime-win-x64-$env:ORT_VERSION"
+          if (-not (Test-Path "$dir/$name/lib/onnxruntime.dll")) {
+            $zip = Join-Path $env:RUNNER_TEMP "$name.zip"
+            Invoke-WebRequest "https://github.com/microsoft/onnxruntime/releases/download/v$env:ORT_VERSION/$name.zip" -OutFile $zip
+            7z x $zip "-o$dir" -y | Out-Null
+          }
+          $lib = (Resolve-Path "$dir/$name/lib").Path
+          "ORT_DYLIB_PATH=$lib\onnxruntime.dll" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          $lib | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+
+      # ffmpeg (GyanD GitHub mirror), OpenBLAS, the VC runtime and the bun
+      # sidecar. Exports FFMPEG_DIR and OPENBLAS_PATH through GITHUB_ENV.
+      - name: Sidecars (pre_build.js)
+        working-directory: apps/screenpipe-app-tauri
+        run: bun ./scripts/pre_build.js
+
+      - name: Runtime DLL search path (OpenBLAS, ffmpeg)
+        shell: pwsh
+        run: |
+          $t = (Resolve-Path apps/screenpipe-app-tauri/src-tauri).Path
+          "$t\openblas\bin" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+          "$t\ffmpeg\bin" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+          Write-Host "OPENBLAS_PATH=$env:OPENBLAS_PATH FFMPEG_DIR=$env:FFMPEG_DIR"
+
+      - name: Build engine (screenpipe.exe)
+        id: engine
+        run: cargo build --profile release-dev -p screenpipe-engine --bin screenpipe
+
+      - name: Test engine workspace
+        if: ${{ !cancelled() && steps.engine.outcome == 'success' }}
+        timeout-minutes: 100
+        run: cargo test --profile release-dev --workspace --exclude screenpipe-rfdetr-mlx --no-fail-fast
+
+      - name: Frontend install
+        id: bun_install
+        if: ${{ !cancelled() }}
+        working-directory: apps/screenpipe-app-tauri
+        run: bun install --frozen-lockfile
+
+      - name: Frontend build (next static export)
+        if: ${{ !cancelled() && steps.bun_install.outcome == 'success' }}
+        working-directory: apps/screenpipe-app-tauri
+        run: bun run build
+
+      - name: Frontend tests (vitest + bun:test)
+        if: ${{ !cancelled() && steps.bun_install.outcome == 'success' }}
+        working-directory: apps/screenpipe-app-tauri
+        run: bun run test
+
+      - name: Build app crate (screenpipe-app.exe)
+        id: app
+        if: ${{ !cancelled() }}
+        working-directory: apps/screenpipe-app-tauri/src-tauri
+        run: |
+          if (-not (Test-Path ../out/index.html)) {
+            New-Item -ItemType Directory -Force ../out | Out-Null
+            Set-Content ../out/index.html '<!doctype html><title>placeholder</title>'
+            Write-Host "::warning::frontend build missing; compiling the app crate against a placeholder out/"
+          }
+          cargo build --profile release-dev
+
+      # Same test as `bun run bindings:check`, run from src-tauri so it reuses
+      # the release-dev build above (and the same .cargo/config.toml).
+      - name: Tauri bindings check (lib/utils/tauri.ts)
+        if: ${{ !cancelled() && steps.app.outcome == 'success' }}
+        working-directory: apps/screenpipe-app-tauri/src-tauri
+        run: cargo test --profile release-dev -p screenpipe-app --bin screenpipe-app tauri_bindings_are_current -- --nocapture
+
+  linux:
+    name: linux
+    runs-on: ubuntu-24.04
+    timeout-minutes: 180
+    steps:
+      - name: Free disk space
+        run: |
+          df -h /
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /usr/local/.ghcup \
+            /opt/hostedtoolcache/CodeQL /usr/local/share/boost /usr/local/share/powershell
+          df -h /
+
+      - uses: actions/checkout@v4
+        with:
+          lfs: false
+
+      - name: System packages
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            g++ cmake clang libclang-dev pkg-config curl xvfb \
+            ffmpeg libavformat-dev libavfilter-dev libavdevice-dev \
+            tesseract-ocr libtesseract-dev \
+            libssl-dev libsqlite3-dev libbz2-dev zlib1g-dev libonig-dev \
+            libxdo-dev libsdl2-dev libxtst-dev libx11-dev libxext-dev libxrandr-dev \
+            libxinerama-dev libxcursor-dev libxi-dev libgl1-mesa-dev \
+            libasound2-dev libpulse-dev libpipewire-0.3-dev libdbus-1-dev \
+            libsamplerate-dev libwebrtc-audio-processing-dev libopenblas-dev \
+            libgtk-3-dev librsvg2-dev libwebkit2gtk-4.1-dev libayatana-appindicator3-dev \
+            libsecret-1-dev
+          # antirez-asr-sys links "-llibopenblas" (double lib prefix); the same
+          # symlink trick as release-app.yml.
+          sudo mkdir -p /usr/lib/x86_64-linux-gnu/openblas/lib
+          sudo ln -sf /usr/lib/x86_64-linux-gnu/libopenblas.so /usr/lib/x86_64-linux-gnu/openblas/lib/liblibopenblas.so
+          sudo ln -sf /usr/lib/x86_64-linux-gnu/libopenblas.a /usr/lib/x86_64-linux-gnu/openblas/lib/liblibopenblas.a
+          echo "OPENBLAS_PATH=/usr/lib/x86_64-linux-gnu/openblas" >> "$GITHUB_ENV"
+
+      - name: Rust toolchain from rust-toolchain.toml
+        run: |
+          rustup toolchain install || rustup show active-toolchain
+          rustc --version
+          cargo --version
+
+      - name: Rust cache (engine workspace)
+        uses: Swatinem/rust-cache@v2
+        with:
+          key: engine
+          workspaces: ". -> target"
+          cache-on-failure: true
+          save-if: ${{ env.SAVE_RUST_CACHE }}
+
+      - name: Rust cache (app crate)
+        uses: Swatinem/rust-cache@v2
+        with:
+          key: app
+          workspaces: "apps/screenpipe-app-tauri/src-tauri -> target"
+          cache-on-failure: true
+          save-if: ${{ env.SAVE_RUST_CACHE }}
+
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: ${{ env.BUN_VERSION }}
+
+      # In CI it links the apt ffmpeg/tesseract into src-tauri and copies bun.
+      - name: Sidecars (pre_build.js)
+        working-directory: apps/screenpipe-app-tauri
+        run: bun ./scripts/pre_build.js
+
+      - name: Build engine (screenpipe)
+        id: engine
+        run: cargo build --profile release-dev -p screenpipe-engine --bin screenpipe
+
+      - name: Test engine workspace
+        if: ${{ !cancelled() && steps.engine.outcome == 'success' }}
+        timeout-minutes: 90
+        run: xvfb-run -a cargo test --profile release-dev --workspace --exclude screenpipe-rfdetr-mlx --no-fail-fast
+
+      - name: Frontend install
+        id: bun_install
+        if: ${{ !cancelled() }}
+        working-directory: apps/screenpipe-app-tauri
+        run: bun install --frozen-lockfile
+
+      - name: Frontend build (next static export)
+        if: ${{ !cancelled() && steps.bun_install.outcome == 'success' }}
+        working-directory: apps/screenpipe-app-tauri
+        run: bun run build
+
+      - name: Frontend tests (vitest + bun:test)
+        if: ${{ !cancelled() && steps.bun_install.outcome == 'success' }}
+        working-directory: apps/screenpipe-app-tauri
+        run: bun run test
+
+      - name: Build app crate (screenpipe-app)
+        id: app
+        if: ${{ !cancelled() }}
+        working-directory: apps/screenpipe-app-tauri/src-tauri
+        run: |
+          if [ ! -f ../out/index.html ]; then
+            mkdir -p ../out && echo '<!doctype html><title>placeholder</title>' > ../out/index.html
+            echo "::warning::frontend build missing; compiling the app crate against a placeholder out/"
+          fi
+          cargo build --profile release-dev
+
+      - name: Tauri bindings check (lib/utils/tauri.ts)
+        if: ${{ !cancelled() && steps.app.outcome == 'success' }}
+        working-directory: apps/screenpipe-app-tauri/src-tauri
+        run: cargo test --profile release-dev -p screenpipe-app --bin screenpipe-app tauri_bindings_are_current -- --nocapture
+
+  gates:
+    name: gates
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          lfs: false
+          fetch-depth: 0
+
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: ${{ env.BUN_VERSION }}
+
+      # Report mode until W0-12 makes strict the default (see the test header).
+      - name: Vendor-host guard
+        run: |
+          set -o pipefail
+          bun test scripts/ci/vendor-guard.test.ts 2>&1 | tee "$RUNNER_TEMP/vendor-guard.log"
+          {
+            echo "## Vendor-host guard (${VENDOR_GUARD_MODE:-report} mode)"
+            echo
+            echo '```'
+            grep -E '^(vendor-guard:|  [a-z])' "$RUNNER_TEMP/vendor-guard.log" | head -n 40 || true
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      # Report-only: hits become warnings and a summary table; reviewers
+      # justify each one in the PR description.
+      - name: Clean-room verbatim gate (added lines)
+        run: bash scripts/ci/verbatim-diff.sh
