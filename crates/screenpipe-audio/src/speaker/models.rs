@@ -643,4 +643,45 @@ mod tests {
         std::fs::write(&short, b"ab").unwrap();
         assert!(verify_download(&SPEC, &short).await.is_err());
     }
+
+    /// Network check of the default mirror: both models download and match
+    /// their pins. About 35 MB.
+    /// Run: cargo test -p screenpipe-audio --lib speaker::models::tests::integration_default_mirror -- --ignored
+    #[tokio::test]
+    #[ignore]
+    async fn integration_default_mirror_serves_the_pinned_models() {
+        static SEG_LOCK: Mutex<Option<PathBuf>> = Mutex::const_new(None);
+        static SEG_DOWNLOADING: AtomicBool = AtomicBool::new(false);
+        static SEG_REJECTED: AtomicBool = AtomicBool::new(false);
+        static EMB_LOCK: Mutex<Option<PathBuf>> = Mutex::const_new(None);
+        static EMB_DOWNLOADING: AtomicBool = AtomicBool::new(false);
+        static EMB_REJECTED: AtomicBool = AtomicBool::new(false);
+
+        let tmp = tempdir().unwrap();
+        let locators = [
+            ModelLocator {
+                spec: &SEGMENTATION_SPEC,
+                bundled_dirs: Vec::new(),
+                cache_dir: tmp.path().to_path_buf(),
+                url: model_download_url_with(&SEGMENTATION_SPEC, None),
+                model_path_lock: &SEG_LOCK,
+                downloading_flag: &SEG_DOWNLOADING,
+                bundled_rejected: &SEG_REJECTED,
+            },
+            ModelLocator {
+                spec: &EMBEDDING_SPEC,
+                bundled_dirs: Vec::new(),
+                cache_dir: tmp.path().to_path_buf(),
+                url: model_download_url_with(&EMBEDDING_SPEC, None),
+                model_path_lock: &EMB_LOCK,
+                downloading_flag: &EMB_DOWNLOADING,
+                bundled_rejected: &EMB_REJECTED,
+            },
+        ];
+        for locator in &locators {
+            let path = locator.locate().await.unwrap();
+            assert_eq!(path, tmp.path().join(locator.spec.filename));
+            assert_eq!(sha256_file(&path).unwrap(), locator.spec.sha256);
+        }
+    }
 }
