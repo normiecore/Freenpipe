@@ -47,3 +47,11 @@ Other agents are working in this repository in parallel. Never delete code you d
 
 ## context
 - always use progressive disclosure when designing agentic systems
+
+## Cloud operation
+Work packages are built by Claude Code cloud sessions (scheduled WORKER and MERGER routines), and the owner's PC is usually off.
+- In a cloud session, read `docs/dev/cloud-runbook.md` first and follow it for your role. It is self-contained. Owner setup is in `docs/dev/cloud-environment.md`, routine prompts in `docs/dev/cloud-routines.md`.
+- Start with `bash tools/cloud/bootstrap.sh`, and begin later build or test commands with `. ~/.freenpipe-env.sh &&`. For status, run `python3 tools/plan/status.py` (the board is `docs/clean-room/STATUS.md`). Workflow commands are in `python3 tools/cloud/fp.py`.
+- Work only on your `wp/<WP-ID>` (or `fix/main-<sha7>`) branch, never on the default `claude/` branch. Only the merger changes `main` (REST merges and `status:` commits). Never force-push or delete branches. Every commit ends with the `Co-Authored-By` trailer. PRs and comments go through the REST API (`gh api`), because `gh pr` and `gh issue` are blocked.
+- The VM runs Linux. Write `cfg(windows)` code anyway: CI's windows job compiles and tests it (`docs/dev/ci.md`). Hardware and runtime checks go into `docs/dev/windows-smoke-checklist.md`.
+- Dev isolation still applies: never use `~/.screenpipe` or ports 3030/11435 in tests. Use a temp data dir and port 3035.
