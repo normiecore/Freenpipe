@@ -12,8 +12,13 @@ import {
   buildDailyLimitMessage,
   classifyQuotaError,
   buildRateLimitMessage,
+  DAILY_ALLOWANCE_MESSAGE,
+  isProviderNoticeMessage,
+  MODEL_NOT_ALLOWED_MESSAGE,
   parseRateLimitWaitSeconds,
   PI_MAX_RATE_LIMIT_RETRIES,
+  RATE_LIMITED_MESSAGE,
+  SPENDING_CAP_MESSAGE,
 } from "../quota-errors";
 
 describe("classifyQuotaError", () => {
@@ -45,25 +50,55 @@ describe("classifyQuotaError", () => {
 
 describe("buildDailyLimitMessage", () => {
   it("returns the rate-limited copy when the string mentions a rate limit", () => {
-    expect(buildDailyLimitMessage("rate limit hit")).toContain("temporarily rate-limited");
-    expect(buildDailyLimitMessage("Rate limit hit")).toContain("temporarily rate-limited");
+    expect(buildDailyLimitMessage("rate limit hit")).toBe(RATE_LIMITED_MESSAGE);
+    expect(buildDailyLimitMessage("Rate limit hit")).toBe(RATE_LIMITED_MESSAGE);
   });
 
-  it("returns account-wide budget copy for cost-limit errors", () => {
+  it("explains a provider spending cap without leaking amounts", () => {
     const msg = buildDailyLimitMessage("daily_cost_limit_exceeded");
-    expect(msg).toContain("account-wide budget");
-    // must not leak a raw dollar cap
+    expect(msg).toBe(SPENDING_CAP_MESSAGE);
     expect(msg).not.toMatch(/\$\d/);
   });
 
-  it("tailors copy by tier", () => {
-    expect(buildDailyLimitMessage('{"tier":"subscribed"}')).toContain("daily limit");
-    expect(buildDailyLimitMessage('{"tier":"logged_in"}')).toContain("upgrade to Business");
-    expect(buildDailyLimitMessage('{"tier":"anonymous"}')).toContain("Sign in for more");
+  it("uses one provider-allowance message whatever the tier", () => {
+    for (const body of ['{"tier":"subscribed"}', '{"tier":"logged_in"}', '{"tier":"anonymous"}', "???"]) {
+      expect(buildDailyLimitMessage(body)).toBe(DAILY_ALLOWANCE_MESSAGE);
+    }
   });
 
-  it("falls back to a generic message for unknown shapes", () => {
-    expect(buildDailyLimitMessage("???")).toContain("free queries");
+  it("never offers a plan, an upgrade or a sign-in", () => {
+    const all = [
+      buildDailyLimitMessage("rate limit"),
+      buildDailyLimitMessage("daily_cost_limit_exceeded"),
+      buildDailyLimitMessage('{"tier":"logged_in"}'),
+      MODEL_NOT_ALLOWED_MESSAGE,
+    ];
+    for (const msg of all) {
+      expect(msg).not.toMatch(/upgrade|business|\bpro\b|sign in|log in|subscri|free model|free queries/i);
+      expect(msg).toContain(msg === RATE_LIMITED_MESSAGE ? "model" : "Settings");
+    }
+  });
+});
+
+describe("isProviderNoticeMessage", () => {
+  it("recognises every notice this module builds", () => {
+    for (const msg of [
+      RATE_LIMITED_MESSAGE,
+      SPENDING_CAP_MESSAGE,
+      DAILY_ALLOWANCE_MESSAGE,
+      MODEL_NOT_ALLOWED_MESSAGE,
+      buildRateLimitMessage("rate limit exceeded, wait 30 seconds"),
+      buildRateLimitMessage("some 429 thing"),
+    ]) {
+      expect(isProviderNoticeMessage(msg)).toBe(true);
+    }
+  });
+
+  it("ignores ordinary replies and empty content", () => {
+    expect(isProviderNoticeMessage("Here is your summary.")).toBe(false);
+    expect(isProviderNoticeMessage("")).toBe(false);
+    expect(isProviderNoticeMessage(undefined)).toBe(false);
+    expect(isProviderNoticeMessage(null)).toBe(false);
   });
 });
 

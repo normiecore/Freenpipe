@@ -283,14 +283,14 @@
       "notes": "Opt-in macOS HD capture and OCR indexing."
     },
     {
-      "spec": "help-discord-link.spec.ts",
+      "spec": "help-links.spec.ts",
       "platforms": ["windows", "macos", "linux"],
       "layers": ["real-ui-e2e"],
       "features": ["help"],
       "criticality": "low",
       "confidence": "smoke",
       "ux": "real-user-flow",
-      "notes": "Help section Discord invite link."
+      "notes": "Help section links to the project's GitHub pages; no vendor links."
     },
     {
       "spec": "home-window.spec.ts",

@@ -38,14 +38,14 @@ const SETTINGS_SECTIONS = [
   { id: 'recording', keywords: ['recording', 'fps', 'capture', 'monitor'] },
   { id: 'shortcuts', keywords: ['shortcut', 'keyboard', 'hotkey', 'overlay'] },
   { id: 'notifications', keywords: ['notification', 'toast', 'sound'] },
-  { id: 'usage', keywords: ['usage', 'activity', 'analytics'] },
   { id: 'privacy', keywords: ['privacy', 'api', 'encryption', 'keychain'] },
   { id: 'storage', keywords: ['storage', 'disk', 'retention', 'cache'] },
   { id: 'speakers', keywords: ['speaker', 'voice'] },
-  { id: 'team', keywords: ['team', 'share', 'member', 'invite'] },
-  { id: 'account', keywords: ['account', 'sign', 'login', 'cloud'] },
-  { id: 'referral', keywords: ['free month', 'referral', 'invite', 'share'] },
 ] as const;
+
+// Upstream's hosted account, usage-credit, team and referral pages. Freenpipe
+// has none of those services, so the sections must not come back.
+const RETIRED_SECTIONS = ['account', 'usage', 'team', 'referral'] as const;
 
 describe('Settings sections', () => {
   before(async () => {
@@ -124,6 +124,17 @@ describe('Settings sections', () => {
       expect(keywords.some((keyword) => body.includes(keyword))).toBe(true);
     });
   }
+
+  it('has no account, usage, team or referral section', async () => {
+    for (const id of RETIRED_SECTIONS) {
+      const nav = await $(`[data-testid="settings-nav-${id}"]`);
+      expect(await nav.isExisting()).toBe(false);
+    }
+    const body = (await browser.execute(() => document.body.innerText.toLowerCase())) as string;
+    for (const banned of ['upgrade to business', 'get free month', 'refer a friend', 'checkout']) {
+      expect(body).not.toContain(banned);
+    }
+  });
 
   // ─── Recent regressions / new features (covered as smoke tests) ───────────
   //

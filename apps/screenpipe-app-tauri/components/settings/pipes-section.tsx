@@ -256,7 +256,7 @@ function parsePipeError(stderr: string): {
       if (parsed.error === "credits_exhausted") {
         return {
           type: "credits_exhausted",
-          message: parsed.message || "daily ai limit reached — upgrade or wait until tomorrow",
+          message: parsed.message || "the AI provider's daily allowance is used up — wait for it to reset or pick another model",
           credits_remaining: parsed.credits_remaining ?? 0,
         };
       }
