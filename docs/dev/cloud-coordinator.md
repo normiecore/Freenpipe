@@ -40,9 +40,12 @@ or a brand-new coordinator session continues from there with nothing else.
      the title `fp.py merge` would use (`git merge --no-ff -m "Merge <WP-ID>: <title>" origin/wp/<WP-ID>`
      plus the commit trailer), resolve per runbook 4.3 (Cargo.lock, bun.lock and tauri.ts are
      regenerated, append-only docs keep both sides), run the affected Linux checks, push `main`.
-     GitHub then shows the PR as merged. Conflicts in logic: `fp.py sync-main <WP-ID>`, resolve on the
-     branch, push, and let CI and a resolution review (cloud-reviewers.md, merge-resolution variant)
-     run before merging.
+     GitHub then shows the PR as merged. Conflicts in logic: run `tools/cloud/workflows/sync-resolve.js`
+     (args `{wp, title, pr, session_url, other_wps}`; `other_wps` says what the merged WPs did in the
+     conflicting areas). It merges origin/main into the branch, resolves keeping both sides, pushes,
+     and runs both resolution reviewers. When CI is green on the new head, approve with
+     `fp.py approve <PR> --verification-file F --compliance-file F` (the files hold the two
+     resolution reviews) and merge.
 3. **Open WP PRs with red CI.** Launch the workflow (below) for that WP with `mode: "ci-fix"` and a
    `ci_failure` note from `fp.py ci <PR> --why`. A failure that is also red on `main` is fixed on main.
 4. **Open WP PRs whose review record says changes are still open** (`fp-blocked:` comment): read the
