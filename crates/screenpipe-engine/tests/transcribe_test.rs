@@ -27,6 +27,9 @@ mod tests {
         let audio_manager = Arc::new(
             AudioManagerBuilder::new()
                 .output_path("/tmp/screenpipe-test".into())
+                // No real devices or ONNX models: a second server built in the same
+                // process crashed on Windows (STATUS_ACCESS_VIOLATION) with them.
+                .is_disabled(true)
                 .build(db.clone())
                 .await
                 .unwrap(),
