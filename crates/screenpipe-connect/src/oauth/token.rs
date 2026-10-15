@@ -873,9 +873,14 @@ mod tests {
 
     #[tokio::test]
     async fn unreachable_endpoint_is_a_transport_error() {
-        let server = MockServer::start().await;
-        let url = format!("{}/oauth/token", server.uri());
-        drop(server);
+        // Reserve a free port, then close it so nothing is listening there.
+        // (A dropped wiremock server goes back to its pool and keeps answering.)
+        let port = std::net::TcpListener::bind("127.0.0.1:0")
+            .unwrap()
+            .local_addr()
+            .unwrap()
+            .port();
+        let url = format!("http://127.0.0.1:{port}/oauth/token");
         let ep = TokenEndpoint {
             url: &url,
             auth: TokenAuth::ClientSecretPost,
