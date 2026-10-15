@@ -587,14 +587,6 @@ function ActiveSyncSettings({
               Everything syncs automatically in the background. Screen recordings, audio, and transcriptions.
               Uses ~0.8 GB per monitor per day.
             </p>
-            <a
-              href="https://docs.screenpi.pe/cloud-sync"
-              target="_blank"
-              rel="noopener noreferrer"
-              className="text-xs text-muted-foreground hover:text-primary underline"
-            >
-              Learn how encryption works →
-            </a>
           </div>
 
 
