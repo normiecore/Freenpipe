@@ -105,7 +105,9 @@ export function StorageSection() {
   return (
     <div className="space-y-5">
       <p className="text-muted-foreground text-sm mb-4">
-        Local disk, cloud archive, and sync
+        {cloudStorageAvailability.archive || cloudStorageAvailability.sync
+          ? "Local disk, cloud archive, and sync"
+          : "Local disk"}
       </p>
 
       {/* Data Directory */}
