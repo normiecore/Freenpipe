@@ -1,0 +1,22 @@
+# Owner decisions (binding for every work package)
+
+Recorded 2026-10-15. These override PLAN.md wherever they conflict, and they settle PLAN.md's open questions.
+
+## Asked and answered by the owner
+1. **Drop-in compatible defaults.** Data dir stays `~/.screenpipe`, the API port stays 3030, the control server stays :11435, and the CLI binary stays named `screenpipe`. Existing pipes, skills and MCP configs must work unchanged. Freenpipe will not run alongside the installed screenpipe, and that is accepted. **During development, the dev-isolation rules in PLAN.md section 4 still apply** (FP_DD, port 3035, SCREENPIPE_API_KEY), because screenpipe is installed on this machine.
+2. **Vendor git deps into the repo.** Every git dependency hosted under the vendor's orgs or contributors (screenpipe/whisper-rs, screenpipe/rusty-tesseract, divanshu-go/audiopipe, tauri-helper and any others found) is copied at its pinned revision into `third_party/<name>/` and consumed as a path dependency, after a licence check. Record each one's licence and source revision in `third_party/README.md`. Do not vendor anything whose pinned revision is dated after 2026-06-10 from the screenpipe org itself. (WP W0-13.)
+3. **Updater wired, off by default.** The updater targets GitHub Releases of normiecore/Freenpipe and is disabled by default. The manual update-check action opens the releases page. No signing keys are generated. Keep the code path ready for a pubkey to be added later.
+4. **Push to main per green wave.** The coordinator pushes; implementers never push. The owner says github.com/normiecore/Freenpipe is where everything should end up, so our own specs, PLAN.md, DECISIONS.md and dev tooling are published under docs/clean-room/ after a scrub pass. Raw extracted target material (app_strings.tsv, frontend/, REA graph dumps) is NEVER published.
+5. **Fully featured: vendor-server features are restored with self-hostable or BYO replacements** (2026-10-15). Billing, paywall, trial, quota, referral, upsell, announcement and remote-control code stays removed; it gates nothing useful. Four features come back as new WPs: WR-01 pipe store on a GitHub-hosted registry in this repo; WR-02 sync and archive to BYO storage (S3/WebDAV/folder, client-side encrypted); WR-03 Freenpipe Hub, a self-hostable team server plus the restored team client; WR-04 Composio with a BYO key, plus workflow sharing via bundles and a GitHub gallery. Wave-0 removals of vendor wiring stand. The WR packages restore the client code from MIT base history and rewire it.
+
+## Coordinator calls (follow upstream unless clearly better)
+- SQLite toolchain moves to sqlx 0.9 / libsqlite3-sys 0.37 / rusqlite with vtab, as upstream did (W0-11).
+- Frontend moves to React 19 / Next 15.5 using **stable** releases at least two weeks old, never canaries (W2-25).
+- Hybrid Parquet storage is in scope (it is "everything") and stays scheduled in the late waves.
+- Deep links: register `freenpipe://` as primary, plus `screenpipe://` as a compatibility alias, consistent with drop-in.
+- Tauri bundle identifier must differ from upstream's so app-level state never overwrites screenpipe's. Product name: "Freenpipe".
+- Localization: en plus ja, all text written fresh.
+- Built-in pipes and starter skills: the full set, all prose written fresh.
+- SOP narration default: captions-only. Local Windows TTS (SAPI) and an OpenAI-compatible TTS are opt-in.
+- These third-party, user-initiated features stay: MCP registry search, ACP agent npm installs, Cursor Cloud (BYO key), GitHub skill installs, Bee pairing (user-supplied app id). Vendor-hosted features are removed or replaced (see cloud.md).
+- CI: GitHub-hosted Windows runners (free for public repos). Release signing secrets are absent, so release jobs must skip signing gracefully.
