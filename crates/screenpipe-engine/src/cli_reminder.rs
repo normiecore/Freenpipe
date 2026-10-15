@@ -96,8 +96,18 @@ mod tests {
         for idx in 0..TIP_COUNT {
             let t = tip(idx);
             let text = format!("{} {}", t.heading, t.lines.join(" ")).to_lowercase();
-            for banned in ["screenpi.pe", "screenpipe.com", "npx", "login", "survey", "quota"] {
-                assert!(!text.contains(banned), "tip {idx} mentions {banned}: {text}");
+            for banned in [
+                "screenpi.pe",
+                "screenpipe.com",
+                "npx",
+                "login",
+                "survey",
+                "quota",
+            ] {
+                assert!(
+                    !text.contains(banned),
+                    "tip {idx} mentions {banned}: {text}"
+                );
             }
         }
     }
@@ -110,7 +120,10 @@ mod tests {
             .collect();
         assert!(!links.is_empty());
         for link in links {
-            assert!(link.starts_with("https://github.com/normiecore/Freenpipe"), "{link}");
+            assert!(
+                link.starts_with("https://github.com/normiecore/Freenpipe"),
+                "{link}"
+            );
         }
     }
 }

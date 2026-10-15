@@ -273,7 +273,10 @@ impl PiExecutor {
             .join("screenpipe-team");
         if skill_dir.exists() {
             std::fs::remove_dir_all(&skill_dir)?;
-            info!("removed the retired screenpipe-team skill from {:?}", skill_dir);
+            info!(
+                "removed the retired screenpipe-team skill from {:?}",
+                skill_dir
+            );
         }
         Ok(())
     }
@@ -2432,7 +2435,11 @@ mod tests {
     #[test]
     fn team_skill_is_removed_and_never_installed() {
         let tmp = tempfile::tempdir().expect("tempdir");
-        let team_dir = tmp.path().join(".pi").join("skills").join("screenpipe-team");
+        let team_dir = tmp
+            .path()
+            .join(".pi")
+            .join("skills")
+            .join("screenpipe-team");
         std::fs::create_dir_all(&team_dir).unwrap();
         std::fs::write(team_dir.join("SKILL.md"), "stale").unwrap();
 
