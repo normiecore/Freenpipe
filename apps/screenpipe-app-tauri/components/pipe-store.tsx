@@ -515,10 +515,14 @@ function DiscoverView({ onInstalled }: { onInstalled?: () => void }) {
       clearTimeout(timeoutId);
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const data = await res.json();
-      setRegistryConfigured(data?.registry_configured !== false);
+      const configured = data?.registry_configured !== false;
+      setRegistryConfigured(configured);
       const list = data.data || data.pipes || (Array.isArray(data) ? data : []);
       const normalized = list.map(normalizePipe);
-      apiCache.set(cacheKey, normalized, 5 * 60_000); // 5 min TTL
+      // Only registry answers are cached: a cached empty "not configured"
+      // answer would later render as an empty registry instead of the
+      // not-configured notice.
+      if (configured) apiCache.set(cacheKey, normalized, 5 * 60_000); // 5 min TTL
       setPipes(normalized);
     } catch (err) {
       console.error("failed to fetch pipe store:", err);
