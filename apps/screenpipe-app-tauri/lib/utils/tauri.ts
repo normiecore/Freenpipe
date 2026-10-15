@@ -6,10 +6,9 @@
 
 export const commands = {
 /**
- * Frontend-callable gate. The banner awaits this before calling
- * `downloadAndInstall` (Windows: triggers process::exit internally) or
- * `relaunch`. Returns one of `"proceed"`, `"errored"`, or `"pending"`
- * — frontend toasts on the latter two.
+ * Frontend-callable gate. Returns one of `"proceed"`, `"errored"`, or
+ * `"pending"` — frontend toasts on the latter two. Kept for callers that
+ * only need the gate; the update banner uses `restart_for_update`.
  */
 async awaitSafeRestart(timeoutSecs: number | null) : Promise<string> {
     return await TAURI_INVOKE("await_safe_restart", { timeoutSecs });
@@ -692,6 +691,13 @@ async getSyncStatus() : Promise<Result<SyncStatusResponse, string>> {
     if(e instanceof Error) throw e;
     else return { status: "error", error: e  as any };
 }
+},
+/**
+ * Updater availability for the settings page: when `enabled` is false,
+ * "Check for updates" opens `releases_url` instead of checking.
+ */
+async getUpdaterStatus() : Promise<UpdaterStatus> {
+    return await TAURI_INVOKE("get_updater_status");
 },
 async hideMainWindow() : Promise<void> {
     await TAURI_INVOKE("hide_main_window");
@@ -1595,6 +1601,25 @@ async resizeSearchWindow(width: number, height: number) : Promise<Result<null, s
     else return { status: "error", error: e  as any };
 }
 },
+/**
+ * Install the pending update and restart into it, once startup is safe to
+ * interrupt.
+ *
+ * Returns `"errored"` or `"pending"` (without touching anything) when the
+ * restart gate says no. With `"proceed"` it stops recording, writes the
+ * update-attempt marker and hands over to the installer (Windows) or
+ * restarts into the staged bundle, so on success the call does not come
+ * back. An `Err` means the update could not be applied; the frontend treats
+ * it like `"errored"`.
+ */
+async restartForUpdate(timeoutSecs: number | null) : Promise<Result<string, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("restart_for_update", { timeoutSecs }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
 async resumeGlobalShortcuts() : Promise<Result<null, string>> {
     try {
     return { status: "ok", data: await TAURI_INVOKE("resume_global_shortcuts") };
@@ -1615,8 +1640,9 @@ async revealInDefaultBrowser(path: string) : Promise<Result<null, string>> {
 }
 },
 /**
- * Install a specific older version from R2. Downloads and installs via Tauri updater,
- * then restarts the app.
+ * Install a specific older version from its GitHub release (per-tag
+ * `latest.json`). Downloads and installs via Tauri updater, then restarts the
+ * app. Fails when in-app updates are disabled in this build.
  */
 async rollbackToVersion(version: string) : Promise<Result<null, string>> {
     try {
@@ -2292,11 +2318,13 @@ currentStep?: string | null }
  */
 export type PendingUpdateSnapshot = { version: string; body: string;
 /**
- * True once the bundle is downloaded and the app is ready to restart.
+ * True once the update is ready for `restart_for_update` (downloaded and
+ * staged, or on Windows deferred to the restart click).
  */
 downloaded: boolean;
 /**
- * True when download failed with 401/403 — user must sign in.
+ * Always false. Release assets are public, so no sign-in is ever
+ * needed; the field stays for binding compatibility.
  */
 auth_required: boolean }
 export type PiCheckResult = { available: boolean; path: string | null }
@@ -2906,6 +2934,31 @@ export type SyncDeviceInfo = { id: string; deviceId: string; deviceName: string 
  * Sync status response.
  */
 export type SyncStatusResponse = { enabled: boolean; isSyncing: boolean; lastSync: string | null; lastError: string | null; storageUsed: number | null; storageLimit: number | null; deviceCount: number | null; deviceLimit: number | null; syncTier: string | null; machineId: string }
+/**
+ * Whether this build can update itself, and from where.
+ */
+export type UpdaterStatus = {
+/**
+ * True when update checks, downloads and installs are possible.
+ */
+enabled: boolean;
+/**
+ * Why updates are off: `dev_build`, `source_build`, `no_signing_key`
+ * or `no_feed`. `None` when enabled.
+ */
+disabled_reason: string | null;
+/**
+ * Effective channel: `stable` or `pre-release`.
+ */
+channel: string;
+/**
+ * Manifest a check would read, when a feed is configured.
+ */
+manifest_url: string | null;
+/**
+ * Releases page for manual downloads.
+ */
+releases_url: string }
 export type User = { id: string | null; name: string | null; email: string | null; image: string | null; token: string | null; clerk_id: string | null; api_key: string | null; credits: Credits | null; stripe_connected: boolean | null; stripe_account_status: string | null; github_username: string | null; bio: string | null; website: string | null; contact: string | null; cloud_subscribed: boolean | null; credits_balance: number | null; app_entitled: boolean | null; subscription_plan: string | null; entitlement: JsonValue | null }
 export type ViewerContent = { kind: "text"; text: string; name: string; path: string; truncated: boolean; total_bytes: number } | { kind: "image"; data_url: string; name: string; path: string } |
 /**
