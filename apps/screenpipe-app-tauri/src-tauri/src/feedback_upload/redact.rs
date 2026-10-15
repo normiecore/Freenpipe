@@ -24,7 +24,7 @@ use serde::Deserialize;
 use serde_json::{Map, Value};
 
 use screenpipe_redact::adapters::regex::redact_one;
-use screenpipe_redact::{RedactedSpan, TextRedactionPolicy};
+use screenpipe_redact::{RedactedSpan, SpanLabel, TextRedactionPolicy};
 
 /// Replacement for a masked settings value.
 pub const MASKED_VALUE: &str = "[redacted]";
@@ -127,6 +127,17 @@ static HOME_PATH: Lazy<Regex> = Lazy::new(|| {
 static IPV4: Lazy<Regex> = Lazy::new(|| {
     Regex::new(r"\b(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})\b").expect("ipv4 regex")
 });
+
+/// The whole of `s` is a dotted-quad address, nothing more.
+static IPV4_ONLY: Lazy<Regex> =
+    Lazy::new(|| Regex::new(r"^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}$").expect("ipv4-only regex"));
+
+/// True when `span` covers exactly a bare IPv4 address in `line` (as opposed
+/// to a URL with credentials, which the detector also labels `Url`).
+fn is_bare_ipv4(line: &str, span: &RedactedSpan) -> bool {
+    line.get(span.start..span.end)
+        .is_some_and(|text| IPV4_ONLY.is_match(text))
+}
 
 /// `Authorization: Bearer <token>` / `Bearer <token>` with a long token.
 static BEARER: Lazy<Regex> = Lazy::new(|| {
@@ -242,6 +253,11 @@ impl FeedbackRedactor {
             .spans
             .iter()
             .filter(|s| self.policy.allows(s.label, s.subtype.as_deref()))
+            // The shared detector files bare IPv4 addresses under `Url`. Leave
+            // those to the IPv4 pass below, which keeps loopback and 0.0.0.0
+            // (they only say which interface something bound to) and turns
+            // every other address into `[IP]`.
+            .filter(|s| !(s.label == SpanLabel::Url && is_bare_ipv4(line, s)))
             .collect();
         spans.sort_by_key(|s| (s.start, std::cmp::Reverse(s.end)));
 
@@ -409,8 +425,13 @@ mod tests {
         assert!(out.contains("0.0.0.0"), "{out}");
         assert!(!out.contains("192.168.1.20"), "{out}");
         assert!(!out.contains("8.8.4.4"), "{out}");
+        assert_eq!(out.matches("[IP]").count(), 2, "{out}");
         // Not an address: an octet above 255.
         assert!(r.redact("value 300.1.1.1").contains("300.1.1.1"));
+        // URLs with credentials are still removed whole, loopback or not.
+        let out = r.redact("db postgres://admin:pa55word@127.0.0.1:5432/app");
+        assert!(!out.contains("pa55word"), "{out}");
+        assert!(out.contains("[URL]"), "{out}");
     }
 
     #[test]

@@ -924,11 +924,21 @@ mod tests {
 
     #[test]
     fn text_caps_respect_char_boundaries() {
+        // "aé" is three bytes: 'a' at 0, 'é' at 1..3, then 'a' at 3, 'é' at 4..6.
         let s = "aé".repeat(10);
-        let (head, cut) = head_str(&s, 4);
-        assert!(cut && head == "aé");
+        // A limit on a boundary keeps exactly that many bytes.
+        assert_eq!(head_str(&s, 4), ("aéa", true));
+        // A limit inside an 'é' steps back to the start of it.
+        assert_eq!(head_str(&s, 5), ("aéa", true));
+        assert_eq!(head_str(&s, 2), ("a", true));
+        assert_eq!(head_str(&s, 100), (s.as_str(), false));
+
+        // 30 bytes; the last 4 start at byte 26, inside an 'é', so the tail
+        // moves forward to the next character.
         let (tail, cut) = tail_str(&s, 4);
-        assert!(cut && tail.ends_with('é'));
+        assert!(cut);
+        assert_eq!(tail, "aé");
         assert!(s.ends_with(tail));
+        assert_eq!(tail_str(&s, 100), (s.as_str(), false));
     }
 }
