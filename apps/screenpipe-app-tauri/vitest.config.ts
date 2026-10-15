@@ -58,6 +58,11 @@ export default defineConfig({
 	resolve: {
 		alias: {
 			"@": path.resolve(__dirname, "./"),
+			// Mirrors tsconfig.json "paths": the analytics SDK is replaced by an
+			// inert shim. Keep "posthog-js/react" first; a plain "posthog-js"
+			// key would also prefix-match it.
+			"posthog-js/react": path.resolve(__dirname, "./lib/analytics/posthog-shim.ts"),
+			"posthog-js": path.resolve(__dirname, "./lib/analytics/posthog-shim.ts"),
 			"@screenpipe-ext": path.resolve(__dirname, "../../crates/screenpipe-core/assets/extensions"),
 		},
 	},

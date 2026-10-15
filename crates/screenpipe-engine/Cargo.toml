@@ -49,9 +49,6 @@ anyhow = "1.0.86"
 async-trait = "0.1"
 moka = { version = "0.12", features = ["future"] }
 
-#opentelemetry
-sentry = { workspace = true }
-
 # Server
 axum = { version = "0.7.5", features = ["ws", "multipart"] }
 http-body-util = "0.1"

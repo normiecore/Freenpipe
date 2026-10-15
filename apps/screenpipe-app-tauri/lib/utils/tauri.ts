@@ -787,6 +787,16 @@ async isServerRunning() : Promise<Result<boolean, string>> {
     else return { status: "error", error: e  as any };
 }
 },
+/**
+ * Whether telemetry is switched off by the environment.
+ *
+ * screenpipe v2.7 exposes this so its settings page can show telemetry as
+ * forced off (it honours `SCREENPIPE_DISABLE_TELEMETRY` and CI variables).
+ * Freenpipe never sends telemetry, so the answer is always `true`.
+ */
+async isTelemetryDisabledByEnv() : Promise<boolean> {
+    return await TAURI_INVOKE("is_telemetry_disabled_by_env");
+},
 async listCacheFiles() : Promise<Result<CacheFile[], string>> {
     try {
     return { status: "ok", data: await TAURI_INVOKE("list_cache_files") };
@@ -2761,11 +2771,14 @@ powerMode?: string | null;
  */
 useChineseMirror: boolean;
 /**
- * Enable anonymous analytics (PostHog).
+ * Legacy telemetry opt-in, kept so an existing store.bin still loads.
+ * Defaults to off, and nothing reads it to send data: Freenpipe has no
+ * telemetry.
  */
 analyticsEnabled: boolean;
 /**
- * Persistent analytics ID (UUID, stable across sessions).
+ * Persistent local install ID (UUID, stable across sessions). Never sent
+ * anywhere.
  */
 analyticsId: string;
 /**

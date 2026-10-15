@@ -1,8 +1,14 @@
-# Telemetry Support Context
+# Deployment labels (formerly "telemetry support context")
 
-Customers who embed the Screenpipe CLI can attach a stable, non-PII support
-identity to Screenpipe's existing telemetry pipeline. This lets Screenpipe support
-filter Sentry errors and PostHog events by customer, deployment, or host app.
+Freenpipe has no telemetry and no crash reporting: nothing about a run is sent
+to any analytics or error-tracking service, whatever the settings say.
+
+The environment variables below are still read, for compatibility with
+deployments that already set them. Their only effect is to label the local
+crash record: when the standalone engine (`screenpipe record`) panics, the
+entry written to `last-panic.log` in its data directory ends with the labels
+that were set, so an operator who collects that file can tell which deployment
+produced it.
 
 ```bash
 export SCREENPIPE_SUPPORT_ID="spcust_acme_123"
@@ -11,20 +17,20 @@ export SCREENPIPE_DEPLOYMENT_ID="prod-laptop-fleet-01"
 export SCREENPIPE_EMBEDDER="acme-agent"
 export SCREENPIPE_EMBEDDER_VERSION="2026.6.4"
 
-npx screenpipe record
+screenpipe record
 ```
 
-## Environment Variables
+## Environment variables
 
-| Variable | Purpose |
+| Variable | Written to the crash record as |
 | --- | --- |
-| `SCREENPIPE_SUPPORT_ID` | Stable support ID for this customer/user/deployment. Used as the CLI PostHog `distinct_id` when `SCREENPIPE_ANALYTICS_ID` is not set, and attached to Sentry/PostHog as `screenpipe_support_id`. |
-| `SCREENPIPE_CUSTOMER_ID` | Customer or organization key, attached as `screenpipe_customer_id`. |
-| `SCREENPIPE_DEPLOYMENT_ID` | Fleet, endpoint group, device, or environment key, attached as `screenpipe_deployment_id`. |
-| `SCREENPIPE_EMBEDDER` | Name of the app embedding or launching Screenpipe, attached as `screenpipe_embedder`. |
-| `SCREENPIPE_EMBEDDER_VERSION` | Version of the embedding app, attached as `screenpipe_embedder_version`. |
+| `SCREENPIPE_SUPPORT_ID` | `screenpipe_support_id` |
+| `SCREENPIPE_CUSTOMER_ID` | `screenpipe_customer_id` |
+| `SCREENPIPE_DEPLOYMENT_ID` | `screenpipe_deployment_id` |
+| `SCREENPIPE_EMBEDDER` | `screenpipe_embedder` |
+| `SCREENPIPE_EMBEDDER_VERSION` | `screenpipe_embedder_version` |
 
-Aliases are also accepted for easier integration with existing deployments:
+Accepted aliases (the first one set wins):
 
 | Canonical variable | Accepted aliases |
 | --- | --- |
@@ -34,18 +40,15 @@ Aliases are also accepted for easier integration with existing deployments:
 | `SCREENPIPE_EMBEDDER` | `SCREENPIPE_HOST_APP`, `SCREENPIPE_TELEMETRY_HOST_APP` |
 | `SCREENPIPE_EMBEDDER_VERSION` | `SCREENPIPE_HOST_VERSION`, `SCREENPIPE_TELEMETRY_HOST_VERSION` |
 
-`SCREENPIPE_ANALYTICS_ID` remains the highest-priority explicit PostHog
-`distinct_id`. Use it only when you intentionally want to control the exact
-person identity. Otherwise prefer `SCREENPIPE_SUPPORT_ID`.
+`SCREENPIPE_ANALYTICS_ID` (falling back to `SCREENPIPE_SUPPORT_ID`) is used
+only as a local salt for hashed identifiers in debug logs. The desktop app sets
+it to its per-install id when it starts the engine.
 
-## Privacy Boundary
+`SCREENPIPE_DISTRIBUTION` / `SCREENPIPE_DIST` used to tag analytics events with
+the install channel; they are no longer read.
 
-These variables should contain opaque IDs, not emails or names. Screenpipe
-telemetry still follows the normal telemetry settings: `--disable-telemetry`
-turns it off, and telemetry does not include screen content, audio, transcripts,
-or file contents.
+## Privacy
 
-The JavaScript/Swift SDK does not send first-party Screenpipe telemetry on its
-own. If an SDK host wants Screenpipe support correlation, it should set the same
-environment variables when launching the Screenpipe CLI/engine, and may also add
-the same fields to the host application's own Sentry/PostHog reports.
+Use opaque ids, not emails or names: the labels end up in a plain-text log file
+on the machine. `--disable-telemetry` and the `analyticsEnabled` setting are
+still accepted for compatibility and change nothing.

@@ -6,7 +6,6 @@
 #![allow(deprecated)] // cocoa/objc crate deprecations — will migrate to objc2 later
 #![allow(unused_imports)]
 
-use analytics::AnalyticsManager;
 use commands::show_main_window;
 use serde_json::json;
 use std::env;
@@ -32,7 +31,6 @@ use window::ShowRewindWindow;
 mod analytics;
 #[allow(deprecated)]
 mod icons;
-use crate::analytics::start_analytics;
 mod agent_event_emitter;
 mod audio_exclusions;
 mod calendar;
@@ -113,7 +111,6 @@ pub use enterprise_policy::set_sync_streams;
 pub use permissions::do_permissions_check;
 pub use permissions::open_permission_settings;
 pub use permissions::request_permission;
-use sentry;
 use tauri::AppHandle;
 #[cfg(target_os = "macos")]
 mod dock_menu;
@@ -473,140 +470,8 @@ async fn main() {
         }
     }
 
-    // Check if telemetry is disabled via store setting (analyticsEnabled) or offline mode
-    let store_path = screenpipe_core::paths::default_screenpipe_data_dir().join("store.bin");
-    let store_json = std::fs::read(&store_path).ok().and_then(|data| {
-        if data.len() >= 8 && &data[..8] == b"SPSTORE1" {
-            // Encrypted store — try to decrypt with keychain key
-            // Only attempt if encryption is enabled (file being encrypted is the signal)
-            let key = match secrets::get_key_if_encryption_enabled() {
-                secrets::KeyResult::Found(k) => k,
-                _ => return None,
-            };
-            let plain = screenpipe_vault::crypto::decrypt_small(&data[8..], &key).ok()?;
-            serde_json::from_slice::<serde_json::Value>(&plain).ok()
-        } else {
-            serde_json::from_slice::<serde_json::Value>(&data).ok()
-        }
-    });
-    // Helper: look up a bool key in the store JSON (check both top-level and nested "settings")
-    let store_bool = |key: &str| -> Option<bool> {
-        store_json.as_ref().and_then(|data| {
-            data.get(key).and_then(|v| v.as_bool()).or_else(|| {
-                data.get("settings")
-                    .and_then(|s| s.get(key))
-                    .and_then(|v| v.as_bool())
-            })
-        })
-    };
-    let telemetry_disabled = store_bool("analyticsEnabled")
-        .map(|enabled| !enabled)
-        .unwrap_or(false);
-    let _posthog_disabled = telemetry_disabled;
-
-    let app_version = env!("CARGO_PKG_VERSION");
-    let sentry_guard = if !telemetry_disabled {
-        Some(sentry::init((
-            "https://da4edafe2c8e5e8682505945695ecad7@o4505591122886656.ingest.us.sentry.io/4510761355116544",
-            sentry::ClientOptions {
-                release: Some(format!("screenpipe-app@{}", app_version).into()),
-                send_default_pii: false,
-                server_name: Some("screenpipe-app".into()),
-                before_send: Some(std::sync::Arc::new(|mut event| {
-                    // Self-expiring Sentry reports. Each build stamps the
-                    // unix epoch seconds of its build time (see build.rs) and
-                    // we refuse to emit events once it's > 90 days old. This
-                    // is the "never get an error from an older version" lever:
-                    // users who never update gradually fall silent, so the
-                    // inbox reflects what's running on current releases
-                    // instead of a 6-month tail of ancient builds. 90d is
-                    // loose enough that even slow updaters stay reporting
-                    // for a full release cycle but tight enough that truly
-                    // stale installs age out.
-                    const SENTRY_REPORT_TTL_SECS: u64 = 90 * 24 * 60 * 60;
-                    let build_time: u64 = env!("SCREENPIPE_BUILD_UNIX_TIME")
-                        .parse()
-                        .unwrap_or(0);
-                    if build_time > 0 {
-                        let now = std::time::SystemTime::now()
-                            .duration_since(std::time::UNIX_EPOCH)
-                            .map(|d| d.as_secs())
-                            .unwrap_or(0);
-                        if now.saturating_sub(build_time) > SENTRY_REPORT_TTL_SECS {
-                            return None;
-                        }
-                    }
-
-                    fn strip_user_paths(s: &str) -> String {
-                        let re_unix = regex::Regex::new(r"/Users/[^/\s]+").unwrap();
-                        let re_win = regex::Regex::new(r"(?i)C:\\Users\\[^\\\s]+").unwrap();
-                        let s = re_unix.replace_all(s, "~").to_string();
-                        re_win.replace_all(&s, "~").to_string()
-                    }
-                    if let Some(ref mut msg) = event.message {
-                        *msg = strip_user_paths(msg);
-                    }
-
-                    // Noise filter: drop events whose root cause is a user
-                    // environment problem we can't fix from code. These were
-                    // cluttering the Sentry inbox and drowning real bugs.
-                    // Patterns compiled lazily and shared across calls to
-                    // avoid per-event regex recompilation overhead.
-                    static USER_ENV_PATTERNS: std::sync::OnceLock<Vec<regex::Regex>> =
-                        std::sync::OnceLock::new();
-                    let env_patterns = USER_ENV_PATTERNS.get_or_init(|| {
-                        [
-                            // WKWebView IndexedDB crash — handled via auto-reload in layout.tsx (APP-2E)
-                            r"Indexed Database server lost",
-                            // User hasn't granted screen recording permission (CLI-49 — 706 users)
-                            r"Screen recording permission denied",
-                            // Linux system library missing — distro-local, not our bug (APP-70)
-                            r"Failed to load ayatana-appindicator3 or appindicator3 dynamic library",
-                            // Broken Homebrew install — external dylib missing (CLI-NN)
-                            r"Library not loaded.*libx265\.",
-                            // Local DB corruption — user dropped/restored part of their db.sqlite
-                            r"no such table: main\.speaker_embeddings",
-                            // Concurrent DB access / user ran CLI while app was running
-                            r"database is locked",
-                            // Transient network failures on /api/app-update — offline / DNS blip (APP-8X)
-                            r"failed to check for updates: error sending request",
-                            r"failed to lookup address information",
-                            // WebView2 runtime errors — Windows user env (APP-8T, APP-91)
-                            r"WebView2 error: WindowsError",
-                            // Deepgram DNS / connectivity blips — already logged locally, not Sentry-worthy
-                            r"deepgram transcription failed: Cannot resolve audio transcription server",
-                        ]
-                        .into_iter()
-                        .filter_map(|p| regex::Regex::new(p).ok())
-                        .collect()
-                    });
-
-                    let matches_noise = |text: &str| env_patterns.iter().any(|re| re.is_match(text));
-                    if event.message.as_deref().map(matches_noise).unwrap_or(false) {
-                        return None;
-                    }
-                    for val in event.exception.values.iter() {
-                        if let Some(ref v) = val.value {
-                            if matches_noise(v) {
-                                return None;
-                            }
-                        }
-                    }
-                    for val in event.exception.values.iter_mut() {
-                        if let Some(ref mut v) = val.value {
-                            *v = strip_user_paths(v);
-                        }
-                    }
-                    Some(event)
-                })),
-                ..Default::default()
-            },
-        )))
-    } else {
-        None
-    };
-
-    // Install a panic hook that logs to stderr + Sentry BEFORE the default hook runs.
+    // Install a panic hook that logs to stderr + a local crash file BEFORE the
+    // default hook runs. Nothing is reported off the machine.
     // This is critical because panics inside `tao::send_event` (called from Obj-C)
     // hit `panic_cannot_unwind` → `abort()`, and the default hook's output may be lost.
     // By logging here we capture the actual panic message for diagnosis.
@@ -649,8 +514,7 @@ async fn main() {
         // a residual race is possible if the worker is inside an await
         // that doesn't include the shutdown future. Either way, this is
         // orderly-shutdown noise — not a crash — and logging it to
-        // last-panic.log + Sentry makes the app look unstable to users
-        // and skews crash-rate dashboards.
+        // last-panic.log makes the app look unstable to users.
         if payload.contains("Tokio 1.x context was found, but it is being shutdown") {
             eprintln!(
                 "(suppressed tokio shutdown-time panic on thread '{}' at {})",
@@ -688,18 +552,6 @@ async fn main() {
             let _ = f.sync_all(); // fsync before abort() kills us
         }
 
-        // Also report to Sentry if initialized
-        sentry::capture_message(
-            &format!(
-                "panic on thread '{}' at {}: {}",
-                thread_name, location, payload
-            ),
-            sentry::Level::Fatal,
-        );
-        // Flush Sentry so the event is sent before abort
-        if let Some(client) = sentry::Hub::current().client() {
-            client.flush(Some(std::time::Duration::from_secs(2)));
-        }
         // Call the default hook (prints backtrace etc.)
         default_hook(info);
     }));
@@ -899,14 +751,6 @@ async fn main() {
     #[cfg(feature = "e2e")]
     let app = app.plugin(tauri_plugin_webdriver::init());
 
-    // Only add Sentry plugin if telemetry is enabled
-    let app = if let Some(ref _guard) = sentry_guard {
-        let client = sentry::Hub::current().client().unwrap();
-        app.plugin(tauri_plugin_sentry::init(&client))
-    } else {
-        app
-    };
-
     #[cfg(target_os = "macos")]
     let app = app.plugin(tauri_nspanel::init());
 
@@ -1035,8 +879,7 @@ async fn main() {
                 .with_writer(std::io::stdout)
                 .with_filter(EnvFilter::new(LOG_FILTER));
 
-            // Initialize the tracing subscriber with both layers + optional Sentry layer
-            // The Sentry layer captures error!() and warn!() events (not just panics)
+            // Initialize the tracing subscriber with both layers (file + console)
             let registry = tracing_subscriber::registry()
                 .with(file_layer)
                 .with(console_layer);
@@ -1044,13 +887,7 @@ async fn main() {
             #[cfg(target_os = "macos")]
             let registry = registry.with(OsLogger::new("pe.screenpi", "app"));
 
-            if sentry_guard.is_some() {
-                registry
-                    .with(sentry::integrations::tracing::layer())
-                    .init();
-            } else {
-                registry.init();
-            }
+            registry.init();
 
             #[cfg(target_os = "windows")]
             windows_webview_env::log_diagnostics();
@@ -1087,10 +924,6 @@ async fn main() {
 
             info!("App version: {}", env!("CARGO_PKG_VERSION"));
             info!("Local data directory: {}", base_dir.display());
-
-            // PostHog analytics setup
-            let posthog_api_key = "phc_z7FZXE8vmXtdTQ78LMy3j1BQWW4zP6PGDUP46rgcdnb".to_string();
-            let interval_hours = 6;
 
             // Store setup and initialization - must be done first
             // Note: StoreBuilder handles file creation internally — pre-creating
@@ -1161,53 +994,6 @@ async fn main() {
                     // Small delay so the frontend window is ready to receive events
                     tokio::time::sleep(std::time::Duration::from_secs(3)).await;
                     let _ = app_handle_fb.emit("data-dir-fallback", ());
-                });
-            }
-
-            // Attach non-sensitive settings to all future Sentry events
-            if !telemetry_disabled {
-                sentry::configure_scope(|scope| {
-                    // Set user.id to the persistent analytics UUID. Support
-                    // context env vars are attached as tags so managed
-                    // deployments can be filtered without replacing the app id.
-                    scope.set_user(Some(sentry::protocol::User {
-                        id: Some(store.recording.analytics_id.clone()),
-                        ..Default::default()
-                    }));
-                    let telemetry_context = screenpipe_engine::telemetry_context::TelemetryContext::from_env();
-                    for (key, value) in telemetry_context.pairs() {
-                        scope.set_tag(key, value);
-                    }
-                    if !telemetry_context.is_empty() {
-                        scope.set_context(
-                            "screenpipe_support",
-                            sentry::protocol::Context::Other(telemetry_context.to_json_map()),
-                        );
-                    }
-                    scope.set_context("app_settings", sentry::protocol::Context::Other({
-                        let mut map = std::collections::BTreeMap::new();
-                        map.insert("audio_chunk_duration".into(), serde_json::json!(store.recording.audio_chunk_duration));
-                        map.insert("port".into(), serde_json::json!(store.recording.port));
-                        map.insert("disable_audio".into(), serde_json::json!(store.recording.disable_audio));
-                        map.insert("audio_transcription_engine".into(), serde_json::json!(store.recording.audio_transcription_engine));
-                        map.insert("ocr_engine".into(), serde_json::json!(store.ocr_engine));
-                        map.insert("monitor_ids".into(), serde_json::json!(store.recording.monitor_ids));
-                        map.insert("use_all_monitors".into(), serde_json::json!(store.recording.use_all_monitors));
-                        map.insert("languages".into(), serde_json::json!(store.recording.languages));
-                        map.insert("use_pii_removal".into(), serde_json::json!(store.recording.use_pii_removal));
-                        map.insert("disable_vision".into(), serde_json::json!(store.recording.disable_vision));
-                        map.insert("auto_start_enabled".into(), serde_json::json!(store.auto_start_enabled));
-                        map.insert("platform".into(), serde_json::json!(store.platform));
-                        map.insert("embedded_llm_enabled".into(), serde_json::json!(store.embedded_llm.enabled));
-                        map.insert("embedded_llm_model".into(), serde_json::json!(store.embedded_llm.model));
-                        // Only send counts for privacy-sensitive lists (not actual values)
-                        map.insert("audio_device_count".into(), serde_json::json!(store.recording.audio_devices.len()));
-                        map.insert("ignored_windows_count".into(), serde_json::json!(store.recording.ignored_windows.len()));
-                        map.insert("included_windows_count".into(), serde_json::json!(store.recording.included_windows.len()));
-                        map.insert("ignored_urls_count".into(), serde_json::json!(store.recording.ignored_urls.len()));
-                        map.insert("ai_preset_count".into(), serde_json::json!(store.ai_presets.len()));
-                        map
-                    }));
                 });
             }
 
@@ -1647,8 +1433,6 @@ async fn main() {
                 });
             }
 
-            let is_analytics_enabled = store.recording.analytics_enabled;
-
             let is_autostart_enabled = store
                 .auto_start_enabled;
 
@@ -1662,31 +1446,6 @@ async fn main() {
                 "registered for autostart? {}",
                 autostart_manager.is_enabled().unwrap_or(false)
             );
-
-            // Use persistent analytics_id for PostHog (consistent across frontend and backend)
-            let unique_id = store.recording.analytics_id.clone();
-            let email = store.user.email.unwrap_or_default();
-            let local_api = crate::recording::local_api_context_from_app(&app_handle);
-
-            if is_analytics_enabled {
-                match start_analytics(
-                    unique_id,
-                    email,
-                    posthog_api_key,
-                    interval_hours,
-                    local_api.url(""),
-                    local_api.api_key.clone(),
-                    data_dir.clone(),
-                    is_analytics_enabled,
-                ) {
-                    Ok(analytics_manager) => {
-                        app.manage(analytics_manager);
-                    }
-                    Err(e) => {
-                        error!("Failed to start analytics: {}", e);
-                    }
-                }
-            }
 
             // Start health check service (macos only)
             let app_handle_clone = app_handle.clone();
@@ -1870,20 +1629,6 @@ async fn main() {
             match event {
                 tauri::RunEvent::Ready { .. } => {
                     debug!("Ready event");
-                    // Send app started event
-                    let app_handle = app_handle.app_handle().clone();
-                    tauri::async_runtime::spawn(async move {
-                        if let Some(analytics) = app_handle.try_state::<Arc<AnalyticsManager>>() {
-                            let _ = analytics
-                                .send_event(
-                                    "app_started",
-                                    Some(json!({
-                                        "startup_type": "normal"
-                                    })),
-                                )
-                                .await;
-                        }
-                    });
                 }
                 tauri::RunEvent::ExitRequested { api, .. } => {
                     // When the user clicks "quit screenpipe" in the tray menu,
@@ -1900,22 +1645,6 @@ async fn main() {
 
                 tauri::RunEvent::Exit => {
                     info!("App exiting — running cleanup");
-
-                    // Send app closed analytics
-                    let app_handle_v2 = app_handle.app_handle().clone();
-                    tauri::async_runtime::spawn(async move {
-                        if let Some(analytics) = app_handle_v2.try_state::<Arc<AnalyticsManager>>()
-                        {
-                            let _ = analytics
-                                .send_event(
-                                    "app_closed",
-                                    Some(json!({
-                                        "shutdown_type": "normal"
-                                    })),
-                                )
-                                .await;
-                        }
-                    });
 
                     // Shut down embedded server (incl. audio manager / ggml Metal cleanup)
                     // MUST happen synchronously before exit() runs C++ static destructors,

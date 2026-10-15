@@ -48,8 +48,6 @@ import { useSqlAutocomplete } from "@/lib/hooks/use-sql-autocomplete";
 import { useInstalledApps } from "@/lib/hooks/use-installed-apps";
 import { commands } from "@/lib/utils/tauri";
 import posthog from "posthog-js";
-import * as Sentry from "@sentry/react";
-import { defaultOptions } from "tauri-plugin-sentry-api";
 import {
   validateField,
   sanitizeValue,
@@ -381,13 +379,11 @@ export function PrivacySection() {
       if (!analyticsEnabled) {
         posthog.capture("telemetry", { enabled: false });
         posthog.opt_out_capturing();
-        Sentry.close();
       } else {
         const isDebug = process.env.TAURI_ENV_DEBUG === "true";
         if (!isDebug) {
           posthog.opt_in_capturing();
           posthog.capture("telemetry", { enabled: true });
-          Sentry.init({ ...defaultOptions });
         }
       }
 

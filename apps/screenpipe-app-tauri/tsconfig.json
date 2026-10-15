@@ -25,6 +25,12 @@
     "paths": {
       "@/*": [
         "./*"
+      ],
+      "posthog-js": [
+        "./lib/analytics/posthog-shim.ts"
+      ],
+      "posthog-js/react": [
+        "./lib/analytics/posthog-shim.ts"
       ]
     },
     "types": ["@tauri-apps/api"]

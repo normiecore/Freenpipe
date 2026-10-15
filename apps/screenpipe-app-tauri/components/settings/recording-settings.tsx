@@ -130,8 +130,6 @@ import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/comp
 import { MeetingAppsPicker } from "./meeting-apps-picker";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { useSqlAutocomplete } from "@/lib/hooks/use-sql-autocomplete";
-import * as Sentry from "@sentry/react";
-import { defaultOptions } from "tauri-plugin-sentry-api";
 import { useLoginDialog } from "../login-dialog";
 import { BatterySaverSection } from "./battery-saver-section";
 // ScheduleSettings moved to privacy-section
@@ -2108,7 +2106,6 @@ export function RecordingSettings() {
           enabled: false,
         });
         posthog.opt_out_capturing();
-        Sentry.close();
         console.log("Telemetry disabled");
       } else {
         const isDebug = process.env.TAURI_ENV_DEBUG === "true";
@@ -2118,9 +2115,6 @@ export function RecordingSettings() {
             enabled: true,
           });
           console.log("Telemetry enabled");
-          Sentry.init({
-            ...defaultOptions,
-          });
         }
       }
 
