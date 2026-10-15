@@ -61,12 +61,6 @@ import posthog from "posthog-js";
 // Utility functions (unchanged)
 // ---------------------------------------------------------------------------
 
-const GITHUB_RELEASES_API = "https://api.github.com/repos/screenpipe/screenpipe/releases";
-
-interface GitHubAsset { name: string; browser_download_url: string; }
-interface GitHubRelease { tag_name: string; assets: GitHubAsset[]; }
-interface McpVersionInfo { available: string | null; installed: string | null; }
-
 function formatRelativeTime(ts: number): string {
   const secs = Math.max(0, Math.floor((Date.now() - ts) / 1000));
   if (secs < 5) return "just now";
@@ -76,26 +70,6 @@ function formatRelativeTime(ts: number): string {
   const hours = Math.floor(mins / 60);
   if (hours < 24) return `${hours}h ago`;
   return `${Math.floor(hours / 24)}d ago`;
-}
-
-async function getLatestMcpRelease(): Promise<{ url: string; version: string }> {
-  const maxPages = 5;
-  for (let page = 1; page <= maxPages; page++) {
-    const response = await tauriFetch(
-      `${GITHUB_RELEASES_API}?per_page=50&page=${page}`,
-      { method: "GET", headers: { "Accept": "application/vnd.github.v3+json" } }
-    );
-    if (!response.ok) throw new Error("Failed to fetch releases");
-    const releases: GitHubRelease[] = await response.json();
-    if (releases.length === 0) break;
-    const mcpRelease = releases.find(r => r.tag_name.startsWith("mcp-v"));
-    if (mcpRelease) {
-      const mcpbAsset = mcpRelease.assets.find(a => a.name.endsWith(".mcpb"));
-      if (!mcpbAsset) throw new Error("No .mcpb file found in release");
-      return { url: mcpbAsset.browser_download_url, version: mcpRelease.tag_name.replace("mcp-v", "") };
-    }
-  }
-  throw new Error("No MCP release found");
 }
 
 async function findClaudeExeOnWindows(): Promise<string | null> {
