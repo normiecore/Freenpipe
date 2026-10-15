@@ -10,12 +10,18 @@
 //! * `set_ignore_missing(true)` lets a database that a newer build migrated
 //!   further still open;
 //! * the checksum-mismatch error text that `fix_migration_checksums` keys on is
-//!   unchanged, and the repair path still runs.
+//!   unchanged, and the repair path still runs;
+//! * the `_sqlx_migrations` bookkeeping table keeps the layout earlier sqlx
+//!   releases created, and stored checksums are still the SHA-384 of each
+//!   migration file, so a database migrated by the sqlx 0.7 base opens without
+//!   any checksum repair.
 
-use std::path::Path;
+use std::collections::BTreeMap;
+use std::path::{Path, PathBuf};
 
 use screenpipe_config::DbConfig;
 use screenpipe_db::DatabaseManager;
+use sha2::{Digest, Sha384};
 use sqlx::migrate::{MigrateError, Migrator};
 use sqlx::sqlite::{SqliteConnectOptions, SqliteConnection, SqlitePoolOptions};
 use sqlx::{ConnectOptions, Connection};
@@ -165,6 +171,92 @@ async fn embedded_migrator_repairs_modified_checksum() {
             .unwrap();
     assert_eq!(repaired, original);
     side.close().await.unwrap();
+}
+
+#[tokio::test]
+async fn migrations_table_keeps_its_layout() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("db.sqlite");
+    drop(open_manager(&path).await);
+
+    let mut side = side_connection(&path).await;
+    let columns: Vec<(String, String, i64, i64)> = sqlx::query_as(
+        "SELECT name, type, \"notnull\", pk FROM pragma_table_info('_sqlx_migrations') ORDER BY cid",
+    )
+    .fetch_all(&mut side)
+    .await
+    .unwrap();
+    side.close().await.unwrap();
+
+    // (name, declared type, NOT NULL, primary-key position), as sqlx 0.7 created it.
+    let expected: Vec<(String, String, i64, i64)> = [
+        ("version", "BIGINT", 0, 1),
+        ("description", "TEXT", 1, 0),
+        ("installed_on", "TIMESTAMP", 1, 0),
+        ("success", "BOOLEAN", 1, 0),
+        ("checksum", "BLOB", 1, 0),
+        ("execution_time", "BIGINT", 1, 0),
+    ]
+    .into_iter()
+    .map(|(name, ty, not_null, pk)| (name.to_owned(), ty.to_owned(), not_null, pk))
+    .collect();
+    assert_eq!(columns, expected);
+}
+
+/// Embedded migration files by version, read from the source tree.
+fn migration_files() -> BTreeMap<i64, PathBuf> {
+    let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("src/migrations");
+    let mut files = BTreeMap::new();
+    for entry in std::fs::read_dir(&dir).expect("read migrations dir") {
+        let path = entry.unwrap().path();
+        let Some(name) = path.file_name().and_then(|n| n.to_str()) else {
+            continue;
+        };
+        if !name.ends_with(".sql") {
+            continue;
+        }
+        let version: i64 = name
+            .split('_')
+            .next()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or_else(|| panic!("migration file without a numeric version: {name}"));
+        assert!(
+            files.insert(version, path.clone()).is_none(),
+            "two migration files share version {version}"
+        );
+    }
+    files
+}
+
+#[tokio::test]
+async fn stored_checksums_are_sha384_of_migration_files() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("db.sqlite");
+    drop(open_manager(&path).await);
+
+    let mut side = side_connection(&path).await;
+    let stored: Vec<(i64, Vec<u8>)> =
+        sqlx::query_as("SELECT version, checksum FROM _sqlx_migrations ORDER BY version")
+            .fetch_all(&mut side)
+            .await
+            .unwrap();
+    side.close().await.unwrap();
+
+    let files = migration_files();
+    assert_eq!(
+        stored.iter().map(|(v, _)| *v).collect::<Vec<_>>(),
+        files.keys().copied().collect::<Vec<_>>(),
+        "every migration file should be applied exactly once"
+    );
+    for (version, checksum) in stored {
+        let text = std::fs::read_to_string(&files[&version]).unwrap();
+        assert_eq!(
+            checksum,
+            Sha384::digest(text.as_bytes()).to_vec(),
+            "checksum of {version} is not the SHA-384 of its file; databases \
+             migrated by an earlier sqlx would need a checksum repair"
+        );
+    }
 }
 
 /// The same guarantees, shown on the bare sqlx `Migrator` with migrations read
