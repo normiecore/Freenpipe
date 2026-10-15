@@ -56,7 +56,6 @@
     "global-shortcut:allow-unregister",
     "global-shortcut:allow-unregister-all",
     "global-shortcut:default",
-    "sentry:default",
     {
       "identifier": "opener:allow-open-url",
       "allow": [

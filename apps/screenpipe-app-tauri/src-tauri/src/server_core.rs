@@ -296,8 +296,8 @@ impl ServerCore {
         let manual_meeting = Arc::new(tokio::sync::RwLock::new(None::<i64>));
 
         // --- Resource + sleep monitors (long-lived) ---
-        let resource_monitor = ResourceMonitor::new(config.analytics_enabled);
-        resource_monitor.start_monitoring(Duration::from_secs(30), Some(Duration::from_secs(60)));
+        let resource_monitor = ResourceMonitor::new();
+        resource_monitor.start_monitoring(Duration::from_secs(30));
         start_sleep_monitor();
 
         // --- HTTP server ---
