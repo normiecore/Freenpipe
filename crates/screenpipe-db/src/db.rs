@@ -251,7 +251,7 @@ async fn flush_level0_bulk(
         }
         sql.push_str("(?,'ocr','block',?,NULL,0,?,?,?,?,?,?)");
     }
-    let mut q = sqlx::query(&sql);
+    let mut q = sqlx::query(sqlx::AssertSqlSafe(sql));
     for row in chunk {
         q = q
             .bind(frame_id)
@@ -546,7 +546,7 @@ impl DatabaseManager {
             if row.0 == 0 {
                 tracing::info!("Adding missing column frames.{}", col_name);
                 let sql = format!("ALTER TABLE frames ADD COLUMN {} {}", col_name, col_type);
-                sqlx::query(&sql).execute(pool).await?;
+                sqlx::query(sqlx::AssertSqlSafe(sql)).execute(pool).await?;
             }
         }
 
@@ -584,7 +584,7 @@ impl DatabaseManager {
             if row.0 == 0 {
                 tracing::info!("Adding missing column memories.{}", col_name);
                 let sql = format!("ALTER TABLE memories ADD COLUMN {} {}", col_name, col_type);
-                sqlx::query(&sql).execute(pool).await?;
+                sqlx::query(sqlx::AssertSqlSafe(sql)).execute(pool).await?;
             }
         }
         sqlx::query(
@@ -5272,7 +5272,7 @@ impl DatabaseManager {
         Ok(())
     }
     pub async fn execute_raw_sql(&self, query: &str) -> Result<serde_json::Value, sqlx::Error> {
-        let rows = sqlx::query(query).fetch_all(&self.pool).await?;
+        let rows = sqlx::query(sqlx::AssertSqlSafe(query)).fetch_all(&self.pool).await?;
 
         let result: Vec<serde_json::Map<String, serde_json::Value>> = rows
             .iter()
@@ -8757,7 +8757,7 @@ LIMIT ? OFFSET ?
     /// Create an atomic backup of the database using `VACUUM INTO`.
     /// The destination path must not already exist.
     pub async fn backup_to(&self, dest: &str) -> Result<(), sqlx::Error> {
-        sqlx::query(&format!("VACUUM INTO '{}'", dest.replace('\'', "''")))
+        sqlx::query(sqlx::AssertSqlSafe(format!("VACUUM INTO '{}'", dest.replace('\'', "''"))))
             .execute(&self.pool)
             .await?;
         Ok(())
@@ -9829,7 +9829,7 @@ LIMIT ? OFFSET ?
             sets.len() + 1
         );
         let mut tx = self.begin_immediate_with_retry().await?;
-        let mut query = sqlx::query(&sql);
+        let mut query = sqlx::query(sqlx::AssertSqlSafe(sql));
         if let Some(v) = meeting_start {
             query = query.bind(normalize_timestamp_for_range_query(v));
         }
@@ -9984,7 +9984,7 @@ LIMIT ? OFFSET ?
                 "DELETE FROM meetings WHERE id IN ({})",
                 loser_placeholders.join(", ")
             );
-            let mut del_query = sqlx::query(&delete_sql);
+            let mut del_query = sqlx::query(sqlx::AssertSqlSafe(delete_sql));
             for &id in &losers {
                 del_query = del_query.bind(id);
             }
@@ -10177,7 +10177,7 @@ LIMIT ? OFFSET ?
 
         let sql = format!("UPDATE memories SET {} WHERE id = ?6", sets.join(", "));
 
-        sqlx::query(&sql)
+        sqlx::query(sqlx::AssertSqlSafe(sql))
             .bind(&now)
             .bind(content)
             .bind(tags)

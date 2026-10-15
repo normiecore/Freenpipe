@@ -53,7 +53,7 @@ async fn migrated_db() -> DatabaseManager {
 }
 
 async fn exec(db: &DatabaseManager, sql: &str) {
-    if let Err(e) = sqlx::query(sql).execute(&db.pool).await {
+    if let Err(e) = sqlx::query(sqlx::AssertSqlSafe(sql)).execute(&db.pool).await {
         let head: String = sql.chars().take(90).collect();
         panic!("exec failed: {e}\n  sql: {head}...");
     }

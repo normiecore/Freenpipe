@@ -1361,7 +1361,7 @@ async fn execute_single_write(
                 "UPDATE frames SET video_chunk_id = ?1, offset_index = CASE id {} ELSE offset_index END, snapshot_path = NULL WHERE id IN ({}) AND snapshot_path IS NOT NULL",
                 case_clauses.join(" "), placeholders.join(",")
             );
-            let mut query = sqlx::query(&sql).bind(chunk_id);
+            let mut query = sqlx::query(sqlx::AssertSqlSafe(sql)).bind(chunk_id);
             for (id, _) in batch {
                 query = query.bind(id);
             }
@@ -1378,7 +1378,7 @@ async fn execute_single_write(
                 "UPDATE frames SET snapshot_path = NULL WHERE id IN ({})",
                 placeholders.join(",")
             );
-            let mut query = sqlx::query(&sql);
+            let mut query = sqlx::query(sqlx::AssertSqlSafe(sql));
             for id in frame_ids {
                 query = query.bind(id);
             }
