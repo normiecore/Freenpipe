@@ -243,8 +243,7 @@ pub enum Command {
 
     /// Install a bundle of pipes from a manifest URL
     Install {
-        /// Manifest URL (HTTPS, JSON). Defaults to the screenpipe starter bundle.
-        #[arg(default_value = "https://screenpi.pe/start.json")]
+        /// Manifest URL (HTTPS, JSON) listing pipe slugs from the configured registry
         url: String,
         /// Allow manifests hosted outside the trusted host list
         #[arg(long, default_value_t = false)]
@@ -1338,9 +1337,9 @@ pub enum PipeCommand {
         #[arg(long, default_value_t = false)]
         json: bool,
     },
-    /// Install a pipe from a local path or URL
+    /// Install a pipe from a local path, an https URL, or a registry slug
     Install {
-        /// Source: local file/dir path or URL
+        /// Source: local file/dir path, https:// URL, or slug from the configured registry
         source: String,
     },
     /// Enable a pipe
@@ -1376,7 +1375,7 @@ pub enum PipeCommand {
         #[command(subcommand)]
         subcommand: ModelCommand,
     },
-    /// Publish a local pipe to the registry
+    /// Publish a local pipe (not supported: registries are read-only; prints how to share the file)
     Publish {
         /// Pipe name (directory name under ~/.screenpipe/pipes/)
         name: String,
@@ -1391,7 +1390,7 @@ pub enum PipeCommand {
         /// Pipe slug (registry identifier)
         slug: String,
     },
-    /// Check publish/review status of a pipe you own
+    /// Check publish/review status of a pipe you own (not supported: registries are read-only)
     Status {
         /// Pipe slug (registry identifier)
         slug: String,

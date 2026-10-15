@@ -151,10 +151,34 @@ Wave 0 ran on the PC before the cloud phase. Tick anything you already checked t
 
 ### W0-08 Cloud sync, archive and pipe store off by default
 
-- [ ] **SMK-W0-08-1** (Runtime) The pipe store is empty without a base URL, and lists a self-hosted index
-  - Setup: engine on `$FP_PORT` with `SCREENPIPE_API_BASE_URL` unset; then a local static JSON server.
-  - Steps: 1. `GET /pipes/store`. 2. Restart with `SCREENPIPE_API_BASE_URL` pointing at the static server, then `GET /pipes/store` again.
-  - Expected: 1. HTTP 200 with an empty `data` array. 2. The store lists the server's pipes.
+- [ ] **SMK-W0-08-1** (Runtime) The pipe store is empty without a registry, and lists and installs from a local static index
+  - Setup: engine on `$FP_PORT` with `SCREENPIPE_API_BASE_URL` unset. A static registry in a temp dir:
+    `mkdir -p "$FP_DD/registry/pipes/hello"`,
+    `printf -- '---\nschedule: manual\nenabled: false\n---\n\nSay hello.\n' > "$FP_DD/registry/pipes/hello/pipe.md"`,
+    `echo '{"data":[{"slug":"hello","title":"Hello","version":1,"source_path":"pipes/hello/pipe.md"}]}' > "$FP_DD/registry/index.json"`,
+    then `python -m http.server 8765 --directory "$FP_DD/registry"` in a second shell.
+  - Steps: 1. `GET /pipes/store` and `GET /pipes/store/hello`. 2. Restart the engine with `SCREENPIPE_API_BASE_URL=http://127.0.0.1:8765/index.json`, then `GET /pipes/store` and `POST /pipes/store/install` with body `{"slug":"hello"}` (`-H "Content-Type: application/json" -d ...`). 3. `POST /pipes/store/publish` with `{}`.
+  - Expected: 1. HTTP 200 `{"data":[],"registry_configured":false}`; the detail call answers 503 with `"error_code":"registry_not_configured"`. 2. The list holds `hello`; install answers `{"success":true,"name":"hello",...}` and `$FP_DD/pipes/hello/pipe.md` exists with `source_slug: hello`. 3. HTTP 501 with `"error_code":"registry_read_only"`.
+  - Result:
+- [ ] **SMK-W0-08-2** (UI smoke) Storage settings offer no cloud archive or cloud sync
+  - Setup: app dev run against the isolated data dir.
+  - Steps: 1. Settings > Storage. 2. Search settings for "archive" and for "sync".
+  - Expected: only the Local tab is shown (no Archive or Sync tab), the section subtitle reads "Local disk", and the settings search finds no Archive or Sync entry.
+  - Result:
+- [ ] **SMK-W0-08-3** (Runtime) Cloud sync and archive never start, even for a store that had them enabled
+  - Setup: app dev run against the isolated data dir; engine reachable on `$FP_PORT`.
+  - Steps: 1. Start the app and read its log for the first minute. 2. `POST /archive/init` with `{"token":"x"}` and `POST /sync/init` with `{"token":"x","password":"y"}` (`-H "Content-Type: application/json"`).
+  - Expected: 1. The log shows "cloud sync: no sync server configured, skipping auto-start" and the same for cloud archive; these checks run before any stored setting is read, so an old `store.bin` with sync or archive enabled behaves the same. 2. Both answer HTTP 501 with an error saying cloud sync is not configured.
+  - Result:
+- [ ] **SMK-W0-08-4** (UI smoke) Pipe store tab explains the missing registry and has no publish or review controls
+  - Setup: app dev run with `SCREENPIPE_API_BASE_URL` unset; then again with the static index from SMK-W0-08-1.
+  - Steps: 1. Pipes > Discover. 2. Restart with the registry set, open Discover, open the `hello` pipe, install it.
+  - Expected: 1. A "no pipe registry configured" card, no PUBLISH button. 2. `hello` is listed; its detail page shows FORK and GET only (no EDIT, PUBLISH UPDATE or UNPUBLISH); GET installs it and switches to My Pipes.
+  - Result:
+- [ ] **SMK-W0-08-5** (UI smoke) "export pipe file" replaces share and publish
+  - Setup: app dev run with at least one pipe in My Pipes (the `hello` pipe from SMK-W0-08-4 works).
+  - Steps: 1. Open the pipe's overflow menu. 2. Choose "export pipe file" and save to the desktop. 3. Delete the pipe, then run `screenpipe pipe install <saved file>` (or use the install dialog).
+  - Expected: 1. The menu has "export pipe file" and no "copy share link" or "publish to store"; there is no upload icon on the pipe row. 2. The save dialog proposes `hello.md`; the file holds the pipe.md text and a toast confirms the export. 3. The pipe comes back under the same name.
   - Result:
 
 ### W0-10 Logs and feedback upload replaced by a local diagnostics bundle

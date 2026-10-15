@@ -110,7 +110,7 @@ async function connect() {
       closeWithoutOpen += 1;
       if (closeWithoutOpen >= AUTH_FAIL_THRESHOLD) {
         setBadge("!", "#dc2626");
-        notifyOnce("Screenpipe extension needs a token", "Open the extension options to paste your screenpipe API token.");
+        notifyOnce("Freenpipe extension needs a token", "Open the extension options to paste your Freenpipe API token.");
       }
     }
     scheduleReconnect();

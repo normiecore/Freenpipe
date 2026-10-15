@@ -1,13 +1,13 @@
 ---
-title: "pipe permissions: scope API access for screenpipe pipes"
+title: "pipe permissions: scope API access for Freenpipe pipes"
 sidebarTitle: "pipe permissions"
-description: "Control which screenpipe API endpoints your pipes can access by allowlisting endpoints, restricting writes, and scoping permissions per automation."
+description: "Control which Freenpipe API endpoints your pipes can access by allowlisting endpoints, restricting writes, and scoping permissions per automation."
 icon: "shield-halved"
 ---
 
 ## overview
 
-pipes can access the screenpipe API to read screen data, manage meetings, send notifications, and more. by default, pipes have **full access** to every endpoint — no restrictions.
+pipes can access the Freenpipe API to read screen data, manage meetings, send notifications, and more. by default, pipes have **full access** to every endpoint — no restrictions.
 
 if you want to limit what a pipe can do, add a `permissions` block to the YAML frontmatter in `pipe.md`. this is useful for:
 
@@ -188,7 +188,7 @@ deny rules always win over allow rules. if no rules of a given type exist, every
 
 when a pipe has any restrictions (permissions block, data filters, etc.):
 
-1. screenpipe generates a unique token (`sp_pipe_*`) for the pipe session
+1. Freenpipe generates a unique token (`sp_pipe_*`) for the pipe session
 2. the token is registered with the server middleware
 3. every API request from the pipe includes the token in `Authorization: Bearer sp_pipe_*`
 4. the middleware checks `is_endpoint_allowed(method, path)` before forwarding
@@ -248,4 +248,4 @@ Track my work activity...
 
 full API access, but time and day restrictions limit when data is visible.
 
-need help? [ask in our discord](https://discord.gg/screenpipe)
+need help? open a [GitHub issue](https://github.com/normiecore/Freenpipe/issues).

@@ -72,12 +72,12 @@ gh run view <RUN_ID> --json status,conclusion,jobs --jq '{status: .status, concl
 ```
 
 ### 5. Test the Draft Release
-- Download from https://screenpi.pe (requires purchase token)
+- Download the installers from the GitHub release the workflow created (https://github.com/normiecore/Freenpipe/releases)
 - Test on macOS and Windows
 - Verify updater artifacts exist (.tar.gz, .sig files)
 
 ### 6. Publish Release
-After testing, publish via the Cloudflare R2 / backend dashboard, OR commit with magic words:
+Since W0-03, `release-app.yml` uploads builds to GitHub Releases instead of the upstream vendor's storage, so the draft and publish steps in this skill need a review against that workflow. To publish, use the GitHub release page, OR commit with magic words:
 ```bash
 git commit --allow-empty -m "release-app-publish" && git push
 ```

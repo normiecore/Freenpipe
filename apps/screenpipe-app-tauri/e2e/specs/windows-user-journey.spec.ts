@@ -834,7 +834,9 @@ describe("Windows user journey", function () {
 
     await waitForBodyText(
       (bodyText) =>
-        bodyText.includes("local disk, cloud archive, and sync") &&
+        // Cloud archive and sync are hidden without a sync server, so the
+        // subtitle is just "Local disk".
+        bodyText.includes("local disk") &&
         bodyText.includes("storage policy") &&
         bodyText.includes("drop video + audio"),
       "Storage settings did not show the local retention controls",
