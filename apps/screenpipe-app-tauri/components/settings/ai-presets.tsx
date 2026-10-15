@@ -20,12 +20,8 @@ import {
   DEFAULT_PROMPT,
   useSettings,
 } from "@/lib/hooks/use-settings";
-import {
-  useUsageStatus,
-  messagesLeftForModel,
-  shouldWarnLowQuota,
-  formatResetTime,
-} from "@/lib/hooks/use-usage-status";
+import { useAiGateway } from "@/lib/hooks/use-ai-gateway";
+import { gatewayUrl, normalizeGatewayUrl } from "@/lib/ai-gateway";
 import {
   buildChatTestBody,
   shouldRetryWithMaxCompletionTokens,
@@ -262,9 +258,33 @@ const AISection = ({
   const aiPresetPolicy = enterprisePolicy.aiPresetPolicy ?? DEFAULT_ENTERPRISE_AI_PRESET_POLICY;
   const employeePresetsAllowed =
     !isEnterprise || aiPresetPolicy.allow_employee_custom_presets || (preset ? isEnterpriseManagedPreset(preset) : false);
-  // Daily quota snapshot — drives the "N left today" chip on weighted
-  // models. Null on BYOK providers; we render nothing in that case.
-  const usage = useUsageStatus();
+  // The user's AI gateway (the `screenpipe-cloud` provider). Null when none
+  // is configured; the provider card then asks for its URL first.
+  const aiGateway = useAiGateway();
+  const savedGatewayUrl = (settings as { aiGatewayUrl?: string }).aiGatewayUrl ?? "";
+  const savedGatewayKey = (settings as { aiGatewayApiKey?: string }).aiGatewayApiKey ?? "";
+  const [gatewayUrlDraft, setGatewayUrlDraft] = useState(savedGatewayUrl);
+  const [gatewayKeyDraft, setGatewayKeyDraft] = useState(savedGatewayKey);
+  const [showGatewayKey, setShowGatewayKey] = useState(false);
+  useEffect(() => setGatewayUrlDraft(savedGatewayUrl), [savedGatewayUrl]);
+  useEffect(() => setGatewayKeyDraft(savedGatewayKey), [savedGatewayKey]);
+  const gatewayUrlInvalid =
+    gatewayUrlDraft.trim() !== "" && normalizeGatewayUrl(gatewayUrlDraft) === null;
+
+  // Persist the gateway settings, push the key into the running engine and
+  // let the engine pick up the URL. Shared by every gateway feature.
+  const saveGatewaySettings = useCallback(async () => {
+    const url = gatewayUrlDraft.trim();
+    if (url !== "" && normalizeGatewayUrl(url) === null) return;
+    const key = gatewayKeyDraft.trim();
+    await updateSettings({ aiGatewayUrl: url, aiGatewayApiKey: key } as any);
+    try {
+      await commands.setCloudToken(key === "" ? null : key);
+    } catch {
+      // The engine picks the key up from settings on its next start.
+    }
+    await aiGateway.refresh();
+  }, [gatewayUrlDraft, gatewayKeyDraft, updateSettings, aiGateway]);
   const [settingsPreset, setSettingsPreset] = useState<
     Partial<AIPreset> | undefined
   >(preset);
@@ -577,8 +597,8 @@ const AISection = ({
         newModel = "claude-sonnet-4-6";
         break;
       case "screenpipe-cloud":
-        newUrl = ""; // Pi uses RPC mode, not HTTP
-        newModel = "auto";
+        newUrl = ""; // the shared AI gateway URL is used
+        newModel = "";
         break;
     }
 
@@ -906,8 +926,7 @@ const AISection = ({
   const isApiKeyRequired =
     settingsPreset?.provider !== "openai-chatgpt" &&
     settingsPreset?.provider !== "anthropic" &&
-    settingsPreset?.url !== "https://api.screenpipe.com/v1" &&
-    settingsPreset?.url !== "https://api.screenpi.pe/v1" &&
+    settingsPreset?.provider !== "screenpipe-cloud" &&
     settingsPreset?.url !== "http://localhost:11434/v1" &&
     settingsPreset?.url !== "embedded";
 
@@ -1071,53 +1090,35 @@ const AISection = ({
         }
 
         case "screenpipe-cloud": {
-          // Fetch models from gateway so new models appear automatically
+          // List the models of the user's own AI gateway (OpenAI-style
+          // `/models`). Without a gateway, or when it does not answer, the
+          // list is empty and the model name can be typed in.
+          if (!aiGateway.url) {
+            setModels([]);
+            break;
+          }
           try {
-            const token = settings.user?.token || "";
-            const piResp = await fetch("https://api.screenpipe.com/v1/models", {
-              headers: token ? { Authorization: `Bearer ${token}` } : {},
+            const key = savedGatewayKey.trim();
+            const resp = await tauriFetch(gatewayUrl(aiGateway.url, "models"), {
+              headers: key ? { Authorization: `Bearer ${key}` } : {},
             });
-            if (piResp.ok) {
-              const piData = await piResp.json();
-              const piModels: AIModel[] = (piData.data || [])
-                .map((m: any) => ({
+            if (!resp.ok) throw new Error(`gateway /models returned ${resp.status}`);
+            const data = await resp.json();
+            const gatewayModels: AIModel[] = (data?.data || [])
+              .filter((m: any) => typeof m?.id === "string")
+              .map((m: any) => ({
                 id: m.id,
                 name: m.name || m.id,
-                provider: "screenpipe",
+                provider: "gateway",
                 description: m.description,
-                tags: m.tags,
-                free: m.free,
                 context_window: m.context_window,
-                best_for: m.best_for,
-                speed: m.speed,
-                intelligence: m.intelligence,
-                cost_tier: m.cost_tier,
-                recommended_for: m.recommended_for,
-                warning: m.warning,
-                query_weight: m.query_weight,
-                }))
-                .filter((m: AIModel, idx: number, arr: AIModel[]) => arr.findIndex((x) => x.id === m.id) === idx);
-              if (piModels.length > 0) {
-                setModels(piModels);
-                break;
-              }
-            }
-          } catch {
-            // fallback to hardcoded
+              }))
+              .filter((m: AIModel, idx: number, arr: AIModel[]) => arr.findIndex((x) => x.id === m.id) === idx);
+            setModels(gatewayModels);
+          } catch (e) {
+            console.warn("could not list AI gateway models:", e);
+            setModels([]);
           }
-          setModels([
-            { id: "auto", name: "Auto (recommended)", provider: "screenpipe" },
-            { id: "claude-haiku-4-5", name: "Haiku 4.5 (fast)", provider: "screenpipe" },
-            { id: "claude-sonnet-4-5", name: "Sonnet 4.5 (balanced)", provider: "screenpipe" },
-            { id: "claude-opus-4-8", name: "Opus 4.8 (powerful, pro)", provider: "screenpipe" },
-            { id: "claude-fable-5", name: "Fable 5 (most capable, pro)", provider: "screenpipe" },
-            { id: "gemini-3-flash", name: "Gemini 3 Flash (fast)", provider: "screenpipe" },
-            { id: "gemini-3.1-flash-lite", name: "Gemini 3.1 Flash-Lite (cheapest)", provider: "screenpipe" },
-            { id: "gemini-3.1-pro", name: "Gemini 3.1 Pro (balanced)", provider: "screenpipe" },
-            { id: "qwen/qwen3.5-flash-02-23", name: "Qwen3.5 Flash (cheapest, 1M ctx)", provider: "screenpipe" },
-            { id: "deepseek/deepseek-chat", name: "DeepSeek V3.2 (fast)", provider: "screenpipe" },
-            { id: "meta-llama/llama-4-scout", name: "Llama 4 Scout", provider: "screenpipe" },
-          ]);
           break;
         }
 
@@ -1134,7 +1135,7 @@ const AISection = ({
       setIsLoadingModels(false);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [settingsPreset?.provider, settingsPreset?.url, settingsPreset?.apiKey, settings.user?.id, chatgptLoggedIn]);
+  }, [settingsPreset?.provider, settingsPreset?.url, settingsPreset?.apiKey, aiGateway.url, savedGatewayKey, chatgptLoggedIn]);
 
   const apiKey = useMemo(() => {
     if (settingsPreset && "apiKey" in settingsPreset) {
@@ -1244,18 +1245,72 @@ const AISection = ({
           {piAvailable && (!isEnterprise || aiPresetPolicy.allow_screenpipe_cloud) && (
             <AIProviderCard
               type="screenpipe-cloud"
-              title="Screenpipe Cloud"
-              description="AI coding agent powered by Screenpipe Cloud. Requires login."
+              title="AI gateway"
+              description="Your own OpenAI-compatible gateway (LiteLLM, a self-hosted proxy, …). Also used for gateway transcription, media analysis and web search."
               imageSrc="/images/screenpipe.png"
               selected={settingsPreset?.provider === "screenpipe-cloud"}
               onClick={() => handleAiProviderChange("screenpipe-cloud")}
-              disabled={!settings.user?.token}
-              warningText={!settings.user?.token ? "Login required" : undefined}
+              warningText={!aiGateway.loading && !aiGateway.configured ? "Set a gateway URL below" : undefined}
             />
           )}
 
         </div>
       </div>
+
+      {settingsPreset?.provider === "screenpipe-cloud" && (
+        <div className="space-y-2 rounded-md border border-border p-3">
+          <p className="text-xs text-muted-foreground">
+            Gateway settings are shared by every preset and feature that uses the AI gateway.
+            Use the OpenAI-style base URL, including its version path.
+          </p>
+          <div className="space-y-1">
+            <Label htmlFor="aiGatewayUrl" className="text-xs">Gateway URL</Label>
+            <Input
+              id="aiGatewayUrl"
+              value={gatewayUrlDraft}
+              placeholder="http://127.0.0.1:4000/v1"
+              autoCorrect="off"
+              autoCapitalize="off"
+              spellCheck={false}
+              onChange={(e) => setGatewayUrlDraft(e.target.value)}
+              onBlur={saveGatewaySettings}
+            />
+            {gatewayUrlInvalid && (
+              <p className="text-xs text-destructive">Enter an absolute http:// or https:// URL.</p>
+            )}
+          </div>
+          <div className="space-y-1">
+            <Label htmlFor="aiGatewayApiKey" className="text-xs">Gateway API key (optional)</Label>
+            <div className="relative">
+              <Input
+                id="aiGatewayApiKey"
+                type={showGatewayKey ? "text" : "password"}
+                value={gatewayKeyDraft}
+                autoCorrect="off"
+                autoCapitalize="off"
+                spellCheck={false}
+                onChange={(e) => setGatewayKeyDraft(e.target.value)}
+                onBlur={saveGatewaySettings}
+                className="pr-8"
+              />
+              <Button
+                type="button"
+                variant="ghost"
+                size="icon"
+                className="absolute right-0 top-0 h-full w-8"
+                onClick={() => setShowGatewayKey(!showGatewayKey)}
+              >
+                {showGatewayKey ? <EyeOff className="h-3 w-3" /> : <Eye className="h-3 w-3" />}
+              </Button>
+            </div>
+          </div>
+          <p className="text-xs text-muted-foreground">
+            {aiGateway.configured
+              ? `Using ${aiGateway.url}`
+              : "No gateway configured: presets on this provider will not run."}
+          </p>
+        </div>
+      )}
 
       <ValidatedInput
         id="preset_id"
@@ -1540,18 +1595,6 @@ const AISection = ({
                                 <div className="flex items-center gap-1 ml-2">
                                   {costLabel && <Badge variant="outline" className="text-[10px]">{costLabel}</Badge>}
                                   {model.speed === "fast" && <Badge variant="outline" className="text-[10px]">fast</Badge>}
-                                  {/* Low-quota warning — only renders when the user is within
-                                      ~30% of exhausting their daily cap for this specific model.
-                                      Silent otherwise (normal state = no extra clutter). */}
-                                  {shouldWarnLowQuota(usage, model.query_weight) && (
-                                    <Badge
-                                      variant="outline"
-                                      className="text-[10px] bg-yellow-500/10 text-yellow-700 border-yellow-500/40 dark:text-yellow-400"
-                                      title={`approaching daily limit${usage?.resets_at ? ` — resets ${formatResetTime(usage.resets_at)}` : ""}`}
-                                    >
-                                      ≈ {messagesLeftForModel(usage, model.query_weight)} left
-                                    </Badge>
-                                  )}
                                 </div>
                               </div>
                               <span className="text-xs text-muted-foreground">
@@ -1615,7 +1658,7 @@ const AISection = ({
               </p>
               <p>
                 GPU strongly recommended. without a dedicated GPU, local models will be very slow and pipes may time out.
-                for best results consider screenpipe cloud or groq as custom provider.
+                without one, consider a hosted OpenAI-compatible provider as a custom preset, or your own AI gateway.
               </p>
             </div>
           )}
@@ -2110,7 +2153,6 @@ useEffect(() => {
   const removePreset = async (id: string) => {
     setIsLoading(true);
     try {
-      // Prevent deletion of screenpipe-cloud preset for Pro subscribers
       const presetToRemove = settings.aiPresets.find((preset) => preset.id === id);
       if (
         isEnterprise &&
@@ -2123,15 +2165,6 @@ useEffect(() => {
         });
         return;
       }
-      if (presetToRemove?.provider === "screenpipe-cloud" && settings.user?.cloud_subscribed) {
-        toast({
-          title: "Cannot delete cloud preset",
-          description: "This preset is included with your Business subscription",
-          variant: "destructive",
-        });
-        return;
-      }
-
       const checkIfDefault = settings.aiPresets.find(
         (preset) => preset.id === id
       )?.defaultPreset;

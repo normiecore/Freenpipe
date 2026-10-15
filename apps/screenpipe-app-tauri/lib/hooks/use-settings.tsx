@@ -18,6 +18,11 @@ import type {
 	EnterpriseInstallMetadata,
 } from "@/lib/app-update-policy";
 import { type FontSize, applyFontSize } from "@/lib/utils/font-size";
+import {
+	applyFreenpipeMigrations,
+	makeDefaultPresets as makeLocalDefaultPresets,
+	normalizeGatewayUrl,
+} from "@/lib/ai-gateway";
 export type VadSensitivity = "low" | "medium" | "high";
 
 export type AIProviderType =
@@ -249,12 +254,10 @@ export type Settings = SettingsStore & {
 	openaiCompatibleHeaders?: Record<string, string>;
 	/** Send raw WAV audio instead of MP3 to OpenAI-compatible endpoint */
 	openaiCompatibleRawAudio?: boolean;
-	/** Let Pi / Claude Code call the confidential cloud enclave
-	 * (Gemma 4 E4B inside an attested Tinfoil CVM) to analyze audio,
-	 * video frames, and images from screenpipe data. Default true. When
-	 * false, the "Cloud audio + video + image analysis" section is
-	 * stripped from `~/.claude/skills/screenpipe-api/SKILL.md` so agents
-	 * literally cannot see the endpoint and won't try to call it. */
+	/** Let agents send audio, video frames and images to the user's own AI
+	 * gateway for analysis. Default false, and only effective when an AI
+	 * gateway is configured. When off, the media analysis section is left
+	 * out of the screenpipe-api skill so agents never see the endpoint. */
 	cloudMediaAnalysisEnabled?: boolean;
 	/** Filter music-dominant audio before transcription (reduces Spotify/YouTube music noise) */
 	filterMusic?: boolean;
@@ -420,91 +423,15 @@ const DEFAULT_IGNORED_WINDOWS_PER_OS: Record<string, string[]> = {
 	linux: ["Info center", "Discover", "Parted"],
 };
 
-// Two default screenpipe-cloud presets on first install:
-// - "Chat":  Claude Opus 4.7 if the user is pro, Claude Sonnet 4.5 otherwise.
-//           Opus is gated in the ai-gateway (subscribed tier), so pushing
-//           it to non-pro users would 403 their first message.
-// - "Pipes": Claude Haiku 4.5 — cheap/fast for recurring pipe runs.
-//           Pipes default to this preset; users can override per-pipe.
-const CHAT_PRESET_ID = "chat";
-const PIPES_PRESET_ID = "pipes";
-
-// Pro users get the chat / pipes pair (opus for interactive chat, auto for
-// pipe runs that pick the cheapest model that fits the task).
-// Non-pro users get a single "screenpipe" preset on auto — auto handles
-// model routing without needing the user to know what to pick.
-const SCREENPIPE_PRESET_ID = "screenpipe";
-
-export function makeDefaultPresets(isPro: boolean): AIPreset[] {
-	if (isPro) {
-		return [
-			{
-				id: CHAT_PRESET_ID,
-				provider: "screenpipe-cloud",
-				url: "",
-				model: "claude-opus-4-8",
-				maxContextChars: 200000,
-				defaultPreset: true,
-				prompt: "",
-			},
-			{
-				id: PIPES_PRESET_ID,
-				provider: "screenpipe-cloud",
-				url: "",
-				model: "auto",
-				maxContextChars: 200000,
-				defaultPreset: false,
-				prompt: "",
-			},
-		];
-	}
-	return [
-		{
-			id: SCREENPIPE_PRESET_ID,
-			provider: "screenpipe-cloud",
-			url: "",
-			model: "auto",
-			maxContextChars: 200000,
-			defaultPreset: true,
-			prompt: "",
-		},
-	];
+// Fresh installs get one local Ollama preset (see lib/ai-gateway.ts); the
+// user picks the model in onboarding or Settings > AI. Nothing remote is
+// configured by default.
+export function makeDefaultPresets(): AIPreset[] {
+	return makeLocalDefaultPresets() as AIPreset[];
 }
 
-// Seed value — module load can't know pro status yet, so fall back to non-pro.
-// ensureDefaultPreset() re-seeds with pro status once settings.user is loaded.
-const DEFAULT_CLOUD_PRESET: AIPreset = makeDefaultPresets(false)[0];
-
-const DEFAULT_AUDIO_ENGINE = "whisper-large-v3-turbo-quantized";
-
-const isLoggedInProUser = (user: User | null | undefined) =>
-	user?.cloud_subscribed === true && Boolean(user.token || user.id);
-
-const applyProCloudAudioDefaults = (settings: Settings): Settings => {
-	if (!isLoggedInProUser(settings.user)) return settings;
-	if ((settings as any)._proCloudAudioDefaultsAppliedV2) return settings;
-
-	// If the user picked a non-default, non-cloud engine, they've configured audio
-	// themselves — don't flip live-meeting on or rewrite the provider behind their back.
-	// V2 marker is intentionally left unset so a later switch back to default re-evaluates.
-	const userChoseCustomEngine =
-		settings.audioTranscriptionEngine !== DEFAULT_AUDIO_ENGINE &&
-		settings.audioTranscriptionEngine !== "screenpipe-cloud";
-	if (userChoseCustomEngine) return settings;
-
-	const oldCloudEngineMigrationAlreadyRan = (settings as any)._cloudEngineApplied === true;
-	if (!oldCloudEngineMigrationAlreadyRan) {
-		settings.audioTranscriptionEngine = "screenpipe-cloud";
-	}
-	settings.meetingLiveTranscriptionEnabled = true;
-	settings.meetingLiveTranscriptionProvider = "screenpipe-cloud";
-	(settings as any)._proCloudAudioDefaultsAppliedV2 = true;
-
-	return settings;
-};
-
 let DEFAULT_SETTINGS: Settings = {
-			aiPresets: makeDefaultPresets(false) as any,
+			aiPresets: makeDefaultPresets() as any,
 			deviceId: crypto.randomUUID(),
 			deepgramApiKey: "",
 			isLoading: false,
@@ -530,7 +457,7 @@ let DEFAULT_SETTINGS: Settings = {
 			ignoredMeetingApps: [],
 			teamFilters: { ignoredWindows: [], includedWindows: [], ignoredUrls: [] },
 
-			analyticsEnabled: true,
+			analyticsEnabled: false,
 			audioChunkDuration: 30,
 			useChineseMirror: false,
 			languages: [],
@@ -589,6 +516,13 @@ let DEFAULT_SETTINGS: Settings = {
 			transcriptionMode: "batch",
 			cloudArchiveEnabled: false,
 			cloudArchiveRetentionDays: 7,
+			piiBackend: "local",
+			cloudMediaAnalysisEnabled: false,
+			aiGatewayUrl: "",
+			aiGatewayApiKey: "",
+			// Fresh settings are already in their Freenpipe shape.
+			_freenpipeCloudPresetMigrated: true,
+			_freenpipePrivacyDefaultsApplied: true,
 			meetingSummaryPipeSlug: "meeting-summary",
 			filterMusic: false,
 			ignoreIncognitoWindows: true,
@@ -658,11 +592,23 @@ export const saveAndEncrypt = async (store: Store) => {
 	await commands.reencryptStore().catch(() => {});
 };
 
+/** Whether the engine has an AI gateway: the saved setting, or the engine's
+ * environment as reported by the `get_screenpipe_ai_gateway_url` command. */
+async function isAiGatewayConfigured(settings: Settings): Promise<boolean> {
+	if (normalizeGatewayUrl((settings as any).aiGatewayUrl)) return true;
+	try {
+		const res = await (commands as any).getScreenpipeAiGatewayUrl?.();
+		return res?.status === "ok";
+	} catch {
+		return false;
+	}
+}
+
 // Store utilities similar to Cap's implementation
 function createSettingsStore() {
 	const get = async (): Promise<Settings> => {
 		const store = await getStore();
-		const settings = await store.get<Settings>("settings");
+		let settings = await store.get<Settings>("settings");
 		if (!settings) {
 			return createDefaultSettingsObject();
 		}
@@ -714,39 +660,12 @@ function createSettingsStore() {
 
 		// Migration: Add default presets if user has none
 		if (!settings.aiPresets || settings.aiPresets.length === 0) {
-			const isPro = settings.user?.cloud_subscribed === true;
-			settings.aiPresets = makeDefaultPresets(isPro) as any;
+			settings.aiPresets = makeDefaultPresets() as any;
 			needsUpdate = true;
 		}
 
-		// b2 seed: the first time we see a logged-in user, replace the anonymous
-		// "screenpipe" placeholder with the pro pair (chat + pipes) IF they're pro.
-		// Anonymous users keep the placeholder forever (which is correct — non-pro
-		// stays on the single "screenpipe" auto preset). Existing users with their
-		// own presets are untouched. Runs exactly once per install.
-		if (!(settings as any)._presetsSeededForUser && settings.user?.token) {
-			const isPro = settings.user?.cloud_subscribed === true;
-			const presets = settings.aiPresets ?? [];
-			const isAnonymousPlaceholder =
-				presets.length === 1 &&
-				(presets[0] as any)?.id === SCREENPIPE_PRESET_ID &&
-				(presets[0] as any)?.provider === "screenpipe-cloud";
-			if (isPro && isAnonymousPlaceholder) {
-				settings.aiPresets = makeDefaultPresets(true) as any;
-			}
-			(settings as any)._presetsSeededForUser = true;
-			needsUpdate = true;
-		}
-
-		// Migration: Rename "pi" provider to "screenpipe-cloud" for clarity
-		if (settings.aiPresets?.some((p: any) => p.provider === "pi")) {
-			settings.aiPresets = settings.aiPresets.map((p: any) =>
-				p.provider === "pi" ? { ...p, provider: "screenpipe-cloud" } : p
-			);
-			needsUpdate = true;
-		}
-
-		// Migration: Rename "pi-agent" preset id to "screenpipe-cloud"
+		// Migration: Rename the legacy "pi-agent" preset id (pipes that still
+		// reference it are normalized to this id by the engine).
 		if (settings.aiPresets?.some((p: any) => p.id === "pi-agent")) {
 			settings.aiPresets = settings.aiPresets.map((p: any) =>
 				p.id === "pi-agent" ? { ...p, id: "screenpipe-cloud" } : p
@@ -754,16 +673,16 @@ function createSettingsStore() {
 			needsUpdate = true;
 		}
 
-		// Migration: Add screenpipe-cloud preset for existing users (without touching their existing presets)
-		const hasCloudPreset = settings.aiPresets?.some(
-			(p: any) => p.id === "screenpipe-cloud" || p.provider === "screenpipe-cloud"
-		);
-		if (settings.aiPresets && settings.aiPresets.length > 0 && !hasCloudPreset) {
-			// Only set as default if no other preset is already default
-			const hasDefault = settings.aiPresets.some((p: any) => p.defaultPreset);
-			const cloudPreset = { ...DEFAULT_CLOUD_PRESET, defaultPreset: !hasDefault };
-			settings.aiPresets = [cloudPreset as any, ...settings.aiPresets];
-			needsUpdate = true;
+		// One-time Freenpipe migrations (hosted-provider presets, PII backend,
+		// analytics and media-analysis defaults). See lib/ai-gateway.ts.
+		{
+			const migrated = applyFreenpipeMigrations(settings, {
+				gatewayConfigured: await isAiGatewayConfigured(settings),
+			});
+			if (migrated.changed) {
+				settings = migrated.settings;
+				needsUpdate = true;
+			}
 		}
 
 		// Migration: Add chat history for existing users
@@ -807,17 +726,11 @@ function createSettingsStore() {
 			// platform() unavailable (SSR/tests) — keep existing value
 		}
 
-		// Mark pro migration as done so the old migration doesn't re-trigger
-		if (!(settings as any)._proCloudMigrationDone) {
-			(settings as any)._proCloudMigrationDone = true;
-			needsUpdate = true;
-		}
-
 		// Migration: Set default transcription engine (one-time only)
 		// - macOS → whisper-large-v3-turbo-quantized
 		// - Windows/Linux → parakeet
-		// Does NOT set screenpipe-cloud here because user may not be logged in yet.
-		// Cloud switch happens in account-section.tsx when subscription is confirmed.
+		// A saved screenpipe-cloud choice is reset to the local engine too:
+		// it now means "the user's AI gateway", which the user opts into.
 		if (!(settings as any)._parakeetDefaultMigrationDone) {
 			const engine = settings.audioTranscriptionEngine;
 			const isWhisperVariant = engine?.includes("whisper");
@@ -833,45 +746,6 @@ function createSettingsStore() {
 			needsUpdate = true;
 		}
 
-		// Post-migration: when a logged-in Pro user is first confirmed, default
-		// both background and live transcription to Screenpipe Cloud. The marker
-		// prevents future user refreshes from overriding a manual engine choice.
-		if (isLoggedInProUser(settings.user) && !(settings as any)._proCloudAudioDefaultsAppliedV2) {
-			applyProCloudAudioDefaults(settings);
-			needsUpdate = true;
-		}
-
-		// Post-migration: if user becomes pro and the Chat preset is still on the
-		// non-pro fallback (Sonnet), upgrade it to Opus 4.7.
-		// Guards:
-		//   - only touches the preset with id === "chat" (leaves user-created presets alone)
-		//   - only if provider is still screenpipe-cloud and model is exactly the seeded
-		//     Sonnet value (prevents clobbering a manual override like glm-5)
-		//   - _chatOpusAppliedForPro flag prevents re-upgrading after user manually
-		//     switches back to something else
-		if (
-			settings.user?.cloud_subscribed &&
-			!(settings as any)._chatOpusAppliedForPro &&
-			Array.isArray(settings.aiPresets)
-		) {
-			let upgraded = false;
-			settings.aiPresets = settings.aiPresets.map((p: any) => {
-				if (
-					p?.id === "chat" &&
-					p?.provider === "screenpipe-cloud" &&
-					p?.model === "claude-sonnet-4-5"
-				) {
-					upgraded = true;
-					return { ...p, model: "claude-opus-4-8" };
-				}
-				return p;
-			});
-			if (upgraded) {
-				(settings as any)._chatOpusAppliedForPro = true;
-				needsUpdate = true;
-			}
-		}
-
 		// Save migrations if needed
 		if (needsUpdate) {
 			await store.set("settings", settings);
@@ -884,15 +758,7 @@ function createSettingsStore() {
 	const set = async (value: Partial<Settings>) => {
 		const store = await getStore();
 		const current = await get();
-		let newSettings = { ...current, ...value } as Settings;
-		if ("user" in value) {
-			// On logout / Pro→non-Pro transition, clear the V2 marker so a future
-			// Pro login re-evaluates cloud defaults (handles account switching).
-			if (!isLoggedInProUser(newSettings.user)) {
-				delete (newSettings as any)._proCloudAudioDefaultsAppliedV2;
-			}
-			newSettings = applyProCloudAudioDefaults(newSettings);
-		}
+		const newSettings = { ...current, ...value } as Settings;
 		await store.set("settings", newSettings);
 		await saveAndEncrypt(store);
 	};
@@ -1041,51 +907,6 @@ export const SettingsProvider: React.FC<{ children: React.ReactNode }> = ({ chil
 			});
 		// eslint-disable-next-line react-hooks/exhaustive-deps
 	}, [settings.analyticsId, settings.user?.id, settings.user?.clerk_id, settings.user?.cloud_subscribed, (settings.user as any)?.app_entitled, (settings.user as any)?.subscription_plan]);
-
-	// When user becomes a Pro subscriber, default to cloud transcription (one-time)
-	useEffect(() => {
-		if (!isSettingsLoaded) return;
-		if ((settings as any)._proCloudMigrationDone) return;
-
-		// Mark migration as done — we no longer force cloud transcription for Pro users.
-		// Local engines (whisper/qwen3) are now the default for all users.
-		settingsStore.set({ _proCloudMigrationDone: true } as any);
-		// eslint-disable-next-line react-hooks/exhaustive-deps
-	}, [settings.user?.cloud_subscribed, isSettingsLoaded]);
-
-	// Upgrade the seeded "chat" preset Sonnet → Opus 4.7 the moment the user
-	// becomes pro (mirrors the on-load migration for same-session transitions).
-	// Guards match the migration: only touch the unmodified seeded chat preset,
-	// never clobber a user override, only fire once.
-	useEffect(() => {
-		if (!isSettingsLoaded) return;
-		if (!settings.user?.cloud_subscribed) return;
-		if ((settings as any)._chatOpusAppliedForPro) return;
-		if (!Array.isArray(settings.aiPresets)) return;
-
-		const idx = settings.aiPresets.findIndex(
-			(p: any) =>
-				p?.id === "chat" &&
-				p?.provider === "screenpipe-cloud" &&
-				p?.model === "claude-sonnet-4-5"
-		);
-		if (idx === -1) {
-			// Nothing to upgrade, but still record the decision so we don't re-check
-			// every render. User either (a) already has Opus, (b) customized, or
-			// (c) deleted the chat preset.
-			settingsStore.set({ _chatOpusAppliedForPro: true } as any);
-			return;
-		}
-
-		const nextPresets = settings.aiPresets.map((p: any, i: number) =>
-			i === idx ? { ...p, model: "claude-opus-4-8" } : p
-		);
-		settingsStore.set({
-			aiPresets: nextPresets,
-			_chatOpusAppliedForPro: true,
-		} as any);
-		// eslint-disable-next-line react-hooks/exhaustive-deps
-	}, [settings.user?.cloud_subscribed, isSettingsLoaded]);
 
 	useEffect(() => {
 		applyFontSize(settings.fontSize);

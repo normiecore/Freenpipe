@@ -13,6 +13,7 @@ import { openPermissionSettingsWithFlow } from "@/lib/utils/permission-flow";
 import { motion, AnimatePresence } from "framer-motion";
 import { useSettings, makeDefaultPresets } from "@/lib/hooks/use-settings";
 import { localFetch } from "@/lib/api";
+import { DEFAULT_OLLAMA_URL, isGatewayProvider } from "@/lib/ai-gateway";
 import { open as openUrl } from "@tauri-apps/plugin-shell";
 import { revealItemInDir } from "@tauri-apps/plugin-opener";
 import { homeDir, join } from "@tauri-apps/api/path";
@@ -457,9 +458,10 @@ export default function EngineStartup({
     return parts.join(". ") + ".";
   }, []);
 
-  // Stream a warm summary using the user's default preset, falling back to
-  // their cloud token. If neither is available, leave summary empty and let
-  // the fallback timer release the continue button.
+  // Stream a warm summary using the user's default preset. A gateway preset
+  // goes through the local engine, which forwards to the user's AI gateway.
+  // If the preset cannot be used yet (no model picked, no key), leave the
+  // summary empty and let the fallback timer release the continue button.
   // Track attempts so a transient failure (no token at first poll, network
   // blip) gets retried instead of permanently breaking the slide.
   const summaryAttemptsRef = useRef(0);
@@ -477,31 +479,30 @@ export default function EngineStartup({
         (presets.find((p: any) => p.defaultPreset) as any) ?? (presets[0] as any);
 
       let endpoint = "";
-      let model = "claude-haiku-4-5";
+      let model = "";
       let auth: Record<string, string> = {};
+      let viaLocalEngine = false;
 
-      const userToken = settings.user?.token;
-
-      if (preset?.provider === "screenpipe-cloud" && userToken) {
-        endpoint = "https://api.screenpipe.com/v1/chat/completions";
-        model = preset.model || model;
-        auth = { Authorization: `Bearer ${userToken}` };
+      if (isGatewayProvider(preset?.provider) && preset?.model) {
+        // The engine adds the gateway key; 503 when no gateway is configured.
+        endpoint = "/v1/chat/completions";
+        model = preset.model;
+        viaLocalEngine = true;
       } else if (
         (preset?.provider === "openai" || preset?.provider === "custom" || preset?.provider === "anthropic") &&
         preset.apiKey &&
-        preset.url
+        preset.url &&
+        preset.model
       ) {
         endpoint = `${preset.url.replace(/\/$/, "")}/chat/completions`;
         model = preset.model;
         auth = { Authorization: `Bearer ${preset.apiKey}` };
-      } else if (userToken) {
-        // Fall back to cloud even if preset is non-cloud but token exists.
-        endpoint = "https://api.screenpipe.com/v1/chat/completions";
-        auth = { Authorization: `Bearer ${userToken}` };
+      } else if (preset?.provider === "native-ollama" && preset.model) {
+        endpoint = `${(preset.url || DEFAULT_OLLAMA_URL).replace(/\/$/, "")}/chat/completions`;
+        model = preset.model;
       } else {
-        // No way to call any model. Bail and reset the gate so a later poll
-        // can retry — settings.user.token can land asynchronously after the
-        // login slide completes.
+        // No usable model yet. Bail and reset the gate so a later poll can
+        // retry once the user has picked a model.
         summaryStartedRef.current = false;
         return;
       }
@@ -526,7 +527,8 @@ instead say things like: "you spent some time in slack", "you were typing notes 
 if the input is sparse, just describe what little you have warmly. don't apologize for not having more.`;
 
       try {
-        const resp = await fetch(endpoint, {
+        const send = viaLocalEngine ? localFetch : fetch;
+        const resp = await send(endpoint, {
           method: "POST",
           headers: { "Content-Type": "application/json", ...auth },
           signal: controller.signal,
@@ -705,10 +707,9 @@ if the input is sparse, just describe what little you have warmly. don't apologi
 
   const ensureDefaultPreset = useCallback(async () => {
     if (settings.aiPresets.length === 0) {
-      const isPro = settings.user?.cloud_subscribed === true;
-      await updateSettings({ aiPresets: makeDefaultPresets(isPro) as any });
+      await updateSettings({ aiPresets: makeDefaultPresets() as any });
     }
-  }, [settings.aiPresets.length, settings.user?.cloud_subscribed, updateSettings]);
+  }, [settings.aiPresets.length, updateSettings]);
 
   const handleContinue = async () => {
     posthog.capture("onboarding_livefeed_continued", {
