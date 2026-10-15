@@ -21,7 +21,12 @@ interface GmailAccount {
   displayName: string | null;
 }
 
-export function GmailCard() {
+export function GmailCard({
+  connectBlockedReason,
+}: {
+  /** Why connecting is impossible right now (e.g. no OAuth app yet). */
+  connectBlockedReason?: string | null;
+} = {}) {
   const { settings } = useSettings();
   // Freenpipe has no plans: OAuth integrations are never locked.
   const isPro = hasCloudEntitlement(settings.user);
@@ -175,7 +180,8 @@ export function GmailCard() {
                   variant="outline"
                   size="sm"
                   onClick={handleConnect}
-                  disabled={isConnecting}
+                  disabled={isConnecting || !!connectBlockedReason}
+                  title={connectBlockedReason ?? undefined}
                   className="text-xs"
                 >
                   {isConnecting ? (

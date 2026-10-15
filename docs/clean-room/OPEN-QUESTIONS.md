@@ -29,9 +29,11 @@ work package.
   the body. Reason: best available knowledge; a smoke test with a real Cal.com app should confirm it and
   whether refreshes need a different path.
 - **Default loopback port.** `OAUTH_REDIRECT_URI` hard-codes port 3030. Decision: the app builds the
-  default redirect from the configured engine port (`recording.port`), which equals the constant on the
-  default port; the dialog shows the exact URI to register. Reason: dev builds run on 3035, where a
-  3030 redirect would land on an installed screenpipe.
+  default redirect from the port the embedded engine was started on; before the engine exists it falls
+  back to a valid `SCREENPIPE_PORT` (the override `to_recording_config` applies), then the stored
+  `recording.port`, then 3030. The dialog shows the exact URI to register, and connect sends the same
+  one. Reason: dev builds run on 3035 through `SCREENPIPE_PORT` while settings keep 3030, and a 3030
+  redirect would land where no Freenpipe engine listens (or on an installed screenpipe).
 - **MCP OAuth redirect.** Decision: `POST /mcp-servers/:id/oauth/start` accepts a `redirect_uri` only when
   it is the loopback `/mcp-servers/<id>/oauth/callback` of this engine; the default takes its port from
   a loopback `Host` header (else 3030); an `app_scheme` field is ignored. Reason: the plan keeps MCP OAuth
@@ -41,10 +43,23 @@ work package.
   configured" error. Removing an OAuth app keeps existing tokens. Reason: the fix is in settings, not in
   waiting; deleting tokens on app removal would lose identity metadata the user may want back.
 - **Google's dedicated cards.** Decision: the OAuth app block is rendered above the Google Calendar, Docs,
-  Sheets and Gmail cards from `connections-section.tsx`. Inside the cards the only change is that the
-  Gmail, Docs and Sheets connect buttons now show the backend error in a toast, as the Calendar card
-  already did. Reason: the cards are outside this WP's owner paths, but with user-entered credentials a
-  missing or rejected OAuth app is the common failure, and those three cards dropped it silently.
+  Sheets and Gmail cards from `connections-section.tsx`, which also passes each card a
+  `connectBlockedReason` prop (from `connectBlocker`). Inside the cards the changes are that prop, which
+  disables the connect / add-account button with the reason as its tooltip, and an error toast on the
+  Gmail, Docs and Sheets connect buttons, as the Calendar card already had. Reason: cloud-018 asks for a
+  disabled OAuth button with guidance; the cards are outside this WP's owner paths, but no other WP owns
+  them, and with user-entered credentials a missing or rejected OAuth app is the common failure.
+- **Other OAuth connect surfaces.** The onboarding "connect apps" tiles and the pipe post-install
+  connections dialog call `oauth_connect` too and dropped an error result silently. Decision: both now
+  show the backend message (the onboarding tile stays in its error state until clicked again; the dialog
+  prints it under the connect button), which names Settings > Connections when no OAuth app is set up.
+  They do not embed the OAuth app form. Reason: the smallest change that gives the guidance cloud-018
+  asks for in files other WPs own in other regions (W0-05, W0-09, W4-07 for `connect-apps.tsx`; W2-20
+  for `post-install-connections-modal.tsx`).
+- **`oauth:` rows outside the registry.** `oauth:chatgpt` (and any future non-registry row) sits under the
+  token prefix the refresh scheduler scans. Decision: the scheduler treats "not a registry OAuth
+  integration" like "no OAuth app": skipped, not counted as a failure, no cooldown. Reason: those rows
+  are refreshed by their own flows, and failing them every tick only produces warnings.
 - **Tokens carried over from screenpipe.** Drop-in data dirs can hold `oauth:<id>` tokens that the
   vendor's OAuth apps issued, and a refresh token only works for the client that obtained it. Decision:
   no conversion. Until an OAuth app is entered the scheduler skips them; afterwards the first refresh

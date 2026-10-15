@@ -130,8 +130,8 @@ Wave 0 ran on the PC before the cloud phase. Tick anything you already checked t
   - Result:
 - [ ] **SMK-W0-07-2** (UI smoke) Without an OAuth app the connect button stays disabled and explains why
   - Setup: app dev run with a fresh `FP_DD`; nothing entered under any connection's OAuth app.
-  - Steps: 1. Settings > Connections > Notion (any generic OAuth tile). 2. Open Zoom. 3. In Zoom, click "set up OAuth app", enter any client id and no redirect URI, save.
-  - Expected: 1. A "Connecting needs your own Notion OAuth app" line with "set up OAuth app"; "connect with Notion" is disabled. 2. Same for Zoom. 3. Saving is refused with a message asking for an HTTPS relay URL; nothing is stored.
+  - Steps: 1. Settings > Connections > Notion (any generic OAuth tile). 2. Open Zoom. 3. In Zoom, click "set up OAuth app", enter any client id and no redirect URI, save. 4. Open Google Calendar, then Gmail. 5. In Google Calendar click "set up OAuth app" and read the redirect URI to register. 6. Pipe onboarding or a pipe's post-install connections dialog: click connect on an OAuth tile (Notion).
+  - Expected: 1. A "Connecting needs your own Notion OAuth app" line with "set up OAuth app"; "connect with Notion" is disabled. 2. Same for Zoom. 3. Saving is refused with a message asking for an HTTPS relay URL; nothing is stored. 4. The same OAuth app line sits above each card, and the card's "Connect ..." button is disabled. 5. `http://localhost:3035/connections/oauth/callback` (the dev engine's port, not 3030). 6. The tile shows the "no OAuth app is configured ... Settings > Connections" message instead of silently going back to idle.
   - Result:
 - [ ] **SMK-W0-07-3** (Manual) Token refresh goes straight to the provider with your client
   - Setup: Google Calendar connected as in SMK-W0-07-1; engine log at `$FP_DD/engine.log`.
@@ -142,6 +142,11 @@ Wave 0 ran on the PC before the cloud phase. Tick anything you already checked t
   - Setup: app dev run on port 3035; a remote MCP server that signs in with OAuth (Krisp, Plaud or any server added through Custom MCP).
   - Steps: 1. Start its sign-in from Settings > Connections. 2. Look at the `redirect_uri` in the provider's browser URL. 3. Finish the consent.
   - Expected: the redirect is `http://localhost:3035/mcp-servers/<id>/oauth/callback`; the tab shows the connected page and the server lists its tools.
+  - Result:
+- [ ] **SMK-W0-07-5** (Manual) Cal.com connects and refreshes with your own OAuth client
+  - Setup: a Cal.com OAuth client you registered, with redirect `http://localhost:3035/connections/oauth/callback`; app dev run; engine log at `$FP_DD/engine.log`.
+  - Steps: 1. Settings > Connections > Cal.com > "set up OAuth app": enter the client id and secret. 2. Connect and finish the browser consent. 3. After the access token expires (or the next refresh-scheduler tick after expiry), use the connection again. 4. `grep -iE 'oauth refresh|token exchange' "$FP_DD/engine.log"`.
+  - Expected: the code exchange at `https://app.cal.com/api/auth/oauth/token` succeeds and Cal.com shows as connected; the later refresh succeeds without reconnecting; no exchange or refresh failure is logged. If either fails, record the HTTP status and error body so the token endpoint in `crates/screenpipe-connect/src/connections/calcom.rs` can be corrected.
   - Result:
 
 ### W0-08 Cloud sync, archive and pipe store off by default

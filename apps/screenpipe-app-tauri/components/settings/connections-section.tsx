@@ -2159,6 +2159,33 @@ interface OAuthAccount {
   displayName: string | null;
 }
 
+/**
+ * OAuth app block for Google's dedicated cards, which keep their own connect
+ * buttons: the block sits above the card, and the card gets the reason its
+ * connect button is disabled (no OAuth app yet), or `null` once it can connect.
+ */
+function OAuthAppGate({
+  integrationId,
+  integrationName,
+  children,
+}: {
+  integrationId: string;
+  integrationName: string;
+  children: (connectBlockedReason: string | null) => React.ReactNode;
+}) {
+  const [clientInfo, setClientInfo] = useState<OAuthClientInfo | null>(null);
+  return (
+    <div className="space-y-3">
+      <OAuthClientSetup
+        integrationId={integrationId}
+        integrationName={integrationName}
+        onChange={setClientInfo}
+      />
+      {children(connectBlocker(clientInfo))}
+    </div>
+  );
+}
+
 function OAuthPanel({
   integrationId,
   integrationName,
@@ -3496,15 +3523,6 @@ export function ConnectionsSection({
 
   const selectedIntegration = integrations.find(i => i.id === selected);
 
-  // Google's dedicated cards keep their own connect buttons; the OAuth app
-  // they authorize as is set up in the block above them.
-  const withOAuthApp = (integrationId: string, integrationName: string, card: React.ReactNode) => (
-    <div className="space-y-3">
-      <OAuthClientSetup integrationId={integrationId} integrationName={integrationName} />
-      {card}
-    </div>
-  );
-
   const renderPanel = () => {
     if (!selected) return null;
     switch (selected) {
@@ -3528,13 +3546,30 @@ export function ConnectionsSection({
       case "apple-intelligence": return <AppleIntelligenceCard />;
       case "input-monitoring": return <InputMonitoringPanel onStatusChange={setInputMonitoringGranted} />;
       case "apple-calendar": return <AppleCalendarCard onStatusChange={setAppleCalendarConnected} />;
-      case "google-calendar": return withOAuthApp("google-calendar", "Google Calendar", <GoogleCalendarCard
-        onConnected={() => setGoogleCalendarConnected(true)}
-        onDisconnected={() => { setGoogleCalendarConnected(false); notifyConnectionsUpdated(); fetchIntegrations(); }}
-      />);
-      case "google-docs": return withOAuthApp("google-docs", "Google Docs", <GoogleDocsCard />);
-      case "google-sheets": return withOAuthApp("google-sheets", "Google Sheets", <GoogleSheetsCard onConnectionChange={fetchIntegrations} />);
-      case "gmail": return withOAuthApp("gmail", "Gmail", <GmailCard />);
+      case "google-calendar": return (
+        <OAuthAppGate integrationId="google-calendar" integrationName="Google Calendar">
+          {(blocked) => <GoogleCalendarCard
+            connectBlockedReason={blocked}
+            onConnected={() => setGoogleCalendarConnected(true)}
+            onDisconnected={() => { setGoogleCalendarConnected(false); notifyConnectionsUpdated(); fetchIntegrations(); }}
+          />}
+        </OAuthAppGate>
+      );
+      case "google-docs": return (
+        <OAuthAppGate integrationId="google-docs" integrationName="Google Docs">
+          {(blocked) => <GoogleDocsCard connectBlockedReason={blocked} />}
+        </OAuthAppGate>
+      );
+      case "google-sheets": return (
+        <OAuthAppGate integrationId="google-sheets" integrationName="Google Sheets">
+          {(blocked) => <GoogleSheetsCard connectBlockedReason={blocked} onConnectionChange={fetchIntegrations} />}
+        </OAuthAppGate>
+      );
+      case "gmail": return (
+        <OAuthAppGate integrationId="gmail" integrationName="Gmail">
+          {(blocked) => <GmailCard connectBlockedReason={blocked} />}
+        </OAuthAppGate>
+      );
       case "ics-calendar": return <IcsCalendarCard />;
       case "openclaw": return <OpenClawCard />;
       case "whatsapp": return <WhatsAppPanel />;

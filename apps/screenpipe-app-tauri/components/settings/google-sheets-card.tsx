@@ -23,8 +23,11 @@ interface SheetsAccount {
 
 export function GoogleSheetsCard({
   onConnectionChange,
+  connectBlockedReason,
 }: {
   onConnectionChange?: () => void;
+  /** Why connecting is impossible right now (e.g. no OAuth app yet). */
+  connectBlockedReason?: string | null;
 } = {}) {
   const { settings } = useSettings();
   // Freenpipe has no plans: OAuth integrations are never locked.
@@ -173,7 +176,8 @@ export function GoogleSheetsCard({
                   variant="outline"
                   size="sm"
                   onClick={handleConnect}
-                  disabled={isConnecting}
+                  disabled={isConnecting || !!connectBlockedReason}
+                  title={connectBlockedReason ?? undefined}
                   className="text-xs"
                 >
                   {isConnecting ? (

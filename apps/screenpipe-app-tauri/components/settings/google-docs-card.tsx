@@ -29,7 +29,12 @@ interface DocsAccount {
   displayName: string | null;
 }
 
-export function GoogleDocsCard() {
+export function GoogleDocsCard({
+  connectBlockedReason,
+}: {
+  /** Why connecting is impossible right now (e.g. no OAuth app yet). */
+  connectBlockedReason?: string | null;
+} = {}) {
   const { settings } = useSettings();
   // Freenpipe has no plans: OAuth integrations are never locked.
   const isPro = hasCloudEntitlement(settings.user);
@@ -223,7 +228,8 @@ export function GoogleDocsCard() {
                   variant="outline"
                   size="sm"
                   onClick={handleConnect}
-                  disabled={isConnecting}
+                  disabled={isConnecting || !!connectBlockedReason}
+                  title={connectBlockedReason ?? undefined}
                   className="text-xs"
                 >
                   {isConnecting ? (

@@ -37,6 +37,8 @@ interface ConnectionStatus {
   integration: IntegrationInfo | null;
   configured: boolean;
   loading: boolean;
+  /** Last OAuth connect failure, e.g. no OAuth app set up yet. */
+  error?: string | null;
 }
 
 export function PostInstallConnectionsModal({
@@ -131,7 +133,7 @@ export function PostInstallConnectionsModal({
   const handleOAuthConnect = async (connId: string, integrationId: string) => {
     setStatuses((prev) => ({
       ...prev,
-      [connId]: { ...prev[connId], loading: true },
+      [connId]: { ...prev[connId], loading: true, error: null },
     }));
 
     try {
@@ -139,15 +141,18 @@ export function PostInstallConnectionsModal({
       if (res.status === "ok" && res.data.connected) {
         handleSaved(connId);
       } else {
+        // An error result usually means no OAuth app is set up yet; the
+        // backend message says where to add one.
+        const error = res.status === "error" ? String(res.error) : null;
         setStatuses((prev) => ({
           ...prev,
-          [connId]: { ...prev[connId], loading: false },
+          [connId]: { ...prev[connId], loading: false, error },
         }));
       }
-    } catch {
+    } catch (e) {
       setStatuses((prev) => ({
         ...prev,
-        [connId]: { ...prev[connId], loading: false },
+        [connId]: { ...prev[connId], loading: false, error: String(e) },
       }));
     }
   };
@@ -269,6 +274,9 @@ export function PostInstallConnectionsModal({
                             <>connect with {integration.name}</>
                           )}
                         </Button>
+                      )}
+                      {status?.error && (
+                        <p className="mt-2 text-xs text-destructive break-words">{status.error}</p>
                       )}
                     </div>
                   )}
