@@ -45,6 +45,13 @@ jobs:
         toolchain: stable
         override: true
         cache: true
+        # Never save a cache from a failed or cancelled run: a PR run cancelled
+        # by a newer push saved a half-built target/, and knf-rs-sys's build
+        # script cannot recover from a half-copied out/knf directory.
+        cache-on-failure: false
+        # Bumped to retire caches saved before cache-on-failure was turned off
+        # (the cache API is not reachable from cloud sessions to delete them).
+        cache-key: v2
         rustflags: ""
 
     - name: Install Chocolatey
