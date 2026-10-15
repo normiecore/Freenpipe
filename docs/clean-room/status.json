@@ -1,0 +1,2411 @@
+{
+ "generated_at": "2026-10-15T07:42:49Z",
+ "generator": "python3 tools/plan/status.py --write",
+ "main": {
+  "ref": "origin/main",
+  "sha": "b951201ec35fb3eccc301c17154580205166a459",
+  "code_sha": "b951201ec35fb3eccc301c17154580205166a459",
+  "ci": {
+   "state": "failure",
+   "checks": {
+    "Clippy & Format": "failure",
+    "Dependency & Performance Checks": "failure",
+    "Knip (frontend dead code)": "failure",
+    "Linux E2E Tests": "failure",
+    "Windows E2E Tests": "success",
+    "build-linux": "skipped",
+    "build-macos": "skipped",
+    "build-windows": "skipped",
+    "check_commit": "success",
+    "macOS E2E Tests": "failure",
+    "publish-npm": "skipped",
+    "publish-tauri": "skipped",
+    "release": "skipped",
+    "test-windows": "success",
+    "trufflehog": "success"
+   },
+   "missing": [
+    "windows",
+    "linux",
+    "gates"
+   ],
+   "max_attempt": 1,
+   "runs": [
+    {
+     "id": 38683437984,
+     "name": "Code Quality & Optimization",
+     "event": "push",
+     "status": "completed",
+     "conclusion": "failure",
+     "attempt": 1,
+     "url": "https://github.com/normiecore/Freenpipe/actions/runs/38683437984"
+    },
+    {
+     "id": 38683437996,
+     "name": "Windows CLI Integration Test",
+     "event": "push",
+     "status": "completed",
+     "conclusion": "success",
+     "attempt": 1,
+     "url": "https://github.com/normiecore/Freenpipe/actions/runs/38683437996"
+    },
+    {
+     "id": 38683438039,
+     "name": "Release App",
+     "event": "push",
+     "status": "completed",
+     "conclusion": "success",
+     "attempt": 1,
+     "url": "https://github.com/normiecore/Freenpipe/actions/runs/38683438039"
+    },
+    {
+     "id": 38683438041,
+     "name": "E2E Tests",
+     "event": "push",
+     "status": "completed",
+     "conclusion": "failure",
+     "attempt": 1,
+     "url": "https://github.com/normiecore/Freenpipe/actions/runs/38683438041"
+    },
+    {
+     "id": 38683438073,
+     "name": "Release CLI",
+     "event": "push",
+     "status": "completed",
+     "conclusion": "success",
+     "attempt": 1,
+     "url": "https://github.com/normiecore/Freenpipe/actions/runs/38683438073"
+    },
+    {
+     "id": 38683438077,
+     "name": "Secret Scan (trufflehog)",
+     "event": "push",
+     "status": "completed",
+     "conclusion": "success",
+     "attempt": 1,
+     "url": "https://github.com/normiecore/Freenpipe/actions/runs/38683438077"
+    }
+   ]
+  }
+ },
+ "github": {
+  "available": true,
+  "transport": "http"
+ },
+ "options": {
+  "stale_hours": 6.0,
+  "required_checks": [
+   "windows",
+   "linux",
+   "gates",
+   "trufflehog",
+   "test-windows"
+  ]
+ },
+ "summary": {
+  "merged": 4,
+  "in_review": 0,
+  "claimed": 0,
+  "ready": 7,
+  "blocked": 143,
+  "total": 154,
+  "percent_merged": 2.6
+ },
+ "waves": [
+  {
+   "wave": 0,
+   "name": "Foundation: build, ee/ stubs, de-cloud, rebrand",
+   "total": 13,
+   "merged": 4,
+   "in_review": 0,
+   "claimed": 0,
+   "ready": 7,
+   "blocked": 2,
+   "complete": false
+  },
+  {
+   "wave": 1,
+   "name": "Cross-cutting foundations: schema v2.7, settings schema, integration seams",
+   "total": 4,
+   "merged": 0,
+   "in_review": 0,
+   "claimed": 0,
+   "ready": 0,
+   "blocked": 4,
+   "complete": false
+  },
+  {
+   "wave": 2,
+   "name": "Engine data layer and core backends",
+   "total": 27,
+   "merged": 0,
+   "in_review": 0,
+   "claimed": 0,
+   "ready": 0,
+   "blocked": 27,
+   "complete": false
+  },
+  {
+   "wave": 3,
+   "name": "Feature backends (search, pipes, connections, capture, audio)",
+   "total": 31,
+   "merged": 0,
+   "in_review": 0,
+   "claimed": 0,
+   "ready": 0,
+   "blocked": 31,
+   "complete": false
+  },
+  {
+   "wave": 4,
+   "name": "Advanced backends, agents runtime, app shell",
+   "total": 22,
+   "merged": 0,
+   "in_review": 0,
+   "claimed": 0,
+   "ready": 0,
+   "blocked": 22,
+   "complete": false
+  },
+  {
+   "wave": 5,
+   "name": "Feature UIs and second-tier backends",
+   "total": 24,
+   "merged": 0,
+   "in_review": 0,
+   "claimed": 0,
+   "ready": 0,
+   "blocked": 24,
+   "complete": false
+  },
+  {
+   "wave": 6,
+   "name": "Agent/workflow UIs, piggyback, hybrid bulk",
+   "total": 21,
+   "merged": 0,
+   "in_review": 0,
+   "claimed": 0,
+   "ready": 0,
+   "blocked": 21,
+   "complete": false
+  },
+  {
+   "wave": 7,
+   "name": "Hybrid lifecycle, overlays, chat follow-ups",
+   "total": 9,
+   "merged": 0,
+   "in_review": 0,
+   "claimed": 0,
+   "ready": 0,
+   "blocked": 9,
+   "complete": false
+  },
+  {
+   "wave": 8,
+   "name": "Final UI pieces and surface audit",
+   "total": 3,
+   "merged": 0,
+   "in_review": 0,
+   "claimed": 0,
+   "ready": 0,
+   "blocked": 3,
+   "complete": false
+  }
+ ],
+ "stale_claims": [],
+ "fixes": [],
+ "wave_integration": {},
+ "warnings": [],
+ "wps": [
+  {
+   "id": "W0-01",
+   "wave": 0,
+   "size": "L",
+   "title": "Build bootstrap, ee/ stubs, endpoint switchboard and dev isolation",
+   "depends_on": [],
+   "status": "merged",
+   "merge_commit": "be94bb3eba52f1d55123c1518433edbbbf19d382",
+   "merged_at": "2026-10-14T22:00:42Z"
+  },
+  {
+   "id": "W0-02",
+   "wave": 0,
+   "size": "M",
+   "title": "Remove telemetry and crash reporting (PostHog, Sentry)",
+   "depends_on": [
+    "W0-01"
+   ],
+   "status": "merged",
+   "merge_commit": "56b1812d5ceb691f74bae6ee30cf35f91ce88afa",
+   "merged_at": "2026-10-15T01:05:46Z"
+  },
+  {
+   "id": "W0-03",
+   "wave": 0,
+   "size": "M",
+   "title": "Updater on GitHub releases, release pipeline de-vendoring, restart_for_update",
+   "depends_on": [
+    "W0-01"
+   ],
+   "status": "merged",
+   "merge_commit": "6c659c4a99e8abc6ebe322d6c5792eccf7838a5b",
+   "merged_at": "2026-10-15T02:23:18Z"
+  },
+  {
+   "id": "W0-04",
+   "wave": 0,
+   "size": "L",
+   "title": "Remove entitlement, login and plan gates",
+   "depends_on": [
+    "W0-01"
+   ],
+   "status": "merged",
+   "merge_commit": "61d5b1a3482f627dff7fb076a811476bda866e56",
+   "merged_at": "2026-10-15T01:54:54Z"
+  },
+  {
+   "id": "W0-05",
+   "wave": 0,
+   "size": "L",
+   "title": "Remove commerce, team and vendor UI surfaces",
+   "depends_on": [
+    "W0-01"
+   ],
+   "status": "ready"
+  },
+  {
+   "id": "W0-06",
+   "wave": 0,
+   "size": "L",
+   "title": "AI gateway, transcription, PII backend and media analysis to bring-your-own",
+   "depends_on": [
+    "W0-01"
+   ],
+   "status": "ready"
+  },
+  {
+   "id": "W0-07",
+   "wave": 0,
+   "size": "L",
+   "title": "OAuth broker replaced by BYO client credentials",
+   "depends_on": [
+    "W0-01"
+   ],
+   "status": "ready"
+  },
+  {
+   "id": "W0-08",
+   "wave": 0,
+   "size": "M",
+   "title": "Cloud sync, archive and pipe store off by default",
+   "depends_on": [
+    "W0-01"
+   ],
+   "status": "ready"
+  },
+  {
+   "id": "W0-09",
+   "wave": 0,
+   "size": "M",
+   "title": "Bundled CLI/MCP runtime and self-hosted model sources",
+   "depends_on": [
+    "W0-01"
+   ],
+   "status": "ready"
+  },
+  {
+   "id": "W0-10",
+   "wave": 0,
+   "size": "M",
+   "title": "Logs and feedback upload replaced by a local diagnostics bundle",
+   "depends_on": [
+    "W0-01"
+   ],
+   "status": "ready"
+  },
+  {
+   "id": "W0-11",
+   "wave": 0,
+   "size": "L",
+   "title": "SQLite toolchain upgrade (sqlx 0.9, libsqlite3-sys 0.37, rusqlite vtab)",
+   "depends_on": [
+    "W0-01"
+   ],
+   "status": "ready"
+  },
+  {
+   "id": "W0-12",
+   "wave": 0,
+   "size": "M",
+   "title": "Rebrand user-visible identity to Freenpipe",
+   "depends_on": [
+    "W0-02",
+    "W0-03",
+    "W0-04",
+    "W0-05",
+    "W0-06",
+    "W0-07",
+    "W0-08",
+    "W0-09",
+    "W0-10",
+    "W0-11"
+   ],
+   "unmet_deps": [
+    "W0-05",
+    "W0-06",
+    "W0-07",
+    "W0-08",
+    "W0-09",
+    "W0-10",
+    "W0-11"
+   ],
+   "status": "blocked"
+  },
+  {
+   "id": "W0-13",
+   "wave": 0,
+   "size": "M",
+   "title": "Vendor git dependencies into third_party/",
+   "depends_on": [
+    "W0-11"
+   ],
+   "unmet_deps": [
+    "W0-11"
+   ],
+   "status": "blocked"
+  },
+  {
+   "id": "W1-01",
+   "wave": 1,
+   "size": "L",
+   "title": "Schema v2.7.104: 28 migrations and ocr_text retirement",
+   "depends_on": [
+    "W0-12"
+   ],
+   "unmet_deps": [
+    "W0-12"
+   ],
+   "status": "blocked"
+  },
+  {
+   "id": "W1-02",
+   "wave": 1,
+   "size": "L",
+   "title": "Settings schema v2 and store compatibility",
+   "depends_on": [
+    "W0-12"
+   ],
+   "unmet_deps": [
+    "W0-12"
+   ],
+   "status": "blocked"
+  },
+  {
+   "id": "W1-03",
+   "wave": 1,
+   "size": "M",
+   "title": "Integration seams, stub modules and shared constants",
+   "depends_on": [
+    "W0-12"
+   ],
+   "unmet_deps": [
+    "W0-12"
+   ],
+   "status": "blocked"
+  },
+  {
+   "id": "W1-04",
+   "wave": 1,
+   "size": "S",
+   "title": "Enterprise and plan-gate no-op surface",
+   "depends_on": [
+    "W0-12"
+   ],
+   "unmet_deps": [
+    "W0-12"
+   ],
+   "status": "blocked"
+  },
+  {
+   "id": "W2-01",
+   "wave": 2,
+   "size": "L",
+   "title": "DB runtime hardening: pragmas, WAL maintenance, preflight, planner stats, cancellable reads",
+   "depends_on": [
+    "W1-01",
+    "W1-03"
+   ],
+   "unmet_deps": [
+    "W1-01",
+    "W1-03"
+   ],
+   "status": "blocked"
+  },
+  {
+   "id": "W2-02",
+   "wave": 2,
+   "size": "L",
+   "title": "Outputs and artifacts registry",
+   "depends_on": [
+    "W1-01",
+    "W1-03"
+   ],
+   "unmet_deps": [
+    "W1-01",
+    "W1-03"
+   ],
+   "status": "blocked"
+  },
+  {
+   "id": "W2-03",
+   "wave": 2,
+   "size": "M",
+   "title": "Unified AI feedback table and /feedback",
+   "depends_on": [
+    "W1-01",
+    "W1-03"
+   ],
+   "unmet_deps": [
+    "W1-01",
+    "W1-03"
+   ],
+   "status": "blocked"
+  },
+  {
+   "id": "W2-04",
+   "wave": 2,
+   "size": "M",
+   "title": "Starred work sessions backend and HD binding",
+   "depends_on": [
+    "W1-01",
+    "W1-03"
+   ],
+   "unmet_deps": [
+    "W1-01",
+    "W1-03"
+   ],
+   "status": "blocked"
+  },
+  {
+   "id": "W2-05",
+   "wave": 2,
+   "size": "M",
+   "title": "Semantic store: runs, items, FTS, actors",
+   "depends_on": [
+    "W1-01",
+    "W1-03"
+   ],
+   "unmet_deps": [
+    "W1-01",
+    "W1-03"
+   ],
+   "status": "blocked"
+  },
+  {
+   "id": "W2-06",
+   "wave": 2,
+   "size": "XL",
+   "title": "screenpipe-semantic parser crate",
+   "depends_on": [
+    "W0-12"
+   ],
+   "unmet_deps": [
+    "W0-12"
+   ],
+   "status": "blocked"
+  },
+  {
+   "id": "W2-07",
+   "wave": 2,
+   "size": "L",
+   "title": "Activity ledger store and deterministic reconciler",
+   "depends_on": [
+    "W1-01",
+    "W1-03"
+   ],
+   "unmet_deps": [
+    "W1-01",
+    "W1-03"
+   ],
+   "status": "blocked"
+  },
+  {
+   "id": "W2-08",
+   "wave": 2,
+   "size": "L",
+   "title": "Meetings API v2: calendar binding, summary endpoints, room-change route",
+   "depends_on": [
+    "W1-01",
+    "W1-03"
+   ],
+   "unmet_deps": [
+    "W1-01",
+    "W1-03"
+   ],
+   "status": "blocked"
+  },
+  {
+   "id": "W2-09",
+   "wave": 2,
+   "size": "M",
+   "title": "Response formats, calendar time literals, tag autocomplete",
+   "depends_on": [
+    "W1-01",
+    "W1-03"
+   ],
+   "unmet_deps": [
+    "W1-01",
+    "W1-03"
+   ],
+   "status": "blocked"
+  },
+  {
+   "id": "W2-10",
+   "wave": 2,
+   "size": "L",
+   "title": "Frame media routes: thumbnail, preview samples, preview media, typed errors, auth",
+   "depends_on": [
+    "W1-01",
+    "W1-03"
+   ],
+   "unmet_deps": [
+    "W1-01",
+    "W1-03"
+   ],
+   "status": "blocked"
+  },
+  {
+   "id": "W2-11",
+   "wave": 2,
+   "size": "L",
+   "title": "Per-monitor vision control and display layout persistence",
+   "depends_on": [
+    "W1-01",
+    "W1-03"
+   ],
+   "unmet_deps": [
+    "W1-01",
+    "W1-03"
+   ],
+   "status": "blocked"
+  },
+  {
+   "id": "W2-12",
+   "wave": 2,
+   "size": "L",
+   "title": "Native WinRT/D3D11 Windows Graphics Capture and frame-diff hardening",
+   "depends_on": [
+    "W0-12"
+   ],
+   "unmet_deps": [
+    "W0-12"
+   ],
+   "status": "blocked"
+  },
+  {
+   "id": "W2-13",
+   "wave": 2,
+   "size": "L",
+   "title": "Health v2, vision metrics and recording coverage",
+   "depends_on": [
+    "W1-03"
+   ],
+   "unmet_deps": [
+    "W1-03"
+   ],
+   "status": "blocked"
+  },
+  {
+   "id": "W2-14",
+   "wave": 2,
+   "size": "L",
+   "title": "Resource monitor v2: process tree, breakdown, leak trend",
+   "depends_on": [
+    "W1-03"
+   ],
+   "unmet_deps": [
+    "W1-03"
+   ],
+   "status": "blocked"
+  },
+  {
+   "id": "W2-15",
+   "wave": 2,
+   "size": "L",
+   "title": "Snapshot compaction v2 and suspend/lock awareness",
+   "depends_on": [
+    "W1-01",
+    "W1-03"
+   ],
+   "unmet_deps": [
+    "W1-01",
+    "W1-03"
+   ],
+   "status": "blocked"
+  },
+  {
+   "id": "W2-16",
+   "wave": 2,
+   "size": "L",
+   "title": "Speakers v2: samples, search paging, merge integrity, reassign v2",
+   "depends_on": [
+    "W1-01"
+   ],
+   "unmet_deps": [
+    "W1-01"
+   ],
+   "status": "blocked"
+  },
+  {
+   "id": "W2-17",
+   "wave": 2,
+   "size": "L",
+   "title": "Stream-scoped live speakers and strict meeting-segment mapping",
+   "depends_on": [
+    "W1-01"
+   ],
+   "unmet_deps": [
+    "W1-01"
+   ],
+   "status": "blocked"
+  },
+  {
+   "id": "W2-18",
+   "wave": 2,
+   "size": "L",
+   "title": "Windows WASAPI loopback engine and exe-based audio exclusions",
+   "depends_on": [
+    "W1-02"
+   ],
+   "unmet_deps": [
+    "W1-02"
+   ],
+   "status": "blocked"
+  },
+  {
+   "id": "W2-19",
+   "wave": 2,
+   "size": "L",
+   "title": "GPU runtimes and bundled models: Vulkan whisper, DirectML, install layout",
+   "depends_on": [
+    "W0-12"
+   ],
+   "unmet_deps": [
+    "W0-12"
+   ],
+   "status": "blocked"
+  },
+  {
+   "id": "W2-20",
+   "wave": 2,
+   "size": "L",
+   "title": "Connections core: secret-safe reads, webhook proxy, Telegram send, router deltas, MCP refs",
+   "depends_on": [
+    "W1-03"
+   ],
+   "unmet_deps": [
+    "W1-03"
+   ],
+   "status": "blocked"
+  },
+  {
+   "id": "W2-21",
+   "wave": 2,
+   "size": "L",
+   "title": "OAuth v2 flow and new OAuth integrations",
+   "depends_on": [
+    "W1-03"
+   ],
+   "unmet_deps": [
+    "W1-03"
+   ],
+   "status": "blocked"
+  },
+  {
+   "id": "W2-22",
+   "wave": 2,
+   "size": "L",
+   "title": "Pipe config v2: new frontmatter, schedule_config and preview, ids, preamble",
+   "depends_on": [
+    "W1-03"
+   ],
+   "unmet_deps": [
+    "W1-03"
+   ],
+   "status": "blocked"
+  },
+  {
+   "id": "W2-23",
+   "wave": 2,
+   "size": "L",
+   "title": "Pi runtime 0.84.1, isolated config, baseline bun, compaction patch",
+   "depends_on": [
+    "W1-03"
+   ],
+   "unmet_deps": [
+    "W1-03"
+   ],
+   "status": "blocked"
+  },
+  {
+   "id": "W2-24",
+   "wave": 2,
+   "size": "M",
+   "title": "Engine local stubs: attribution headers, telemetry no-op routes, local data-sync",
+   "depends_on": [
+    "W1-03"
+   ],
+   "unmet_deps": [
+    "W1-03"
+   ],
+   "status": "blocked"
+  },
+  {
+   "id": "W2-25",
+   "wave": 2,
+   "size": "L",
+   "title": "Frontend stack refresh and browser-dev mock runtime",
+   "depends_on": [
+    "W1-02"
+   ],
+   "unmet_deps": [
+    "W1-02"
+   ],
+   "status": "blocked"
+  },
+  {
+   "id": "W2-26",
+   "wave": 2,
+   "size": "L",
+   "title": "App engine supervision: auto-respawn, port-conflict classification, safe relaunch",
+   "depends_on": [
+    "W1-02"
+   ],
+   "unmet_deps": [
+    "W1-02"
+   ],
+   "status": "blocked"
+  },
+  {
+   "id": "W2-27",
+   "wave": 2,
+   "size": "L",
+   "title": "App startup hardening: argv helper modes, autostart, focus handoff, env, AVX2, WER, opener",
+   "depends_on": [
+    "W1-03"
+   ],
+   "unmet_deps": [
+    "W1-03"
+   ],
+   "status": "blocked"
+  },
+  {
+   "id": "W3-01",
+   "wave": 3,
+   "size": "L",
+   "title": "Semantic projection worker and actors API",
+   "depends_on": [
+    "W2-05",
+    "W2-06"
+   ],
+   "unmet_deps": [
+    "W2-05",
+    "W2-06"
+   ],
+   "status": "blocked"
+  },
+  {
+   "id": "W3-02",
+   "wave": 3,
+   "size": "L",
+   "title": "Search v2: parsed content, starred, actor and related filters",
+   "depends_on": [
+    "W2-04",
+    "W2-05",
+    "W2-09"
+   ],
+   "unmet_deps": [
+    "W2-04",
+    "W2-05",
+    "W2-09"
+   ],
+   "status": "blocked"
+  },
+  {
+   "id": "W3-03",
+   "wave": 3,
+   "size": "L",
+   "title": "Element API formats and state",
+   "depends_on": [
+    "W2-09"
+   ],
+   "unmet_deps": [
+    "W2-09"
+   ],
+   "status": "blocked"
+  },
+  {
+   "id": "W3-04",
+   "wave": 3,
+   "size": "L",
+   "title": "Activity APIs: activity-summary v2 and activity-ledger route",
+   "depends_on": [
+    "W2-04",
+    "W2-07"
+   ],
+   "unmet_deps": [
+    "W2-04",
+    "W2-07"
+   ],
+   "status": "blocked"
+  },
+  {
+   "id": "W3-05",
+   "wave": 3,
+   "size": "L",
+   "title": "Structured output targets",
+   "depends_on": [
+    "W2-02",
+    "W2-03"
+   ],
+   "unmet_deps": [
+    "W2-02",
+    "W2-03"
+   ],
+   "status": "blocked"
+  },
+  {
+   "id": "W3-06",
+   "wave": 3,
+   "size": "L",
+   "title": "Event-trigger idempotency, run outcome verification, meeting-summary finalizer",
+   "depends_on": [
+    "W2-08",
+    "W2-22"
+   ],
+   "unmet_deps": [
+    "W2-08",
+    "W2-22"
+   ],
+   "status": "blocked"
+  },
+  {
+   "id": "W3-07",
+   "wave": 3,
+   "size": "M",
+   "title": "Live meeting overlay websocket",
+   "depends_on": [
+    "W2-17",
+    "W2-13"
+   ],
+   "unmet_deps": [
+    "W2-17",
+    "W2-13"
+   ],
+   "status": "blocked"
+  },
+  {
+   "id": "W3-08",
+   "wave": 3,
+   "size": "L",
+   "title": "UI-scan meeting detector: calendar binding and lock awareness",
+   "depends_on": [
+    "W2-08"
+   ],
+   "unmet_deps": [
+    "W2-08"
+   ],
+   "status": "blocked"
+  },
+  {
+   "id": "W3-09",
+   "wave": 3,
+   "size": "L",
+   "title": "Retention v2: lean mode, strip, NULL-safe deletes, coverage",
+   "depends_on": [
+    "W2-05",
+    "W2-11"
+   ],
+   "unmet_deps": [
+    "W2-05",
+    "W2-11"
+   ],
+   "status": "blocked"
+  },
+  {
+   "id": "W3-10",
+   "wave": 3,
+   "size": "L",
+   "title": "PII redaction surfaces v2",
+   "depends_on": [
+    "W1-01",
+    "W1-02"
+   ],
+   "unmet_deps": [
+    "W1-01",
+    "W1-02"
+   ],
+   "status": "blocked"
+  },
+  {
+   "id": "W3-11",
+   "wave": 3,
+   "size": "L",
+   "title": "Capture loop hardening A: stages and wedge watchdog, probe timeouts, fail-closed exclusions, corrupt frames",
+   "depends_on": [
+    "W2-11",
+    "W2-13"
+   ],
+   "unmet_deps": [
+    "W2-11",
+    "W2-13"
+   ],
+   "status": "blocked"
+  },
+  {
+   "id": "W3-12",
+   "wave": 3,
+   "size": "M",
+   "title": "Dedicated Windows OCR worker and OCR availability reporting",
+   "depends_on": [
+    "W1-01",
+    "W2-10"
+   ],
+   "unmet_deps": [
+    "W1-01",
+    "W2-10"
+   ],
+   "status": "blocked"
+  },
+  {
+   "id": "W3-13",
+   "wave": 3,
+   "size": "L",
+   "title": "URL domain rules, Windows window identity, input-hook watchdog",
+   "depends_on": [
+    "W1-02",
+    "W2-11"
+   ],
+   "unmet_deps": [
+    "W1-02",
+    "W2-11"
+   ],
+   "status": "blocked"
+  },
+  {
+   "id": "W3-14",
+   "wave": 3,
+   "size": "L",
+   "title": "Audio capture modes and device status events",
+   "depends_on": [
+    "W1-02",
+    "W2-13"
+   ],
+   "unmet_deps": [
+    "W1-02",
+    "W2-13"
+   ],
+   "status": "blocked"
+  },
+  {
+   "id": "W3-15",
+   "wave": 3,
+   "size": "L",
+   "title": "Software AEC3 + NS + AGC2 (aecMode=screenpipe)",
+   "depends_on": [
+    "W2-18"
+   ],
+   "unmet_deps": [
+    "W2-18"
+   ],
+   "status": "blocked"
+  },
+  {
+   "id": "W3-16",
+   "wave": 3,
+   "size": "L",
+   "title": "Reconciliation durability, identification gating, STT retries, dedup",
+   "depends_on": [
+    "W2-17"
+   ],
+   "unmet_deps": [
+    "W2-17"
+   ],
+   "status": "blocked"
+  },
+  {
+   "id": "W3-17",
+   "wave": 3,
+   "size": "L",
+   "title": "Startup health diagnostics (health-startup.json) and ORT init watchdog",
+   "depends_on": [
+    "W2-13",
+    "W2-19"
+   ],
+   "unmet_deps": [
+    "W2-13",
+    "W2-19"
+   ],
+   "status": "blocked"
+  },
+  {
+   "id": "W3-18",
+   "wave": 3,
+   "size": "L",
+   "title": "Notifications v2 backend on :11435",
+   "depends_on": [
+    "W1-02"
+   ],
+   "unmet_deps": [
+    "W1-02"
+   ],
+   "status": "blocked"
+  },
+  {
+   "id": "W3-19",
+   "wave": 3,
+   "size": "L",
+   "title": "Slack user-token integration with read routes",
+   "depends_on": [
+    "W2-21"
+   ],
+   "unmet_deps": [
+    "W2-21"
+   ],
+   "status": "blocked"
+  },
+  {
+   "id": "W3-20",
+   "wave": 3,
+   "size": "L",
+   "title": "IMAP read-only inbox integration",
+   "depends_on": [
+    "W2-20"
+   ],
+   "unmet_deps": [
+    "W2-20"
+   ],
+   "status": "blocked"
+  },
+  {
+   "id": "W3-21",
+   "wave": 3,
+   "size": "L",
+   "title": "BYO MCP: registry search, MCP-OAuth-first tiles, session allow-gate, relay-free OAuth",
+   "depends_on": [
+    "W2-20"
+   ],
+   "unmet_deps": [
+    "W2-20"
+   ],
+   "status": "blocked"
+  },
+  {
+   "id": "W3-22",
+   "wave": 3,
+   "size": "M",
+   "title": "Local integrations: memory-sync guidance, Obsidian memories, Hermes, WhatsApp sign-out",
+   "depends_on": [
+    "W2-20"
+   ],
+   "unmet_deps": [
+    "W2-20"
+   ],
+   "status": "blocked"
+  },
+  {
+   "id": "W3-23",
+   "wave": 3,
+   "size": "L",
+   "title": "Pi extension set expansion and extension packages",
+   "depends_on": [
+    "W2-23"
+   ],
+   "unmet_deps": [
+    "W2-23"
+   ],
+   "status": "blocked"
+  },
+  {
+   "id": "W3-24",
+   "wave": 3,
+   "size": "L",
+   "title": "Agent self-improvement: skills store, user profile, learning",
+   "depends_on": [
+    "W1-03"
+   ],
+   "unmet_deps": [
+    "W1-03"
+   ],
+   "status": "blocked"
+  },
+  {
+   "id": "W3-25",
+   "wave": 3,
+   "size": "L",
+   "title": "Local OpenAI-compatible proxy and BYO web search",
+   "depends_on": [
+    "W1-03"
+   ],
+   "unmet_deps": [
+    "W1-03"
+   ],
+   "status": "blocked"
+  },
+  {
+   "id": "W3-26",
+   "wave": 3,
+   "size": "M",
+   "title": "Connect broker and connection-gate tools",
+   "depends_on": [
+    "W2-20"
+   ],
+   "unmet_deps": [
+    "W2-20"
+   ],
+   "status": "blocked"
+  },
+  {
+   "id": "W3-27",
+   "wave": 3,
+   "size": "L",
+   "title": "SQLite hard-fault quarantine coordinator",
+   "depends_on": [
+    "W2-01"
+   ],
+   "unmet_deps": [
+    "W2-01"
+   ],
+   "status": "blocked"
+  },
+  {
+   "id": "W3-28",
+   "wave": 3,
+   "size": "L",
+   "title": "Headless mode and search-only mode",
+   "depends_on": [
+    "W2-26"
+   ],
+   "unmet_deps": [
+    "W2-26"
+   ],
+   "status": "blocked"
+  },
+  {
+   "id": "W3-29",
+   "wave": 3,
+   "size": "M",
+   "title": "Recording health incident state",
+   "depends_on": [
+    "W2-26"
+   ],
+   "unmet_deps": [
+    "W2-26"
+   ],
+   "status": "blocked"
+  },
+  {
+   "id": "W3-30",
+   "wave": 3,
+   "size": "M",
+   "title": "Low-disk recording guard and keep-awake",
+   "depends_on": [
+    "W1-02",
+    "W1-03"
+   ],
+   "unmet_deps": [
+    "W1-02",
+    "W1-03"
+   ],
+   "status": "blocked"
+  },
+  {
+   "id": "W3-31",
+   "wave": 3,
+   "size": "L",
+   "title": "SOP narration providers: OpenAI-compatible, local OS TTS, captions-only",
+   "depends_on": [
+    "W1-02"
+   ],
+   "unmet_deps": [
+    "W1-02"
+   ],
+   "status": "blocked"
+  },
+  {
+   "id": "W4-01",
+   "wave": 4,
+   "size": "XL",
+   "title": "Workflows core and /workflows API",
+   "depends_on": [
+    "W2-22",
+    "W3-23",
+    "W2-02"
+   ],
+   "unmet_deps": [
+    "W2-22",
+    "W3-23",
+    "W2-02"
+   ],
+   "status": "blocked"
+  },
+  {
+   "id": "W4-02",
+   "wave": 4,
+   "size": "L",
+   "title": "Pipe scheduler v2: defer/coalesce, topics, preset '*', trajectories, log archive",
+   "depends_on": [
+    "W3-06"
+   ],
+   "unmet_deps": [
+    "W3-06"
+   ],
+   "status": "blocked"
+  },
+  {
+   "id": "W4-03",
+   "wave": 4,
+   "size": "XL",
+   "title": "ACP agent runtime and screenpipe-tools MCP",
+   "depends_on": [
+    "W2-23",
+    "W2-27"
+   ],
+   "unmet_deps": [
+    "W2-23",
+    "W2-27"
+   ],
+   "status": "blocked"
+  },
+  {
+   "id": "W4-04",
+   "wave": 4,
+   "size": "L",
+   "title": "Cloud coding agents (BYO Cursor/Codex/Claude)",
+   "depends_on": [
+    "W2-22"
+   ],
+   "unmet_deps": [
+    "W2-22"
+   ],
+   "status": "blocked"
+  },
+  {
+   "id": "W4-05",
+   "wave": 4,
+   "size": "M",
+   "title": "Chat runtime commands and per-turn connections context",
+   "depends_on": [
+    "W2-23"
+   ],
+   "unmet_deps": [
+    "W2-23"
+   ],
+   "status": "blocked"
+  },
+  {
+   "id": "W4-06",
+   "wave": 4,
+   "size": "M",
+   "title": "Bundled skills update and starter skills",
+   "depends_on": [
+    "W2-23",
+    "W3-23"
+   ],
+   "unmet_deps": [
+    "W2-23",
+    "W3-23"
+   ],
+   "status": "blocked"
+  },
+  {
+   "id": "W4-07",
+   "wave": 4,
+   "size": "L",
+   "title": "CLI v2: service, diagnose, richer status, agent setup",
+   "depends_on": [
+    "W3-17"
+   ],
+   "unmet_deps": [
+    "W3-17"
+   ],
+   "status": "blocked"
+  },
+  {
+   "id": "W4-08",
+   "wave": 4,
+   "size": "M",
+   "title": "Pipe permissions v2",
+   "depends_on": [
+    "W3-02",
+    "W3-21"
+   ],
+   "unmet_deps": [
+    "W3-02",
+    "W3-21"
+   ],
+   "status": "blocked"
+  },
+  {
+   "id": "W4-09",
+   "wave": 4,
+   "size": "L",
+   "title": "Database recovery v2: embedded page-level recovery",
+   "depends_on": [
+    "W3-27"
+   ],
+   "unmet_deps": [
+    "W3-27"
+   ],
+   "status": "blocked"
+  },
+  {
+   "id": "W4-10",
+   "wave": 4,
+   "size": "L",
+   "title": "Data maintenance, vault and secrets DB split",
+   "depends_on": [
+    "W3-27"
+   ],
+   "unmet_deps": [
+    "W3-27"
+   ],
+   "status": "blocked"
+  },
+  {
+   "id": "W4-11",
+   "wave": 4,
+   "size": "L",
+   "title": "Live Views backend",
+   "depends_on": [
+    "W3-05"
+   ],
+   "unmet_deps": [
+    "W3-05"
+   ],
+   "status": "blocked"
+  },
+  {
+   "id": "W4-12",
+   "wave": 4,
+   "size": "XL",
+   "title": "Audio-process (mic-holder) meeting detector",
+   "depends_on": [
+    "W3-08",
+    "W2-18"
+   ],
+   "unmet_deps": [
+    "W3-08",
+    "W2-18"
+   ],
+   "status": "blocked"
+  },
+  {
+   "id": "W4-13",
+   "wave": 4,
+   "size": "XL",
+   "title": "Event-driven retained UIA tree on Windows",
+   "depends_on": [
+    "W3-13"
+   ],
+   "unmet_deps": [
+    "W3-13"
+   ],
+   "status": "blocked"
+  },
+  {
+   "id": "W4-14",
+   "wave": 4,
+   "size": "L",
+   "title": "Capture loop B: tree-walker worker and foreground identity gate",
+   "depends_on": [
+    "W3-11"
+   ],
+   "unmet_deps": [
+    "W3-11"
+   ],
+   "status": "blocked"
+  },
+  {
+   "id": "W4-15",
+   "wave": 4,
+   "size": "L",
+   "title": "Redaction pseudonyms, a11y-aware secret detection, configurable models",
+   "depends_on": [
+    "W3-10"
+   ],
+   "unmet_deps": [
+    "W3-10"
+   ],
+   "status": "blocked"
+  },
+  {
+   "id": "W4-16",
+   "wave": 4,
+   "size": "L",
+   "title": "Bluetooth meeting gate, output follow and speaker watchdog",
+   "depends_on": [
+    "W3-14"
+   ],
+   "unmet_deps": [
+    "W3-14"
+   ],
+   "status": "blocked"
+  },
+  {
+   "id": "W4-17",
+   "wave": 4,
+   "size": "L",
+   "title": "Calendar v2: all-calendar Google events and reminder scheduler",
+   "depends_on": [
+    "W2-21",
+    "W3-18"
+   ],
+   "unmet_deps": [
+    "W2-21",
+    "W3-18"
+   ],
+   "status": "blocked"
+  },
+  {
+   "id": "W4-18",
+   "wave": 4,
+   "size": "L",
+   "title": "Bee pairing and browser snapshot v2 with /act",
+   "depends_on": [
+    "W2-20"
+   ],
+   "unmet_deps": [
+    "W2-20"
+   ],
+   "status": "blocked"
+  },
+  {
+   "id": "W4-19",
+   "wave": 4,
+   "size": "L",
+   "title": "Window inventory, screen-share protection, renderer heartbeat",
+   "depends_on": [
+    "W3-28"
+   ],
+   "unmet_deps": [
+    "W3-28"
+   ],
+   "status": "blocked"
+  },
+  {
+   "id": "W4-20",
+   "wave": 4,
+   "size": "L",
+   "title": "UI localization (en + ja) and native string tables",
+   "depends_on": [
+    "W2-25",
+    "W1-02"
+   ],
+   "unmet_deps": [
+    "W2-25",
+    "W1-02"
+   ],
+   "status": "blocked"
+  },
+  {
+   "id": "W4-21",
+   "wave": 4,
+   "size": "XL",
+   "title": "Narrated SOP video renderer (core)",
+   "depends_on": [
+    "W3-31"
+   ],
+   "unmet_deps": [
+    "W3-31"
+   ],
+   "status": "blocked"
+  },
+  {
+   "id": "W4-22",
+   "wave": 4,
+   "size": "L",
+   "title": "App shell: (main) route group, navigation v2, command palette",
+   "depends_on": [
+    "W2-25"
+   ],
+   "unmet_deps": [
+    "W2-25"
+   ],
+   "status": "blocked"
+  },
+  {
+   "id": "W5-01",
+   "wave": 5,
+   "size": "L",
+   "title": "Pipes API v2 and SSE output stream",
+   "depends_on": [
+    "W4-02"
+   ],
+   "unmet_deps": [
+    "W4-02"
+   ],
+   "status": "blocked"
+  },
+  {
+   "id": "W5-02",
+   "wave": 5,
+   "size": "L",
+   "title": "Skills registry, external-agent skill export, provider automations",
+   "depends_on": [
+    "W4-06",
+    "W4-03"
+   ],
+   "unmet_deps": [
+    "W4-06",
+    "W4-03"
+   ],
+   "status": "blocked"
+  },
+  {
+   "id": "W5-03",
+   "wave": 5,
+   "size": "M",
+   "title": "Meeting room-change offers",
+   "depends_on": [
+    "W4-12"
+   ],
+   "unmet_deps": [
+    "W4-12"
+   ],
+   "status": "blocked"
+  },
+  {
+   "id": "W5-04",
+   "wave": 5,
+   "size": "L",
+   "title": "Audio device lifecycle hardening and shared engine reuse",
+   "depends_on": [
+    "W4-16"
+   ],
+   "unmet_deps": [
+    "W4-16"
+   ],
+   "status": "blocked"
+  },
+  {
+   "id": "W5-05",
+   "wave": 5,
+   "size": "L",
+   "title": "Capture loop C: screenshot policy, scroll cadence, width cap, frozen streams",
+   "depends_on": [
+    "W4-14"
+   ],
+   "unmet_deps": [
+    "W4-14"
+   ],
+   "status": "blocked"
+  },
+  {
+   "id": "W5-06",
+   "wave": 5,
+   "size": "L",
+   "title": "OCR text-region gate and crop OCR",
+   "depends_on": [
+    "W3-12",
+    "W4-14"
+   ],
+   "unmet_deps": [
+    "W3-12",
+    "W4-14"
+   ],
+   "status": "blocked"
+  },
+  {
+   "id": "W5-07",
+   "wave": 5,
+   "size": "XL",
+   "title": "Hybrid storage format hybrid-parquet-v1",
+   "depends_on": [
+    "W2-01"
+   ],
+   "unmet_deps": [
+    "W2-01"
+   ],
+   "status": "blocked"
+  },
+  {
+   "id": "W5-08",
+   "wave": 5,
+   "size": "L",
+   "title": "Database self-heal user flow",
+   "depends_on": [
+    "W4-09"
+   ],
+   "unmet_deps": [
+    "W4-09"
+   ],
+   "status": "blocked"
+  },
+  {
+   "id": "W5-09",
+   "wave": 5,
+   "size": "M",
+   "title": "Tray menu v2",
+   "depends_on": [
+    "W4-20",
+    "W2-11"
+   ],
+   "unmet_deps": [
+    "W4-20",
+    "W2-11"
+   ],
+   "status": "blocked"
+  },
+  {
+   "id": "W5-10",
+   "wave": 5,
+   "size": "L",
+   "title": "Workflow video jobs in the app",
+   "depends_on": [
+    "W4-21"
+   ],
+   "unmet_deps": [
+    "W4-21"
+   ],
+   "status": "blocked"
+  },
+  {
+   "id": "W5-11",
+   "wave": 5,
+   "size": "L",
+   "title": "Captured-moment replay server and open command",
+   "depends_on": [
+    "W2-10"
+   ],
+   "unmet_deps": [
+    "W2-10"
+   ],
+   "status": "blocked"
+  },
+  {
+   "id": "W5-12",
+   "wave": 5,
+   "size": "L",
+   "title": "Activity history generator (app)",
+   "depends_on": [
+    "W3-04",
+    "W3-25"
+   ],
+   "unmet_deps": [
+    "W3-04",
+    "W3-25"
+   ],
+   "status": "blocked"
+  },
+  {
+   "id": "W5-13",
+   "wave": 5,
+   "size": "L",
+   "title": "Notifications UI v2: inbox window, bell, panel, preferences",
+   "depends_on": [
+    "W3-18",
+    "W4-19"
+   ],
+   "unmet_deps": [
+    "W3-18",
+    "W4-19"
+   ],
+   "status": "blocked"
+  },
+  {
+   "id": "W5-14",
+   "wave": 5,
+   "size": "L",
+   "title": "Starred sessions UI, star shortcut, overlay snooze/anchor, CLI",
+   "depends_on": [
+    "W2-04",
+    "W4-19"
+   ],
+   "unmet_deps": [
+    "W2-04",
+    "W4-19"
+   ],
+   "status": "blocked"
+  },
+  {
+   "id": "W5-15",
+   "wave": 5,
+   "size": "L",
+   "title": "Chat tabs, split pane, side chat, groups and landing cards",
+   "depends_on": [
+    "W4-05",
+    "W4-22"
+   ],
+   "unmet_deps": [
+    "W4-05",
+    "W4-22"
+   ],
+   "status": "blocked"
+  },
+  {
+   "id": "W5-16",
+   "wave": 5,
+   "size": "L",
+   "title": "Library: memories and artifacts",
+   "depends_on": [
+    "W2-02",
+    "W4-22"
+   ],
+   "unmet_deps": [
+    "W2-02",
+    "W4-22"
+   ],
+   "status": "blocked"
+  },
+  {
+   "id": "W5-17",
+   "wave": 5,
+   "size": "L",
+   "title": "Meetings workspace UI",
+   "depends_on": [
+    "W2-08",
+    "W4-22"
+   ],
+   "unmet_deps": [
+    "W2-08",
+    "W4-22"
+   ],
+   "status": "blocked"
+  },
+  {
+   "id": "W5-18",
+   "wave": 5,
+   "size": "L",
+   "title": "Timeline and search window v2",
+   "depends_on": [
+    "W3-02",
+    "W4-22"
+   ],
+   "unmet_deps": [
+    "W3-02",
+    "W4-22"
+   ],
+   "status": "blocked"
+  },
+  {
+   "id": "W5-19",
+   "wave": 5,
+   "size": "L",
+   "title": "Settings navigation v2, general, AI features, permissions",
+   "depends_on": [
+    "W4-22",
+    "W4-20"
+   ],
+   "unmet_deps": [
+    "W4-22",
+    "W4-20"
+   ],
+   "status": "blocked"
+  },
+  {
+   "id": "W5-20",
+   "wave": 5,
+   "size": "L",
+   "title": "Screen and audio settings",
+   "depends_on": [
+    "W3-14",
+    "W3-15",
+    "W4-22"
+   ],
+   "unmet_deps": [
+    "W3-14",
+    "W3-15",
+    "W4-22"
+   ],
+   "status": "blocked"
+  },
+  {
+   "id": "W5-21",
+   "wave": 5,
+   "size": "M",
+   "title": "Deep links v2",
+   "depends_on": [
+    "W4-22"
+   ],
+   "unmet_deps": [
+    "W4-22"
+   ],
+   "status": "blocked"
+  },
+  {
+   "id": "W5-22",
+   "wave": 5,
+   "size": "M",
+   "title": "Viewer, permission recovery and help refresh",
+   "depends_on": [
+    "W2-26",
+    "W4-22"
+   ],
+   "unmet_deps": [
+    "W2-26",
+    "W4-22"
+   ],
+   "status": "blocked"
+  },
+  {
+   "id": "W5-23",
+   "wave": 5,
+   "size": "L",
+   "title": "Connections UI catalogue",
+   "depends_on": [
+    "W3-19",
+    "W3-20",
+    "W3-21",
+    "W4-18"
+   ],
+   "unmet_deps": [
+    "W3-19",
+    "W3-20",
+    "W3-21",
+    "W4-18"
+   ],
+   "status": "blocked"
+  },
+  {
+   "id": "WR-02",
+   "wave": 5,
+   "size": "L",
+   "title": "Sync and archive to bring-your-own storage",
+   "depends_on": [
+    "W0-08",
+    "W4-10"
+   ],
+   "unmet_deps": [
+    "W0-08",
+    "W4-10"
+   ],
+   "status": "blocked"
+  },
+  {
+   "id": "W6-01",
+   "wave": 6,
+   "size": "XL",
+   "title": "ACP presets and coding-agent chat UI",
+   "depends_on": [
+    "W4-03",
+    "W5-15"
+   ],
+   "unmet_deps": [
+    "W4-03",
+    "W5-15"
+   ],
+   "status": "blocked"
+  },
+  {
+   "id": "W6-02",
+   "wave": 6,
+   "size": "M",
+   "title": "Run destinations and conversation continuity",
+   "depends_on": [
+    "W5-01"
+   ],
+   "unmet_deps": [
+    "W5-01"
+   ],
+   "status": "blocked"
+  },
+  {
+   "id": "W6-03",
+   "wave": 6,
+   "size": "L",
+   "title": "Connection-source pipe triggers",
+   "depends_on": [
+    "W4-02",
+    "W3-19",
+    "W3-20",
+    "W2-21"
+   ],
+   "unmet_deps": [
+    "W4-02",
+    "W3-19",
+    "W3-20",
+    "W2-21"
+   ],
+   "status": "blocked"
+  },
+  {
+   "id": "W6-04",
+   "wave": 6,
+   "size": "L",
+   "title": "External chat import and chat-control broker",
+   "depends_on": [
+    "W5-15"
+   ],
+   "unmet_deps": [
+    "W5-15"
+   ],
+   "status": "blocked"
+  },
+  {
+   "id": "W6-05",
+   "wave": 6,
+   "size": "XL",
+   "title": "Meeting piggyback (smart recording)",
+   "depends_on": [
+    "W5-04",
+    "W4-12",
+    "W4-16"
+   ],
+   "unmet_deps": [
+    "W5-04",
+    "W4-12",
+    "W4-16"
+   ],
+   "status": "blocked"
+  },
+  {
+   "id": "W6-06",
+   "wave": 6,
+   "size": "XL",
+   "title": "Hybrid bulk column archival and screenpipe_elements virtual table",
+   "depends_on": [
+    "W5-07"
+   ],
+   "unmet_deps": [
+    "W5-07"
+   ],
+   "status": "blocked"
+  },
+  {
+   "id": "W6-07",
+   "wave": 6,
+   "size": "XL",
+   "title": "Workflows workspace UI",
+   "depends_on": [
+    "W4-01",
+    "W4-22"
+   ],
+   "unmet_deps": [
+    "W4-01",
+    "W4-22"
+   ],
+   "status": "blocked"
+  },
+  {
+   "id": "W6-08",
+   "wave": 6,
+   "size": "L",
+   "title": "Workflow ready-to-review notifications",
+   "depends_on": [
+    "W4-01",
+    "W3-18"
+   ],
+   "unmet_deps": [
+    "W4-01",
+    "W3-18"
+   ],
+   "status": "blocked"
+  },
+  {
+   "id": "W6-09",
+   "wave": 6,
+   "size": "L",
+   "title": "Video render CLI mode and Pi video-sop extension",
+   "depends_on": [
+    "W5-10",
+    "W2-27"
+   ],
+   "unmet_deps": [
+    "W5-10",
+    "W2-27"
+   ],
+   "status": "blocked"
+  },
+  {
+   "id": "W6-10",
+   "wave": 6,
+   "size": "M",
+   "title": "Workflow-to-skill drafting",
+   "depends_on": [
+    "W4-01",
+    "W3-24",
+    "W3-25"
+   ],
+   "unmet_deps": [
+    "W4-01",
+    "W3-24",
+    "W3-25"
+   ],
+   "status": "blocked"
+  },
+  {
+   "id": "W6-11",
+   "wave": 6,
+   "size": "L",
+   "title": "Built-in MCP server v0.20 and portable MCP launcher",
+   "depends_on": [
+    "W4-01",
+    "W2-03",
+    "W5-01"
+   ],
+   "unmet_deps": [
+    "W4-01",
+    "W2-03",
+    "W5-01"
+   ],
+   "status": "blocked"
+  },
+  {
+   "id": "W6-12",
+   "wave": 6,
+   "size": "XL",
+   "title": "Live Views dashboards UI",
+   "depends_on": [
+    "W4-11",
+    "W5-16"
+   ],
+   "unmet_deps": [
+    "W4-11",
+    "W5-16"
+   ],
+   "status": "blocked"
+  },
+  {
+   "id": "W6-13",
+   "wave": 6,
+   "size": "L",
+   "title": "Activity view UI",
+   "depends_on": [
+    "W5-12",
+    "W3-04"
+   ],
+   "unmet_deps": [
+    "W5-12",
+    "W3-04"
+   ],
+   "status": "blocked"
+  },
+  {
+   "id": "W6-14",
+   "wave": 6,
+   "size": "M",
+   "title": "Recording status popover and first-run guide",
+   "depends_on": [
+    "W3-30",
+    "W2-11",
+    "W4-22"
+   ],
+   "unmet_deps": [
+    "W3-30",
+    "W2-11",
+    "W4-22"
+   ],
+   "status": "blocked"
+  },
+  {
+   "id": "W6-15",
+   "wave": 6,
+   "size": "L",
+   "title": "Privacy settings v2",
+   "depends_on": [
+    "W3-13",
+    "W3-10",
+    "W4-15"
+   ],
+   "unmet_deps": [
+    "W3-13",
+    "W3-10",
+    "W4-15"
+   ],
+   "status": "blocked"
+  },
+  {
+   "id": "W6-16",
+   "wave": 6,
+   "size": "L",
+   "title": "Onboarding v2",
+   "depends_on": [
+    "W5-01",
+    "W4-22"
+   ],
+   "unmet_deps": [
+    "W5-01",
+    "W4-22"
+   ],
+   "status": "blocked"
+  },
+  {
+   "id": "W6-17",
+   "wave": 6,
+   "size": "L",
+   "title": "Automations (pipes) UI v2",
+   "depends_on": [
+    "W5-01"
+   ],
+   "unmet_deps": [
+    "W5-01"
+   ],
+   "status": "blocked"
+  },
+  {
+   "id": "W6-18",
+   "wave": 6,
+   "size": "L",
+   "title": "Right sidebar: multi-tab owned browser, files, connections",
+   "depends_on": [
+    "W5-15"
+   ],
+   "unmet_deps": [
+    "W5-15"
+   ],
+   "status": "blocked"
+  },
+  {
+   "id": "W6-19",
+   "wave": 6,
+   "size": "L",
+   "title": "Shortcut overlay v2 (webview)",
+   "depends_on": [
+    "W5-14",
+    "W3-07",
+    "W3-29"
+   ],
+   "unmet_deps": [
+    "W5-14",
+    "W3-07",
+    "W3-29"
+   ],
+   "status": "blocked"
+  },
+  {
+   "id": "WR-01",
+   "wave": 6,
+   "size": "L",
+   "title": "Pipe store on a GitHub-hosted registry",
+   "depends_on": [
+    "W0-08",
+    "W2-22",
+    "W5-01"
+   ],
+   "unmet_deps": [
+    "W0-08",
+    "W2-22",
+    "W5-01"
+   ],
+   "status": "blocked"
+  },
+  {
+   "id": "WR-03",
+   "wave": 6,
+   "size": "XL",
+   "title": "Freenpipe Hub: self-hostable team server and team client",
+   "depends_on": [
+    "W0-05",
+    "W3-02",
+    "W4-10",
+    "W5-16"
+   ],
+   "unmet_deps": [
+    "W0-05",
+    "W3-02",
+    "W4-10",
+    "W5-16"
+   ],
+   "status": "blocked"
+  },
+  {
+   "id": "W7-01",
+   "wave": 7,
+   "size": "XL",
+   "title": "Storage migration lifecycle (SQLite to hybrid)",
+   "depends_on": [
+    "W6-06"
+   ],
+   "unmet_deps": [
+    "W6-06"
+   ],
+   "status": "blocked"
+  },
+  {
+   "id": "W7-02",
+   "wave": 7,
+   "size": "XL",
+   "title": "Hybrid compact, sparse reclaim, backup bundle and retention strip",
+   "depends_on": [
+    "W6-06",
+    "W3-09"
+   ],
+   "unmet_deps": [
+    "W6-06",
+    "W3-09"
+   ],
+   "status": "blocked"
+  },
+  {
+   "id": "W7-03",
+   "wave": 7,
+   "size": "L",
+   "title": "SOP video project workspace and gate removal",
+   "depends_on": [
+    "W6-07",
+    "W6-09"
+   ],
+   "unmet_deps": [
+    "W6-07",
+    "W6-09"
+   ],
+   "status": "blocked"
+  },
+  {
+   "id": "W7-04",
+   "wave": 7,
+   "size": "L",
+   "title": "Native Win32 shortcut overlay pill",
+   "depends_on": [
+    "W6-19"
+   ],
+   "unmet_deps": [
+    "W6-19"
+   ],
+   "status": "blocked"
+  },
+  {
+   "id": "W7-05",
+   "wave": 7,
+   "size": "M",
+   "title": "Chat composer upgrades",
+   "depends_on": [
+    "W6-01"
+   ],
+   "unmet_deps": [
+    "W6-01"
+   ],
+   "status": "blocked"
+  },
+  {
+   "id": "W7-06",
+   "wave": 7,
+   "size": "L",
+   "title": "First-run summary",
+   "depends_on": [
+    "W5-12",
+    "W6-01"
+   ],
+   "unmet_deps": [
+    "W5-12",
+    "W6-01"
+   ],
+   "status": "blocked"
+  },
+  {
+   "id": "W7-07",
+   "wave": 7,
+   "size": "L",
+   "title": "Agent worktrees and per-chat coding workspace",
+   "depends_on": [
+    "W6-01",
+    "W6-04"
+   ],
+   "unmet_deps": [
+    "W6-01",
+    "W6-04"
+   ],
+   "status": "blocked"
+  },
+  {
+   "id": "W7-08",
+   "wave": 7,
+   "size": "L",
+   "title": "Built-in pipe catalogue and builtin text migrations",
+   "depends_on": [
+    "W6-03",
+    "W4-01",
+    "W3-06"
+   ],
+   "unmet_deps": [
+    "W6-03",
+    "W4-01",
+    "W3-06"
+   ],
+   "status": "blocked"
+  },
+  {
+   "id": "WR-04",
+   "wave": 7,
+   "size": "L",
+   "title": "Composio integrations (BYO key) and workflow sharing",
+   "depends_on": [
+    "W2-20",
+    "W6-07",
+    "WR-01"
+   ],
+   "unmet_deps": [
+    "W2-20",
+    "W6-07",
+    "WR-01"
+   ],
+   "status": "blocked"
+  },
+  {
+   "id": "W8-01",
+   "wave": 8,
+   "size": "XL",
+   "title": "Rich chat blocks and local feedback UI",
+   "depends_on": [
+    "W7-05",
+    "W2-03"
+   ],
+   "unmet_deps": [
+    "W7-05",
+    "W2-03"
+   ],
+   "status": "blocked"
+  },
+  {
+   "id": "W8-02",
+   "wave": 8,
+   "size": "L",
+   "title": "Storage and retention settings UI with migration overlays",
+   "depends_on": [
+    "W7-01",
+    "W7-02",
+    "W3-09",
+    "W4-10"
+   ],
+   "unmet_deps": [
+    "W7-01",
+    "W7-02",
+    "W3-09",
+    "W4-10"
+   ],
+   "status": "blocked"
+  },
+  {
+   "id": "W8-03",
+   "wave": 8,
+   "size": "L",
+   "title": "Tauri command/event surface audit, ACL and release readiness",
+   "depends_on": [
+    "W8-01",
+    "W8-02",
+    "W7-01",
+    "W7-02",
+    "W7-03",
+    "W7-04",
+    "W7-05",
+    "W7-06",
+    "W7-07",
+    "W7-08"
+   ],
+   "unmet_deps": [
+    "W8-01",
+    "W8-02",
+    "W7-01",
+    "W7-02",
+    "W7-03",
+    "W7-04",
+    "W7-05",
+    "W7-06",
+    "W7-07",
+    "W7-08"
+   ],
+   "status": "blocked"
+  }
+ ]
+}
