@@ -25,6 +25,18 @@ use screenpipe_engine::{
 use tokio::sync::Notify;
 use tracing::{error, info, warn};
 
+/// Environment variable screenpipe uses to tell the engine and its child
+/// processes (pipes, agents) how the app's startup account check resolved.
+pub const STARTUP_AUTH_STATUS_ENV: &str = "SCREENPIPE_STARTUP_AUTHENTICATION_STATUS";
+/// Freenpipe has no account check, so the status is always "not required".
+pub const STARTUP_AUTH_NOT_REQUIRED: &str = "not_required";
+
+/// Publish the startup-auth status before the engine and pipes start, so
+/// they and every child process inherit it. No network is involved.
+pub fn export_startup_auth_status() {
+    std::env::set_var(STARTUP_AUTH_STATUS_ENV, STARTUP_AUTH_NOT_REQUIRED);
+}
+
 /// Shared references that survive capture start/stop cycles.
 /// The HTTP server, pipes, and DB live here.
 pub struct ServerCore {
@@ -94,6 +106,8 @@ impl ServerCore {
             std::env::set_var("HF_ENDPOINT", "https://hf-mirror.com");
             info!("Using Chinese HuggingFace mirror");
         }
+
+        export_startup_auth_status();
 
         // Audio transcription provider config is passed directly into
         // AudioManagerOptions. Do not use process env here: Deepgram used to
@@ -894,5 +908,23 @@ impl ServerCore {
             Ok(Err(e)) => warn!("Audio manager shutdown error: {:?}", e),
             Err(_) => warn!("Audio manager shutdown timed out after 15s"),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn startup_auth_status_is_exported_as_not_required() {
+        export_startup_auth_status();
+        assert_eq!(
+            std::env::var(STARTUP_AUTH_STATUS_ENV).as_deref(),
+            Ok("not_required")
+        );
+        assert_eq!(
+            STARTUP_AUTH_STATUS_ENV,
+            "SCREENPIPE_STARTUP_AUTHENTICATION_STATUS"
+        );
     }
 }

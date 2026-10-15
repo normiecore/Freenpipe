@@ -12,9 +12,6 @@ import React, { createContext, useContext, useEffect, useRef, useState } from "r
 import posthog from "posthog-js";
 import { User } from "../utils/tauri";
 import { SettingsStore } from "../utils/tauri";
-import { installAuthInterceptor } from "../auth-guard";
-import { normalizeAppUser } from "@/lib/app-entitlement";
-import { screenpipeWebUrl } from "@/lib/web-url";
 import type { SourceCitation } from "@/lib/source-citations";
 import type {
 	EnterpriseAppUpdatePolicy,
@@ -1002,91 +999,9 @@ export const SettingsProvider: React.FC<{ children: React.ReactNode }> = ({ chil
 		};
 	}, []);
 
-	// Install global fetch interceptor to catch 401s from screenpi.pe
-	const settingsRef = useRef(settings);
-	settingsRef.current = settings;
-
-	// Monotonic auth generation, bumped on every explicit sign-out. A
-	// loadUser() call snapshots this at entry; if a sign-out bumps it while the
-	// network request is still in flight, loadUser refuses to write the user
-	// back. Without this, a slow refresh that started before the user clicked
-	// "logout" resurrects the just-cleared session — the user had to click
-	// logout twice. Regression test: e2e/specs/zz-logout-resurrect.spec.ts.
-	const authGenerationRef = useRef(0);
-
-	useEffect(() => {
-		installAuthInterceptor(
-			() => settingsRef.current.user?.token ?? undefined,
-			async () => {
-				await updateSettings({ user: null as any });
-				// Mirror the sign-out into the sidecar so the pi-agent and
-				// cloud_proxy.rs stop sending the now-revoked token on the
-				// next pipe run.
-				try {
-					await commands.setCloudToken(null);
-				} catch (e) {
-					console.warn("failed to clear cloud token in sidecar:", e);
-				}
-			}
-		);
-	}, []); // eslint-disable-line react-hooks/exhaustive-deps
-
-	// Cross-window sign-out: when any window broadcasts a sign-out (logout
-	// button or 401 interceptor), bump THIS window's auth generation so an
-	// in-flight loadUser here also aborts instead of writing the user back
-	// into the shared store. Pairs with the emit() in updateSettings.
-	useEffect(() => {
-		const unlistenPromise = listen("screenpipe-auth-signout", () => {
-			authGenerationRef.current += 1;
-		});
-		return () => {
-			unlistenPromise.then((un) => un()).catch(() => {});
-		};
-	}, []);
-
-	// Auto-refresh user data from API when app starts with a stored token.
-	// This ensures subscription status (cloud_subscribed) stays current —
-	// e.g. when a subscription is granted after the user last logged in.
-	// Retries with exponential backoff so transient network failures don't
-	// leave the user stuck on a stale tier for the entire session.
-	useEffect(() => {
-		if (!isSettingsLoaded) return;
-		const token = settings.user?.token;
-		if (!token) return;
-
-		let cancelled = false;
-		const MAX_RETRIES = 3;
-		const BASE_DELAY_MS = 2000; // 2s, 4s, 8s
-
-		const attemptLoad = async () => {
-			for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
-				if (cancelled) return;
-				try {
-					await loadUser(token);
-					return; // success
-				} catch (err) {
-					// Don't retry on auth errors — the interceptor handles sign-out
-					const msg = err instanceof Error ? err.message : String(err);
-					if (msg.includes("401") || msg.includes("403")) {
-						console.warn("auto-refresh: token rejected, stopping retries");
-						return;
-					}
-					console.warn(
-						`auto-refresh user data failed (attempt ${attempt + 1}/${MAX_RETRIES + 1}):`,
-						err
-					);
-					if (attempt < MAX_RETRIES && !cancelled) {
-						const delay = BASE_DELAY_MS * Math.pow(2, attempt);
-						await new Promise((r) => setTimeout(r, delay));
-					}
-				}
-			}
-		};
-
-		attemptLoad();
-		return () => { cancelled = true; };
-		// eslint-disable-next-line react-hooks/exhaustive-deps
-	}, [isSettingsLoaded, settings.user?.token]);
+	// No account session lives here: Freenpipe never verifies a token against
+	// a website, never refreshes a cached user and installs no fetch
+	// interceptor. See loadUser below.
 
 	// Identify the user in PostHog. When a Clerk-authenticated user is present,
 	// we identify by clerk_id (matches the web's identify call), so PostHog
@@ -1177,20 +1092,6 @@ export const SettingsProvider: React.FC<{ children: React.ReactNode }> = ({ chil
 	}, [settings.fontSize]);
 
 	const updateSettings = async (updates: Partial<Settings>) => {
-		// Sign-out (user → null) must invalidate any loadUser() request that is
-		// currently in flight so the cleared session can't be resurrected when a
-		// slow refresh resolves afterwards. Bump synchronously — before the first
-		// await — so even the logout button's fire-and-forget call wins the race.
-		if ("user" in updates && !updates.user) {
-			authGenerationRef.current += 1;
-			// Broadcast to the other windows. Each non-overlay window has its own
-			// SettingsProvider + DeeplinkHandler, so a login's deep-link fires a
-			// loadUser in EVERY window. Without this, a logout in this window
-			// wouldn't invalidate an in-flight loadUser in another window, which
-			// would write the user back into the shared store and resurrect the
-			// session. Fire-and-forget; the listener above bumps each window's ref.
-			emit("screenpipe-auth-signout").catch(() => {});
-		}
 		await settingsStore.set(updates);
 		// Settings will be updated via the listener
 
@@ -1235,78 +1136,11 @@ export const SettingsProvider: React.FC<{ children: React.ReactNode }> = ({ chil
 		return `${homeDirPath}/.screenpipe`;
 	};
 
-	const loadUser = async (token: string, verify = false) => {
-		// Snapshot the auth generation at the start of the request. If the user
-		// signs out while this fetch is in flight, the generation changes and we
-		// abort the write below instead of resurrecting the cleared session.
-		const generation = authGenerationRef.current;
-		try {
-			const userUrl = screenpipeWebUrl("/api/user");
-			if (!userUrl) return; // no website configured: nothing to verify against
-			const response = await fetch(userUrl, {
-				method: "POST",
-				headers: {
-					"Content-Type": "application/json",
-				},
-				// verify=true asks the server to consult Stripe directly (used by the
-				// entitlement gate right after purchase); normal polls omit it to keep
-				// the hot path off Stripe.
-				body: JSON.stringify({ token, ...(verify ? { verify: true } : {}) }),
-			});
-
-			if (!response.ok) {
-				const body = await response.text().catch(() => "<no body>");
-				throw new Error(`failed to verify token: ${response.status} ${response.statusText} - ${body}`);
-			}
-
-			const data = await response.json();
-			const userData = normalizeAppUser(data.user, token) as User;
-
-			// The user signed out while this request was in flight — writing
-			// userData now would resurrect the cleared session (the "logout needs
-			// two clicks" bug). Abort silently; the sign-out already won.
-			if (authGenerationRef.current !== generation) {
-				console.log("loadUser: sign-out during fetch — not restoring session");
-				return;
-			}
-
-			// if user was not logged in, send posthog event and bridge identity
-			if (!settings.user?.id) {
-				posthog.capture("app_login", {
-					email: userData.email,
-				});
-				// Bridge app identity → website identity via email alias
-				// This merges the anonymous app profile with any website profile
-				// that used the same email during checkout
-				if (userData.email) {
-					posthog.alias(userData.email);
-					posthog.people?.set({
-						email: userData.email,
-						app_user_id: userData.id,
-						login_source: "app",
-					});
-				}
-			}
-
-			await updateSettings({ user: userData });
-
-			// Push the fresh token into the running sidecar so the
-			// `Server.cloud_token` (used by /v1/chat/completions proxy) and
-			// the `PiExecutor.user_token` (used by pi-agent's models.json
-			// apiKey) both pick up the new value on the next pipe run.
-			// Without this, sign-in only updates the webview's settings —
-			// the engine keeps whatever token it captured at boot (often
-			// `null`), and every Sonnet/Opus pipe 403s on tier=anonymous.
-			try {
-				await commands.setCloudToken(token);
-			} catch (e) {
-				console.warn("failed to push cloud token to sidecar:", e);
-			}
-		} catch (err) {
-			console.error("failed to load user:", err instanceof Error ? err.message : err);
-			throw err;
-		}
-	};
+	// screenpipe verified the token against its website here and cached the
+	// account it returned. Freenpipe has no hosted account, so loadUser keeps
+	// its signature for existing callers but resolves at once: no network
+	// call, no write to the stored user, no token pushed to the engine.
+	const loadUser = async (_token: string, _verify = false) => {};
 
 	const value: SettingsContextType = {
 		settings,

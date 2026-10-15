@@ -13,6 +13,7 @@ import { listen, emit } from "@tauri-apps/api/event";
 import { onOpenUrl } from "@tauri-apps/plugin-deep-link";
 import { openSettingsWindow } from "@/lib/utils/window";
 import { useTimelineStore } from "@/lib/hooks/use-timeline-store";
+import { isAccountDeepLink } from "@/lib/account-deep-link";
 import {
   openScreenpipeViewerLink,
   screenpipeViewerPathFromHref,
@@ -22,7 +23,7 @@ export function DeeplinkHandler() {
   const { toast } = useToast();
   const { setShowChangelogDialog } = useChangelogDialog();
   const { open: openStatusDialog } = useStatusDialog();
-  const { loadUser, reloadStore } = useSettings();
+  const { reloadStore } = useSettings();
   const setPendingNavigation = useTimelineStore((s) => s.setPendingNavigation);
 
   useEffect(() => {
@@ -45,61 +46,13 @@ export function DeeplinkHandler() {
     const processDeepLinkUrl = async (url: string) => {
       const parsedUrl = new URL(url);
 
-      // Handle API key auth
-      if (url.includes("api_key=")) {
-        const apiKey = parsedUrl.searchParams.get("api_key");
-        if (apiKey) {
-          try {
-            await loadUser(apiKey);
-            toast({
-              title: "logged in!",
-              description: "you have been logged in",
-            });
-            // Notify the chat UI to restart Pi with the new token so it
-            // picks up the new account immediately. The chat component knows
-            // the active session ID; we just pass the key.
-            try {
-              await emit("pi-reauth", { apiKey });
-              console.log("[deeplink] emitted pi-reauth with new auth token");
-            } catch (e) {
-              console.log("[deeplink] pi-reauth emit skipped:", e);
-            }
-          } catch (error) {
-            const msg = error instanceof Error ? error.message : String(error);
-            console.error("failed to load user:", msg);
-            toast({
-              title: "failed to load user",
-              description: msg || "unknown error",
-            });
-          }
-        }
-      }
-
-      // Handle subscription activation deep link.
-      // Louis's email/success page can include:
-      //   screenpipe://subscription-success?purchase_token=<token>
-      // This lets existing app users activate pro without re-logging in.
-      if (
-        parsedUrl.host === "subscription-success" ||
-        parsedUrl.pathname?.includes("subscription-success")
-      ) {
-        const purchaseToken = parsedUrl.searchParams.get("purchase_token");
-        if (purchaseToken) {
-          try {
-            await loadUser(purchaseToken);
-            toast({
-              title: "welcome to screenpipe pro!",
-              description: "your subscription is now active",
-            });
-          } catch (error) {
-            const msg = error instanceof Error ? error.message : String(error);
-            toast({
-              title: "activation failed",
-              description: msg || "try logging out and back in",
-              variant: "destructive",
-            });
-          }
-        }
+      // Account links from screenpipe's website (sign-in `?api_key=`,
+      // subscription-success, purchase-successful) carry nothing Freenpipe
+      // can use: there is no hosted account or plan. Drop them without
+      // reading their tokens.
+      if (isAccountDeepLink(parsedUrl)) {
+        console.log("[deeplink] ignoring account/billing link; Freenpipe has no hosted account");
+        return;
       }
 
       // Handle Google Calendar OAuth callback
@@ -326,7 +279,7 @@ export function DeeplinkHandler() {
         unsubscribes.forEach((unsubscribe) => unsubscribe());
       });
     };
-  }, [toast, setShowChangelogDialog, openStatusDialog, loadUser, reloadStore, setPendingNavigation]);
+  }, [toast, setShowChangelogDialog, openStatusDialog, reloadStore, setPendingNavigation]);
 
   return null; // This component doesn't render anything
 } 

@@ -120,7 +120,6 @@ import posthog from "posthog-js";
 import { Language } from "@/lib/language";
 import { open } from "@tauri-apps/plugin-dialog";
 import { ToastAction } from "@/components/ui/toast";
-import { open as openUrl } from "@tauri-apps/plugin-shell";
 import { listen } from "@tauri-apps/api/event";
 import { getMediaFile } from "@/lib/actions/video-actions";
 import { Dialog, DialogContent, DialogTitle, DialogDescription } from "@/components/ui/dialog";
@@ -1835,7 +1834,6 @@ export function RecordingSettings() {
   const [showApiKey, setShowApiKey] = useState(false);
   const [showOpenAIApiKey, setShowOpenAIApiKey] = useState(false);
   const [isRefreshingSubscription, setIsRefreshingSubscription] = useState(false);
-  const { checkLogin } = useLoginDialog();
   const overlayData = useOverlayData();
   const [hwCapability, setHwCapability] = useState<HardwareCapability | null>(null);
 
@@ -2183,38 +2181,7 @@ export function RecordingSettings() {
     value: string,
     realtime = false
   ) => {
-    const isLoggedIn = checkLogin(settings.user);
-    // If trying to use cloud but not logged in
-    if (value === "screenpipe-cloud" && !isLoggedIn) {
-      return;
-    }
-
-    // If trying to use cloud but not subscribed
-    if (value === "screenpipe-cloud" && !settings.user?.cloud_subscribed) {
-      try {
-        const response = await fetch("https://screenpi.pe/api/cloud-sync/checkout", {
-          method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-            "Authorization": `Bearer ${settings.user?.token}`,
-          },
-          body: JSON.stringify({
-            tier: "pro",
-            billingPeriod: "monthly",
-            userId: settings.user?.id,
-            email: settings.user?.email,
-          }),
-        });
-        const data = await response.json();
-        openUrl(data.url || "https://screenpipe.com/billing");
-      } catch {
-        openUrl("https://screenpipe.com/billing");
-      }
-      // Revert back to previous value in the Select component
-      return;
-    }
-
-    // Only proceed with the change if all checks pass
+    // No login or plan check: every engine choice is the user's to make.
     const newSettings = realtime
       ? { realtimeAudioTranscriptionEngine: value }
       : { audioTranscriptionEngine: value };
@@ -2545,8 +2512,8 @@ Your screen is a pipe. Everything you see, hear, and type flows through it. Scre
                   <SelectContent>
                     <SelectGroup>
                       <SelectLabel className="text-[10px] text-muted-foreground/70 uppercase tracking-wider">cloud</SelectLabel>
-                      <SelectItem value="screenpipe-cloud" disabled={!settings.user?.cloud_subscribed}>
-                        Screenpipe Cloud {!settings.user?.cloud_subscribed && "(pro)"}{hwCapability?.recommendedEngine === "screenpipe-cloud" && " ★"}
+                      <SelectItem value="screenpipe-cloud">
+                        Screenpipe Cloud{hwCapability?.recommendedEngine === "screenpipe-cloud" && " ★"}
                       </SelectItem>
                       <SelectItem value="deepgram">Deepgram</SelectItem>
                     </SelectGroup>
@@ -2594,30 +2561,6 @@ Your screen is a pipe. Everything you see, hear, and type flows through it. Scre
                     </div>
                   </div>
                   <div className="flex flex-wrap gap-2 pt-1">
-                    {audioEngineResolution.fallbackReason === "notLoggedIn" && (
-                      <Button
-                        type="button"
-                        variant="outline"
-                        size="sm"
-                        className="h-7 px-2 text-xs"
-                        data-testid="audio-engine-fallback-login"
-                        onClick={() => checkLogin(settings.user)}
-                      >
-                        Log in
-                      </Button>
-                    )}
-                    {audioEngineResolution.fallbackReason === "notSubscribed" && (
-                      <Button
-                        type="button"
-                        variant="outline"
-                        size="sm"
-                        className="h-7 px-2 text-xs"
-                        data-testid="audio-engine-fallback-upgrade"
-                        onClick={() => openUrl("https://screenpipe.com/billing")}
-                      >
-                        Upgrade
-                      </Button>
-                    )}
                     <Button
                       type="button"
                       variant="outline"

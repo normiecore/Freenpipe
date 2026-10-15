@@ -6,9 +6,9 @@ and layer declared in the manifest, weighted by confidence and criticality.
 
 - Manifest: `e2e/coverage-map.json`
 - Specs directory: `e2e/specs`
-- Mapped specs: 46
-- Declared test blocks: 155
-- Weighted coverage points: 122.1
+- Mapped specs: 45
+- Declared test blocks: 154
+- Weighted coverage points: 121.1
 
 Confidence weights: strong=1.0, partial=0.7, conditional=0.4, smoke=0.3.
 Criticality weights: high=1.0, medium=0.7, low=0.4.
@@ -19,9 +19,9 @@ can execute more runtime cases than this number shows.
 
 | Platform | Specs | Declared tests | Weighted points | Layers | Features | Critical score |
 | --- | --- | --- | --- | --- | --- | --- |
-| windows | 39 | 144 | 118.7 | 15 | 46 | 92% |
-| macos | 43 | 121 | 94.7 | 15 | 47 | 89% |
-| linux | 33 | 109 | 91.1 | 13 | 43 | 86% |
+| windows | 38 | 143 | 117.7 | 14 | 43 | 92% |
+| macos | 42 | 120 | 93.7 | 14 | 44 | 89% |
+| linux | 32 | 108 | 90.1 | 12 | 40 | 86% |
 
 ## Runtime Results
 
@@ -34,7 +34,6 @@ pass/fail/skip counts.
 | Layer | windows | macos | linux |
 | --- | --- | --- | --- |
 | audio-device | 2 specs / 26 tests / 19.4 pts | 1 specs / 1 tests / 0.3 pts | - |
-| billing | 1 specs / 1 tests / 1.0 pts | 1 specs / 1 tests / 1.0 pts | 1 specs / 1 tests / 1.0 pts |
 | capture-ocr | 2 specs / 13 tests / 5.2 pts | 2 specs / 3 tests / 1.2 pts | 1 specs / 2 tests / 0.8 pts |
 | chat-ai | 7 specs / 7 tests / 3.9 pts | 9 specs / 10 tests / 4.8 pts | 7 specs / 7 tests / 3.9 pts |
 | local-api | 10 specs / 78 tests / 66.1 pts | 9 specs / 53 tests / 47.1 pts | 8 specs / 52 tests / 46.7 pts |
@@ -43,8 +42,8 @@ pass/fail/skip counts.
 | os-integration | 3 specs / 16 tests / 15.1 pts | 3 specs / 3 tests / 0.9 pts | - |
 | performance | 2 specs / 43 tests / 43.0 pts | 4 specs / 33 tests / 29.5 pts | 1 specs / 28 tests / 28.0 pts |
 | pipes | 1 specs / 8 tests / 8.0 pts | 1 specs / 8 tests / 8.0 pts | 1 specs / 8 tests / 8.0 pts |
-| real-ui-e2e | 21 specs / 75 tests / 61.9 pts | 22 specs / 62 tests / 51.4 pts | 18 specs / 56 tests / 49.5 pts |
-| settings | 8 specs / 25 tests / 23.2 pts | 8 specs / 18 tests / 15.5 pts | 7 specs / 17 tests / 15.2 pts |
+| real-ui-e2e | 20 specs / 74 tests / 60.9 pts | 21 specs / 61 tests / 50.4 pts | 17 specs / 55 tests / 48.5 pts |
+| settings | 7 specs / 24 tests / 22.2 pts | 7 specs / 17 tests / 14.5 pts | 6 specs / 16 tests / 14.2 pts |
 | storage-privacy | 6 specs / 20 tests / 19.1 pts | 5 specs / 12 tests / 11.1 pts | 4 specs / 12 tests / 11.1 pts |
 | tauri-command | 8 specs / 17 tests / 10.3 pts | 9 specs / 19 tests / 10.8 pts | 8 specs / 17 tests / 10.3 pts |
 | window-lifecycle | 16 specs / 60 tests / 51.2 pts | 16 specs / 41 tests / 29.6 pts | 12 specs / 36 tests / 28.1 pts |
@@ -132,7 +131,6 @@ pass/fail/skip counts.
 | windows-core-recording.spec.ts | windows | capture-ocr, local-api, audio-device, real-ui-e2e | capture-ocr, local-api-auth, local-api-search, audio-device-health, timeline | high | conditional | mixed | 11 | Windows recording-enabled lane; hosted runners can skip frame-dependent OCR assertions. |
 | windows-system-integration.spec.ts | windows | os-integration, local-api, audio-device, window-lifecycle, performance | app-launch, local-api-auth, audio-device-health, window-lifecycle, os-process-health, webview-stability | high | strong | mixed | 15 | Windows display, WebView2, loopback, process, Defender, audio, focus, and crash-report checks. |
 | windows-user-journey.spec.ts | windows | real-ui-e2e, settings, notifications, storage-privacy, window-lifecycle | home-search, timeline, settings-recording, meeting-notes, shortcut-reminder, notifications, storage-retention, settings-privacy-api-auth | high | strong | real-user-flow | 8 | Windows-first real UX journey across search, timeline, settings, meetings, notifications, storage, and privacy. |
-| zz-app-entitlement-gate.spec.ts | windows, macos, linux | settings, billing, real-ui-e2e | app-entitlement-gate, billing-gate | high | strong | real-user-flow | 1 | Production billing gate blocks an unentitled session behind the paywall and restores access when the forced-gate flag is cleared. |
-| zz-logout-resurrect.spec.ts | windows, macos, linux | real-ui-e2e, settings | account-logout, auth-session | high | strong | synthetic | 1 | Logout must not be resurrected by an in-flight loadUser. Logs in via a synthetic deep-link (?api_key=) with a mocked /api/user fetch, makes the fetch slow, fires it, then clicks logout while it is pending and asserts the slow response cannot re-write the user (the 'logout needs two clicks' bug). Covers the auth-generation guard in use-settings.tsx. |
+| zz-app-entitlement-gate.spec.ts | windows, macos, linux | settings, real-ui-e2e | no-app-entitlement-gate | high | strong | real-user-flow | 1 | Freenpipe has no billing gate: with screenpipe's old force-gate flag set, the app chrome stays visible, no paywall or sign-in screen appears, and the local API keeps answering. |
 | zz-owned-browser-background-nav.spec.ts | windows, macos | os-integration, window-lifecycle | owned-browser, window-lifecycle | low | smoke | command | 0 | Owned browser background navigation visibility. |
 | zzz-browser-state-chat-switch.spec.ts | windows, macos | real-ui-e2e, storage-privacy | chat, owned-browser | high | strong | synthetic | 0 | Synthetic E2E (zzz- prefix, search-driven): starts from a fresh chat with no conversation file, seeds browser state before the first durable save, then verifies auto-save persists that state and it survives a switch away and back. Keeps native visibility assertions out of this spec because post-zz window state is too brittle; deeper save/merge coverage lives in focused tests. |

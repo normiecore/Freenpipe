@@ -10,6 +10,7 @@ import { Loader2, RefreshCw, LogOut, ExternalLink, FileText, Lock, Plus } from "
 import { commands } from "@/lib/utils/tauri";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import { useSettings } from "@/lib/hooks/use-settings";
+import { hasCloudEntitlement } from "@/lib/app-entitlement";
 import { notifyConnectionsUpdated } from "@/lib/connections-events";
 import posthog from "posthog-js";
 import { localFetch } from "@/lib/api";
@@ -29,7 +30,8 @@ interface DocsAccount {
 
 export function GoogleDocsCard() {
   const { settings } = useSettings();
-  const isPro = !!settings.user?.cloud_subscribed;
+  // Freenpipe has no plans: OAuth integrations are never locked.
+  const isPro = hasCloudEntitlement(settings.user);
   const [accounts, setAccounts] = useState<DocsAccount[]>([]);
   const [isConnecting, setIsConnecting] = useState(false);
   const [disconnecting, setDisconnecting] = useState<string | null>(null);

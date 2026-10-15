@@ -42,8 +42,6 @@ pub fn resolved_api_auth_key() -> Option<String> {
 
 /// Magic header for encrypted store.bin files.
 const STORE_MAGIC: &[u8; 8] = b"SPSTORE1";
-const APP_ENTITLEMENT_MAX_STALE_HOURS: i64 = 72;
-const APP_ENTITLEMENT_CLOCK_SKEW_MINUTES: i64 = 5;
 
 // ---------------------------------------------------------------------------
 // Settings-loss recovery
@@ -516,8 +514,22 @@ impl Default for OnboardingStore {
     }
 }
 
+/// Onboarding steps written by screenpipe's trial/paywall experiment. Freenpipe
+/// has no trial, so it never assigns these; a store that still carries one
+/// (for example one copied over from a screenpipe install) counts as finished.
+const TRIAL_ACTIVATION_STEPS: [&str; 3] = [
+    "trial-activation-v1-summary",
+    "trial-activation-v1-paywall",
+    "trial-activation-v1-unlocked",
+];
+
+pub fn is_trial_activation_step(step: &str) -> bool {
+    TRIAL_ACTIVATION_STEPS.contains(&step)
+}
+
 impl OnboardingStore {
-    pub fn get(app: &AppHandle) -> Result<Option<Self>, String> {
+    /// Read the stored onboarding state exactly as persisted.
+    fn load(app: &AppHandle) -> Result<Option<Self>, String> {
         let store = get_store(app, None).map_err(|e| e.to_string())?;
 
         match store.is_empty() {
@@ -536,6 +548,30 @@ impl OnboardingStore {
         }
     }
 
+    pub fn get(app: &AppHandle) -> Result<Option<Self>, String> {
+        Ok(Self::load(app)?.map(|mut onboarding| {
+            onboarding.retire_trial_step();
+            onboarding
+        }))
+    }
+
+    /// Replace a vendor trial-activation step with a completed onboarding.
+    /// Returns true when the state changed and should be persisted.
+    pub fn retire_trial_step(&mut self) -> bool {
+        let on_trial_step = self
+            .current_step
+            .as_deref()
+            .is_some_and(is_trial_activation_step);
+        if !on_trial_step {
+            return false;
+        }
+        if !self.is_completed {
+            self.complete();
+        }
+        self.current_step = None;
+        true
+    }
+
     pub fn update(
         app: &AppHandle,
         update: impl FnOnce(&mut OnboardingStore),
@@ -546,6 +582,7 @@ impl OnboardingStore {
 
         let mut onboarding = Self::get(app)?.unwrap_or_default();
         update(&mut onboarding);
+        onboarding.retire_trial_step();
         store.set("onboarding", json!(onboarding));
         store.save().map_err(|e| e.to_string())?;
         reencrypt_store_file(app);
@@ -798,6 +835,13 @@ impl Default for AIPreset {
     }
 }
 
+/// Cached screenpipe account record.
+///
+/// Freenpipe has no accounts: it never fetches this record and never gates a
+/// feature on it. The fields are kept, together with the ones newer screenpipe
+/// releases write (`has_payment_method`, `entitlement_source`,
+/// `enterprise_account`), so a `store.bin` produced by screenpipe loads and
+/// saves back without losing data.
 #[derive(Serialize, Deserialize, Type, Clone)]
 #[serde(default)]
 pub struct User {
@@ -820,6 +864,14 @@ pub struct User {
     pub app_entitled: Option<bool>,
     pub subscription_plan: Option<String>,
     pub entitlement: Option<serde_json::Value>,
+    // Field-level `default` also marks these optional in the generated
+    // TypeScript type, so existing `User` literals stay valid.
+    #[serde(default)]
+    pub has_payment_method: Option<bool>,
+    #[serde(default)]
+    pub entitlement_source: Option<String>,
+    #[serde(default)]
+    pub enterprise_account: Option<serde_json::Value>,
 }
 
 impl Default for User {
@@ -844,59 +896,11 @@ impl Default for User {
             app_entitled: None,
             subscription_plan: None,
             entitlement: None,
+            has_payment_method: None,
+            entitlement_source: None,
+            enterprise_account: None,
         }
     }
-}
-
-fn parse_entitlement_time(
-    value: Option<&serde_json::Value>,
-) -> Option<chrono::DateTime<chrono::Utc>> {
-    value
-        .and_then(|value| value.as_str())
-        .and_then(|value| chrono::DateTime::parse_from_rfc3339(value).ok())
-        .map(|value| value.with_timezone(&chrono::Utc))
-}
-
-fn entitlement_checked_recently(entitlement: &serde_json::Value) -> bool {
-    let Some(checked_at) = parse_entitlement_time(entitlement.get("checked_at")) else {
-        return false;
-    };
-
-    let now = chrono::Utc::now();
-    checked_at <= now + chrono::Duration::minutes(APP_ENTITLEMENT_CLOCK_SKEW_MINUTES)
-        && now.signed_duration_since(checked_at)
-            <= chrono::Duration::hours(APP_ENTITLEMENT_MAX_STALE_HOURS)
-}
-
-fn entitlement_active(entitlement: &serde_json::Value) -> bool {
-    entitlement
-        .get("active")
-        .and_then(|active| active.as_bool())
-        .unwrap_or(false)
-}
-
-fn entitlement_has_future_grace(entitlement: &serde_json::Value) -> bool {
-    parse_entitlement_time(entitlement.get("grace_until"))
-        .map(|grace_until| grace_until > chrono::Utc::now())
-        .unwrap_or(false)
-}
-
-fn entitlement_is_lifetime(entitlement: &serde_json::Value) -> bool {
-    let field = |key: &str| {
-        entitlement
-            .get(key)
-            .and_then(|value| value.as_str())
-            .unwrap_or("")
-    };
-    field("plan") == "lifetime" || field("source") == "lifetime"
-}
-
-fn entitlement_feature(entitlement: &serde_json::Value, feature: &str) -> bool {
-    entitlement
-        .get("features")
-        .and_then(|features| features.get(feature))
-        .and_then(|feature| feature.as_bool())
-        .unwrap_or(false)
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Type)]
@@ -1280,38 +1284,11 @@ impl SettingsStore {
         config
     }
 
+    /// Whether this install may record. Freenpipe has no licence or plan, so
+    /// the answer is always yes; the name and signature stay so callers that
+    /// used to consult screenpipe's entitlement keep compiling unchanged.
     pub fn app_entitled_or_dev(&self) -> bool {
-        // Debug builds (`bun tauri dev`, e2e, signed dev builds) are never gated.
-        // Release builds must not be bypassable via a runtime env var.
-        if cfg!(debug_assertions) {
-            return true;
-        }
-
-        // Legacy cloud subscribers keep working during rollout.
-        if self.user.cloud_subscribed == Some(true) {
-            return true;
-        }
-
-        let Some(entitlement) = self.user.entitlement.as_ref() else {
-            return false;
-        };
-
-        let has_app_feature =
-            self.user.app_entitled == Some(true) || entitlement_feature(entitlement, "app");
-        if !has_app_feature {
-            return false;
-        }
-
-        // Perpetual (lifetime) grants and server-issued offline grace windows stay
-        // valid even when the cached entitlement is stale. A local-first app must
-        // not stop recording just because it could not reach the server for a few
-        // days.
-        if entitlement_is_lifetime(entitlement) || entitlement_has_future_grace(entitlement) {
-            return true;
-        }
-
-        // Otherwise require a recent check confirming the plan is still active.
-        entitlement_checked_recently(entitlement) && entitlement_active(entitlement)
+        true
     }
 
     pub fn audio_engine_resolution(&self) -> AudioEngineResolution {
@@ -1459,8 +1436,14 @@ pub fn init_store(app: &AppHandle) -> Result<SettingsStore, String> {
 pub fn init_onboarding_store(app: &AppHandle) -> Result<OnboardingStore, String> {
     println!("Initializing onboarding store");
 
-    let (onboarding, should_save) = match OnboardingStore::get(app) {
-        Ok(Some(onboarding)) => (onboarding, false),
+    let (onboarding, should_save) = match OnboardingStore::load(app) {
+        Ok(Some(mut onboarding)) => {
+            let retired = onboarding.retire_trial_step();
+            if retired {
+                tracing::info!("onboarding: stored trial-activation step treated as complete");
+            }
+            (onboarding, retired)
+        }
         Ok(None) => (OnboardingStore::default(), true),
         Err(e) => {
             // Fallback to defaults when deserialization fails
@@ -1713,6 +1696,173 @@ mod tests {
 
         assert_eq!(resolution.active, "screenpipe-cloud");
         assert_eq!(resolution.fallback_reason, None);
+    }
+
+    // ---- Entitlement gate removal (Freenpipe has no plans) ----
+
+    #[test]
+    fn app_entitled_or_dev_is_always_true() {
+        assert!(SettingsStore::default().app_entitled_or_dev());
+
+        // A signed-out user with no entitlement record.
+        let mut signed_out = SettingsStore::default();
+        signed_out.user = User::default();
+        assert!(signed_out.app_entitled_or_dev());
+
+        // A cached entitlement that screenpipe would have rejected as stale
+        // and inactive must not block recording either.
+        let mut stale = SettingsStore::default();
+        stale.user.app_entitled = Some(false);
+        stale.user.cloud_subscribed = Some(false);
+        stale.user.entitlement = Some(json!({
+            "active": false,
+            "checked_at": "2020-01-01T00:00:00Z",
+            "features": { "app": false }
+        }));
+        assert!(stale.app_entitled_or_dev());
+    }
+
+    /// A store.bin written by screenpipe v2.7.x carries account fields the base
+    /// schema did not know. Loading it and saving it back must keep them.
+    #[test]
+    fn screenpipe_store_bin_user_fields_round_trip() {
+        let tmp = tempfile::tempdir().unwrap();
+        let store_path = write_store(
+            tmp.path(),
+            &json!({
+                "settings": {
+                    "aiPresets": [],
+                    "user": {
+                        "id": "user_123",
+                        "email": "someone@example.com",
+                        "token": "opaque-token",
+                        "cloud_subscribed": true,
+                        "app_entitled": true,
+                        "subscription_plan": "pro_ultra",
+                        "has_payment_method": true,
+                        "entitlement_source": "subscription",
+                        "entitlement": {
+                            "active": true,
+                            "plan": "pro_ultra",
+                            "source": "subscription",
+                            "features": { "app": true, "cloud": true }
+                        },
+                        "enterprise_account": {
+                            "is_screenpipe_user": false,
+                            "team_id": "team_42",
+                            "org_name": "Example Org"
+                        }
+                    }
+                }
+            }),
+        );
+
+        // Load the way the store does: parse the file, take `settings`.
+        let raw: Value = serde_json::from_slice(&std::fs::read(&store_path).unwrap()).unwrap();
+        let settings: SettingsStore =
+            serde_json::from_value(raw.get("settings").cloned().unwrap()).unwrap();
+
+        assert_eq!(
+            settings.user.subscription_plan.as_deref(),
+            Some("pro_ultra")
+        );
+        assert_eq!(settings.user.has_payment_method, Some(true));
+        assert_eq!(
+            settings.user.entitlement_source.as_deref(),
+            Some("subscription")
+        );
+        assert_eq!(
+            settings
+                .user
+                .enterprise_account
+                .as_ref()
+                .and_then(|a| a.get("team_id"))
+                .and_then(|v| v.as_str()),
+            Some("team_42")
+        );
+        // Loading such a store never gates recording.
+        assert!(settings.app_entitled_or_dev());
+
+        // Save it back the way SettingsStore::save does and reload from disk.
+        write_store(tmp.path(), &json!({ "settings": json!(settings) }));
+        let reloaded: Value = serde_json::from_slice(&std::fs::read(&store_path).unwrap()).unwrap();
+        let user = reloaded.pointer("/settings/user").unwrap();
+
+        assert_eq!(user["subscription_plan"], json!("pro_ultra"));
+        assert_eq!(user["has_payment_method"], json!(true));
+        assert_eq!(user["entitlement_source"], json!("subscription"));
+        assert_eq!(
+            user["enterprise_account"],
+            json!({
+                "is_screenpipe_user": false,
+                "team_id": "team_42",
+                "org_name": "Example Org"
+            })
+        );
+        assert_eq!(user["entitlement"]["plan"], json!("pro_ultra"));
+        assert_eq!(user["id"], json!("user_123"));
+    }
+
+    #[test]
+    fn base_store_without_new_user_fields_still_loads() {
+        let settings: SettingsStore = serde_json::from_value(json!({
+            "aiPresets": [],
+            "user": { "id": null, "token": null, "cloud_subscribed": null }
+        }))
+        .unwrap();
+        assert_eq!(settings.user.has_payment_method, None);
+        assert_eq!(settings.user.entitlement_source, None);
+        assert!(settings.user.enterprise_account.is_none());
+    }
+
+    // ---- Trial-activation onboarding steps (never assigned by Freenpipe) ----
+
+    #[test]
+    fn stored_trial_step_counts_as_completed_onboarding() {
+        for step in TRIAL_ACTIVATION_STEPS {
+            let mut onboarding: OnboardingStore = serde_json::from_value(json!({
+                "isCompleted": false,
+                "completedAt": null,
+                "currentStep": step
+            }))
+            .unwrap();
+
+            assert!(onboarding.retire_trial_step(), "{step} should be retired");
+            assert!(onboarding.is_completed, "{step} should complete onboarding");
+            assert!(onboarding.completed_at.is_some());
+            assert_eq!(onboarding.current_step, None);
+        }
+    }
+
+    #[test]
+    fn retiring_trial_step_keeps_original_completion_time() {
+        let mut onboarding = OnboardingStore {
+            is_completed: true,
+            completed_at: Some("2026-01-01T00:00:00+00:00".to_string()),
+            current_step: Some("trial-activation-v1-unlocked".to_string()),
+        };
+        assert!(onboarding.retire_trial_step());
+        assert_eq!(
+            onboarding.completed_at.as_deref(),
+            Some("2026-01-01T00:00:00+00:00")
+        );
+    }
+
+    #[test]
+    fn normal_onboarding_steps_are_left_alone() {
+        for step in ["permissions", "engine", "connect-apps", "pipe", "login"] {
+            let mut onboarding = OnboardingStore {
+                current_step: Some(step.to_string()),
+                ..OnboardingStore::default()
+            };
+            assert!(!onboarding.retire_trial_step());
+            assert!(!onboarding.is_completed);
+            assert_eq!(onboarding.current_step.as_deref(), Some(step));
+        }
+
+        let mut fresh = OnboardingStore::default();
+        assert!(!fresh.retire_trial_step());
+        assert!(!fresh.is_completed);
     }
 
     #[test]

@@ -8,7 +8,6 @@
 //! screenpipe-connect is automatically handled by these commands.
 //! Adding a new OAuth provider requires zero changes here.
 
-use crate::store::SettingsStore;
 use base64::Engine;
 use screenpipe_connect::connections::all_integrations;
 use screenpipe_connect::oauth::{self, PendingOAuth, OAUTH_REDIRECT_URI, PENDING_OAUTH};
@@ -77,17 +76,6 @@ pub async fn oauth_connect(
     let config = integration
         .oauth_config()
         .ok_or_else(|| format!("{} does not use OAuth", integration_id))?;
-
-    // Gate OAuth behind Pro subscription
-    let is_pro = SettingsStore::get(&app_handle)
-        .unwrap_or_default()
-        .unwrap_or_default()
-        .user
-        .cloud_subscribed
-        == Some(true);
-    if !is_pro {
-        return Err("OAuth integrations require a Pro subscription. Please upgrade to connect third-party services.".to_string());
-    }
 
     let state = uuid::Uuid::new_v4().simple().to_string();
     let (tx, rx) = oneshot::channel::<String>();

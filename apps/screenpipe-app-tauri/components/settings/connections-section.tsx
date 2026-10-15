@@ -16,6 +16,7 @@ import { Download, ExternalLink, Check, Loader2, Copy, Terminal, Lock, LogIn, Lo
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
 import { commands } from "@/lib/utils/tauri";
 import { useSettings } from "@/lib/hooks/use-settings";
+import { hasCloudEntitlement } from "@/lib/app-entitlement";
 import { useToast } from "@/components/ui/use-toast";
 import { ensureChatGptPreset } from "@/lib/utils/chatgpt-preset";
 import { notifyConnectionsUpdated } from "@/lib/connections-events";
@@ -2168,7 +2169,8 @@ function OAuthPanel({
   onDisconnected?: () => void;
 }) {
   const { settings } = useSettings();
-  const isPro = !!settings.user?.cloud_subscribed;
+  // Freenpipe has no plans: OAuth integrations are never locked.
+  const isPro = hasCloudEntitlement(settings.user);
   const [status, setStatus] = useState<"idle" | "loading">("idle");
   const [accounts, setAccounts] = useState<OAuthAccount[]>([]);
   const [disconnecting, setDisconnecting] = useState<string | null>(null);

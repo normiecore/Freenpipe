@@ -18,9 +18,9 @@
 //
 // What we assert:
 // 1. On boot, the URL is `/onboarding` — the gate fires.
-// 2. The login slide actually rendered (text contains "screenpipe" + the
-//    tagline) — defensive against the page mounting but a child component
-//    throwing silently.
+// 2. A real onboarding slide rendered (Freenpipe has no sign-in slide, so it
+//    opens on permissions) and nothing asks the user to sign in — defensive
+//    against the page mounting but a child component throwing silently.
 // 3. The home window handle is NOT what we land on first — catches a
 //    regression where the gate redirects but then the home window opens
 //    too, leaving the user with two windows and no clear next step.
@@ -66,17 +66,24 @@ const canRun = !seedFlags.includes("onboarding");
       expect(url.pathname).toBe("/onboarding");
     });
 
-    it("renders the login slide content, not a loading spinner or blank shell", async () => {
+    it("renders onboarding content without a sign-in step", async () => {
       // The page has a top-level isLoading branch that shows only a
       // spinner — guard against the test passing while the user actually
-      // sees nothing useful. Asserting visible text from login-gate.tsx
-      // (the brand wordmark + tagline) catches both "spinner never
-      // resolved" and "login component threw and got unmounted".
-      const bodyText = ((await browser.execute(
-        () => document.body?.innerText || "",
-      )) as string).toLowerCase();
-      expect(bodyText).toContain("screenpipe");
-      expect(bodyText).toContain("ai finally knows what you");
+      // sees nothing useful. The first slide is permissions; on platforms
+      // with nothing to grant it may already have advanced to the engine
+      // slide, so only require some visible text. No slide may ask the
+      // user to sign in: Freenpipe has no account.
+      let bodyText = "";
+      await browser.waitUntil(
+        async () => {
+          bodyText = ((await browser.execute(
+            () => document.body?.innerText || "",
+          )) as string).toLowerCase();
+          return bodyText.trim().length > 0;
+        },
+        { timeout: t(15_000), timeoutMsg: "onboarding rendered no text" },
+      );
+      expect(bodyText).not.toContain("sign in");
     });
 
     it("does not open a home window alongside onboarding", async () => {

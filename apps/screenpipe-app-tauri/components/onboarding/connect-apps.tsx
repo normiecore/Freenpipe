@@ -9,6 +9,7 @@ import { Check, Loader, Lock } from "lucide-react";
 import { motion, AnimatePresence } from "framer-motion";
 import { commands } from "@/lib/utils/tauri";
 import { useSettings } from "@/lib/hooks/use-settings";
+import { hasCloudEntitlement } from "@/lib/app-entitlement";
 import { localFetch } from "@/lib/api";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import { readTextFile, writeFile, mkdir } from "@tauri-apps/plugin-fs";
@@ -500,7 +501,8 @@ interface ConnectAppsProps {
 
 export default function ConnectApps({ handleNextSlide }: ConnectAppsProps) {
   const { settings, loadUser } = useSettings();
-  const isPro = !!settings.user?.cloud_subscribed;
+  // Freenpipe has no plans: OAuth integrations are never locked.
+  const isPro = hasCloudEntitlement(settings.user);
 
   const [cardStates, setCardStates] = useState<Record<string, CardState>>({});
   const [displayNames, setDisplayNames] = useState<Record<string, string>>({});
