@@ -5,20 +5,8 @@
 name: Rust CI
 
 on:
-  push:
-    paths:
-      - '**.rs'
-      - '**/Cargo.toml'
-      - '**/Cargo.lock'
-      - '.github/workflows/ci.yml'
-      - '.github/scripts/**'
-  pull_request:
-    paths:
-      - '**.rs'
-      - '**/Cargo.toml'
-      - '**/Cargo.lock'
-      - '.github/workflows/ci.yml'
-      - '.github/scripts/**'
+  # Freenpipe: dispatch-only; freenpipe-ci.yml builds and tests the pinned toolchain on Windows and Linux instead.
+  workflow_dispatch:
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.event_name == 'push' && github.ref == 'refs/heads/main' && github.sha || github.ref }}

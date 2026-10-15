@@ -14,10 +14,7 @@
 name: sync-skills
 
 on:
-  push:
-    branches: [main]
-    paths:
-      - "crates/screenpipe-core/assets/skills/**"
+  # Freenpipe: dispatch-only; it would open bot PRs mirroring product skills into .claude/skills, which cloud agent sessions load.
   workflow_dispatch:
 
 permissions:

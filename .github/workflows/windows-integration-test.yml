@@ -1,10 +1,11 @@
 name: Windows CLI Integration Test
 
+# Freenpipe: kept as a merge check. It is the only CI job that runs the engine
+# on real Windows (screen capture, Scream virtual audio, data written to disk).
 on:
   push:
-    branches: [ main ]
+    branches: [ main, "ci/**" ]
   pull_request:
-    branches: [ main ]
   workflow_dispatch:
 
 concurrency:
@@ -19,8 +20,11 @@ env:
 jobs:
   test-windows:
     runs-on: windows-2022
+    timeout-minutes: 90
     steps:
     - uses: actions/checkout@v4
+      with:
+        lfs: false
 
     - name: Setup Node
       uses: actions/setup-node@v4

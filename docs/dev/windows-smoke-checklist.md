@@ -1,0 +1,181 @@
+# Windows smoke checklist
+
+Cloud sessions cannot run Windows. The CI `windows` job compiles and unit-tests every PR, but
+runtime and hardware behaviour (screen capture, audio devices, UIA, DirectML, Windows OCR, tray,
+windows, installer, deep links, OAuth in a browser) needs a real Windows desktop. Those checks
+collect here, and the owner runs them when the PC is on.
+
+- **Workers add entries** (never tick them) in the same PR as the code, under their WP's heading in
+  plan order. See [cloud-runbook.md](cloud-runbook.md), section 1.3.
+- **The owner runs them** and records the result in place.
+- **The merger** counts the open entries of each wave in its integration record (runbook 4.7).
+
+## How to run a smoke session
+
+1. Update a checkout of `main` (or the commit named in the entry) and build it in the isolated dev
+   setup from [windows-build.md](windows-build.md):
+
+   ```bash
+   source scripts/dev/msvc-env.sh          # MSVC, LLVM, CMake and OpenBLAS environment for Git Bash
+   source scripts/dev/dev-env.sh smoke     # FP_DD, port 3035, focus port 11436, SCREENPIPE_API_KEY
+   cargo build -p screenpipe-engine --profile release-dev
+   ```
+
+2. Engine checks: `scripts/dev/engine-smoke.sh` starts the engine on `$FP_PORT` with a throwaway data
+   dir. For longer runs, start it yourself:
+   `target/release-dev/screenpipe.exe record --port $FP_PORT --data-dir "$FP_DD" > "$FP_DD/engine.log" 2>&1 &`.
+   Call the API with
+   `curl -s -H "Authorization: Bearer $SCREENPIPE_API_KEY" http://127.0.0.1:$FP_PORT/<path>`.
+3. App checks (UI smoke): quit the installed screenpipe first, then run `scripts/dev/app-dev.sh`
+   (guards, then `bun run tauri dev`). Read its caveats in windows-build.md: the webview still uses
+   `~/.screenpipe` until the owning WPs fix that.
+4. Never point a dev build at `~/.screenpipe` or ports 3030/11435 unless an entry says so explicitly.
+
+## Recording results
+
+Change `- [ ]` to `- [x]` for a pass or `- [!]` for a failure, and fill in the `Result:` line with the
+date, the commit you tested and a note. Commit the file to `main` yourself (the GitHub web editor is
+fine); agents never tick these boxes. For a failure, describe it under **Failures to fix** at the
+end of this file, then start a cloud session to fix it on a `fix/smoke-<entry-id>` branch, or leave
+it for the WP that owns the area.
+
+## Entry format
+
+```markdown
+### W3-12 Windows OCR worker
+
+- [ ] **SMK-W3-12-1** (UI smoke | Manual | Runtime | Hardware) <one-line check>
+  - Setup: <build, settings, devices, data needed>
+  - Steps: 1. ... 2. ...
+  - Expected: <observable result>
+  - Result:
+```
+
+Ids are `SMK-<WP-ID>-<n>`. Keep each entry self-contained: someone who did not write the code must
+be able to run it in about ten minutes.
+
+## Wave 0: Foundation
+
+Wave 0 ran on the PC before the cloud phase. Tick anything you already checked there.
+
+### W0-01 Build bootstrap, ee/ stubs, endpoint switchboard and dev isolation
+
+- [ ] **SMK-W0-01-1** (Runtime) Engine harness smoke on the dev port leaves `~/.screenpipe` alone
+  - Setup: release-dev engine build; `source scripts/dev/dev-env.sh`.
+  - Steps: 1. Note the mtime of `~/.screenpipe/auth.json` (if it exists). 2. Run `scripts/dev/engine-smoke.sh`.
+  - Expected: `/health` answers JSON on port 3035; the script passes; `~/.screenpipe` and its `auth.json` are unchanged.
+  - Result:
+- [ ] **SMK-W0-01-2** (Runtime) No blind kill of an installed screenpipe
+  - Setup: installed screenpipe running (ports 3030 and 11435 in use).
+  - Steps: 1. `FP_ALLOW_SCREENPIPE_RUNNING=1 scripts/dev/app-dev.sh`. 2. Let the dev app start, then quit it.
+  - Expected: the Freenpipe log reports the port holders and does not kill them; the installed screenpipe engine and app are still running afterwards.
+  - Result:
+
+### W0-02 Remove telemetry and crash reporting (PostHog, Sentry)
+
+- [ ] **SMK-W0-02-1** (Runtime) No telemetry traffic during a recording run
+  - Setup: release-dev engine, dev env.
+  - Steps: 1. Run the engine with `record` on `$FP_PORT` for 2 minutes. 2. `grep -iE 'posthog|sentry' "$FP_DD/engine.log"`. 3. Optional: watch connections with Resource Monitor or `netstat -b`.
+  - Expected: no matching log lines; no connections to PostHog or Sentry hosts.
+  - Result:
+
+### W0-03 Updater on GitHub releases, release pipeline de-vendoring, restart_for_update
+
+- [ ] **SMK-W0-03-1** (UI smoke) The updater is off by default, and the manual check opens the releases page
+  - Setup: `scripts/dev/app-dev.sh` with a fresh `FP_DD`.
+  - Steps: 1. Start the app and wait one minute. 2. Use the manual update-check action (Settings or tray).
+  - Expected: no automatic update request at start; the manual action opens https://github.com/normiecore/Freenpipe/releases in the browser (DECISIONS.md 3).
+  - Result:
+
+### W0-04 Remove entitlement, login and plan gates
+
+- [ ] **SMK-W0-04-1** (UI smoke) A fresh install records without signing in
+  - Setup: installed screenpipe quit; fresh `FP_DD` (no `store.bin`).
+  - Steps: 1. `scripts/dev/app-dev.sh`. 2. Complete onboarding if shown.
+  - Expected: recording starts automatically; no sign-in prompt, plan gate or entitlement screen appears.
+  - Result:
+
+### W0-05 Remove commerce, team and vendor UI surfaces
+
+- [ ] **SMK-W0-05-1** (UI smoke) Settings has no account, usage, team or referral sections
+  - Setup: app dev run.
+  - Steps: open every Settings section.
+  - Expected: no Account, Usage, Team or Referral section, and no upgrade or checkout button anywhere.
+  - Result:
+- [ ] **SMK-W0-05-2** (UI smoke) The tray menu has no plan or upgrade row
+  - Setup: app dev run.
+  - Steps: open the tray menu.
+  - Expected: no plan, upgrade or subscription entry.
+  - Result:
+
+### W0-06 AI gateway, transcription, PII backend and media analysis to bring-your-own
+
+- [ ] **SMK-W0-06-1** (Runtime) Chat completions without a gateway return 503
+  - Setup: engine on `$FP_PORT`, no `aiGatewayUrl` configured.
+  - Steps: `curl -s -X POST -H "Authorization: Bearer $SCREENPIPE_API_KEY" -H 'Content-Type: application/json' -d '{"model":"x","messages":[]}' http://127.0.0.1:$FP_PORT/v1/chat/completions -w ' %{http_code}'`
+  - Expected: HTTP 503 with error `cloud_token_missing`.
+  - Result:
+- [ ] **SMK-W0-06-2** (Runtime) A configured gateway receives the request
+  - Setup: a local mock OpenAI-compatible server (any small HTTP server that logs requests); `aiGatewayUrl` pointing at it.
+  - Steps: repeat the request from SMK-W0-06-1.
+  - Expected: the mock logs the forwarded request; the engine returns the mock's answer.
+  - Result:
+
+### W0-07 OAuth broker replaced by BYO client credentials
+
+- [ ] **SMK-W0-07-1** (Manual) Google Calendar connects with your own OAuth client
+  - Setup: a Google Cloud OAuth client (desktop type) with the loopback redirect; app dev run.
+  - Steps: 1. Enter the client id and secret in the connection settings. 2. Connect Google Calendar and finish the browser consent.
+  - Expected: the loopback callback completes; tokens are stored in the secret store (not in plain files); calendar events load.
+  - Result:
+
+### W0-08 Cloud sync, archive and pipe store off by default
+
+- [ ] **SMK-W0-08-1** (Runtime) The pipe store is empty without a base URL, and lists a self-hosted index
+  - Setup: engine on `$FP_PORT` with `SCREENPIPE_API_BASE_URL` unset; then a local static JSON server.
+  - Steps: 1. `GET /pipes/store`. 2. Restart with `SCREENPIPE_API_BASE_URL` pointing at the static server, then `GET /pipes/store` again.
+  - Expected: 1. HTTP 200 with an empty `data` array. 2. The store lists the server's pipes.
+  - Result:
+
+### W0-10 Logs and feedback upload replaced by a local diagnostics bundle
+
+- [ ] **SMK-W0-10-1** (UI smoke) "Share logs" writes a local diagnostics bundle
+  - Setup: app dev run.
+  - Steps: Help > share logs.
+  - Expected: `<FP_DD>/feedback/<timestamp>.zip` appears, the UI shows the completion state, and nothing is uploaded.
+  - Result:
+
+### W0-12 Rebrand user-visible identity to Freenpipe
+
+- [ ] **SMK-W0-12-1** (UI smoke) The installer and the running app say Freenpipe
+  - Setup: a Windows installer built from `main` (the NSIS bundle; see windows-build.md), installed screenpipe left installed.
+  - Steps: 1. Run the installer. 2. Start Freenpipe and check the tray tooltip and every window title.
+  - Expected: the installer is named Freenpipe; tray tooltip and window titles say Freenpipe; the installed screenpipe still starts and works.
+  - Result:
+- [ ] **SMK-W0-12-2** (Manual) Deep-link registration leaves screenpipe's scheme alone
+  - Setup: `reg export HKCU\Software\Classes\screenpipe before.reg` before installing.
+  - Steps: 1. Install Freenpipe. 2. `reg query HKCU\Software\Classes\freenpipe`. 3. Export the screenpipe key again and compare.
+  - Expected: the `freenpipe` key exists; the `screenpipe` key is byte-identical to before.
+  - Result:
+
+## Wave 1: Cross-cutting foundations
+
+### W1-01 Schema v2.7.104: 28 migrations and ocr_text retirement
+
+- [ ] **SMK-W1-01-1** (Runtime) Real capture writes text into frames, not ocr_text
+  - Setup: engine on `$FP_PORT` with a fresh `FP_DD`, a normal desktop session.
+  - Steps: 1. Record for 2 minutes while using a few apps. 2. `GET /search?content_type=ocr&limit=5`. 3. `python -I -c "import sqlite3,sys; c=sqlite3.connect(sys.argv[1]); print(c.execute('select count(*) from frames where text_json is not null').fetchone(), c.execute(\"select name from sqlite_master where name like 'ocr_text%'\").fetchall())" "$FP_DD/db.sqlite"`.
+  - Expected: search returns items whose `ocr_engine` is empty; frames carry `text_json`; no `ocr_text` table exists.
+  - Result:
+
+### W1-03 Integration seams, stub modules and shared constants
+
+- [ ] **SMK-W1-03-1** (Runtime) The OpenAPI route count did not change
+  - Setup: engine builds from the commit before W1-03 and from main.
+  - Steps: for each build, `GET /openapi.json` and count `paths`.
+  - Expected: the same count for both builds.
+  - Result:
+
+## Failures to fix
+
+None yet.
