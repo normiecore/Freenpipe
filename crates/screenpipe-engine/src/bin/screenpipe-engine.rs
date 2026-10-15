@@ -1072,13 +1072,12 @@ async fn main() -> anyhow::Result<()> {
     server.manual_meeting = Some(manual_meeting.clone());
     server.api_auth = config.api_auth;
     server.api_auth_key = config.api_auth_key.clone();
-    // Cloud JWT for the /v1/chat/completions proxy. CLI/binary path reads
-    // SCREENPIPE_API_KEY directly; desktop path overrides via
-    // SCServer::cloud_token_handle after spawn.
-    if let Ok(t) = std::env::var("SCREENPIPE_API_KEY") {
-        if !t.is_empty() {
-            server.cloud_token.store(std::sync::Arc::new(Some(t)));
-        }
+    // AI gateway credential for the /v1/chat/completions proxy. The CLI path
+    // reads SCREENPIPE_AI_GATEWAY_KEY; SCREENPIPE_API_KEY is the *local* API
+    // key here and must never be forwarded to a remote gateway. The desktop
+    // path overrides via SCServer::cloud_token_handle after spawn.
+    if let Some(t) = screenpipe_core::ai_gateway::credential(None) {
+        server.cloud_token.store(std::sync::Arc::new(Some(t)));
     }
 
     // Initialize secret store for unified credential management
@@ -1162,21 +1161,25 @@ async fn main() -> anyhow::Result<()> {
     let pipes_dir = local_data_dir.join("pipes");
     std::fs::create_dir_all(&pipes_dir).ok();
 
-    let user_token = std::env::var("SCREENPIPE_API_KEY").ok();
+    // Gateway credential for the pi agent's gateway-backed provider (never
+    // the local API key, see above).
+    let user_token = screenpipe_core::ai_gateway::credential(None);
     let pi_executor = std::sync::Arc::new(
         screenpipe_core::agents::pi::PiExecutor::new(user_token.clone())
             .with_api_auth_key(config.api_auth_key.clone()),
     );
 
-    // Workflow event classifier — opt-in cloud feature. Polls recent activity
-    // and emits `WorkflowEvent`s on the bus so pipes with `trigger.events`
-    // frontmatter can run. Routed through the gateway by default; self-host
-    // can override with SCREENPIPE_EVENT_CLASSIFIER_URL.
-    if config.enable_workflow_events {
-        let classifier_url =
-            std::env::var("SCREENPIPE_EVENT_CLASSIFIER_URL").unwrap_or_else(|_| {
-                screenpipe_engine::workflow_classifier::DEFAULT_CLASSIFIER_URL.to_string()
-            });
+    // Workflow event classifier — opt-in. Polls recent activity and emits
+    // `WorkflowEvent`s on the bus so pipes with `trigger.events` frontmatter
+    // can run. It needs a classifier the user runs
+    // (SCREENPIPE_EVENT_CLASSIFIER_URL); with none it stays off.
+    let classifier_url = screenpipe_core::endpoints::event_classifier_url();
+    if config.enable_workflow_events && classifier_url.is_none() {
+        tracing::info!(
+            "workflow events are enabled but SCREENPIPE_EVENT_CLASSIFIER_URL is not set; classifier not started"
+        );
+    }
+    if let Some(classifier_url) = classifier_url.filter(|_| config.enable_workflow_events) {
         let token = user_token.clone().unwrap_or_default();
         let port = config.port;
         tokio::spawn(async move {

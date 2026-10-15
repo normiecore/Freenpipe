@@ -258,7 +258,9 @@ fn validate_provider_combo(
     if provider.forbids_api_key() && api_key.map(|s| !s.is_empty()).unwrap_or(false) {
         let reason = match provider {
             Provider::NativeOllama => "local ollama doesn't authenticate",
-            Provider::ScreenpipeCloud => "cloud uses your login token (run `screenpipe login`)",
+            Provider::ScreenpipeCloud => {
+                "it uses your AI gateway's key (aiGatewayApiKey or SCREENPIPE_AI_GATEWAY_KEY)"
+            }
             _ => "this provider does not accept --api-key",
         };
         bail!(

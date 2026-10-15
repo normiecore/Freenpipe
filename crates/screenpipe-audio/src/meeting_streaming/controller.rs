@@ -770,7 +770,7 @@ async fn effective_streaming_config(
         .with_provider(MeetingStreamingProvider::ScreenpipeCloud);
     if cloud_config.live_transcription_ready() {
         info!(
-            "meeting streaming: selected-engine resolved to screenpipe-cloud live because the selected transcription engine is screenpipe cloud"
+            "meeting streaming: selected-engine resolved to the AI gateway live relay because the selected transcription engine is Deepgram-compatible and a gateway is configured"
         );
         return cloud_config;
     }
@@ -797,20 +797,19 @@ async fn readiness_error(
         MeetingStreamingProvider::SelectedEngine => match transcription_engine.read().await.as_ref()
         {
             Some(engine) if engine.config() == AudioTranscriptionEngine::Disabled => Some(
-                "Choose an audio transcription engine to use live meeting notes without ScreenPipe Cloud"
-                    .to_string(),
+                "Choose an audio transcription engine to use live meeting notes".to_string(),
             ),
             Some(_) => None,
             None => Some("Selected transcription engine is still loading".to_string()),
         },
         MeetingStreamingProvider::ScreenpipeCloud if config.live_transcription_ready() => None,
         MeetingStreamingProvider::ScreenpipeCloud => Some(
-            "Log in to ScreenPipe Cloud to enable live meeting transcription".to_string(),
+            "Live notes through the AI gateway need a gateway (or realtime relay) URL and key in settings"
+                .to_string(),
         ),
         MeetingStreamingProvider::DeepgramLive if config.live_transcription_ready() => None,
         MeetingStreamingProvider::DeepgramLive => Some(
-            "Direct Deepgram live transcription needs a Deepgram API key; ScreenPipe Cloud does not"
-                .to_string(),
+            "Direct Deepgram live transcription needs a Deepgram API key".to_string(),
         ),
     }
 }
@@ -940,13 +939,14 @@ mod tests {
         let audio_tap = test_audio_tap();
         let transcription_engine = Arc::new(RwLock::new(None));
         let mut active = None;
-        let config = MeetingStreamingConfig::from_settings(
+        let config = MeetingStreamingConfig::from_settings_with_relay(
             true,
             "screenpipe-cloud",
-            Some("cloud-token".to_string()),
+            Some("gateway-key".to_string()),
             None,
             None,
             None,
+            "wss://gateway.example.test/v1/realtime".to_string(),
         );
 
         start_streaming_session(
@@ -1059,7 +1059,12 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn selected_deepgram_uses_cloud_live_when_token_available() {
+    async fn selected_deepgram_never_reaches_a_gateway_that_is_not_configured() {
+        if screenpipe_core::ai_gateway::is_configured()
+            || std::env::var("SCREENPIPE_MEETING_REALTIME_URL").is_ok()
+        {
+            return; // a developer-provided relay would legitimately be used
+        }
         let engine = TranscriptionEngine::new(
             Arc::new(AudioTranscriptionEngine::Deepgram),
             Some(DeepgramTranscriptionConfig::direct(
@@ -1075,7 +1080,7 @@ mod tests {
         let config = MeetingStreamingConfig::from_settings(
             true,
             "selected-engine",
-            Some("cloud-token".to_string()),
+            Some("gateway-key".to_string()),
             None,
             None,
             None,
@@ -1083,13 +1088,11 @@ mod tests {
 
         let effective = effective_streaming_config(&config, &engine_ref).await;
 
-        assert_eq!(
+        assert_ne!(
             effective.provider,
-            MeetingStreamingProvider::ScreenpipeCloud
+            MeetingStreamingProvider::ScreenpipeCloud,
+            "no relay or gateway is configured, so nothing may stream to one"
         );
-        assert!(effective.live_transcription_ready());
-        assert_eq!(effective.model.as_deref(), Some("nova-3"));
-        assert!(effective.endpoint.starts_with("wss://"));
     }
 
     #[tokio::test]

@@ -9,7 +9,7 @@ export default function (pi: ExtensionAPI) {
     name: "web_search",
     label: "Web Search",
     description:
-      "Search the public internet via Google Search. Use ONLY for public, external information the user explicitly asks about — current events, news, public people or companies, or public product documentation. Do NOT use it for the user's own screenpipe data (recordings, meetings, activity) or the local screenpipe API at localhost:3030 — that data is private and not on the web; use your screenpipe skills and the local tools for it. When unsure, do not search. Returns search results with sources.",
+      "Search the public web through the AI gateway the user configured in Freenpipe. Only for public, external facts the user explicitly asks about: current events, news, public people or companies, public product documentation. Never for the user's own recorded data (screens, meetings, activity) or the local API at localhost:3030; that data is private and not on the web, so use the screenpipe skills and local tools instead. If unsure, do not search. Returns results with their sources.",
     parameters: Type.Object({
       query: Type.String({ description: "The search query" }),
     }),
@@ -33,19 +33,32 @@ export default function (pi: ExtensionAPI) {
         ],
       });
 
+      // Freenpipe: the search goes to the user's own AI gateway, whose base
+      // URL the agent runtime exports. No gateway, no request.
+      const gatewayBase = (process.env.SCREENPIPE_AI_GATEWAY_URL || "")
+        .trim()
+        .replace(/\/+$/, "");
+      if (!gatewayBase) {
+        return {
+          content: [
+            {
+              type: "text" as const,
+              text: "Web search is unavailable: no AI gateway is configured in Freenpipe.",
+            },
+          ],
+        };
+      }
       const apiKey = process.env.SCREENPIPE_API_KEY || "";
-      const response = await fetch(
-        "https://api.screenpipe.com/v1/web-search",
-        {
-          method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-            Authorization: `Bearer ${apiKey}`,
-          },
-          body: JSON.stringify({ query: params.query }),
-          signal,
-        }
-      );
+      const headers: Record<string, string> = {
+        "Content-Type": "application/json",
+      };
+      if (apiKey) headers.Authorization = `Bearer ${apiKey}`;
+      const response = await fetch(`${gatewayBase}/web-search`, {
+        method: "POST",
+        headers,
+        body: JSON.stringify({ query: params.query }),
+        signal,
+      });
 
       if (!response.ok) {
         const errorText = await response.text().catch(() => "Unknown error");

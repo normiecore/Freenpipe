@@ -58,12 +58,9 @@ const EVENT_LABELS: &[&str] = &[
     "no_event",
 ];
 
-/// Default endpoint for the event classifier — routes through the screenpipe
-/// AI gateway, which forwards the `screenpipe-event-classifier` model to the
-/// self-hosted vLLM. Going through the gateway means infra moves only need a
-/// `wrangler secret put EVENT_CLASSIFIER_URL` — no client release.
-/// Override with the `SCREENPIPE_EVENT_CLASSIFIER_URL` env var for self-host.
-pub const DEFAULT_CLASSIFIER_URL: &str = "https://api.screenpipe.com";
+// There is no default classifier endpoint. The engine starts the loop only
+// when the user points `SCREENPIPE_EVENT_CLASSIFIER_URL` at a classifier they
+// run (see `screenpipe_core::endpoints::event_classifier_url`).
 
 /// Start the workflow classifier polling loop.
 pub async fn start_workflow_classifier(
