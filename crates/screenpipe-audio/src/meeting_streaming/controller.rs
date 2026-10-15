@@ -14,7 +14,10 @@ use tokio::{
 };
 use tracing::{debug, info, warn};
 
-use crate::{core::engine::AudioTranscriptionEngine, transcription::engine::TranscriptionEngine};
+use crate::{
+    core::engine::AudioTranscriptionEngine,
+    transcription::{deepgram::DeepgramTranscriptionConfig, engine::TranscriptionEngine},
+};
 
 use super::{
     deepgram_live,
@@ -756,33 +759,46 @@ async fn effective_streaming_config(
         return config.clone();
     }
 
-    let selected_engine = transcription_engine
-        .read()
-        .await
-        .as_ref()
-        .map(TranscriptionEngine::config);
-    if selected_engine != Some(AudioTranscriptionEngine::Deepgram) {
-        return config.clone();
-    }
+    let selected_deepgram = match transcription_engine.read().await.as_ref() {
+        Some(TranscriptionEngine::Deepgram { config, .. }) => config.clone(),
+        _ => return config.clone(),
+    };
 
-    let cloud_config = config
-        .clone()
-        .with_provider(MeetingStreamingProvider::ScreenpipeCloud);
-    if cloud_config.live_transcription_ready() {
-        info!(
-            "meeting streaming: selected-engine resolved to the AI gateway live relay because the selected transcription engine is Deepgram-compatible and a gateway is configured"
-        );
-        return cloud_config;
-    }
+    resolve_selected_deepgram(
+        config,
+        &selected_deepgram,
+        config
+            .clone()
+            .with_provider(MeetingStreamingProvider::ScreenpipeCloud),
+        config
+            .clone()
+            .with_provider(MeetingStreamingProvider::DeepgramLive),
+    )
+}
 
-    let direct_deepgram_config = config
-        .clone()
-        .with_provider(MeetingStreamingProvider::DeepgramLive);
-    if direct_deepgram_config.live_transcription_ready() {
+/// Live provider for `selected-engine` when the batch engine is Deepgram
+/// wire format. Live audio goes to the same service as batch audio: the
+/// gateway relay when the batch engine is the user's AI gateway, direct
+/// Deepgram live when it is the user's own Deepgram key. When that live
+/// path cannot run, the selected engine keeps transcribing in batches.
+fn resolve_selected_deepgram(
+    config: &MeetingStreamingConfig,
+    batch: &DeepgramTranscriptionConfig,
+    gateway_relay: MeetingStreamingConfig,
+    direct_deepgram: MeetingStreamingConfig,
+) -> MeetingStreamingConfig {
+    if batch.is_gateway() {
+        if gateway_relay.live_transcription_ready() {
+            info!(
+                "meeting streaming: selected-engine resolved to the AI gateway live relay because the selected transcription engine is the AI gateway"
+            );
+            return gateway_relay;
+        }
+    } else if direct_deepgram.live_transcription_ready() {
         info!(
             "meeting streaming: selected-engine resolved to direct Deepgram live because the selected transcription engine is Deepgram"
         );
-        return direct_deepgram_config;
+        return direct_deepgram;
     }
 
     config.clone()
@@ -836,7 +852,6 @@ fn emit_error(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::transcription::deepgram::DeepgramTranscriptionConfig;
 
     fn test_session(now: Instant, live: bool) -> ActiveMeetingStream {
         ActiveMeetingStream {
@@ -1060,12 +1075,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn selected_deepgram_never_reaches_a_gateway_that_is_not_configured() {
-        if screenpipe_core::ai_gateway::is_configured()
-            || std::env::var("SCREENPIPE_MEETING_REALTIME_URL").is_ok()
-        {
-            return; // a developer-provided relay would legitimately be used
-        }
+    async fn selected_direct_deepgram_never_streams_to_a_gateway_relay() {
         let engine = TranscriptionEngine::new(
             Arc::new(AudioTranscriptionEngine::Deepgram),
             Some(DeepgramTranscriptionConfig::direct(
@@ -1092,7 +1102,7 @@ mod tests {
         assert_ne!(
             effective.provider,
             MeetingStreamingProvider::ScreenpipeCloud,
-            "no relay or gateway is configured, so nothing may stream to one"
+            "a direct Deepgram engine never streams live audio to a gateway relay"
         );
     }
 
@@ -1115,6 +1125,99 @@ mod tests {
 
         let effective = effective_streaming_config(&config, &engine_ref).await;
 
+        assert_eq!(effective.provider, MeetingStreamingProvider::SelectedEngine);
+    }
+    fn ready_gateway_relay() -> MeetingStreamingConfig {
+        let relay = MeetingStreamingConfig::from_settings_with_relay(
+            true,
+            "screenpipe-cloud",
+            Some("gateway-key".to_string()),
+            None,
+            None,
+            None,
+            "wss://gw.example.test/v1/realtime".to_string(),
+        );
+        assert!(relay.live_transcription_ready());
+        relay
+    }
+
+    fn direct_deepgram_live(key: Option<&str>) -> MeetingStreamingConfig {
+        let mut live = MeetingStreamingConfig::from_settings(
+            true,
+            "deepgram",
+            None,
+            key.map(str::to_string),
+            None,
+            None,
+        );
+        live.api_key = key.map(str::to_string);
+        live
+    }
+
+    fn selected_engine_config() -> MeetingStreamingConfig {
+        MeetingStreamingConfig::from_settings(
+            true,
+            "selected-engine",
+            Some("gateway-key".to_string()),
+            None,
+            None,
+            None,
+        )
+    }
+
+    #[test]
+    fn selected_own_deepgram_prefers_direct_live_over_a_gateway_relay() {
+        let config = selected_engine_config();
+        let batch = DeepgramTranscriptionConfig::direct("personal-dg-key".to_string());
+
+        let effective = resolve_selected_deepgram(
+            &config,
+            &batch,
+            ready_gateway_relay(),
+            direct_deepgram_live(Some("personal-dg-key")),
+        );
+        assert_eq!(effective.provider, MeetingStreamingProvider::DeepgramLive);
+
+        // Without a live Deepgram key the selected engine keeps working;
+        // the gateway relay is never used for a direct Deepgram engine.
+        let effective = resolve_selected_deepgram(
+            &config,
+            &batch,
+            ready_gateway_relay(),
+            direct_deepgram_live(None),
+        );
+        assert_eq!(effective.provider, MeetingStreamingProvider::SelectedEngine);
+    }
+
+    #[test]
+    fn selected_gateway_engine_uses_the_gateway_relay() {
+        let config = selected_engine_config();
+        let batch = DeepgramTranscriptionConfig::gateway(
+            "https://gw.example.test/v1",
+            "gateway-key".to_string(),
+        );
+
+        let effective = resolve_selected_deepgram(
+            &config,
+            &batch,
+            ready_gateway_relay(),
+            direct_deepgram_live(Some("personal-dg-key")),
+        );
+        assert_eq!(
+            effective.provider,
+            MeetingStreamingProvider::ScreenpipeCloud
+        );
+
+        // Relay not ready: stay on the selected (gateway batch) engine rather
+        // than sending live audio to a different service.
+        let mut unready = ready_gateway_relay();
+        unready.endpoint.clear();
+        let effective = resolve_selected_deepgram(
+            &config,
+            &batch,
+            unready,
+            direct_deepgram_live(Some("personal-dg-key")),
+        );
         assert_eq!(effective.provider, MeetingStreamingProvider::SelectedEngine);
     }
 }

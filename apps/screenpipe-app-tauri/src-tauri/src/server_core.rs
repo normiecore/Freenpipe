@@ -638,8 +638,11 @@ impl ServerCore {
         //                 local backend is used.
         let backend = config.pii_backend.as_str();
         let wants_tinfoil = matches!(backend, "tinfoil" | "cloud" | "enclave");
-        let use_tinfoil =
-            wants_tinfoil && screenpipe_redact::adapters::tinfoil::is_configured();
+        // The enclave host goes through the endpoint switchboard so a
+        // settings override applies here as well as the environment.
+        let enclave_host = screenpipe_core::endpoints::privacy_filter_base();
+        let use_tinfoil = wants_tinfoil
+            && screenpipe_redact::adapters::tinfoil::is_configured_for(enclave_host.clone());
         if wants_tinfoil && !use_tinfoil {
             warn!(
                 "piiBackend is '{}' but no enclave is configured (SCREENPIPE_PRIVACY_FILTER_ENCLAVE, \
@@ -690,6 +693,7 @@ impl ServerCore {
             // dead duplicate columns the old non-destructive mode used.
             if use_tinfoil {
                 let ai: Arc<dyn Redactor> = Arc::new(TinfoilRedactor::new(TinfoilConfig {
+                    enclave: enclave_host.clone(),
                     api_key: tinfoil_api_key.clone(),
                     labels: pii_labels.clone(),
                     ..Default::default()
@@ -807,6 +811,7 @@ impl ServerCore {
             let pool = db.pool.clone();
             if use_tinfoil {
                 let detector = Arc::new(TinfoilImageRedactor::new(TinfoilImageConfig {
+                    enclave: enclave_host.clone(),
                     api_key: tinfoil_api_key.clone(),
                     labels: pii_labels.clone(),
                     ..Default::default()

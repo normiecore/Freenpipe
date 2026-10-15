@@ -22,6 +22,7 @@ import {
 	applyFreenpipeMigrations,
 	makeDefaultPresets as makeLocalDefaultPresets,
 	normalizeGatewayUrl,
+	pendingFreenpipeMigrations,
 } from "@/lib/ai-gateway";
 export type VadSensitivity = "low" | "medium" | "high";
 
@@ -674,14 +675,21 @@ function createSettingsStore() {
 		}
 
 		// One-time Freenpipe migrations (hosted-provider presets, PII backend,
-		// analytics and media-analysis defaults). See lib/ai-gateway.ts.
+		// analytics and media-analysis defaults). See lib/ai-gateway.ts. Once
+		// both have run this costs nothing; the gateway lookup (a Tauri call)
+		// only happens while the preset step is pending.
 		{
-			const migrated = applyFreenpipeMigrations(settings, {
-				gatewayConfigured: await isAiGatewayConfigured(settings),
-			});
-			if (migrated.changed) {
-				settings = migrated.settings;
-				needsUpdate = true;
+			const pending = pendingFreenpipeMigrations(settings);
+			if (pending.presets || pending.privacy) {
+				const migrated = applyFreenpipeMigrations(settings, {
+					gatewayConfigured: pending.presets
+						? await isAiGatewayConfigured(settings)
+						: false,
+				});
+				if (migrated.changed) {
+					settings = migrated.settings;
+					needsUpdate = true;
+				}
 			}
 		}
 

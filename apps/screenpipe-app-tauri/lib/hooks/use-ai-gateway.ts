@@ -20,11 +20,25 @@ export async function fetchAiGatewayUrl(): Promise<string | null> {
   }
 }
 
+/**
+ * Whether the engine has a gateway key (the saved `aiGatewayApiKey`, or
+ * `SCREENPIPE_AI_GATEWAY_KEY` in its environment). The key is never returned.
+ */
+export async function fetchAiGatewayKeyConfigured(): Promise<boolean> {
+  try {
+    return await commands.getAiGatewayKeyConfigured();
+  } catch {
+    return false;
+  }
+}
+
 export interface AiGatewayState {
   /** Configured gateway base, or `null`. */
   url: string | null;
   /** Shorthand for `url !== null`. Gateway-only features hide when false. */
   configured: boolean;
+  /** A gateway key is available to the engine (setting or environment). */
+  keyConfigured: boolean;
   /** True until the first answer arrives. */
   loading: boolean;
   /** Ask again, e.g. right after saving the gateway settings. */
@@ -35,18 +49,26 @@ export interface AiGatewayState {
 export function useAiGateway(): AiGatewayState {
   const { settings } = useSettings();
   const [url, setUrl] = useState<string | null>(null);
+  const [keyConfigured, setKeyConfigured] = useState(false);
   const [loading, setLoading] = useState(true);
 
   const refresh = useCallback(async () => {
-    const next = await fetchAiGatewayUrl();
-    setUrl(next);
+    const [nextUrl, nextKey] = await Promise.all([
+      fetchAiGatewayUrl(),
+      fetchAiGatewayKeyConfigured(),
+    ]);
+    setUrl(nextUrl);
+    setKeyConfigured(nextKey);
     setLoading(false);
   }, []);
 
   const savedUrl = (settings as { aiGatewayUrl?: string }).aiGatewayUrl ?? "";
+  const hasSavedKey = Boolean(
+    (settings as { aiGatewayApiKey?: string }).aiGatewayApiKey?.trim(),
+  );
   useEffect(() => {
     refresh();
-  }, [refresh, savedUrl]);
+  }, [refresh, savedUrl, hasSavedKey]);
 
-  return { url, configured: url !== null, loading, refresh };
+  return { url, configured: url !== null, keyConfigured, loading, refresh };
 }

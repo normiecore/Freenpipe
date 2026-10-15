@@ -1373,23 +1373,29 @@ impl SettingsStore {
     /// - Presets on the hosted provider (`screenpipe-cloud`, legacy `pi`)
     ///   become local Ollama presets when no AI gateway is configured; ids,
     ///   prompts and the default flag are kept so pipes still resolve them.
+    ///   With a gateway they stay on it, and legacy `pi` becomes
+    ///   `screenpipe-cloud`.
     /// - A remote PII backend goes back to `local`, the legacy analytics flag
     ///   goes off and cloud media analysis goes off. Remote options can be
     ///   re-selected once the user has configured their own endpoints.
     pub fn apply_freenpipe_ai_migrations(&mut self, gateway_configured: bool) -> bool {
         let mut changed = false;
         if !self.extra.contains_key(CLOUD_PRESET_MIGRATION_FLAG) {
-            if !gateway_configured {
-                for preset in &mut self.ai_presets {
-                    if matches!(
-                        preset.provider,
-                        AIProviderType::ScreenpipeCloud | AIProviderType::Pi
-                    ) {
-                        preset.provider = AIProviderType::NativeOllama;
-                        preset.url = DEFAULT_OLLAMA_URL.to_string();
-                        preset.model = String::new();
-                        preset.api_key = None;
-                    }
+            for preset in &mut self.ai_presets {
+                if !matches!(
+                    preset.provider,
+                    AIProviderType::ScreenpipeCloud | AIProviderType::Pi
+                ) {
+                    continue;
+                }
+                if gateway_configured {
+                    // Kept on the gateway; the legacy id gets the current one.
+                    preset.provider = AIProviderType::ScreenpipeCloud;
+                } else {
+                    preset.provider = AIProviderType::NativeOllama;
+                    preset.url = DEFAULT_OLLAMA_URL.to_string();
+                    preset.model = String::new();
+                    preset.api_key = None;
                 }
             }
             self.extra
@@ -1903,6 +1909,32 @@ mod tests {
             AIProviderType::ScreenpipeCloud
         ));
         assert_eq!(store.extra[CLOUD_PRESET_MIGRATION_FLAG], json!(true));
+    }
+
+    #[test]
+    fn legacy_pi_presets_are_renamed_when_a_gateway_is_configured() {
+        let mut store: SettingsStore = serde_json::from_value(json!({
+            "aiPresets": [
+                {"id": "agent", "provider": "pi", "url": "", "model": "auto",
+                 "defaultPreset": true, "prompt": "keep me", "maxContextChars": 200000},
+                {"id": "mine", "provider": "openai", "url": "https://api.example.test/v1",
+                 "model": "m", "defaultPreset": false, "prompt": "", "maxContextChars": 1000}
+            ]
+        }))
+        .unwrap();
+        assert!(store.apply_freenpipe_ai_migrations(true));
+        assert!(matches!(
+            store.ai_presets[0].provider,
+            AIProviderType::ScreenpipeCloud
+        ));
+        assert_eq!(store.ai_presets[0].id, "agent");
+        assert_eq!(store.ai_presets[0].model, "auto");
+        assert_eq!(store.ai_presets[0].prompt, "keep me");
+        assert!(matches!(store.ai_presets[1].provider, AIProviderType::OpenAI));
+        assert_eq!(
+            serde_json::to_value(&store.ai_presets[0]).unwrap()["provider"],
+            json!("screenpipe-cloud")
+        );
     }
 
     #[test]

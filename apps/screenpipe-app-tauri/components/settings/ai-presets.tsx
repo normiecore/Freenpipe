@@ -1566,25 +1566,7 @@ const AISection = ({
                           <CommandItem
                             key={model.id}
                             value={model.id}
-                            onSelect={async () => {
-                              if (model.id === "claude-opus-4-8" && !settings.user?.cloud_subscribed) {
-                                if (!settings.user?.token) {
-                                  await commands.openLoginWindow();
-                                } else {
-                                  try {
-                                    const res = await fetch("https://screenpi.pe/api/cloud-sync/checkout", {
-                                      method: "POST",
-                                      headers: { "Content-Type": "application/json", "Authorization": `Bearer ${settings.user.token}` },
-                                      body: JSON.stringify({ tier: "pro", billingPeriod: "monthly", userId: settings.user.id, email: settings.user.email }),
-                                    });
-                                    const data = await res.json();
-                                    if (data.url) await openUrl(data.url);
-                                  } catch (e) {
-                                    console.error("checkout failed:", e);
-                                  }
-                                }
-                                return;
-                              }
+                            onSelect={() => {
                               updateSettingsPreset({ model: model.id });
                               setIsModelPickerOpen(false);
                             }}

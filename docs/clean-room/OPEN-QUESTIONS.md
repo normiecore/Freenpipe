@@ -144,7 +144,9 @@ work package.
    repo has no default any more, and the local API key is no longer an enclave credential fallback.
    Reason: a stored `tinfoil` in a screenpipe store points at the vendor enclave; re-selecting it after
    configuring your own enclave is one click. Environment-only configuration avoids more settings keys
-   for a power-user feature.
+   for a power-user feature. The enclave host is read through the W0-01 switchboard
+   (`endpoints::privacy_filter_base()`, same variable names) by the engine and the app, so a later
+   settings override applies everywhere.
 
 6. **How is the cloud media analysis opt-in stored?**
    Decision: a `cloud_media_analysis.enabled` marker in the data dir records the opt-in; the screenpipe
@@ -158,8 +160,12 @@ work package.
    Whisper with the new `gatewayNotConfigured` reason (the `notLoggedIn`/`notSubscribed` reasons are
    gone). The live relay is an explicit `SCREENPIPE_MEETING_REALTIME_URL` or `{gateway}/realtime` and
    also needs the key; a `screenpipe-cloud` live choice without them falls back to the selected local
-   engine, and `selected-engine` is never promoted to a remote provider.
-   Reason: the existing live and batch clients always send a Bearer credential.
+   engine. `selected-engine` stays on the service the batch engine already uses: with the gateway engine
+   it may use the gateway relay, with the user's own Deepgram engine it may use direct Deepgram live, and
+   otherwise (or when that live path is not ready) it keeps the selected engine. It is never moved to a
+   different remote service.
+   Reason: the existing live and batch clients always send a Bearer credential, and a chat-only gateway
+   (for example LiteLLM) has no Deepgram-format `/realtime`.
 
 8. **Web search without a vendor route.**
    Decision: the agent web-search extension calls `{gateway}/web-search` directly (base exported to the
@@ -171,7 +177,9 @@ work package.
 9. **Enhanced AI suggestions and the workflow classifier.**
    Decision: enhanced suggestions call the default AI preset (OpenAI-compatible chat; gateway presets go
    through the local proxy; ChatGPT OAuth presets are not used). The classifier starts only when
-   `SCREENPIPE_EVENT_CLASSIFIER_URL` is set.
+   `SCREENPIPE_EVENT_CLASSIFIER_URL` is set. Its bearer token is `SCREENPIPE_EVENT_CLASSIFIER_KEY` (new
+   variable), else the gateway key only when the classifier URL has the gateway's origin; a gateway key
+   is never sent to another host.
    Reason: cloud-016 says both "use the default BYO preset" and "classifier only runs if … is set".
 
 10. **`use-usage-status.tsx` overlaps with W0-05.**
@@ -183,3 +191,25 @@ work package.
     Decision: left in place, documented as not built or shipped (`packages/ai-gateway/FREENPIPE.md`); no
     workspace or workflow referenced it. The vendor guard still reports its hosts; W0-12 should skip the
     directory or the owner can delete it.
+
+12. **What does `/search?filter_pii=true` do without an enclave?**
+    Decision: it redacts on the device with the deterministic `screenpipe-redact` regex pass (emails,
+    phone numbers, cards, national IDs, connection strings, API-key and private-key shapes, every class
+    it detects). The local AI model is not loaded at search time; with "AI PII removal" on, the
+    background worker has already rewritten stored text with it. A configured enclave
+    (`SCREENPIPE_PRIVACY_FILTER_ENCLAVE` or `_URL` plus `_REPO`) is used instead and still fails closed
+    with 503 `privacy_filter_unavailable` on enclave errors.
+    Reason: specs/api.md says "implement locally (`screenpipe-redact` regex/NER)". Failing closed when
+    nothing is configured would break the onboarding live feed, every pipe whose manifest sets
+    `privacy_filter: true` (DECISIONS #1) and the e2e search contract (no 5xx for `filter_pii=true`).
+
+13. **Where is the gateway key stored?**
+    Decision: for now `aiGatewayApiKey` sits in `store.bin` like the existing preset `apiKey`,
+    `deepgramApiKey` and `openaiCompatibleApiKey` (encrypted at rest only when `encryptStore` is on;
+    the `.last-good` recovery snapshot is plain JSON). It is visible to the webview through the
+    settings object and is written into the agent's `~/.pi/agent/models.json`/`auth.json` like other
+    provider keys. Follow-up (owner: the W1-02 settings
+    schema or a dedicated secrets WP): move every AI provider key, this one included, into
+    `screenpipe_secrets::SecretStore` and push it into the engine with `set_cloud_token`.
+    Reason: moving only the new key would leave the same exposure for the older keys and split one
+    settings page across two stores; the move is a cross-cutting change outside this WP's paths.

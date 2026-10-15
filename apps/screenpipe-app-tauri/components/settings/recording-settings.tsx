@@ -110,6 +110,7 @@ import { useHealthCheck } from "@/lib/hooks/use-health-check";
 import { localFetch } from "@/lib/api";
 import {
   FALLBACK_TRANSCRIPTION_ENGINE,
+  isGatewaySttReady,
   resolveAudioEngine,
   type AudioEngineFallbackReason,
 } from "@/lib/ai-gateway";
@@ -1818,8 +1819,13 @@ export function RecordingSettings() {
 
   const aiGateway = useAiGateway();
   const gatewayApiKey = (settings as { aiGatewayApiKey?: string }).aiGatewayApiKey ?? "";
-  // The AI gateway transcription engine needs a gateway URL and key.
-  const gatewaySttReady = aiGateway.configured && gatewayApiKey.trim() !== "";
+  // The AI gateway transcription engine needs a gateway URL and key (saved,
+  // or SCREENPIPE_AI_GATEWAY_KEY as reported by the backend).
+  const gatewaySttReady = isGatewaySttReady(
+    aiGateway.url,
+    gatewayApiKey,
+    aiGateway.keyConfigured,
+  );
   const audioEngineResolution = useMemo(
     () =>
       resolveAudioEngine(
@@ -1829,12 +1835,14 @@ export function RecordingSettings() {
           aiGatewayApiKey: gatewayApiKey,
         },
         aiGateway.url,
+        aiGateway.keyConfigured,
       ),
     [
       settings.audioTranscriptionEngine,
       settings.deepgramApiKey,
       gatewayApiKey,
       aiGateway.url,
+      aiGateway.keyConfigured,
     ]
   );
 

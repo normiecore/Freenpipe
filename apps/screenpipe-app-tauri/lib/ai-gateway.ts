@@ -95,6 +95,20 @@ export function pickGatewayModel(presets: readonly PresetShape[] | null | undefi
   return preferred?.model?.trim() || "auto";
 }
 
+/**
+ * Which one-time migrations a loaded settings object still needs. Callers
+ * skip the gateway lookup (a Tauri call) when the preset step has run.
+ */
+export function pendingFreenpipeMigrations(settings: Record<string, any>): {
+  presets: boolean;
+  privacy: boolean;
+} {
+  return {
+    presets: !settings[CLOUD_PRESET_MIGRATION_FLAG],
+    privacy: !settings[PRIVACY_DEFAULTS_MIGRATION_FLAG],
+  };
+}
+
 export interface MigrationContext {
   /** An AI gateway URL is configured (setting or engine environment). */
   gatewayConfigured: boolean;
@@ -156,6 +170,18 @@ export function applyFreenpipeMigrations<T extends Record<string, any>>(
   return { settings: settings as T, changed };
 }
 
+/**
+ * Whether gateway transcription can run: a gateway URL plus a key, either the
+ * saved `aiGatewayApiKey` or one the backend reports (environment).
+ */
+export function isGatewaySttReady(
+  gatewayUrl: string | null,
+  savedKey: string | null | undefined,
+  backendKeyConfigured: boolean,
+): boolean {
+  return Boolean(gatewayUrl) && (Boolean(savedKey?.trim()) || backendKeyConfigured);
+}
+
 export type AudioEngineFallbackReason = "gatewayNotConfigured" | "missingDeepgramKey";
 
 export interface AudioEngineResolution {
@@ -169,6 +195,10 @@ export interface AudioEngineResolution {
  * `audio_engine_resolution`. `screenpipe-cloud` needs a gateway URL and a
  * gateway key; Deepgram needs the user's Deepgram key; local engines always
  * run.
+ *
+ * `gatewayKeyConfigured` is the backend's answer (`get_ai_gateway_key_configured`):
+ * it also counts a key the engine reads from `SCREENPIPE_AI_GATEWAY_KEY`,
+ * which the settings object cannot see.
  */
 export function resolveAudioEngine(
   settings: {
@@ -177,10 +207,11 @@ export function resolveAudioEngine(
     aiGatewayApiKey?: string | null;
   },
   gatewayUrl: string | null,
+  gatewayKeyConfigured = false,
 ): AudioEngineResolution {
   const requested = settings.audioTranscriptionEngine;
   const fallback = FALLBACK_TRANSCRIPTION_ENGINE;
-  const gatewayReady = Boolean(gatewayUrl) && Boolean(settings.aiGatewayApiKey?.trim());
+  const gatewayReady = isGatewaySttReady(gatewayUrl, settings.aiGatewayApiKey, gatewayKeyConfigured);
   const hasDeepgramKey = Boolean(
     settings.deepgramApiKey && settings.deepgramApiKey !== "default",
   );

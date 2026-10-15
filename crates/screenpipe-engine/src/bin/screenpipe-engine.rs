@@ -1180,7 +1180,13 @@ async fn main() -> anyhow::Result<()> {
         );
     }
     if let Some(classifier_url) = classifier_url.filter(|_| config.enable_workflow_events) {
-        let token = user_token.clone().unwrap_or_default();
+        // SCREENPIPE_EVENT_CLASSIFIER_KEY, or the gateway key when the
+        // classifier is served from the gateway's own origin.
+        let token = screenpipe_engine::workflow_classifier::classifier_credential(
+            &classifier_url,
+            user_token.as_deref(),
+        )
+        .unwrap_or_default();
         let port = config.port;
         tokio::spawn(async move {
             screenpipe_engine::workflow_classifier::start_workflow_classifier(
@@ -1748,6 +1754,8 @@ async fn main() -> anyhow::Result<()> {
                                 );
                                 let ai: Arc<dyn Redactor> =
                                     Arc::new(TinfoilRedactor::new(TinfoilConfig {
+                                        enclave:
+                                            screenpipe_core::endpoints::privacy_filter_base(),
                                         labels: labels.clone(),
                                         ..Default::default()
                                     }));

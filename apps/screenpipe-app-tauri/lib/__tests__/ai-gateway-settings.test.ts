@@ -11,6 +11,7 @@ import {
   isGatewayProvider,
   makeDefaultPresets,
   normalizeGatewayUrl,
+  pendingFreenpipeMigrations,
   pickGatewayModel,
   resolveAudioEngine,
 } from "../ai-gateway";
@@ -177,6 +178,19 @@ describe("gateway helpers", () => {
     ).toBe("qwen2.5-vl");
   });
 
+  test("pending migrations are reported per flag", () => {
+    expect(pendingFreenpipeMigrations({})).toEqual({ presets: true, privacy: true });
+    expect(
+      pendingFreenpipeMigrations({ [CLOUD_PRESET_MIGRATION_FLAG]: true }),
+    ).toEqual({ presets: false, privacy: true });
+    expect(
+      pendingFreenpipeMigrations({
+        [CLOUD_PRESET_MIGRATION_FLAG]: true,
+        [PRIVACY_DEFAULTS_MIGRATION_FLAG]: true,
+      }),
+    ).toEqual({ presets: false, privacy: false });
+  });
+
   test("gateway transcription falls back to local whisper without a gateway and key", () => {
     const base = { audioTranscriptionEngine: "screenpipe-cloud", aiGatewayApiKey: "" };
     expect(resolveAudioEngine(base, null)).toEqual({
@@ -190,6 +204,11 @@ describe("gateway helpers", () => {
     expect(
       resolveAudioEngine({ ...base, aiGatewayApiKey: "k" }, "http://127.0.0.1:4000/v1"),
     ).toEqual({ requested: "screenpipe-cloud", active: "screenpipe-cloud", fallbackReason: null });
+    // A key only in the engine's environment (reported by the backend) counts too.
+    expect(
+      resolveAudioEngine(base, "http://127.0.0.1:4000/v1", true),
+    ).toEqual({ requested: "screenpipe-cloud", active: "screenpipe-cloud", fallbackReason: null });
+    expect(resolveAudioEngine(base, null, true).fallbackReason).toBe("gatewayNotConfigured");
     expect(
       resolveAudioEngine({ audioTranscriptionEngine: "deepgram", deepgramApiKey: "" }, null)
         .fallbackReason,

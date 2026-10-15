@@ -156,6 +156,22 @@ pub fn is_configured() -> bool {
     is_configured_with(|name| std::env::var(name).ok())
 }
 
+/// [`is_configured`] with the enclave host supplied by the caller, for
+/// example the endpoint switchboard's privacy-filter base (which already
+/// folds in a settings override and the same environment variables). The
+/// repo and API key still come from the environment.
+pub fn is_configured_for(enclave: Option<String>) -> bool {
+    is_configured_for_with(enclave, |name| std::env::var(name).ok())
+}
+
+/// Pure form of [`is_configured_for`].
+pub fn is_configured_for_with(
+    enclave: Option<String>,
+    env: impl Fn(&str) -> Option<String>,
+) -> bool {
+    resolve_target_with(enclave, None, &env).is_some() && resolve_api_key_with(None, &env).is_some()
+}
+
 pub(crate) fn not_configured_error() -> RedactError {
     RedactError::Runtime(format!(
         "tinfoil enclave is not configured: set {ENCLAVE_ENV} and {REPO_ENV} \
@@ -650,6 +666,21 @@ mod tests {
         assert_eq!(
             resolve_api_key_with(None, &with_key).as_deref(),
             Some("enclave-key")
+        );
+    }
+
+    #[test]
+    fn caller_supplied_enclave_counts_toward_a_complete_setup() {
+        let repo_and_key = env_from(&[(REPO_ENV, "org/repo"), (API_KEY_ENV, "enclave-key")]);
+        assert!(!is_configured_for_with(None, &repo_and_key));
+        assert!(is_configured_for_with(
+            Some("https://e.example.test/filter".into()),
+            &repo_and_key
+        ));
+        let key_only = env_from(&[(API_KEY_ENV, "enclave-key")]);
+        assert!(
+            !is_configured_for_with(Some("e.example.test".into()), &key_only),
+            "the attestation repo is still required"
         );
     }
 

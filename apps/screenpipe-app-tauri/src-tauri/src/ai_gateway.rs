@@ -72,11 +72,25 @@ pub fn get_screenpipe_ai_gateway_url(app: AppHandle) -> Result<String, String> {
         .ok_or_else(|| screenpipe_core::ai_gateway::NOT_CONFIGURED.to_string())
 }
 
-/// Whether a remote PII-redaction enclave is fully configured (enclave host,
-/// attestation repo and API key in `SCREENPIPE_PRIVACY_FILTER_*`). The
+/// Whether an AI gateway credential is available to the engine: the
+/// `aiGatewayApiKey` setting, else `SCREENPIPE_AI_GATEWAY_KEY`. The key itself
+/// is never returned. Gateway transcription needs this and a gateway URL.
+#[tauri::command]
+#[specta::specta]
+pub fn get_ai_gateway_key_configured(app: AppHandle) -> bool {
+    let store = SettingsStore::get(&app).ok().flatten();
+    screenpipe_core::ai_gateway::credential(store.as_ref().map(|s| s.ai_gateway_api_key.as_str()))
+        .is_some()
+}
+
+/// Whether a remote PII-redaction enclave is fully configured: an enclave
+/// host from the endpoint switchboard (`SCREENPIPE_PRIVACY_FILTER_ENCLAVE` or
+/// `_URL`), plus `SCREENPIPE_PRIVACY_FILTER_REPO` and `_API_KEY`. The
 /// settings page offers the enclave backend only when this is true.
 #[tauri::command]
 #[specta::specta]
 pub fn get_privacy_filter_enclave_configured() -> bool {
-    screenpipe_redact::adapters::tinfoil::is_configured()
+    screenpipe_redact::adapters::tinfoil::is_configured_for(
+        screenpipe_core::endpoints::privacy_filter_base(),
+    )
 }

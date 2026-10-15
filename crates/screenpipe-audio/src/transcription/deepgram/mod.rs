@@ -56,9 +56,15 @@ impl DeepgramTranscriptionConfig {
         format!("{} {}", self.auth_header_prefix, self.auth_token)
     }
 
+    /// Whether this config talks to the user's AI gateway (Bearer auth)
+    /// rather than to Deepgram with the user's own key (Token auth).
+    pub fn is_gateway(&self) -> bool {
+        self.auth_header_prefix == "Bearer"
+    }
+
     /// Distinguishes the AI gateway from personal Deepgram; safe for logs.
     pub fn provider_slug_for_log(&self) -> &'static str {
-        if self.auth_header_prefix == "Bearer" {
+        if self.is_gateway() {
             "ai-gateway"
         } else {
             "deepgram-direct"
