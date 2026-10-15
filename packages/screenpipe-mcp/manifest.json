@@ -1,21 +1,21 @@
 {
   "manifest_version": "0.3",
   "name": "screenpipe",
-  "display_name": "Screenpipe",
+  "display_name": "Freenpipe",
   "version": "0.0.0-injected-from-package-json",
-  "description": "Search your screen recordings and audio transcriptions with AI",
-  "long_description": "Screenpipe is a 24/7 screen and audio recorder that lets you search everything you've seen or heard. This extension connects Claude to your local screenpipe instance, enabling AI-powered search through your digital memory.",
+  "description": "Search your Freenpipe screen and audio history from Claude",
+  "long_description": "Freenpipe records your screen and audio on your own machine and indexes them for search. This extension connects Claude to your local Freenpipe instance so it can search what you have seen and heard.",
   "author": {
-    "name": "screenpipe",
-    "url": "https://screenpi.pe"
+    "name": "Freenpipe",
+    "url": "https://github.com/normiecore/Freenpipe"
   },
   "repository": {
     "type": "git",
-    "url": "https://github.com/screenpipe/screenpipe"
+    "url": "https://github.com/normiecore/Freenpipe"
   },
-  "homepage": "https://screenpi.pe",
-  "documentation": "https://github.com/screenpipe/screenpipe/tree/main/packages/screenpipe-mcp",
-  "support": "https://github.com/screenpipe/screenpipe/issues",
+  "homepage": "https://github.com/normiecore/Freenpipe",
+  "documentation": "https://github.com/normiecore/Freenpipe/tree/main/packages/screenpipe-mcp",
+  "support": "https://github.com/normiecore/Freenpipe/issues",
   "license": "MIT",
   "server": {
     "type": "node",
@@ -59,7 +59,6 @@
   },
   "keywords": ["screen-recording", "ocr", "audio-transcription", "automation", "memory", "search"],
   "privacy_policies": [
-    "https://github.com/screenpipe/screenpipe/tree/main/packages/screenpipe-mcp#privacy-policy",
-    "https://screenpi.pe/privacy"
+    "https://github.com/normiecore/Freenpipe/tree/main/packages/screenpipe-mcp#privacy-policy"
   ]
 }
