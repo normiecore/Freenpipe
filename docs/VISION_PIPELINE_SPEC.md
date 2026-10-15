@@ -8,7 +8,7 @@
 
 ### 1.1 The Promise
 
-Screenpipe promises: "AI that knows everything you've seen, said, or heard." Users expect that anything they saw on screen is searchable later. Missing data = broken product.
+Users expect that anything they saw on screen is searchable later. Missing data = broken product.
 
 ### 1.2 What's Broken Today (v2.0.440)
 

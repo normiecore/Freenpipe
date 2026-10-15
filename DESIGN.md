@@ -1,5 +1,4 @@
-
-# Screenpipe Design Guide
+# Freenpipe Design Guide
 
 ## Philosophy
 
@@ -16,7 +15,7 @@ No color. Sharp corners. Clean typography. Escher-inspired mathematical abstract
 | **Privacy First** | Local-first execution and data by default, cloud optional |
 | **Open Source** | Inspect, modify, own, clean abstractions and readable codebase |
 | **Simplicity** | Clean, minimal interface, powerful abstractions |
-| **Radical optimism** | There is no such thing as impossible |
+| **Radical optimism** | Assume a hard problem can be solved |
 | **Progressive disclosure** | Easy, simple for non technical users but power users can still go deep |
 
 ---
@@ -157,7 +156,7 @@ No color. Sharp corners. Clean typography. Escher-inspired mathematical abstract
 
 ### Iteration
 
-Do at least 10 iterations on your animations, at every turn criticise your own design and improve it until it matches the unique brand style
+Do at least 10 iterations on your animations. At every turn, criticise your own design and improve it until it matches the style in this guide.
 
 ---
 
@@ -192,10 +191,10 @@ When creating new UI components:
 
 | Purpose | Location |
 |---------|----------|
-| Design tokens | `screenpipe-app-tauri/app/globals.css` |
-| Tailwind config | `screenpipe-app-tauri/tailwind.config.ts` |
-| Color constants | `screenpipe-app-tauri/lib/constants/colors.ts` |
-| UI components | `screenpipe-app-tauri/components/ui/*.tsx` |
+| Design tokens | `apps/screenpipe-app-tauri/app/globals.css` |
+| Tailwind config | `apps/screenpipe-app-tauri/tailwind.config.ts` |
+| Color constants | `apps/screenpipe-app-tauri/lib/constants/colors.ts` |
+| UI components | `apps/screenpipe-app-tauri/components/ui/*.tsx` |
 
 ---
 
