@@ -2458,7 +2458,7 @@ Your screen is a pipe. Everything you see, hear, and type flows through it. Scre
                 <Mic className="h-4 w-4 text-muted-foreground shrink-0" />
                 <h3 className="text-sm font-medium text-foreground flex items-center gap-1.5">
                   Transcription engine
-                  <HelpTooltip text="Remote engines send audio to a server you configured (your AI gateway or your Deepgram account). Offline engines run on your device: fully private, but they use more CPU and RAM." />
+                  <HelpTooltip text="Remote engines send audio to a server you configured (your AI gateway or your Deepgram account). On-device engines keep audio on this computer at the cost of more CPU and RAM." />
                 </h3>
               </div>
               <div className="flex items-center gap-2">
@@ -2811,7 +2811,7 @@ Your screen is a pipe. Everything you see, hear, and type flows through it. Scre
                 <div>
                   <h3 className="text-sm font-medium text-foreground flex items-center gap-1.5">
                     Live meeting notes
-                    <HelpTooltip text="Streams only the active meeting into the live note. This is separate from background 24/7 recording and can use your selected transcription engine, your AI gateway's live relay, or Deepgram with your key." />
+                    <HelpTooltip text="Live captions for the meeting in progress, kept apart from the always-on background recording. They can come from your transcription engine, your AI gateway's live relay, or Deepgram with your key." />
                   </h3>
                   <p className="text-xs text-muted-foreground">Meeting-only live captions, separate from background transcription</p>
                 </div>
@@ -2865,7 +2865,7 @@ Your screen is a pipe. Everything you see, hear, and type flows through it. Scre
                 {(settings.meetingLiveTranscriptionProvider ?? "selected-engine") === "selected-engine" &&
                   settings.audioTranscriptionEngine === "disabled" && (
                   <p className="text-xs text-muted-foreground">
-                    Pick an audio transcription engine above, or choose a gateway or Deepgram live provider.
+                    Select a transcription engine above, or switch live notes to the gateway relay or Deepgram.
                   </p>
                 )}
               </div>

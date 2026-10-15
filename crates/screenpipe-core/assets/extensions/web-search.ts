@@ -20,7 +20,7 @@ export default function (pi: ExtensionAPI) {
     name: "web_search",
     label: "Web Search",
     description:
-      "Search the public web through the AI gateway the user configured in Freenpipe. Only for public, external facts the user explicitly asks about: current events, news, public people or companies, public product documentation. Never for the user's own recorded data (screens, meetings, activity) or the local API at localhost:3030; that data is private and not on the web, so use the screenpipe skills and local tools instead. If unsure, do not search. Returns results with their sources.",
+      "Look things up on the public web through the AI gateway configured in Freenpipe. Use it only when the user wants outside, public information such as recent news, public figures or organizations, or public product docs. Never use it for the user's own recordings, meetings or activity, or for the local API on localhost:3030: that data is private and not online, so rely on the screenpipe skills and local tools. When in doubt, skip the search. Results come back with their sources.",
     parameters: params,
 
     async execute(

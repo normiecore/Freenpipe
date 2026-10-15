@@ -408,7 +408,7 @@ async fn handle_deepgram_response(
                     device, e
                 );
                 return Err(anyhow::anyhow!(
-                    "Connection refused to audio transcription server. A firewall may be blocking {}.",
+                    "The transcription server at {} refused the connection; a firewall may be in the way.",
                     host
                 ));
             }

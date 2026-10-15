@@ -797,7 +797,8 @@ async fn readiness_error(
         MeetingStreamingProvider::SelectedEngine => match transcription_engine.read().await.as_ref()
         {
             Some(engine) if engine.config() == AudioTranscriptionEngine::Disabled => Some(
-                "Choose an audio transcription engine to use live meeting notes".to_string(),
+                "Live meeting notes need a transcription engine; select one in the recording settings"
+                    .to_string(),
             ),
             Some(_) => None,
             None => Some("Selected transcription engine is still loading".to_string()),
@@ -809,7 +810,7 @@ async fn readiness_error(
         ),
         MeetingStreamingProvider::DeepgramLive if config.live_transcription_ready() => None,
         MeetingStreamingProvider::DeepgramLive => Some(
-            "Direct Deepgram live transcription needs a Deepgram API key".to_string(),
+            "Add your Deepgram API key to stream live notes through Deepgram".to_string(),
         ),
     }
 }
