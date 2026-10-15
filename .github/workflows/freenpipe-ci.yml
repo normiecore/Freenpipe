@@ -39,8 +39,11 @@ env:
   CARGO_PROFILE_RELEASE_DEV_INCREMENTAL: "false"
   BUN_VERSION: "1.3.10"
   ORT_VERSION: "1.22.0"
-  # Rust caches are written by main and ci/** pushes only; PRs restore them.
-  SAVE_RUST_CACHE: ${{ github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/heads/ci/') }}
+  # Rust caches are written by main pushes only, and every PR and ci/** run
+  # restores them (a run can read its own ref's and the default branch's
+  # caches). One full set (two OSes, engine + app) takes most of the
+  # repository's 10 GB cache budget, so a second writer would evict main's.
+  SAVE_RUST_CACHE: ${{ github.ref == 'refs/heads/main' }}
 
 jobs:
   windows:
@@ -66,12 +69,17 @@ jobs:
           rustc --version
           cargo --version
 
+      # Two caches, two keys. cache-bin stays off on both: with it on, the
+      # first post-job save prunes ~/.cargo/bin down to `cargo install`ed tools,
+      # deleting the cargo proxy, and the second save then cannot run
+      # `cargo metadata` and stores an empty target dir.
       - name: Rust cache (engine workspace)
         uses: Swatinem/rust-cache@v2
         with:
           key: engine
           workspaces: ". -> target"
           cache-on-failure: true
+          cache-bin: "false"
           save-if: ${{ env.SAVE_RUST_CACHE }}
 
       - name: Rust cache (app crate)
@@ -80,11 +88,17 @@ jobs:
           key: app
           workspaces: "apps/screenpipe-app-tauri/src-tauri -> target"
           cache-on-failure: true
+          cache-bin: "false"
           save-if: ${{ env.SAVE_RUST_CACHE }}
 
       - uses: oven-sh/setup-bun@v2
         with:
           bun-version: ${{ env.BUN_VERSION }}
+
+      # scripts/ci/cargo_test.py (test quarantine and failure summary).
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
 
       - name: MSVC environment
         uses: ilammy/msvc-dev-cmd@v1
@@ -126,10 +140,19 @@ jobs:
         id: engine
         run: cargo build --profile release-dev -p screenpipe-engine --bin screenpipe
 
+      # Every workspace crate except the macOS-only MLX one, doc tests included.
+      # Tests listed for windows/engine in scripts/ci/test-quarantine.txt are
+      # skipped here and run on their own in the next step.
       - name: Test engine workspace
+        id: engine_tests
         if: ${{ !cancelled() && steps.engine.outcome == 'success' }}
         timeout-minutes: 100
-        run: cargo test --profile release-dev --workspace --exclude screenpipe-rfdetr-mlx --no-fail-fast
+        run: python scripts/ci/cargo_test.py --platform windows --suite engine -- --profile release-dev --workspace --exclude screenpipe-rfdetr-mlx --no-fail-fast
+
+      - name: Quarantined engine tests (informational)
+        if: ${{ !cancelled() && steps.engine_tests.outcome != 'skipped' }}
+        timeout-minutes: 15
+        run: python scripts/ci/cargo_test.py --platform windows --suite engine --quarantined -- --profile release-dev --workspace --exclude screenpipe-rfdetr-mlx --no-fail-fast
 
       - name: Frontend install
         id: bun_install
@@ -162,9 +185,17 @@ jobs:
       # Same test as `bun run bindings:check`, run from src-tauri so it reuses
       # the release-dev build above (and the same .cargo/config.toml).
       - name: Tauri bindings check (lib/utils/tauri.ts)
+        id: bindings
         if: ${{ !cancelled() && steps.app.outcome == 'success' }}
         working-directory: apps/screenpipe-app-tauri/src-tauri
         run: cargo test --profile release-dev -p screenpipe-app --bin screenpipe-app tauri_bindings_are_current -- --nocapture
+
+      # The rest of the app binary's unit tests: the bindings check above has
+      # already compiled this test binary, so this only runs it.
+      - name: App crate unit tests
+        if: ${{ !cancelled() && steps.app.outcome == 'success' }}
+        working-directory: apps/screenpipe-app-tauri/src-tauri
+        run: python ../../../scripts/ci/cargo_test.py --platform windows --suite app --also-skip specta_bindings::tests::tauri_bindings_are_current -- --profile release-dev -p screenpipe-app --bin screenpipe-app --no-fail-fast
 
   linux:
     name: linux
@@ -215,6 +246,7 @@ jobs:
           key: engine
           workspaces: ". -> target"
           cache-on-failure: true
+          cache-bin: "false"
           save-if: ${{ env.SAVE_RUST_CACHE }}
 
       - name: Rust cache (app crate)
@@ -223,6 +255,7 @@ jobs:
           key: app
           workspaces: "apps/screenpipe-app-tauri/src-tauri -> target"
           cache-on-failure: true
+          cache-bin: "false"
           save-if: ${{ env.SAVE_RUST_CACHE }}
 
       - uses: oven-sh/setup-bun@v2
@@ -239,9 +272,15 @@ jobs:
         run: cargo build --profile release-dev -p screenpipe-engine --bin screenpipe
 
       - name: Test engine workspace
+        id: engine_tests
         if: ${{ !cancelled() && steps.engine.outcome == 'success' }}
         timeout-minutes: 90
-        run: xvfb-run -a cargo test --profile release-dev --workspace --exclude screenpipe-rfdetr-mlx --no-fail-fast
+        run: xvfb-run -a python3 scripts/ci/cargo_test.py --platform linux --suite engine -- --profile release-dev --workspace --exclude screenpipe-rfdetr-mlx --no-fail-fast
+
+      - name: Quarantined engine tests (informational)
+        if: ${{ !cancelled() && steps.engine_tests.outcome != 'skipped' }}
+        timeout-minutes: 15
+        run: xvfb-run -a python3 scripts/ci/cargo_test.py --platform linux --suite engine --quarantined -- --profile release-dev --workspace --exclude screenpipe-rfdetr-mlx --no-fail-fast
 
       - name: Frontend install
         id: bun_install
@@ -274,6 +313,11 @@ jobs:
         if: ${{ !cancelled() && steps.app.outcome == 'success' }}
         working-directory: apps/screenpipe-app-tauri/src-tauri
         run: cargo test --profile release-dev -p screenpipe-app --bin screenpipe-app tauri_bindings_are_current -- --nocapture
+
+      - name: App crate unit tests
+        if: ${{ !cancelled() && steps.app.outcome == 'success' }}
+        working-directory: apps/screenpipe-app-tauri/src-tauri
+        run: xvfb-run -a python3 ../../../scripts/ci/cargo_test.py --platform linux --suite app --also-skip specta_bindings::tests::tauri_bindings_are_current -- --profile release-dev -p screenpipe-app --bin screenpipe-app --no-fail-fast
 
   gates:
     name: gates

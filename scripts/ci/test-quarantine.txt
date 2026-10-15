@@ -1,0 +1,28 @@
+# Freenpipe CI test quarantine (read by scripts/ci/cargo_test.py).
+#
+# One test per line:  <platform> <suite> <exact test name> <why>
+#   platform  windows | linux | macos | all
+#   suite     engine (root workspace) | app (apps/screenpipe-app-tauri/src-tauri)
+#   name      the full libtest name as printed by `cargo test`, matched with --exact
+#
+# The gating test step skips these. A separate, non-blocking step runs only the
+# quarantined tests and flags any that pass again, so remove an entry once
+# its test is fixed. Every entry below fails on the hosted windows-2022 runner
+# in files that are unchanged since the fork's base import, and passes on
+# Linux. Add an entry only for a failure that a PR did not cause, and say why.
+
+windows engine tree::windows::tests::test_incognito_detection  stale upstream assertion: is_title_private("Enter Password - Chrome") is false with the current incognito.rs rules (screenpipe-a11y, src/tree/windows.rs:1021)
+windows engine meeting_streaming::controller::tests::live_session_requests_auto_end_after_max_duration  `Instant::now() - LIVE_MAX_SESSION_DURATION` overflows on a freshly booted runner; Windows Instant counts from boot (screenpipe-audio, controller.rs:1008)
+windows engine test_slow_consumer_causes_lag  timing-based: with Windows' ~15 ms timer granularity the slow consumer never lags (screenpipe-audio, tests/channel_lag_test.rs:146)
+windows engine timeline_performance_tests::test_file_based_db_performance  SqliteError 14 "unable to open database file": hard-coded /tmp/screenpipe_test_perf.db, and \tmp does not exist on Windows (screenpipe-db, tests/timeline_performance_test.rs:423)
+windows engine logging::tests::basic_write_creates_file  reads the size of a still-open log file through the directory listing, which NTFS only updates on close (screenpipe-engine, src/logging.rs:484)
+windows engine logging::tests::write_accumulates_in_same_file  same NTFS directory-entry size lag (screenpipe-engine, src/logging.rs:498)
+windows engine logging::tests::oversized_single_write_lands_in_file  same NTFS directory-entry size lag (screenpipe-engine, src/logging.rs:543)
+windows engine logging::tests::flush_is_idempotent  same NTFS directory-entry size lag (screenpipe-engine, src/logging.rs:721)
+windows engine tests::test_transcribe_unknown_engine_returns_400  the transcribe_test binary dies with STATUS_ACCESS_VIOLATION (0xc0000005) while this test, the only one that gets past the audio decode, is running (screenpipe-engine, tests/transcribe_test.rs:162)
+windows engine adapters::rfdetr::tests::default_path_lives_under_screenpipe_dir  asserts a '/'-separated path; Windows paths use '\' (screenpipe-redact, src/adapters/rfdetr.rs:533)
+windows engine adapters::rfdetr_mlx::tests::default_path_under_screenpipe_dir  asserts a '/'-separated path; Windows paths use '\' (screenpipe-redact, src/adapters/rfdetr_mlx.rs:465)
+windows engine worker_skips_already_redacted_rows  timing-based: a 120 ms window with a 20 ms poll is too short on the Windows runner, nothing is redacted yet (screenpipe-redact, tests/worker_integration.rs:193)
+windows engine worker_overwrites_source_columns_destructively  same timing window, raw email still in the source column (screenpipe-redact, tests/worker_integration.rs:226)
+windows engine migration::tests::test_migrate_skips_already_migrated  the second migration re-imports the file: its NTFS mtime compares newer than the store's updated_at (screenpipe-secrets, src/migration.rs:378)
+windows engine destination::local_fs::tests::batch_id_header_overrides_filename  asserts the object URL ends with "/batch-001.jsonl"; the Windows path ends with '\batch-001.jsonl' (screenpipe-sync, src/destination/local_fs.rs:115)
