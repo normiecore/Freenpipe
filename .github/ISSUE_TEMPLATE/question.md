@@ -1,6 +1,6 @@
 ---
 name: question
-about: ask a question about screenpipe
+about: ask a question about Freenpipe
 title: "[question] "
 labels: question
 assignees: ''
