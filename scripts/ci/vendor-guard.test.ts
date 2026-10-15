@@ -57,6 +57,63 @@ const ALLOWED: { path: string; rules: string[]; reason: string }[] = [
   },
 ];
 
+/**
+ * Commerce and promotion surfaces: checkout and billing, referral, the hosted
+ * team and enterprise consoles, sales booking links, plan and upgrade rows,
+ * and the vendor's later trial, paywall, card-ask, annual-plan, announcement,
+ * remote-control and hosted-quota features.
+ *
+ * W0-05 removed every one of these that the MIT base had. The target-only
+ * ones are never ported: Freenpipe has nothing to sell, so they have no
+ * counterpart. Unlike RULES, these fail in every mode. Code that has to name
+ * one of them to recognise and ignore it (store compatibility, deep-link
+ * filtering) goes in COMMERCE_ALLOWED with its reason.
+ */
+export const COMMERCE_RULES: Rule[] = [
+  // Removed from the base app by W0-05.
+  { id: "checkout-endpoint", pattern: /\/api\/(subscription|cloud-sync)\/checkout(?![\w-])/ },
+  { id: "referral-endpoint", pattern: /\/api\/referral(?![\w-])/ },
+  { id: "team-endpoint", pattern: /\/api\/team(?![\w-])/ },
+  { id: "enterprise-endpoint", pattern: /\/api\/enterprise\/(policy|heartbeat|v1)(?![\w-])/ },
+  { id: "booking-link", pattern: /cal\.com\/team\//i },
+  { id: "purchase-deep-link", pattern: /purchase-successful|stripe-connect/ },
+  { id: "tray-upgrade", pattern: /tray-upgrade|upgrade to business/i },
+  // Target-only (v2.7.x); never ported.
+  { id: "trial-paywall", pattern: /trial-activation|\/onboarding\/checkout/ },
+  { id: "card-ask", pattern: /card-ask|business-trial|FORCE_BUSINESS_TRIAL/i },
+  { id: "upgrade-offer", pattern: /\/api\/subscription\/(offer|change-plan)|\/api\/billing(?![\w-])|\/api\/team\/billing/ },
+  { id: "annual-plan-banner", pattern: /annual-plan-banner|plan-expiration-notice/ },
+  { id: "announcements", pattern: /screenpipe-announcement|announcements-dismissed/ },
+  { id: "remote-control-policy", pattern: /remoteControlPolicy|desktop_remote_control_applied/ },
+  {
+    id: "hosted-quota",
+    pattern:
+      /free_pipe_limit_reached|free_chat_limit_exceeded|hosted_ai_allowance_exceeded|trial_cost_limit_exceeded|activitiesQuotaPause|background_pipe_advisory/,
+  },
+];
+
+/**
+ * Legitimate COMMERCE_RULES hits. A path ending in "/" covers everything
+ * below it.
+ */
+const COMMERCE_ALLOWED: { path: string; rules: string[]; reason: string }[] = [
+  {
+    path: "apps/screenpipe-app-tauri/src-tauri/src/store.rs",
+    rules: ["trial-paywall"],
+    reason: "reads trial onboarding steps that screenpipe stored and treats them as complete",
+  },
+  {
+    path: "apps/screenpipe-app-tauri/lib/account-deep-link.ts",
+    rules: ["purchase-deep-link"],
+    reason: "recognises vendor purchase deep links so they can be dropped",
+  },
+  {
+    path: "packages/ai-gateway/",
+    rules: ["upgrade-offer"],
+    reason: "the vendor's hosted gateway source; not built or shipped (W0-06)",
+  },
+];
+
 /** Files that make up the endpoint switchboard; these must stay clean. */
 const SWITCHBOARD_FILES = [
   "crates/screenpipe-core/src/endpoints.rs",
@@ -208,14 +265,14 @@ export function blankRustTestModules(lines: string[]): string[] {
   return out;
 }
 
-export function scanSource(file: string, source: string): Hit[] {
+export function scanSource(file: string, source: string, rules: Rule[] = RULES): Hit[] {
   const ext = extname(file).toLowerCase();
   if (!SLASH_COMMENT.has(ext) && !HASH_COMMENT.has(ext) && !PLAIN.has(ext)) return [];
   let lines = stripComments(source, ext);
   if (ext === ".rs") lines = blankRustTestModules(lines);
   const hits: Hit[] = [];
   lines.forEach((text, i) => {
-    for (const rule of RULES) {
+    for (const rule of rules) {
       if (rule.pattern.test(text)) {
         hits.push({ file, line: i + 1, rule: rule.id, text: text.trim().slice(0, 160) });
       }
@@ -228,11 +285,22 @@ function isAllowed(hit: Hit): boolean {
   return ALLOWED.some((a) => hit.file === a.path && a.rules.includes(hit.rule));
 }
 
+function isCommerceAllowed(hit: Hit): boolean {
+  return COMMERCE_ALLOWED.some(
+    (a) =>
+      (a.path.endsWith("/") ? hit.file.startsWith(a.path) : hit.file === a.path) &&
+      a.rules.includes(hit.rule),
+  );
+}
+
 function toRepoPath(full: string): string {
   return relative(REPO_ROOT, full).split(sep).join("/");
 }
 
-export function scanRepo(): { hits: Hit[]; allowed: Hit[]; files: number } {
+export function scanRepo(
+  rules: Rule[] = RULES,
+  allow: (hit: Hit) => boolean = isAllowed,
+): { hits: Hit[]; allowed: Hit[]; files: number } {
   const hits: Hit[] = [];
   const allowed: Hit[] = [];
   let files = 0;
@@ -247,8 +315,8 @@ export function scanRepo(): { hits: Hit[]; allowed: Hit[]; files: number } {
       } catch {
         continue;
       }
-      for (const hit of scanSource(toRepoPath(full), source)) {
-        (isAllowed(hit) ? allowed : hits).push(hit);
+      for (const hit of scanSource(toRepoPath(full), source, rules)) {
+        (allow(hit) ? allowed : hits).push(hit);
       }
     }
   }
@@ -323,6 +391,44 @@ describe("vendor-host guard", () => {
       offenders.push(...scanSource(rel, source));
     }
     expect(offenders).toEqual([]);
+  });
+
+  test("commerce rules catch removed and never-ported surfaces", () => {
+    const sample = [
+      'fetch("https://example.test/api/subscription/checkout")',
+      'fetch(`${web}/api/cloud-sync/checkout`)',
+      'fetch(base + "/api/referral/invite")',
+      'const API = base + "/api/team";',
+      'openUrl("https://cal.com/team/acme/chat")',
+      'let _ = app.emit("tray-upgrade", ());',
+      'step: "trial-activation-v1-paywall"',
+      'localStorage.getItem("screenpipe-announcements-dismissed-v1")',
+      'if (settings.remoteControlPolicy) {}',
+      'if (code === "free_pipe_limit_reached") {}',
+    ].join("\n");
+    const hit = scanSource("x.ts", sample, COMMERCE_RULES).map((h) => h.line);
+    expect(hit).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9, 10]);
+
+    const innocent = [
+      "git checkout main",
+      'fetch("/api/teams-meeting/status")',
+      'const plan = "upgrade the parser";',
+      'route("/api/billing-address-autofill")',
+    ].join("\n");
+    expect(scanSource("x.ts", innocent, COMMERCE_RULES)).toEqual([]);
+  });
+
+  test("no commerce, team or promotion surfaces remain (every mode)", () => {
+    const { hits, files } = scanRepo(COMMERCE_RULES, isCommerceAllowed);
+    if (hits.length > 0) {
+      console.log(
+        ["vendor-guard: commerce surfaces found (allowlist only with a reason):"]
+          .concat(hits.map((h) => `  ${h.file}:${h.line} [${h.rule}] ${h.text}`))
+          .join("\n"),
+      );
+    }
+    expect(files).toBeGreaterThan(0);
+    expect(hits).toEqual([]);
   });
 
   test(`repository scan (${MODE} mode)`, () => {

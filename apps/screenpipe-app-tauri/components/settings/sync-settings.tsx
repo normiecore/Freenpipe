@@ -27,8 +27,6 @@ import {
   CheckCircle2,
   AlertCircle,
   Loader2,
-  ArrowRight,
-  Sparkles,
   Copy,
   Eye,
   EyeOff,
@@ -203,10 +201,9 @@ function SyncBenefits() {
   );
 }
 
-// Onboarding/upgrade prompt
-function SyncOnboarding({ onSubscribe, onRefresh, isLoading, isRefreshing, isLoggedIn }: { onSubscribe: (isAnnual: boolean) => void; onRefresh: () => void; isLoading: boolean; isRefreshing: boolean; isLoggedIn: boolean }) {
-  const [isAnnual, setIsAnnual] = useState(true);
-
+// Shown when no sync account is available. There is nothing to buy: the
+// hosted sync service is not part of this build.
+function SyncOnboarding({ onRefresh, isRefreshing }: { onRefresh: () => void; isRefreshing: boolean }) {
   return (
     <div className="space-y-6">
       <div className="text-center">
@@ -219,82 +216,10 @@ function SyncOnboarding({ onSubscribe, onRefresh, isLoading, isRefreshing, isLog
 
       <SyncBenefits />
 
-      <Card className="p-4 bg-primary/5 border-primary/20">
-        <div className="flex items-center justify-between">
-          <div>
-            <div className="flex items-center gap-2">
-              <Sparkles className="w-4 h-4 text-primary" />
-              <span className="font-medium">Screenpipe Business</span>
-            </div>
-            <p className="text-sm text-muted-foreground mt-1">
-              50GB storage · 3 devices · Priority support
-            </p>
-          </div>
-          <div className="text-right">
-            <div className="text-lg font-bold">
-              ${isAnnual ? "42" : "50"}
-              <span className="text-sm font-normal text-muted-foreground">
-                /mo
-              </span>
-            </div>
-            {isAnnual && (
-              <p className="text-xs text-primary">$500/year - Save 17%</p>
-            )}
-          </div>
-        </div>
-
-        {/* Billing toggle */}
-        <div className="flex items-center justify-center gap-3 mt-4">
-          <span className={`text-sm ${!isAnnual ? "text-foreground" : "text-muted-foreground"}`}>
-            Monthly
-          </span>
-          <Switch
-            checked={isAnnual}
-            onCheckedChange={setIsAnnual}
-          />
-          <span className={`text-sm ${isAnnual ? "text-foreground" : "text-muted-foreground"}`}>
-            Annual
-          </span>
-        </div>
-
-        {isLoggedIn ? (
-          <Button
-            className="w-full mt-4"
-            onClick={() => onSubscribe(isAnnual)}
-            disabled={isLoading}
-          >
-            {isLoading ? (
-              <Loader2 className="w-4 h-4 animate-spin mr-2" />
-            ) : null}
-            Get Cloud Sync
-            <ArrowRight className="w-4 h-4 ml-2" />
-          </Button>
-        ) : (
-          <div className="mt-4 space-y-2">
-            <p className="text-sm text-center text-muted-foreground">
-              Please log in to subscribe
-            </p>
-            <Button
-              className="w-full"
-              variant="outline"
-              onClick={async () => {
-                const { open } = await import("@tauri-apps/plugin-shell");
-                await open("https://screenpipe.com/login");
-              }}
-            >
-              Log in to continue
-              <ArrowRight className="w-4 h-4 ml-2" />
-            </Button>
-          </div>
-        )}
-        <a
-          href="https://docs.screenpi.pe/cloud-sync"
-          target="_blank"
-          rel="noopener noreferrer"
-          className="text-xs text-center text-muted-foreground mt-3 block hover:text-primary underline"
-        >
-          Learn how encryption works →
-        </a>
+      <Card className="p-4">
+        <p className="text-sm text-muted-foreground">
+          Cloud sync is not available: this build has no hosted sync service.
+        </p>
       </Card>
 
       <Button
@@ -305,7 +230,7 @@ function SyncOnboarding({ onSubscribe, onRefresh, isLoading, isRefreshing, isLog
         className="mx-auto flex items-center gap-2 text-muted-foreground"
       >
         <RefreshCw className={`w-3 h-3 ${isRefreshing ? "animate-spin" : ""}`} />
-        {isRefreshing ? "Checking..." : "Already subscribed? Refresh"}
+        {isRefreshing ? "Checking..." : "Check again"}
       </Button>
     </div>
   );
@@ -1035,79 +960,6 @@ export function SyncSettings() {
     }
   };
 
-  const handleSubscribe = async (isAnnual: boolean = true) => {
-    try {
-      setIsLoading(true);
-      const token = settings.user?.token;
-      const userId = settings.user?.id;
-
-      if (!token || !userId) {
-        toast({
-          title: "please log in first",
-          description: "you need to be logged in to subscribe",
-          variant: "destructive",
-        });
-        return;
-      }
-
-      const response = await fetch("https://screenpi.pe/api/cloud-sync/checkout", {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          "Authorization": `Bearer ${token}`,
-        },
-        body: JSON.stringify({
-          tier: "pro",
-          billingPeriod: isAnnual ? "yearly" : "monthly",
-          userId,
-          email: settings.user?.email,
-        }),
-      });
-
-      const data = await response.json();
-
-      if (data.url) {
-        const { open } = await import("@tauri-apps/plugin-shell");
-        await open(data.url);
-
-        toast({
-          title: "checkout opened",
-          description: "complete your purchase in the browser, then return here",
-        });
-
-        // Poll for subscription status - stop when subscription is detected
-        let pollCount = 0;
-        const maxPolls = 300; // 5 minutes at 1 second intervals
-        const checkInterval = setInterval(async () => {
-          pollCount++;
-          console.log(`polling for subscription... attempt ${pollCount}`);
-          const hasSubscription = await checkSubscriptionAndLoad();
-          if (hasSubscription) {
-            console.log("subscription detected, stopping poll");
-            clearInterval(checkInterval);
-            toast({
-              title: "subscription activated",
-              description: "setting up cloud sync...",
-            });
-          } else if (pollCount >= maxPolls) {
-            console.log("stopping subscription poll - max attempts reached");
-            clearInterval(checkInterval);
-          }
-        }, 1000);
-      } else {
-        throw new Error(data.error || "failed to create checkout");
-      }
-    } catch (error) {
-      toast({
-        title: "failed to start checkout",
-        description: String(error),
-        variant: "destructive",
-      });
-    } finally {
-      setIsLoading(false);
-    }
-  };
-
   const handlePasswordSubmit = async (password: string) => {
     try {
       setIsLoading(true);
@@ -1303,8 +1155,7 @@ export function SyncSettings() {
   }
 
   if (step === "onboarding") {
-    const isLoggedIn = !!(settings.user?.token && settings.user?.id);
-    return <SyncOnboarding onSubscribe={handleSubscribe} onRefresh={handleRefresh} isLoading={isLoading} isRefreshing={isRefreshing} isLoggedIn={isLoggedIn} />;
+    return <SyncOnboarding onRefresh={handleRefresh} isRefreshing={isRefreshing} />;
   }
 
   if (step === "password") {

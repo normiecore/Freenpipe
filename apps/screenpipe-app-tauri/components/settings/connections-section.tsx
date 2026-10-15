@@ -12,11 +12,10 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Dialog, DialogClose, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
-import { Download, ExternalLink, Check, Loader2, Copy, Terminal, Lock, LogIn, LogOut, Send, X, HelpCircle, Search, Calendar as CalendarIcon, Eye, EyeOff, FolderOpen, Plus, Keyboard, AlertCircle, MessageSquare } from "lucide-react";
+import { Download, ExternalLink, Check, Loader2, Copy, Terminal, LogIn, LogOut, Send, X, HelpCircle, Search, Calendar as CalendarIcon, Eye, EyeOff, FolderOpen, Plus, Keyboard, AlertCircle, MessageSquare } from "lucide-react";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
 import { commands } from "@/lib/utils/tauri";
 import { useSettings } from "@/lib/hooks/use-settings";
-import { hasCloudEntitlement } from "@/lib/app-entitlement";
 import { useToast } from "@/components/ui/use-toast";
 import { ensureChatGptPreset } from "@/lib/utils/chatgpt-preset";
 import { notifyConnectionsUpdated } from "@/lib/connections-events";
@@ -2168,9 +2167,6 @@ function OAuthPanel({
   onConnected?: () => void;
   onDisconnected?: () => void;
 }) {
-  const { settings } = useSettings();
-  // Freenpipe has no plans: OAuth integrations are never locked.
-  const isPro = hasCloudEntitlement(settings.user);
   const [status, setStatus] = useState<"idle" | "loading">("idle");
   const [accounts, setAccounts] = useState<OAuthAccount[]>([]);
   const [disconnecting, setDisconnecting] = useState<string | null>(null);
@@ -2288,19 +2284,7 @@ function OAuthPanel({
         </div>
       )}
       <div className="flex flex-wrap gap-2">
-        {!isPro && !connected ? (
-          <div className="flex flex-col gap-1.5">
-            <Button disabled size="sm" className="gap-1.5 h-7 text-xs normal-case font-sans tracking-normal whitespace-nowrap opacity-60">
-              <Lock className="h-3 w-3" />pro required
-            </Button>
-            <button
-              onClick={() => openUrl("https://screenpipe.com/onboarding")}
-              className="text-[10px] text-muted-foreground hover:text-foreground underline"
-            >
-              upgrade to pro to connect
-            </button>
-          </div>
-        ) : status === "loading" ? (
+        {status === "loading" ? (
           <div className="flex gap-2 items-center">
             <Button disabled size="sm" className="gap-1.5 h-7 text-xs normal-case font-sans tracking-normal whitespace-nowrap">
               <Loader2 className="h-3 w-3 animate-spin" />connecting...

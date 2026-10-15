@@ -6,12 +6,9 @@
 import React, { useCallback, useEffect, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
-import { useSettings } from "@/lib/hooks/use-settings";
-import { hasCloudEntitlement } from "@/lib/app-entitlement";
 import { notifyConnectionsUpdated } from "@/lib/connections-events";
 import { commands } from "@/lib/utils/tauri";
-import { openUrl } from "@tauri-apps/plugin-opener";
-import { Loader2, Lock, LogOut, Plus, Table2 } from "lucide-react";
+import { Loader2, LogOut, Plus, Table2 } from "lucide-react";
 import posthog from "posthog-js";
 import { GoogleOAuthUnverifiedAppHint } from "./google-oauth-unverified-app-hint";
 
@@ -25,9 +22,6 @@ export function GoogleSheetsCard({
 }: {
   onConnectionChange?: () => void;
 } = {}) {
-  const { settings } = useSettings();
-  // Freenpipe has no plans: OAuth integrations are never locked.
-  const isPro = hasCloudEntitlement(settings.user);
   const [accounts, setAccounts] = useState<SheetsAccount[]>([]);
   const [isConnecting, setIsConnecting] = useState(false);
   const [disconnecting, setDisconnecting] = useState<string | null>(null);
@@ -151,43 +145,29 @@ export function GoogleSheetsCard({
               </div>
             )}
 
-            {!isPro && !connected ? (
-              <div className="flex flex-col gap-1.5">
-                <Button disabled size="sm" className="gap-1.5 text-xs opacity-60">
-                  <Lock className="h-3 w-3" />pro required
-                </Button>
-                <button
-                  onClick={() => openUrl("https://screenpi.pe/onboarding")}
-                  className="text-[10px] text-muted-foreground hover:text-foreground underline"
-                >
-                  upgrade to pro to connect
-                </button>
-              </div>
-            ) : (
-              <div className="space-y-2">
-                <Button
-                  variant="outline"
-                  size="sm"
-                  onClick={handleConnect}
-                  disabled={isConnecting}
-                  className="text-xs"
-                >
-                  {isConnecting ? (
-                    <Loader2 className="h-3 w-3 mr-1.5 animate-spin" />
-                  ) : connected ? (
-                    <Plus className="h-3 w-3 mr-1.5" />
-                  ) : (
-                    <Table2 className="h-3 w-3 mr-1.5" />
-                  )}
-                  {isConnecting
-                    ? "Waiting for Google..."
-                    : connected
-                    ? "Add another account"
-                    : "Connect Google Sheets"}
-                </Button>
-                {!connected && <GoogleOAuthUnverifiedAppHint />}
-              </div>
-            )}
+            <div className="space-y-2">
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={handleConnect}
+                disabled={isConnecting}
+                className="text-xs"
+              >
+                {isConnecting ? (
+                  <Loader2 className="h-3 w-3 mr-1.5 animate-spin" />
+                ) : connected ? (
+                  <Plus className="h-3 w-3 mr-1.5" />
+                ) : (
+                  <Table2 className="h-3 w-3 mr-1.5" />
+                )}
+                {isConnecting
+                  ? "Waiting for Google..."
+                  : connected
+                  ? "Add another account"
+                  : "Connect Google Sheets"}
+              </Button>
+              {!connected && <GoogleOAuthUnverifiedAppHint />}
+            </div>
           </div>
         </div>
 

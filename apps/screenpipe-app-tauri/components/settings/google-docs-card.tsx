@@ -6,11 +6,8 @@
 import React, { useState, useEffect, useCallback } from "react";
 import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
-import { Loader2, RefreshCw, LogOut, ExternalLink, FileText, Lock, Plus } from "lucide-react";
+import { Loader2, RefreshCw, LogOut, ExternalLink, FileText, Plus } from "lucide-react";
 import { commands } from "@/lib/utils/tauri";
-import { openUrl } from "@tauri-apps/plugin-opener";
-import { useSettings } from "@/lib/hooks/use-settings";
-import { hasCloudEntitlement } from "@/lib/app-entitlement";
 import { notifyConnectionsUpdated } from "@/lib/connections-events";
 import posthog from "posthog-js";
 import { localFetch } from "@/lib/api";
@@ -29,9 +26,6 @@ interface DocsAccount {
 }
 
 export function GoogleDocsCard() {
-  const { settings } = useSettings();
-  // Freenpipe has no plans: OAuth integrations are never locked.
-  const isPro = hasCloudEntitlement(settings.user);
   const [accounts, setAccounts] = useState<DocsAccount[]>([]);
   const [isConnecting, setIsConnecting] = useState(false);
   const [disconnecting, setDisconnecting] = useState<string | null>(null);
@@ -201,43 +195,29 @@ export function GoogleDocsCard() {
               </div>
             )}
 
-            {!isPro && !connected ? (
-              <div className="flex flex-col gap-1.5">
-                <Button disabled size="sm" className="gap-1.5 text-xs opacity-60">
-                  <Lock className="h-3 w-3" />pro required
-                </Button>
-                <button
-                  onClick={() => openUrl("https://screenpipe.com/onboarding")}
-                  className="text-[10px] text-muted-foreground hover:text-foreground underline"
-                >
-                  upgrade to pro to connect
-                </button>
-              </div>
-            ) : (
-              <div className="space-y-2">
-                <Button
-                  variant="outline"
-                  size="sm"
-                  onClick={handleConnect}
-                  disabled={isConnecting}
-                  className="text-xs"
-                >
-                  {isConnecting ? (
-                    <Loader2 className="h-3 w-3 mr-1.5 animate-spin" />
-                  ) : connected ? (
-                    <Plus className="h-3 w-3 mr-1.5" />
-                  ) : (
-                    <img src="/images/google-docs.svg" alt="" className="h-3 w-3 mr-1.5" />
-                  )}
-                  {isConnecting
-                    ? "Waiting for Google..."
-                    : connected
-                    ? "Add another account"
-                    : "Connect Google Docs"}
-                </Button>
-                {!connected && <GoogleOAuthUnverifiedAppHint />}
-              </div>
-            )}
+            <div className="space-y-2">
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={handleConnect}
+                disabled={isConnecting}
+                className="text-xs"
+              >
+                {isConnecting ? (
+                  <Loader2 className="h-3 w-3 mr-1.5 animate-spin" />
+                ) : connected ? (
+                  <Plus className="h-3 w-3 mr-1.5" />
+                ) : (
+                  <img src="/images/google-docs.svg" alt="" className="h-3 w-3 mr-1.5" />
+                )}
+                {isConnecting
+                  ? "Waiting for Google..."
+                  : connected
+                  ? "Add another account"
+                  : "Connect Google Docs"}
+              </Button>
+              {!connected && <GoogleOAuthUnverifiedAppHint />}
+            </div>
           </div>
         </div>
 
