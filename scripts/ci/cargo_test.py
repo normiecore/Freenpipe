@@ -7,33 +7,39 @@
 
 Default mode runs `cargo test <args> -- --exact --skip <name> ...` for every
 entry of scripts/ci/test-quarantine.txt that matches the platform and suite,
-streams the output, and exits with cargo's exit code.
+and streams the output. A test binary that dies without a failed test (an
+access violation, a signal) is run once more on its own with
+--test-threads=1. If that passes, the crash counts as flaky: it is reported as
+a warning and does not fail the step. Any failed test, any crash that repeats,
+or more than MAX_CRASH_RETRIES crashed binaries fail the step.
 
 --quarantined runs only the quarantined tests of that platform and suite
 (`cargo test <args> --lib --bins --tests -- --exact <name> ...`, so no doc
-tests), reports each one's outcome, flags any that now pass, and always exits
-0: it keeps the quarantine honest without blocking a merge.
+tests), reports each one's outcome, flags any that pass, and always exits 0:
+it keeps the quarantine honest without blocking a merge.
 
 Both modes end the log with a "cargo-test summary" block (failed tests, failed
-targets with cargo's rerun hint), add ::error annotations for failures (the
-check-run annotations API exposes them without a log download), and append a
-table to $GITHUB_STEP_SUMMARY when it is set.
+targets with cargo's rerun hint), add annotations for failures (the check-run
+annotations API exposes them without a log download), and append a table to
+$GITHUB_STEP_SUMMARY when it is set.
 """
 
 import argparse
 import os
 import re
+import shlex
 import subprocess
 import sys
 from pathlib import Path
 
 QUARANTINE = Path(__file__).resolve().parent / "test-quarantine.txt"
 ANSI = re.compile(r"\x1b\[[0-9;]*[A-Za-z]")
-RUNNING = re.compile(r"^\s*(?:Running|Doc-tests)\s+(.*)$")
+RUNNING = re.compile(r"^\s*(Running|Doc-tests)\s+(.*)$")
 TEST_LINE = re.compile(r"^test (\S.*?) \.\.\. (ok|FAILED|ignored.*)$")
 RESULT = re.compile(r"^test result: \w+\. (\d+) passed; (\d+) failed; (\d+) ignored;")
 RERUN = re.compile(r"^error: test failed, to rerun pass `([^`]*)`")
 MAX_ANNOTATIONS = 10
+MAX_CRASH_RETRIES = 3
 
 
 def load_quarantine(platform, suite):
@@ -53,11 +59,13 @@ def load_quarantine(platform, suite):
     return entries
 
 
-def target_label(running):
-    """'unittests src\\lib.rs (target\\...\\deps\\screenpipe_a11y-71d8.exe)' -> 'screenpipe_a11y (unittests src/lib.rs)'."""
-    m = re.match(r"^(.*?)\s*\((.*)\)\s*$", running)
+def target_label(kind, rest):
+    """('Running', 'unittests src\\lib.rs (target\\...\\screenpipe_a11y-71d8.exe)') -> 'screenpipe_a11y (unittests src/lib.rs)'."""
+    if kind == "Doc-tests":
+        return f"doc-tests {rest.strip()}"
+    m = re.match(r"^(.*?)\s*\((.*)\)\s*$", rest)
     if not m:
-        return running.strip()
+        return rest.strip()
     what, exe = m.group(1).replace("\\", "/"), m.group(2).replace("\\", "/")
     stem = exe.rsplit("/", 1)[-1]
     stem = re.sub(r"\.exe$", "", stem)
@@ -78,15 +86,19 @@ def run(cmd):
 
 
 def parse(lines):
+    """Returns outcomes {test: [(target, outcome)]}, failed [(target, test)],
+    failed targets [(rerun spec, target, crashed)], totals [passed, failed, ignored]."""
     current = ""
-    outcomes = {}  # test name -> list of (target, outcome)
-    failed = []  # (target, test)
-    rerun = []
+    current_failed = 0
+    outcomes = {}
+    failed = []
+    targets = []
     totals = [0, 0, 0]
     for line in lines:
         m = RUNNING.match(line)
         if m:
-            current = target_label(m.group(1)) if line.lstrip().startswith("Running") else f"doc-tests {m.group(1).strip()}"
+            current = target_label(m.group(1), m.group(2))
+            current_failed = 0
             continue
         m = TEST_LINE.match(line)
         if m:
@@ -94,6 +106,7 @@ def parse(lines):
             outcomes.setdefault(name, []).append((current, outcome))
             if outcome == "FAILED":
                 failed.append((current, name))
+                current_failed += 1
             continue
         m = RESULT.match(line)
         if m:
@@ -102,8 +115,27 @@ def parse(lines):
             continue
         m = RERUN.match(line)
         if m:
-            rerun.append(m.group(1))
-    return outcomes, failed, rerun, totals
+            # cargo prints this right after the binary ends. A failure without
+            # a failed test means the process died (mid-run or at exit).
+            targets.append((m.group(1), current, current_failed == 0))
+    return outcomes, failed, targets, totals
+
+
+def target_flags(spec):
+    """cargo's rerun hint ('-p screenpipe-engine --test tags_test') minus the
+    package. The retry keeps the original package selection, so feature
+    resolution, and with it every compiled binary, stays the same; with
+    --workspace cargo would ignore -p anyway. A `--lib` retry therefore runs
+    the unit tests of every selected crate."""
+    out, skip = [], False
+    for a in shlex.split(spec):
+        if skip:
+            skip = False
+        elif a in ("-p", "--package"):
+            skip = True
+        elif not (a.startswith("--package=") or (a.startswith("-p") and len(a) > 2)):
+            out.append(a)
+    return out
 
 
 def esc(s):
@@ -128,6 +160,7 @@ def main():
     label = f"{opts.platform}/{opts.suite}"
     summary_path = os.environ.get("GITHUB_STEP_SUMMARY")
 
+    libtest = []
     if opts.quarantined:
         if not names:
             print(f"cargo_test: nothing quarantined for {label}")
@@ -135,39 +168,72 @@ def main():
         # Without an explicit target selection, leave out doc tests: they are
         # never quarantined and rustdoc would compile them again.
         explicit = {"--lib", "--bin", "--bins", "--test", "--tests", "--doc"} & set(cargo_args)
-        targets = [] if explicit else ["--lib", "--bins", "--tests"]
-        cmd = ["cargo", "test", *cargo_args, *targets, "--", "--exact", *names]
+        targets_sel = [] if explicit else ["--lib", "--bins", "--tests"]
+        cmd = ["cargo", "test", *cargo_args, *targets_sel, "--", "--exact", *names]
     else:
         skips = names + opts.also_skip
-        cmd = ["cargo", "test", *cargo_args, "--"]
         if skips:
-            cmd.append("--exact")
+            libtest.append("--exact")
             for n in skips:
-                cmd += ["--skip", n]
+                libtest += ["--skip", n]
+        cmd = ["cargo", "test", *cargo_args, "--", *libtest]
 
     code, lines = run(cmd)
-    outcomes, failed, rerun, totals = parse(lines)
+    outcomes, failed, targets, totals = parse(lines)
+
+    # ---- retry crashed binaries once, alone and single-threaded --------------
+    flaky, crashed_again = [], []
+    crashes = [t for t in targets if t[2]]
+    if not opts.quarantined and crashes:
+        if len(crashes) > MAX_CRASH_RETRIES:
+            print(f"cargo_test: {len(crashes)} test binaries crashed; not retrying more than {MAX_CRASH_RETRIES}")
+            crashed_again = crashes
+        else:
+            for spec, target, _ in crashes:
+                flags = target_flags(spec)
+                if not flags:
+                    crashed_again.append((spec, target, True))
+                    continue
+                print(f"\ncargo_test: {target} crashed without a failed test; retrying it alone with --test-threads=1", flush=True)
+                rc, rlines = run(["cargo", "test", *cargo_args, *flags, "--", *libtest, "--test-threads=1"])
+                r_outcomes, r_failed, _, r_totals = parse(rlines)
+                for k, v in r_outcomes.items():
+                    outcomes.setdefault(k, []).extend(v)
+                for i in range(3):
+                    totals[i] += r_totals[i]
+                if rc == 0:
+                    flaky.append((spec, target))
+                else:
+                    crashed_again.append((spec, target, True))
+                    failed.extend(r_failed)
+        hard = [t for t in targets if not t[2]]
+        if code != 0 and not hard and not crashed_again and not failed:
+            code = 0
+
+    failed_specs = [t[0] for t in targets if not t[2]] + [t[0] for t in crashed_again]
 
     print(f"\n==== cargo-test summary ({label}{', quarantined only' if opts.quarantined else ''}) ====")
     print(f"exit {code}; passed {totals[0]}, failed {totals[1]}, ignored {totals[2]}; "
           f"{len(names)} quarantined test(s) {'run' if opts.quarantined else 'skipped'}")
     for target, name in failed:
         print(f"FAILED  {name}    [{target}]")
-    for spec in rerun:
+    for spec in failed_specs:
         print(f"TARGET FAILED  cargo test ... {spec}")
+    for spec, target in flaky:
+        print(f"FLAKY CRASH  {target}: crashed, then passed alone with --test-threads=1 ({spec})")
 
     md = []
     if opts.quarantined:
-        md.append(f"### Quarantined tests ({label}, informational)\n")
+        md.append(f"### Quarantined tests ({label}, informational)\n\n")
         md.append("| Test | Outcome | Why quarantined |\n|---|---|---|\n")
         for name, reason in entries:
             seen = outcomes.get(name, [])
             if not seen:
                 result = "no result (binary crashed or test not found)"
             elif all(o == "ok" for _, o in seen):
-                result = "**passes now**: remove it from the quarantine"
-                print(f"::warning title=quarantined test passes::{esc(name)} passes on {label}; "
-                      f"remove it from scripts/ci/test-quarantine.txt")
+                result = "**passed**: if it keeps passing, remove it from the quarantine"
+                print(f"::warning title=quarantined test passed::{esc(name)} passed on {label}; "
+                      f"if it keeps passing, remove it from scripts/ci/test-quarantine.txt")
             else:
                 result = ", ".join(sorted({o for _, o in seen}))
             print(f"QUARANTINED  {name}: {result}")
@@ -175,13 +241,16 @@ def main():
         code = 0
     else:
         # GitHub keeps 10 error annotations per step: failed tests first, then
-        # one line naming every failed target (a crashed binary has no FAILED
+        # one line naming every failed target (a crashed binary has no failed
         # test line, only a target).
         for target, name in failed[:MAX_ANNOTATIONS - 1]:
             print(f"::error title=test failed ({label})::{esc(name)} in {esc(target)}")
-        if rerun:
-            print(f"::error title=failed test targets ({label})::{esc('; '.join(rerun))}")
-        if code != 0 and not failed and not rerun:
+        if failed_specs:
+            print(f"::error title=failed test targets ({label})::{esc('; '.join(failed_specs))}")
+        for spec, target in flaky:
+            print(f"::warning title=flaky test crash ({label})::{esc(target)} crashed, then passed alone "
+                  f"with --test-threads=1 ({esc(spec)})")
+        if code != 0 and not failed and not failed_specs:
             print(f"::error title=cargo test failed ({label})::cargo exited {code} before running tests (build error?)")
         md.append(f"### cargo test ({label})\n\n")
         md.append(f"exit {code}: {totals[0]} passed, {totals[1]} failed, {totals[2]} ignored, "
@@ -190,9 +259,13 @@ def main():
             md.append("| Failed test | Target |\n|---|---|\n")
             md.extend(f"| `{n}` | {t} |\n" for t, n in failed)
             md.append("\n")
-        if rerun:
+        if failed_specs:
             md.append("Failed targets (cargo rerun hints):\n\n")
-            md.extend(f"- `{s}`\n" for s in rerun)
+            md.extend(f"- `{s}`\n" for s in failed_specs)
+            md.append("\n")
+        if flaky:
+            md.append("Flaky crashes (passed on a single-threaded retry):\n\n")
+            md.extend(f"- {t} (`{s}`)\n" for s, t in flaky)
             md.append("\n")
 
     if summary_path:

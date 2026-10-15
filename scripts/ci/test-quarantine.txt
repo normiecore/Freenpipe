@@ -6,10 +6,12 @@
 #   name      the full libtest name as printed by `cargo test`, matched with --exact
 #
 # The gating test step skips these. A separate, non-blocking step runs only the
-# quarantined tests and flags any that pass again, so remove an entry once
-# its test is fixed. Every entry below fails on the hosted windows-2022 runner
-# in files that are unchanged since the fork's base import, and passes on
-# Linux. Add an entry only for a failure that a PR did not cause, and say why.
+# quarantined tests and flags any that pass, so remove an entry once its test
+# is fixed. Every entry below fails (the timing ones: usually fails) on the
+# hosted windows-2022 runner, in files unchanged since the fork's base import,
+# and passes on Linux. Add an entry only for a failure that a PR did not
+# cause, and say why. A test binary that crashes without a failed test is not
+# quarantined here: cargo_test.py retries it once, single-threaded.
 
 windows engine tree::windows::tests::test_incognito_detection  stale upstream assertion: is_title_private("Enter Password - Chrome") is false with the current incognito.rs rules (screenpipe-a11y, src/tree/windows.rs:1021)
 windows engine meeting_streaming::controller::tests::live_session_requests_auto_end_after_max_duration  `Instant::now() - LIVE_MAX_SESSION_DURATION` overflows on a freshly booted runner; Windows Instant counts from boot (screenpipe-audio, controller.rs:1008)
@@ -19,7 +21,6 @@ windows engine logging::tests::basic_write_creates_file  reads the size of a sti
 windows engine logging::tests::write_accumulates_in_same_file  same NTFS directory-entry size lag (screenpipe-engine, src/logging.rs:498)
 windows engine logging::tests::oversized_single_write_lands_in_file  same NTFS directory-entry size lag (screenpipe-engine, src/logging.rs:543)
 windows engine logging::tests::flush_is_idempotent  same NTFS directory-entry size lag (screenpipe-engine, src/logging.rs:721)
-windows engine tests::test_transcribe_unknown_engine_returns_400  the transcribe_test binary dies with STATUS_ACCESS_VIOLATION (0xc0000005) while this test, the only one that gets past the audio decode, is running (screenpipe-engine, tests/transcribe_test.rs:162)
 windows engine adapters::rfdetr::tests::default_path_lives_under_screenpipe_dir  asserts a '/'-separated path; Windows paths use '\' (screenpipe-redact, src/adapters/rfdetr.rs:533)
 windows engine adapters::rfdetr_mlx::tests::default_path_under_screenpipe_dir  asserts a '/'-separated path; Windows paths use '\' (screenpipe-redact, src/adapters/rfdetr_mlx.rs:465)
 windows engine worker_skips_already_redacted_rows  timing-based: a 120 ms window with a 20 ms poll is too short on the Windows runner, nothing is redacted yet (screenpipe-redact, tests/worker_integration.rs:193)
