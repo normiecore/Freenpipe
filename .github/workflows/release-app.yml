@@ -16,6 +16,10 @@ on:
         description: "Whether this release needs community testing"
         type: boolean
         default: false
+      prerelease:
+        description: "Publish as a pre-release (only the pre-release update channel picks it up)"
+        type: boolean
+        default: false
       force_github_runners:
         description: "Force GitHub-hosted runners (skip self-hosted even if online)"
         type: boolean
@@ -73,53 +77,10 @@ jobs:
             echo "should_test=${{ github.event.inputs.needs_testing }}" >> $GITHUB_OUTPUT
           fi
 
-      - name: Check self-hosted runner availability
+      - name: Pick runners
         id: check-runner
-        env:
-          GH_TOKEN: ${{ secrets.RUNNER_CHECK_TOKEN }}
         run: |
-          # Check runner: returns "available" (online+idle), "busy" (online+busy), or "offline"
-          check_runner() {
-            local label="$1"
-            local info
-            info=$(gh api repos/${{ github.repository }}/actions/runners \
-              --jq ".runners[] | select(.labels[].name == \"$label\") | {status: .status, busy: .busy}" 2>/dev/null || echo '{"status":"offline","busy":true}')
-            local status=$(echo "$info" | jq -r '.status // "offline"')
-            local busy=$(echo "$info" | jq -r 'if .busy then "true" else "false" end')
-            if [ "$status" = "online" ] && [ "$busy" = "false" ]; then
-              echo "available"
-            elif [ "$status" = "online" ]; then
-              echo "busy"
-            else
-              echo "offline"
-            fi
-          }
-
-          # Wait up to TIMEOUT seconds for a runner to become available
-          # Returns "available" or "timeout"
-          wait_for_runner() {
-            local label="$1"
-            local timeout="$2"
-            local elapsed=0
-            local interval=10
-            echo "⏳ Waiting up to ${timeout}s for $label to become available..." >&2
-            while [ $elapsed -lt $timeout ]; do
-              local state=$(check_runner "$label")
-              if [ "$state" = "available" ]; then
-                echo "available"
-                return
-              elif [ "$state" = "offline" ]; then
-                echo "offline"
-                return
-              fi
-              echo "  $label is busy, waiting... (${elapsed}s/${timeout}s)" >&2
-              sleep $interval
-              elapsed=$((elapsed + interval))
-            done
-            echo "timeout"
-          }
-
-          # Force GitHub-hosted runners if requested
+          # GitHub-hosted runners only.
           if [ "${{ github.event.inputs.force_github_runners }}" = "true" ]; then
             echo "macos_arm_runner=macos-latest" >> $GITHUB_OUTPUT
             echo "windows_runner=windows-2022" >> $GITHUB_OUTPUT
@@ -134,32 +95,21 @@ jobs:
             echo "ℹ️ Using GH-hosted Windows runner (windows-2022)"
           fi
 
-  draft:
+  # Builds every platform and hands its bundles to the `release` job as a
+  # workflow artifact. Signing is optional: each kind of signing runs only
+  # when its secrets exist, so a fork without any secrets still produces
+  # (unsigned) installers.
+  publish-tauri:
     needs: [check_commit]
     if: github.event_name == 'workflow_dispatch' || needs.check_commit.outputs.should_release == 'true'
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          ref: ${{ github.event.inputs.commit_hash || github.ref }}
-
-      - name: Update version in Cargo.toml
-        if: github.event.inputs.commit_hash && github.event.inputs.version
-        run: |
-          if [[ "$OSTYPE" == "darwin"* ]]; then
-            sed -i '' 's/^version = ".*"/version = "${{ github.event.inputs.version }}"/' apps/screenpipe-app-tauri/src-tauri/Cargo.toml
-          else
-            sed -i 's/^version = ".*"/version = "${{ github.event.inputs.version }}"/' apps/screenpipe-app-tauri/src-tauri/Cargo.toml
-          fi
-
-      - name: draft placeholder
-        run: echo "R2-based releases - no CN draft needed"
-
-  publish-tauri:
-    needs: [check_commit, draft]
-    if: github.event_name == 'workflow_dispatch' || needs.check_commit.outputs.should_release == 'true'
     permissions:
-      contents: write
+      contents: read
+    env:
+      # Tauri updater signing (minisign). Without it no updater artifacts or
+      # latest.json are produced and in-app updates stay off in the build.
+      HAS_UPDATER_KEY: ${{ secrets.TAURI_PRIVATE_KEY != '' }}
+      # Apple Developer ID signing + notarization.
+      HAS_APPLE_CERT: ${{ secrets.APPLE_CERTIFICATE != '' }}
     strategy:
       fail-fast: false
       matrix:
@@ -554,6 +504,31 @@ jobs:
         shell: bash
         run: cp apps/screenpipe-app-tauri/src-tauri/tauri.prod.conf.json apps/screenpipe-app-tauri/src-tauri/tauri.conf.json
 
+      # The committed config ships an empty updater pubkey, which keeps the
+      # in-app updater off. When the minisign private key secret exists, the
+      # matching public key (repository variable TAURI_UPDATER_PUBKEY) is
+      # merged in so the build can verify what it downloads. Without the
+      # secret, updater artifacts are not built at all.
+      - name: Configure updater signing
+        id: updater
+        shell: bash
+        env:
+          UPDATER_PUBKEY: ${{ vars.TAURI_UPDATER_PUBKEY }}
+        run: |
+          OVERRIDES=apps/screenpipe-app-tauri/src-tauri/release-overrides.json
+          if [ "$HAS_UPDATER_KEY" = "true" ]; then
+            if [ -z "$UPDATER_PUBKEY" ]; then
+              echo "::error::TAURI_PRIVATE_KEY is set but the TAURI_UPDATER_PUBKEY variable is empty; nobody could verify the updates"
+              exit 1
+            fi
+            bun -e 'console.log(JSON.stringify({ plugins: { updater: { pubkey: process.env.UPDATER_PUBKEY } } }))' > "$OVERRIDES"
+            echo "updater artifacts will be signed"
+          else
+            echo '{ "bundle": { "createUpdaterArtifacts": false } }' > "$OVERRIDES"
+            echo "::warning::TAURI_PRIVATE_KEY is not set: no updater artifacts, no latest.json, in-app updates stay off"
+          fi
+          echo "config_arg=--config src-tauri/release-overrides.json" >> "$GITHUB_OUTPUT"
+
       - name: Set macOS deployment target
         if: matrix.os_type == 'macos'
         shell: bash
@@ -568,7 +543,7 @@ jobs:
           fi
 
       - name: Import signing cert into build keychain (macOS)
-        if: matrix.os_type == 'macos'
+        if: matrix.os_type == 'macos' && env.HAS_APPLE_CERT == 'true'
         shell: bash
         env:
           APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
@@ -751,7 +726,7 @@ jobs:
           echo "Cleaning stale bundle artifacts from ${BUNDLE_DIR}..."
           rm -rf "${BUNDLE_DIR}" 2>/dev/null || true
 
-          bunx tauri build --verbose ${{ matrix.tauri-args }}
+          bunx tauri build --verbose ${{ matrix.tauri-args }} ${{ steps.updater.outputs.config_arg }}
 
           # Fix ABI mismatch: the AppImage bundles libs from Ubuntu 24.04 but
           # on distros like Fedora 43 with newer system libs, symbols are missing
@@ -838,7 +813,7 @@ jobs:
           CARGO_PROFILE_RELEASE_CODEGEN_UNITS: "16"
           # Enable incremental compilation for Windows
           CARGO_INCREMENTAL: "true"
-          # Windows: keep symbols for Sentry upload, macOS: none
+          # Keep symbols so local crash dumps stay readable
           CARGO_PROFILE_RELEASE_STRIP: none
           CARGO_PROFILE_RELEASE_PANIC: abort
           CARGO_PROFILE_RELEASE_INCREMENTAL: "false"
@@ -863,7 +838,7 @@ jobs:
           GGML_AVX512_BF16: "OFF"
           CMAKE_ARGS: ${{ matrix.target == 'x86_64-pc-windows-msvc' && '-DGGML_NATIVE=OFF -DGGML_AVX512=OFF -DGGML_AVX512_VBMI=OFF -DGGML_AVX512_VNNI=OFF -DGGML_AVX512_BF16=OFF -DCMAKE_C_FLAGS=/arch:AVX2 -DCMAKE_CXX_FLAGS=/arch:AVX2' || '-DGGML_NATIVE=OFF' }}
           OPENBLAS_PATH: ${{ github.workspace }}/apps/screenpipe-app-tauri/src-tauri/openblas
-        run: bunx tauri build --verbose ${{ matrix.tauri-args }}
+        run: bunx tauri build --verbose ${{ matrix.tauri-args }} ${{ steps.updater.outputs.config_arg }}
 
       - name: Sign NSIS installer with SSL.com EV (Windows)
         # Tauri's signCommand handles inner binaries, but the final NSIS
@@ -957,7 +932,12 @@ jobs:
           LINUXDEPLOY_OUTPUT_VERSION: ${{ matrix.os_type == 'linux' && '1' || '' }}
           APPIMAGE_EXTRACT_AND_RUN: ${{ matrix.os_type == 'linux' && '1' || '' }}
         run: |
-          TAURI_ARGS="${{ steps.tauri-args.outputs.args || matrix.tauri-args }}"
+          TAURI_ARGS="${{ steps.tauri-args.outputs.args || matrix.tauri-args }} ${{ steps.updater.outputs.config_arg }}"
+          if [ "$HAS_APPLE_CERT" != "true" ]; then
+            # No Developer ID: build unsigned rather than fail on empty values.
+            unset APPLE_SIGNING_IDENTITY APPLE_ID APPLE_PASSWORD APPLE_TEAM_ID
+            echo "::warning::APPLE_CERTIFICATE is not set: building an unsigned, unnotarized app"
+          fi
           MAX_ATTEMPTS=3
           TARGET="${{ matrix.target }}"
           BUNDLE_DIR="apps/screenpipe-app-tauri/src-tauri/target/${TARGET}/release/bundle"
@@ -1045,7 +1025,7 @@ jobs:
         # runs --verify after its own re-sign; this step also covers x86_64
         # (which has no re-sign path) and protects against a regression in
         # the initial Tauri-side sign too.
-        if: matrix.os_type == 'macos'
+        if: matrix.os_type == 'macos' && env.HAS_APPLE_CERT == 'true'
         shell: bash
         run: |
           set -euo pipefail
@@ -1133,16 +1113,21 @@ jobs:
 
           # Re-sign the bundle. --deep so all inner binaries stay covered;
           # --force so the existing signature is replaced. Same identity +
-          # entitlements + hardened-runtime flags Tauri used.
-          codesign --force --deep \
-            --sign "$APPLE_SIGNING_IDENTITY" \
-            --options runtime \
-            --entitlements apps/screenpipe-app-tauri/src-tauri/entitlements.plist \
-            --timestamp \
-            "$APP"
+          # entitlements + hardened-runtime flags Tauri used. Unsigned builds
+          # (no Developer ID secret) skip this and the DMG signature below.
+          if [ -n "${APPLE_SIGNING_IDENTITY:-}" ]; then
+            codesign --force --deep \
+              --sign "$APPLE_SIGNING_IDENTITY" \
+              --options runtime \
+              --entitlements apps/screenpipe-app-tauri/src-tauri/entitlements.plist \
+              --timestamp \
+              "$APP"
 
-          codesign --verify --deep --strict --verbose=2 "$APP"
-          echo "✅ ${APP##*/} re-signed with mlx.metallib in Contents/MacOS/"
+            codesign --verify --deep --strict --verbose=2 "$APP"
+            echo "✅ ${APP##*/} re-signed with mlx.metallib in Contents/MacOS/"
+          else
+            echo "unsigned build: mlx.metallib injected without re-signing"
+          fi
 
           # Rebuild the DMG so it ships the modified .app.
           #
@@ -1196,9 +1181,11 @@ jobs:
           rm -rf "$DMG_STAGE"
 
           # Sign the new DMG so notarization sees a clean cdhash.
-          codesign --force --sign "$APPLE_SIGNING_IDENTITY" --timestamp "$DMG"
-          codesign --verify --verbose=2 "$DMG"
-          echo "✅ ${DMG##*/} re-created + signed from patched .app (with Applications symlink)"
+          if [ -n "${APPLE_SIGNING_IDENTITY:-}" ]; then
+            codesign --force --sign "$APPLE_SIGNING_IDENTITY" --timestamp "$DMG"
+            codesign --verify --verbose=2 "$DMG"
+          fi
+          echo "✅ ${DMG##*/} re-created from patched .app (with Applications symlink)"
 
       - name: Clean up signing cert from login keychain (macOS)
         if: matrix.os_type == 'macos' && always()
@@ -1210,7 +1197,7 @@ jobs:
           security list-keychain -d user -s ~/Library/Keychains/login.keychain-db 2>/dev/null || true
 
       - name: Notarize and staple DMGs (macOS)
-        if: matrix.os_type == 'macos'
+        if: matrix.os_type == 'macos' && env.HAS_APPLE_CERT == 'true'
         env:
           APPLE_ID: ${{ secrets.APPLE_ID }}
           APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
@@ -1240,7 +1227,7 @@ jobs:
           done
 
       - name: Staple .app and rebuild updater tarball (macOS)
-        if: matrix.os_type == 'macos'
+        if: matrix.os_type == 'macos' && env.HAS_APPLE_CERT == 'true'
         env:
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_KEY_PASSWORD }}
@@ -1289,7 +1276,12 @@ jobs:
             spctl --assess --type execute --verbose "$app" 2>&1 || true
 
             # Rebuild updater tarball so Tauri updater ships the stapled .app.
+            # Builds without the updater key have no tarball to rebuild.
             TARBALL="${MACOS_DIR}/${APP_NAME}.tar.gz"
+            if [ ! -f "$TARBALL" ]; then
+              echo "✅ ${APP_NAME} stapled (no updater tarball in this build)"
+              continue
+            fi
             echo "Rebuilding ${APP_NAME}.tar.gz with stapled bundle"
             ( cd "${MACOS_DIR}" && tar czf "${APP_NAME}.tar.gz" "${APP_NAME}" )
 
@@ -1301,266 +1293,168 @@ jobs:
             echo "✅ ${APP_NAME} stapled, tarball rebuilt and re-signed"
           done
 
-      - name: Upload to Cloudflare R2 (macOS)
-        if: matrix.os_type == 'macos'
+      # Hand the installers (and, when signed, the updater artifacts with
+      # their .sig files) to the release job. macOS updater tarballs are
+      # named after the app only, so the arch is added to keep the two
+      # macOS targets from colliding as release assets.
+      - name: Collect release assets
         shell: bash
-        env:
-          AWS_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
-          AWS_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
-          AWS_DEFAULT_REGION: auto
-          R2_ENDPOINT: https://${{ secrets.CLOUDFLARE_ACCOUNT_ID }}.r2.cloudflarestorage.com
         run: |
-          # Upload helper: tries aws s3 cp first, falls back to curl.
-          # The self-hosted macOS ARM runner has broken LibreSSL 3.3.6 that causes
-          # SSLV3_ALERT_BAD_RECORD_MAC on large uploads to R2. Both aws cli (Python SSL)
-          # and system curl (LibreSSL) are affected. Use homebrew curl (OpenSSL 3.6.1)
-          # as the reliable fallback.
-          CURL_BIN="/opt/homebrew/opt/curl/bin/curl"
-          if [ ! -x "$CURL_BIN" ]; then
-            CURL_BIN="curl"  # fallback to system curl on non-macOS
-          fi
-          upload_with_retry() {
-            local src="$1" dst="$2"
-            local bucket_path="${dst#s3://}"
-            local r2_key="${bucket_path#*/}"
-            local bucket="${bucket_path%%/*}"
-
-            # Try aws cli first
-            for attempt in 1 2 3; do
-              if AWS_MAX_ATTEMPTS=3 aws s3 cp "$src" "$dst" \
-                  --endpoint-url "$R2_ENDPOINT" \
-                  --no-verify-ssl \
-                  --no-progress \
-                  --expected-size "$(stat -f%z "$src" 2>/dev/null || stat -c%s "$src" 2>/dev/null)" \
-                  --cli-read-timeout 300 --cli-connect-timeout 30 \
-                  --region auto 2>&1; then
-                echo "  ✅ $(basename "$src") (aws)"
-                return 0
-              fi
-              echo "  ⚠️ aws attempt $attempt failed for $(basename "$src")"
-              sleep $((attempt * 5))
-            done
-
-            # Fallback: curl with S3 v4 signing (uses macOS SecureTransport, bypasses Python SSL)
-            echo "  🔄 falling back to curl for $(basename "$src")..."
-            local content_type="application/octet-stream"
-            local date_stamp=$(date -u +%Y%m%d)
-            local amz_date=$(date -u +%Y%m%dT%H%M%SZ)
-            local region="auto"
-            local service="s3"
-            local host="${R2_ENDPOINT#https://}"
-
-            sign_and_upload() {
-              local method="PUT"
-              local canonical_uri="/${r2_key}"
-              local content_sha256=$(shasum -a 256 "$src" | awk '{print $1}')
-              local canonical_headers="content-type:${content_type}\nhost:${host}\nx-amz-content-sha256:${content_sha256}\nx-amz-date:${amz_date}\n"
-              local signed_headers="content-type;host;x-amz-content-sha256;x-amz-date"
-              local canonical_request="${method}\n${canonical_uri}\n\n${canonical_headers}\n${signed_headers}\n${content_sha256}"
-              local cr_hash=$(printf "${canonical_request}" | shasum -a 256 | awk '{print $1}')
-              local scope="${date_stamp}/${region}/${service}/aws4_request"
-              local string_to_sign="AWS4-HMAC-SHA256\n${amz_date}\n${scope}\n${cr_hash}"
-
-              local k_date=$(printf "${date_stamp}" | openssl dgst -sha256 -hex -mac HMAC -macopt "key:AWS4${AWS_SECRET_ACCESS_KEY}" | awk '{print $NF}')
-              local k_region=$(printf "${region}" | openssl dgst -sha256 -hex -mac HMAC -macopt "hexkey:${k_date}" | awk '{print $NF}')
-              local k_service=$(printf "${service}" | openssl dgst -sha256 -hex -mac HMAC -macopt "hexkey:${k_region}" | awk '{print $NF}')
-              local k_signing=$(printf "aws4_request" | openssl dgst -sha256 -hex -mac HMAC -macopt "hexkey:${k_service}" | awk '{print $NF}')
-              local signature=$(printf "${string_to_sign}" | openssl dgst -sha256 -hex -mac HMAC -macopt "hexkey:${k_signing}" | awk '{print $NF}')
-
-              local auth="AWS4-HMAC-SHA256 Credential=${AWS_ACCESS_KEY_ID}/${scope}, SignedHeaders=${signed_headers}, Signature=${signature}"
-
-              $CURL_BIN -fSs --retry 3 --retry-delay 5 \
-                -X PUT \
-                -H "Content-Type: ${content_type}" \
-                -H "x-amz-date: ${amz_date}" \
-                -H "x-amz-content-sha256: ${content_sha256}" \
-                -H "Authorization: ${auth}" \
-                --data-binary "@${src}" \
-                "${R2_ENDPOINT}/${r2_key}"
-            }
-
-            for attempt in 1 2 3; do
-              if sign_and_upload 2>&1; then
-                echo "  ✅ $(basename "$src") (curl)"
-                return 0
-              fi
-              echo "  ⚠️ curl attempt $attempt failed for $(basename "$src")"
-              sleep $((attempt * 10))
-            done
-            echo "  ❌ failed to upload $(basename "$src") after all attempts"
-            return 1
-          }
-
-          VERSION=$(grep '^version = ' apps/screenpipe-app-tauri/src-tauri/Cargo.toml | sed 's/version = "\(.*\)"/\1/')
+          set -euo pipefail
           TARGET="${{ matrix.target }}"
           BUNDLE_DIR="apps/screenpipe-app-tauri/src-tauri/target/${TARGET}/release/bundle"
-          R2_PREFIX="s3://screenpipe-releases/releases/${VERSION}/${TARGET}"
-
-          echo "uploading ${TARGET} bundles for v${VERSION} to R2..."
-          echo "aws cli: $(aws --version)"
-
-          # Clean any stale artifacts from previous (failed) runs for this version+target
-          echo "cleaning stale R2 artifacts at ${R2_PREFIX}/ ..."
-          aws s3 rm "${R2_PREFIX}/" --recursive --endpoint-url "$R2_ENDPOINT" --no-verify-ssl 2>/dev/null || true
-
-          UPLOAD_FAILED=0
-
-          # Upload DMG
-          for f in "${BUNDLE_DIR}"/dmg/*.dmg; do
-            [ -f "$f" ] && { upload_with_retry "$f" "${R2_PREFIX}/$(basename "$f")" || UPLOAD_FAILED=1; }
+          OUT="release-assets/${TARGET}"
+          rm -rf "$OUT"
+          mkdir -p "$OUT"
+          shopt -s nullglob
+          for f in \
+            "$BUNDLE_DIR"/nsis/*.exe "$BUNDLE_DIR"/nsis/*.exe.sig \
+            "$BUNDLE_DIR"/msi/*.msi "$BUNDLE_DIR"/msi/*.msi.sig \
+            "$BUNDLE_DIR"/dmg/*.dmg \
+            "$BUNDLE_DIR"/macos/*.app.tar.gz "$BUNDLE_DIR"/macos/*.app.tar.gz.sig \
+            "$BUNDLE_DIR"/appimage/*.AppImage "$BUNDLE_DIR"/appimage/*.AppImage.sig \
+            "$BUNDLE_DIR"/deb/*.deb "$BUNDLE_DIR"/deb/*.deb.sig \
+            "$BUNDLE_DIR"/rpm/*.rpm "$BUNDLE_DIR"/rpm/*.rpm.sig; do
+            sub="$(basename "$(dirname "$f")")"
+            mkdir -p "$OUT/$sub"
+            cp "$f" "$OUT/$sub/"
           done
-
-          # Upload updater artifacts (.tar.gz + .sig)
-          for f in "${BUNDLE_DIR}"/macos/*.tar.gz "${BUNDLE_DIR}"/macos/*.sig; do
-            [ -f "$f" ] && { upload_with_retry "$f" "${R2_PREFIX}/$(basename "$f")" || UPLOAD_FAILED=1; }
+          ARCH="${TARGET%%-*}"
+          for f in "$OUT"/macos/*.app.tar.gz; do
+            base="${f%.app.tar.gz}"
+            mv "$f" "${base}_${ARCH}.app.tar.gz"
+            if [ -f "$f.sig" ]; then mv "$f.sig" "${base}_${ARCH}.app.tar.gz.sig"; fi
           done
-
-          if [ "$UPLOAD_FAILED" -eq 1 ]; then
-            echo "❌ Some uploads failed - marking step as failed"
-            exit 1
-          fi
-          echo "R2 upload complete for ${TARGET}"
-
-      - name: Upload to Cloudflare R2 (Windows)
-        if: matrix.os_type == 'windows'
-        shell: powershell
-        env:
-          AWS_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
-          AWS_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
-          AWS_DEFAULT_REGION: auto
-        run: |
-          # Install AWS CLI if not present
-          if (-not (Get-Command aws -ErrorAction SilentlyContinue)) {
-            Write-Host "Installing AWS CLI..."
-            Invoke-WebRequest -Uri "https://awscli.amazonaws.com/AWSCLIV2.msi" -OutFile "$env:TEMP\awscli.msi"
-            Start-Process msiexec.exe -Wait -ArgumentList "/i $env:TEMP\awscli.msi /quiet"
-            $env:PATH += ";C:\Program Files\Amazon\AWSCLIV2"
-          }
-          $version = (Select-String -Path apps/screenpipe-app-tauri/src-tauri/Cargo.toml -Pattern '^version = "(.*)"').Matches[0].Groups[1].Value
-          $bundleDir = "apps/screenpipe-app-tauri/src-tauri/target/${{ matrix.target }}/release/bundle"
-          $r2Endpoint = "https://${{ secrets.CLOUDFLARE_ACCOUNT_ID }}.r2.cloudflarestorage.com"
-          $r2Prefix = "s3://screenpipe-releases/releases/$version/${{ matrix.target }}"
-
-          Write-Host "uploading Windows bundles for v$version to R2..."
-
-          # Clean any stale artifacts from previous (failed) runs for this version+target
-          Write-Host "cleaning stale R2 artifacts at $r2Prefix/ ..."
-          aws s3 rm "$r2Prefix/" --recursive --endpoint-url $r2Endpoint 2>$null
-
-          # Upload ALL bundle artifacts (.exe, .nsis.zip, .sig files)
-          Write-Host "Files in nsis bundle dir:"
-          Get-ChildItem "$bundleDir/nsis" -ErrorAction SilentlyContinue | ForEach-Object {
-            Write-Host "  found: $($_.Name) ($($_.Length) bytes)"
-          }
-          Get-ChildItem "$bundleDir/nsis" -ErrorAction SilentlyContinue | ForEach-Object {
-            aws s3 cp $_.FullName "$r2Prefix/$($_.Name)" --endpoint-url $r2Endpoint
-            Write-Host "  ✅ $($_.Name)"
-          }
-
-          Write-Host "R2 upload complete for Windows"
-
-      - name: Upload to Cloudflare R2 (Linux)
-        if: matrix.os_type == 'linux'
-        shell: bash
-        env:
-          AWS_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
-          AWS_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
-          AWS_DEFAULT_REGION: auto
-          R2_ENDPOINT: https://${{ secrets.CLOUDFLARE_ACCOUNT_ID }}.r2.cloudflarestorage.com
-        run: |
-          VERSION=$(grep '^version = ' apps/screenpipe-app-tauri/src-tauri/Cargo.toml | sed 's/version = "\(.*\)"/\1/')
-          TARGET="${{ matrix.target }}"
-          BUNDLE_DIR="apps/screenpipe-app-tauri/src-tauri/target/${TARGET}/release/bundle"
-          R2_PREFIX="s3://screenpipe-releases/releases/${VERSION}/${TARGET}"
-
-          echo "uploading Linux bundles for v${VERSION} to R2..."
-
-          # Clean any stale artifacts from previous (failed) runs for this version+target
-          echo "cleaning stale R2 artifacts at ${R2_PREFIX}/ ..."
-          aws s3 rm "${R2_PREFIX}/" --recursive --endpoint-url "$R2_ENDPOINT" --no-verify-ssl 2>/dev/null || true
-
-          echo "bundle dir contents:"
-          find "${BUNDLE_DIR}" -type f 2>/dev/null || echo "  (bundle dir not found)"
-
-          UPLOADED=0
-
-          # Upload AppImage
-          for f in "${BUNDLE_DIR}"/appimage/*.AppImage; do
-            [ -f "$f" ] && aws s3 cp "$f" "${R2_PREFIX}/$(basename "$f")" --endpoint-url "$R2_ENDPOINT" && echo "  ✅ $(basename "$f")" && UPLOADED=$((UPLOADED+1))
-          done
-
-          # Upload deb
-          for f in "${BUNDLE_DIR}"/deb/*.deb; do
-            [ -f "$f" ] && aws s3 cp "$f" "${R2_PREFIX}/$(basename "$f")" --endpoint-url "$R2_ENDPOINT" && echo "  ✅ $(basename "$f")" && UPLOADED=$((UPLOADED+1))
-          done
-
-          # Upload updater artifacts (.tar.gz + .sig) if present
-          for f in "${BUNDLE_DIR}"/appimage/*.tar.gz "${BUNDLE_DIR}"/appimage/*.sig; do
-            [ -f "$f" ] && aws s3 cp "$f" "${R2_PREFIX}/$(basename "$f")" --endpoint-url "$R2_ENDPOINT" && echo "  ✅ $(basename "$f")" && UPLOADED=$((UPLOADED+1))
-          done
-
-          if [ "$UPLOADED" -eq 0 ]; then
-            echo "❌ No Linux artifacts found to upload!"
+          find "$OUT" -type f | sort
+          if [ -z "$(find "$OUT" -type f)" ]; then
+            echo "::error::no bundles found in ${BUNDLE_DIR}"
             exit 1
           fi
 
-          echo "R2 upload complete for Linux ($UPLOADED files)"
+      - name: Upload release assets
+        uses: actions/upload-artifact@v4
+        with:
+          name: bundle-${{ matrix.target }}
+          path: release-assets/${{ matrix.target }}
+          if-no-files-found: error
+          retention-days: 7
 
-      # Sentry uploads run AFTER R2 so they don't delay release artifacts
-      - name: Upload debug symbols to Sentry (Windows)
-        if: matrix.os_type == 'windows'
-        continue-on-error: true
-        shell: powershell
-        env:
-          SENTRY_AUTH_TOKEN: ${{ secrets.SENTRY_AUTH_TOKEN }}
-          SENTRY_ORG: mediar
-          SENTRY_ARCH: ${{ matrix.target == 'aarch64-pc-windows-msvc' && 'aarch64' || 'x86_64' }}
-        run: |
-          Invoke-WebRequest -Uri "https://release-registry.services.sentry.io/apps/sentry-cli/latest?response=download&arch=$env:SENTRY_ARCH&platform=Windows&package=sentry-cli" -OutFile sentry-cli.exe
-          Write-Host "Uploading debug symbols to Sentry..."
-          .\sentry-cli.exe debug-files upload --org $env:SENTRY_ORG --project screenpipe-app apps/screenpipe-app-tauri/src-tauri/target/${{ matrix.target }}/release/
-
-      - name: Upload debug symbols to Sentry (macOS)
-        if: matrix.os_type == 'macos'
-        continue-on-error: true
-        shell: bash
-        env:
-          SENTRY_AUTH_TOKEN: ${{ secrets.SENTRY_AUTH_TOKEN }}
-          SENTRY_ORG: mediar
-        run: |
-          if ! command -v sentry-cli &> /dev/null; then
-            curl -sL https://sentry.io/get-cli/ | bash
-          fi
-          echo "Uploading debug symbols to Sentry..."
-          sentry-cli debug-files upload --org $SENTRY_ORG --project screenpipe-app apps/screenpipe-app-tauri/src-tauri/target/${{ matrix.target }}/release/
-
-  generate-changelog:
+  # Publishes everything as a GitHub release of this repository and, when the
+  # builds were signed for the updater, the static `latest.json` manifest the
+  # in-app updater reads:
+  #   - stable:      releases/latest/download/latest.json (newest non-pre-release)
+  #   - pre-release: releases/download/prerelease/latest.json (fixed tag)
+  #   - rollback:    releases/download/v<version>/latest.json (every release)
+  release:
     needs: [check_commit, publish-tauri]
     if: github.event_name == 'workflow_dispatch' || needs.check_commit.outputs.should_release == 'true'
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
     steps:
       - uses: actions/checkout@v4
         with:
-          fetch-depth: 100
+          ref: ${{ github.event.inputs.commit_hash || github.ref }}
 
-      - name: Get version and previous bump
-        id: params
-        run: |
-          VERSION=$(grep '^version = ' apps/screenpipe-app-tauri/src-tauri/Cargo.toml | sed 's/version = "\(.*\)"/\1/')
-          echo "version=v${VERSION}" >> $GITHUB_OUTPUT
+      - name: Update version in Cargo.toml
+        if: github.event.inputs.commit_hash && github.event.inputs.version
+        run: sed -i 's/^version = ".*"/version = "${{ github.event.inputs.version }}"/' apps/screenpipe-app-tauri/src-tauri/Cargo.toml
 
-          # Find the previous "Bump" or "release-app" commit to diff from
-          PREV=$(git log --oneline --skip=1 --grep="release-app\|Bump app" -1 --format="%H" 2>/dev/null || echo "")
-          if [ -z "$PREV" ]; then
-            PREV="HEAD~50"
-          fi
-          echo "since=${PREV}" >> $GITHUB_OUTPUT
-          echo "Changelog: v${VERSION} since ${PREV}"
-
-      - name: Trigger changelog generation on website repo
-        uses: peter-evans/repository-dispatch@v3
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
         with:
-          token: ${{ secrets.WEBSITE_REPO_TOKEN }}
-          repository: screenpipe/website
-          event-type: generate-changelog
-          client-payload: '{"version": "${{ steps.params.outputs.version }}", "since": "${{ steps.params.outputs.since }}"}'
+          bun-version: 1.3.10
+
+      - name: Download bundles
+        uses: actions/download-artifact@v4
+        with:
+          pattern: bundle-*
+          path: bundles
+
+      - name: Resolve version
+        id: meta
+        run: |
+          VERSION=$(grep '^version = ' apps/screenpipe-app-tauri/src-tauri/Cargo.toml | head -1 | sed 's/version = "\(.*\)"/\1/')
+          PRERELEASE="${{ github.event.inputs.prerelease || 'false' }}"
+          # A semver pre-release suffix (1.2.3-beta.1) always means pre-release.
+          case "$VERSION" in *-*) PRERELEASE=true ;; esac
+          echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
+          echo "tag=v${VERSION}" >> "$GITHUB_OUTPUT"
+          echo "prerelease=${PRERELEASE}" >> "$GITHUB_OUTPUT"
+          echo "v${VERSION} (prerelease=${PRERELEASE})"
+
+      - name: Write latest.json and stage assets
+        id: stage
+        env:
+          VERSION: ${{ steps.meta.outputs.version }}
+          TAG: ${{ steps.meta.outputs.tag }}
+        run: |
+          set -euo pipefail
+          mkdir -p dist
+          ARGS=()
+          for dir in bundles/bundle-*; do
+            ARGS+=(--bundle "${dir#bundles/bundle-}=${dir}")
+          done
+          if [ -n "$(find bundles -name '*.sig' -print -quit)" ]; then
+            bun scripts/release/make-latest-json.ts \
+              --version "$VERSION" \
+              --base-url "https://github.com/${GITHUB_REPOSITORY}/releases/download/${TAG}" \
+              --notes "Freenpipe ${TAG}: https://github.com/${GITHUB_REPOSITORY}/releases/tag/${TAG}" \
+              "${ARGS[@]}" \
+              --stage dist \
+              --out dist/latest.json
+            echo "manifest=true" >> "$GITHUB_OUTPUT"
+            cat dist/latest.json
+          else
+            echo "::warning::no updater signatures in this build: publishing installers without latest.json"
+            echo "manifest=false" >> "$GITHUB_OUTPUT"
+          fi
+          # Installers that are not updater artifacts (dmg, deb, ...) and every
+          # file of an unsigned build, under the same GitHub-safe names the
+          # manifest script uses.
+          find bundles -type f ! -name '*.sig' -print0 | while IFS= read -r -d '' f; do
+            name="$(basename "$f" | sed 's/[^A-Za-z0-9._-]/./g')"
+            [ -e "dist/$name" ] || cp "$f" "dist/$name"
+          done
+          ls -la dist
+
+      - name: Publish GitHub release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ steps.meta.outputs.tag }}
+          PRERELEASE: ${{ steps.meta.outputs.prerelease }}
+          TARGET_SHA: ${{ github.event.inputs.commit_hash || github.sha }}
+        run: |
+          set -euo pipefail
+          if ! gh release view "$TAG" >/dev/null 2>&1; then
+            FLAGS=(--title "$TAG" --generate-notes --target "$TARGET_SHA")
+            if [ "$PRERELEASE" = "true" ]; then FLAGS+=(--prerelease); else FLAGS+=(--latest); fi
+            gh release create "$TAG" "${FLAGS[@]}"
+          fi
+          gh release upload "$TAG" dist/* --clobber
+
+      # The pre-release channel follows one fixed tag. Every release, stable
+      # or not, moves it forward, so pre-release users also get stable fixes;
+      # it never moves backwards.
+      - name: Update the pre-release channel manifest
+        if: steps.stage.outputs.manifest == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          VERSION: ${{ steps.meta.outputs.version }}
+        run: |
+          set -euo pipefail
+          CHANNEL_TAG=prerelease
+          if ! gh release view "$CHANNEL_TAG" >/dev/null 2>&1; then
+            gh release create "$CHANNEL_TAG" --prerelease --title "Pre-release update channel" \
+              --notes "Holds the latest.json read by the pre-release update channel. Download builds from the versioned releases."
+          fi
+          CURRENT=""
+          if gh release download "$CHANNEL_TAG" --pattern latest.json --output channel-latest.json 2>/dev/null; then
+            CURRENT=$(bun -e 'console.log(JSON.parse(require("fs").readFileSync("channel-latest.json","utf8")).version ?? "")')
+          fi
+          if [ -n "$CURRENT" ] && [ "$(bun -e "console.log(Bun.semver.order('$VERSION', '$CURRENT'))")" != "1" ]; then
+            echo "pre-release channel already at v${CURRENT}; not moving it to v${VERSION}"
+            exit 0
+          fi
+          gh release upload "$CHANNEL_TAG" dist/latest.json --clobber
+          echo "pre-release channel now at v${VERSION}"
