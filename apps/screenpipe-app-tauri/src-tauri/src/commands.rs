@@ -3020,25 +3020,20 @@ pub(crate) fn register_window_shortcuts_if_main_visible(app: tauri::AppHandle) {
     }
 }
 
-/// Install a specific older version from R2. Downloads and installs via Tauri updater,
-/// then restarts the app.
+/// Install a specific older version from its GitHub release (per-tag
+/// `latest.json`). Downloads and installs via Tauri updater, then restarts the
+/// app. Fails when in-app updates are disabled in this build.
 #[tauri::command]
 #[specta::specta]
 pub async fn rollback_to_version(
     app_handle: tauri::AppHandle,
     version: String,
 ) -> Result<(), String> {
-    use crate::RecordingState;
     info!("rollback_to_version: installing v{}", version);
 
-    // Stop recording first
-    if let Err(e) =
-        crate::stop_screenpipe(app_handle.state::<RecordingState>(), app_handle.clone()).await
-    {
-        error!("rollback: failed to stop recording: {}", e);
-    }
-
-    // Download and install the target version
+    // Download and install the target version. It stops recording itself,
+    // right before installing, so a refused or failed rollback leaves
+    // recording running.
     crate::updates::install_specific_version(&app_handle, &version).await?;
 
     info!("rollback: v{} installed, restarting", version);
