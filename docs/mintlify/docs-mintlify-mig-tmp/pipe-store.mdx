@@ -64,7 +64,7 @@ these ship with Freenpipe and are available without an install:
 2. if it's not there, install the pipe again (copy its folder back into `~/.screenpipe/pipes/`)
 3. if the pipe is still not showing, the tombstone file (`.tombstones.json`) may need to be cleared. **backup first**, then delete `~/.screenpipe/pipes/.tombstones.json` and restart Freenpipe
 
-**to prevent**: avoid deleting pipes manually from the filesystem. use the **delete** button in the app instead — it properly manages tombstone records.
+**to prevent**: avoid deleting pipes manually from the filesystem. use the **delete** button in the app instead; it keeps the tombstone records consistent.
 
 ### pipe install succeeds but doesn't execute
 
@@ -113,15 +113,15 @@ a pipe is a folder with a `pipe.md` file, so you can share it as a file or throu
 
 ---
 
-## what makes pipes powerful
+## what pipes can do
 
 | feature | description |
 |---------|-------------|
-| **zero code** | pipes are plain markdown — describe what you want in natural language |
+| **no code** | pipes are plain markdown: describe what you want in natural language |
 | **any schedule** | run every 5 minutes, hourly, daily, or on-demand |
 | **full API access** | query screen text, audio, browser URLs, app activity, input events |
 | **any AI model** | use your own API key, your ChatGPT/Claude subscription, or local Ollama |
-| **external APIs** | pipes can call Slack, Toggl, Notion, Gmail — anything with an API |
+| **external APIs** | pipes can call Slack, Toggl, Notion, Gmail or any other service with an API |
 | **privacy controls** | restrict what data a pipe can access with [permissions](/pipe-permissions) |
 | **shareable** | a pipe is one file, so it can be shared like any other file |
 

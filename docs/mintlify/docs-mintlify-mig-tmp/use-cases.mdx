@@ -81,7 +81,7 @@ Flag any step that needs human verification.
 
 - **search transcriptions**: "what did John say about the deadline?" → find the exact quote
 - **run the Meeting Summary pipe**: AI summaries of the meeting that just ended, with action items
-- **speaker identification**: Freenpipe identifies who said what — label speakers once, recognized forever
+- **speaker identification**: Freenpipe identifies who said what; name a speaker once and later meetings use that name
 - **search by speaker**: `curl "http://localhost:3030/search?content_type=audio&speaker_name=John"`
 
 **best setup:** enable audio recording in settings → enable the [Meeting Summary pipe](/pipe-store).
@@ -128,7 +128,7 @@ Flag any step that needs human verification.
 
 ## give AI memory of your screen
 
-*LLMs are stateless — they don't know what you were working on 5 minutes ago. Freenpipe fixes that.*
+*LLMs are stateless: they don't know what you were working on 5 minutes ago. Freenpipe gives them that context.*
 
 - **Claude Desktop**: ask "what was I working on?" and Claude searches your screen history via MCP
 - **Cursor**: give Cursor context about what you've been coding, what PRs you reviewed, what errors you saw
