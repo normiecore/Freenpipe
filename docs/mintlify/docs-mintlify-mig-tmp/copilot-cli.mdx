@@ -1,17 +1,17 @@
 ---
 title: "GitHub Copilot CLI — agentic coding with screen context"
 sidebarTitle: "copilot cli"
-description: "Connect screenpipe to GitHub Copilot CLI via MCP so Copilot can reference your screen history, meeting transcriptions, and app context from the terminal."
+description: "Connect Freenpipe to GitHub Copilot CLI via MCP so Copilot can reference your screen history, meeting transcriptions, and app context from the terminal."
 icon: "terminal"
 ---
 
 <img src="/copilot-icon.svg" alt="GitHub Copilot" width="80" />
 
-[GitHub Copilot CLI](https://docs.github.com/en/copilot/concepts/agents/about-copilot-cli) is GitHub's terminal-based AI coding agent. it supports MCP servers, so you can connect screenpipe and let Copilot reference what you've been seeing, hearing, and doing.
+[GitHub Copilot CLI](https://docs.github.com/en/copilot/concepts/agents/about-copilot-cli) is GitHub's terminal-based AI coding agent. it supports MCP servers, so you can connect Freenpipe and let Copilot reference what you've been seeing, hearing, and doing.
 
 ## setup
 
-before setting up, make sure screenpipe is running on your machine:
+before setting up, make sure Freenpipe is running on your machine:
 
 ```bash
 npx screenpipe@latest record
@@ -57,9 +57,9 @@ restart Copilot CLI after editing the config.
 
 ## stdio vs http — which should I use?
 
-**use stdio** (`type: "local"` in config). this is the standard for local MCP servers on the same machine. screenpipe runs locally on your machine, so stdio communication has no network overhead and is the intended pattern.
+**use stdio** (`type: "local"` in config). this is the standard for local MCP servers on the same machine. Freenpipe runs locally on your machine, so stdio communication has no network overhead and is the intended pattern.
 
-HTTP transport is only for remote scenarios where your MCP client (Claude, Cursor, etc.) runs on a different machine than screenpipe — see [openclaw](/openclaw) for that pattern. **for Copilot CLI on the same machine, always choose stdio.**
+HTTP transport is only for remote scenarios where your MCP client (Claude, Cursor, etc.) runs on a different machine than Freenpipe — see [openclaw](/openclaw) for that pattern. **for Copilot CLI on the same machine, always choose stdio.**
 
 ## verify connection
 
@@ -84,7 +84,7 @@ you should see `screenpipe` listed with its tools.
 
 ## usage examples
 
-ask Copilot CLI to use screenpipe naturally:
+ask Copilot CLI to use Freenpipe naturally:
 
 ```
 > what was I working on this morning?
@@ -122,15 +122,15 @@ ask Copilot CLI to use screenpipe naturally:
 
 ## requirements
 
-- screenpipe running on localhost:3030 (start with `npx screenpipe@latest record`)
+- Freenpipe running on localhost:3030 (start with `npx screenpipe@latest record`)
 - GitHub Copilot CLI installed
 - Node.js >= 18.0.0
 
 ## troubleshooting
 
-**how do I check I'm on the latest screenpipe CLI?**
+**how do I check I'm on the latest Freenpipe CLI?**
 
-always invoke screenpipe with the `@latest` npm tag — it pulls the freshest build from npm each time:
+always invoke Freenpipe with the `@latest` npm tag — it pulls the freshest build from npm each time:
 
 ```bash
 npx screenpipe@latest record
@@ -144,7 +144,7 @@ npx screenpipe@latest --version
 
 **MCP not connecting?**
 
-1. verify screenpipe is running:
+1. verify Freenpipe is running:
    ```bash
    curl http://localhost:3030/health
    ```
@@ -159,12 +159,12 @@ npx screenpipe@latest --version
 
 **queries returning empty?**
 
-- check screenpipe has data: `curl "http://localhost:3030/search?limit=1"`
+- check Freenpipe has data: `curl "http://localhost:3030/search?limit=1"`
 - ensure screen recording permissions are granted
-- give screenpipe a minute or two of running before querying
+- give Freenpipe a minute or two of running before querying
 
 **permission errors on macOS?**
 
 - System Settings → Privacy & Security → Screen Recording → enable for your terminal
 
-still stuck? [ask in our discord](https://discord.gg/screenpipe).
+still stuck? open a [GitHub issue](https://github.com/normiecore/Freenpipe/issues).
