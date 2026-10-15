@@ -13,9 +13,9 @@ Run commands as `screenpipe <command>`. The CLI is installed with the desktop ap
 
 ## Shell
 
-- **All platforms** → `bash` (on Windows, the bundled git-portable bash is used automatically)
+- Every platform uses `bash`. On Windows the app provides a portable Git bash for agents, so nothing needs installing.
 
-> **Note:** the bash tool truncates output around ~50 KB. Long listings (`connection list`, `pipe list`, etc.) are sorted with connected/enabled rows first, but if you need a specific row, pipe through `grep` or `head` rather than scanning the full output — e.g. `screenpipe connection list | grep -E 'browser|connected'`.
+> **Note:** tool output is cut off at roughly 50 KB. Listings such as `pipe list` and `connection list` put enabled or connected entries first; to find one row, filter the output instead of reading all of it, e.g. `screenpipe connection list | grep -E 'browser|connected'`.
 
 ---
 

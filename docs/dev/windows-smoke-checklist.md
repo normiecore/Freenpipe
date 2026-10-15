@@ -146,7 +146,7 @@ Wave 0 ran on the PC before the cloud phase. Tick anything you already checked t
   - Result:
 - [ ] **SMK-W0-09-2** (UI smoke) Claude Desktop is connected through the bundled MCP server by absolute path
   - Setup: the installed build from SMK-W0-09-1, Claude Desktop installed and opened once; no Node.js needed.
-  - Steps: 1. Settings > Connections > Claude > connect. 2. Open `%APPDATA%\Claude\claude_desktop_config.json`. 3. Restart Claude Desktop and ask "what did I do in the last 5 minutes?".
+  - Steps: 1. Settings > Connections > Claude > connect. 2. Open `%APPDATA%\Claude\claude_desktop_config.json`. 3. Restart Claude Desktop and ask it to summarize your screen activity of the last few minutes.
   - Expected: `mcpServers.screenpipe.command` is `<install>\bun.exe`, `args[0]` is `<install>\mcp\screenpipe-mcp.js`, `env.SCREENPIPE_LOCAL_API_KEY` is set; no `npx`, `bun x` or `@latest` anywhere; Claude lists the screenpipe tools and answers from local data.
   - Result:
 - [ ] **SMK-W0-09-3** (Runtime) Agents run the bundled CLI, never a registry copy
