@@ -130,6 +130,15 @@ fn parse_body(body: &str) -> Option<Map<String, Value>> {
     }
     let mut map = Map::new();
     for (k, v) in form::parse(trimmed.as_bytes()) {
+        // Real form keys are identifiers; anything else is prose that
+        // happens to contain '=' and is better treated as plain text.
+        if k.is_empty()
+            || !k
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '-' | '.'))
+        {
+            return None;
+        }
         let value = match (k.as_ref(), v.parse::<u64>()) {
             ("expires_in" | "refresh_token_expires_in", Ok(n)) => Value::from(n),
             _ => Value::String(v.into_owned()),
@@ -584,6 +593,13 @@ mod tests {
                 assert_eq!(status, 502);
                 assert_eq!(code, "http_502");
                 assert!(description.unwrap().chars().count() <= DESCRIPTION_LIMIT + 1);
+            }
+            other => panic!("unexpected {other:?}"),
+        }
+        // Prose containing '=' is not mistaken for a form body.
+        match interpret_token_response(400, "Bad request: redirect_uri mismatch (a=b)") {
+            Err(OAuthTokenError::Provider { description, .. }) => {
+                assert!(description.unwrap().contains("redirect_uri mismatch"));
             }
             other => panic!("unexpected {other:?}"),
         }

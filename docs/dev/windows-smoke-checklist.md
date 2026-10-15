@@ -128,6 +128,21 @@ Wave 0 ran on the PC before the cloud phase. Tick anything you already checked t
   - Steps: 1. Enter the client id and secret in the connection settings. 2. Connect Google Calendar and finish the browser consent.
   - Expected: the loopback callback completes; tokens are stored in the secret store (not in plain files); calendar events load.
   - Result:
+- [ ] **SMK-W0-07-2** (UI smoke) Without an OAuth app the connect button stays disabled and explains why
+  - Setup: app dev run with a fresh `FP_DD`; nothing entered under any connection's OAuth app.
+  - Steps: 1. Settings > Connections > Notion (any generic OAuth tile). 2. Open Zoom. 3. In Zoom, click "set up OAuth app", enter any client id and no redirect URI, save.
+  - Expected: 1. A "Connecting needs your own Notion OAuth app" line with "set up OAuth app"; "connect with Notion" is disabled. 2. Same for Zoom. 3. Saving is refused with a message asking for an HTTPS relay URL; nothing is stored.
+  - Result:
+- [ ] **SMK-W0-07-3** (Manual) Token refresh goes straight to the provider with your client
+  - Setup: Google Calendar connected as in SMK-W0-07-1; engine log at `$FP_DD/engine.log`.
+  - Steps: 1. Wait for the access token to expire (about an hour) or leave the app running past the next refresh-scheduler tick after expiry. 2. Load upcoming events in the Google Calendar card. 3. `grep -iE 'oauth refresh' "$FP_DD/engine.log"`.
+  - Expected: events load without reconnecting; no refresh failure is logged; the only token host contacted is `oauth2.googleapis.com` (check with Resource Monitor or a proxy if in doubt).
+  - Result:
+- [ ] **SMK-W0-07-4** (Manual) MCP OAuth finishes on the local callback
+  - Setup: app dev run on port 3035; a remote MCP server that signs in with OAuth (Krisp, Plaud or any server added through Custom MCP).
+  - Steps: 1. Start its sign-in from Settings > Connections. 2. Look at the `redirect_uri` in the provider's browser URL. 3. Finish the consent.
+  - Expected: the redirect is `http://localhost:3035/mcp-servers/<id>/oauth/callback`; the tab shows the connected page and the server lists its tools.
+  - Result:
 
 ### W0-08 Cloud sync, archive and pipe store off by default
 

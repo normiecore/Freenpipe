@@ -7,10 +7,17 @@
 //! Any integration that implements `Integration::oauth_config()` in
 //! screenpipe-connect is automatically handled by these commands.
 //! Adding a new OAuth provider requires zero changes here.
+//!
+//! Connecting needs the user's own OAuth app for the provider (client ID,
+//! optional secret, optional HTTPS relay redirect). The `oauth_client_*`
+//! commands manage it in the SecretStore; the secret never comes back out.
 
 use base64::Engine;
 use screenpipe_connect::connections::all_integrations;
-use screenpipe_connect::oauth::{self, PendingOAuth, OAUTH_REDIRECT_URI, PENDING_OAUTH};
+use screenpipe_connect::oauth::{
+    self, OAuthClientCredentials, OAuthClientUpdate, OAuthConfig, PendingOAuth, Pkce,
+    PENDING_OAUTH,
+};
 use serde::{Deserialize, Serialize};
 use tauri::AppHandle;
 use tauri_plugin_opener::OpenerExt;
@@ -35,6 +42,37 @@ pub struct OAuthInstanceInfo {
     pub display_name: Option<String>,
 }
 
+/// What the settings UI may know about an integration's BYO OAuth app.
+/// Deliberately carries no secret, only whether one is stored.
+#[derive(Serialize, Deserialize, specta::Type, Clone, Debug)]
+pub struct OAuthClientInfo {
+    pub integration_id: String,
+    /// A client ID is stored, so connecting is possible.
+    pub configured: bool,
+    pub client_id: Option<String>,
+    pub has_client_secret: bool,
+    /// The user's redirect override (an HTTPS relay or a non-default port).
+    pub redirect_uri: Option<String>,
+    /// Loopback callback for the engine's current port; register this with
+    /// the provider unless a relay is used.
+    pub default_redirect_uri: String,
+    /// The provider refuses loopback redirects: `redirect_uri` is required.
+    pub requires_https_redirect: bool,
+    pub uses_pkce: bool,
+    pub auth_url: String,
+    pub token_url: String,
+}
+
+/// Edit submitted by the OAuth app dialog.
+#[derive(Serialize, Deserialize, specta::Type, Clone)]
+pub struct OAuthClientInput {
+    pub client_id: String,
+    /// `null` keeps the stored secret, `""` removes it, anything else replaces it.
+    pub client_secret: Option<String>,
+    /// `null` or `""` means "use the loopback default".
+    pub redirect_uri: Option<String>,
+}
+
 // ---------------------------------------------------------------------------
 // SecretStore helper
 // ---------------------------------------------------------------------------
@@ -53,9 +91,129 @@ async fn open_secret_store() -> Option<screenpipe_secrets::SecretStore> {
         .ok()
 }
 
+fn find_oauth_config(integration_id: &str) -> Result<&'static OAuthConfig, String> {
+    let integrations = all_integrations();
+    let integration = integrations
+        .iter()
+        .find(|i| i.def().id == integration_id)
+        .ok_or_else(|| format!("unknown integration: {}", integration_id))?;
+    integration
+        .oauth_config()
+        .ok_or_else(|| format!("{} does not use OAuth", integration_id))
+}
+
+/// Loopback callback for the port the engine is configured to listen on.
+fn default_redirect_uri(app_handle: &AppHandle) -> String {
+    let port = crate::store::SettingsStore::get(app_handle)
+        .ok()
+        .flatten()
+        .map(|s| s.recording.port)
+        .unwrap_or(3030);
+    oauth::loopback_redirect_uri(port)
+}
+
+fn client_info(
+    integration_id: &str,
+    config: &OAuthConfig,
+    creds: Option<&OAuthClientCredentials>,
+    default_redirect_uri: String,
+) -> OAuthClientInfo {
+    OAuthClientInfo {
+        integration_id: integration_id.to_string(),
+        configured: creds.is_some(),
+        client_id: creds.map(|c| c.client_id.clone()),
+        has_client_secret: creds.is_some_and(OAuthClientCredentials::has_secret),
+        redirect_uri: creds.and_then(|c| c.redirect_uri.clone()),
+        default_redirect_uri,
+        requires_https_redirect: config.requires_https_redirect,
+        uses_pkce: config.uses_pkce,
+        auth_url: config.auth_url.to_string(),
+        token_url: config.token_url.to_string(),
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Tauri commands
 // ---------------------------------------------------------------------------
+
+/// Describe the user's OAuth app for `integration_id` (never the secret).
+#[tauri::command]
+#[specta::specta]
+pub async fn oauth_client_get(
+    app_handle: AppHandle,
+    integration_id: String,
+) -> Result<OAuthClientInfo, String> {
+    let config = find_oauth_config(&integration_id)?;
+    let store = open_secret_store().await;
+    let creds = oauth::load_oauth_client(store.as_ref(), &integration_id).await;
+    Ok(client_info(
+        &integration_id,
+        config,
+        creds.as_ref(),
+        default_redirect_uri(&app_handle),
+    ))
+}
+
+/// Validate and store the user's OAuth app for `integration_id`.
+#[tauri::command]
+#[specta::specta]
+pub async fn oauth_client_save(
+    app_handle: AppHandle,
+    integration_id: String,
+    input: OAuthClientInput,
+) -> Result<OAuthClientInfo, String> {
+    let config = find_oauth_config(&integration_id)?;
+    let store = open_secret_store()
+        .await
+        .ok_or_else(|| "the secret store is unavailable, so the OAuth app cannot be saved".to_string())?;
+    let loopback = default_redirect_uri(&app_handle);
+    let existing = oauth::load_oauth_client(Some(&store), &integration_id).await;
+    let creds = oauth::apply_client_update(
+        existing.as_ref(),
+        OAuthClientUpdate {
+            client_id: input.client_id,
+            client_secret: input.client_secret,
+            redirect_uri: input.redirect_uri,
+        },
+        config,
+        &loopback,
+    )
+    .map_err(|e| e.to_string())?;
+    oauth::save_oauth_client(&store, &integration_id, &creds)
+        .await
+        .map_err(|e| e.to_string())?;
+    info!(
+        "OAuth app saved for {} (secret stored: {}, custom redirect: {})",
+        integration_id,
+        creds.has_secret(),
+        creds.redirect_uri.is_some()
+    );
+    Ok(client_info(&integration_id, config, Some(&creds), loopback))
+}
+
+/// Forget the user's OAuth app for `integration_id`. Connected accounts keep
+/// their tokens but can no longer refresh until an app is configured again.
+#[tauri::command]
+#[specta::specta]
+pub async fn oauth_client_delete(
+    app_handle: AppHandle,
+    integration_id: String,
+) -> Result<OAuthClientInfo, String> {
+    let config = find_oauth_config(&integration_id)?;
+    let store = open_secret_store()
+        .await
+        .ok_or_else(|| "the secret store is unavailable".to_string())?;
+    oauth::delete_oauth_client(&store, &integration_id)
+        .await
+        .map_err(|e| e.to_string())?;
+    info!("OAuth app removed for {}", integration_id);
+    Ok(client_info(
+        &integration_id,
+        config,
+        None,
+        default_redirect_uri(&app_handle),
+    ))
+}
 
 /// Start the OAuth flow for any integration that has `oauth_config()` set.
 /// `integration_id` must match the integration's `def().id`.
@@ -67,17 +225,34 @@ pub async fn oauth_connect(
     integration_id: String,
     instance: Option<String>,
 ) -> Result<OAuthStatus, String> {
-    let integrations = all_integrations();
-    let integration = integrations
-        .iter()
-        .find(|i| i.def().id == integration_id)
-        .ok_or_else(|| format!("unknown integration: {}", integration_id))?;
+    let config = find_oauth_config(&integration_id)?;
 
-    let config = integration
-        .oauth_config()
-        .ok_or_else(|| format!("{} does not use OAuth", integration_id))?;
+    // The user's own OAuth app: without it there is nothing to authorize as.
+    let store = open_secret_store().await;
+    let creds = oauth::load_oauth_client(store.as_ref(), &integration_id)
+        .await
+        .ok_or_else(|| {
+            oauth::OAuthTokenError::ClientNotConfigured {
+                integration_id: integration_id.clone(),
+            }
+            .to_string()
+        })?;
+    let redirect_uri =
+        oauth::resolve_redirect_uri(config, &creds, &default_redirect_uri(&app_handle))
+            .map_err(|e| e.to_string())?;
+    let pkce = config.uses_pkce.then(Pkce::generate);
 
     let state = uuid::Uuid::new_v4().simple().to_string();
+    let auth_url = oauth::build_authorization_url(
+        config,
+        &creds.client_id,
+        &redirect_uri,
+        &state,
+        pkce.as_ref(),
+        instance.as_deref(),
+    )
+    .map_err(|e| e.to_string())?;
+
     let (tx, rx) = oneshot::channel::<String>();
     {
         let mut map = PENDING_OAUTH.lock().unwrap();
@@ -88,28 +263,6 @@ pub async fn oauth_connect(
                 sender: tx,
             },
         );
-    }
-
-    let redirect_uri = config.redirect_uri_override.unwrap_or(OAUTH_REDIRECT_URI);
-
-    let mut auth_url =
-        reqwest::Url::parse(config.auth_url).map_err(|e| format!("bad auth_url: {}", e))?;
-    {
-        let mut pairs = auth_url.query_pairs_mut();
-        pairs
-            .append_pair("client_id", config.client_id)
-            .append_pair("response_type", "code")
-            .append_pair("redirect_uri", redirect_uri)
-            .append_pair("state", &state);
-        for (k, v) in config.extra_auth_params {
-            pairs.append_pair(k, v);
-        }
-        // For Google OAuth, add login_hint to pre-select account
-        if let Some(inst) = &instance {
-            if config.auth_url.contains("google.com") {
-                pairs.append_pair("login_hint", inst);
-            }
-        }
     }
 
     app_handle
@@ -155,12 +308,19 @@ pub async fn oauth_connect(
         .build()
         .map_err(|e| format!("http client: {}", e))?;
 
-    let mut token_data = oauth::exchange_code(&client, &integration_id, &code, redirect_uri)
-        .await
-        .map_err(|e| {
-            error!("token exchange failed for {}: {}", integration_id, e);
-            format!("token exchange failed: {}", e)
-        })?;
+    let mut token_data = oauth::exchange_code(
+        &client,
+        config.token_endpoint(),
+        &creds,
+        &code,
+        &redirect_uri,
+        pkce.as_ref().map(|p| p.verifier.as_str()),
+    )
+    .await
+    .map_err(|e| {
+        error!("token exchange failed for {}: {}", integration_id, e);
+        format!("token exchange failed: {}", e)
+    })?;
 
     // Merge extra callback params (e.g. realmId for QuickBooks) into the stored token data.
     if let Some(ref extras) = callback_extras {
@@ -347,8 +507,6 @@ pub async fn oauth_connect(
             integration_id
         ));
     }
-
-    let store = open_secret_store().await;
 
     // Auto-derive instance name from email/identity in token response
     let effective_instance = instance.or_else(|| token_data["email"].as_str().map(String::from));

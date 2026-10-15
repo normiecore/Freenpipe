@@ -1,0 +1,46 @@
+# Open questions
+
+Spec ambiguities resolved during implementation: the question, the decision taken and why. Grouped by
+work package.
+
+## W0-07
+
+- **Key family for BYO client credentials.** connections.md suggests `oauth-client:<id>`, cloud-018 and
+  PLAN.md say `oauth_client:<id>`. Decision: `oauth_client:<integration_id>`, holding
+  `{client_id, client_secret?, redirect_uri?}`. Reason: PLAN.md names cloud-018 as canonical; the
+  underscore also keeps the rows outside the `oauth:` token prefix the refresh scheduler scans.
+- **Extra `OAuthConfig` fields.** The plan names only `token_url` and `uses_pkce`. Decision: also add
+  `token_auth` (client_secret_post or client_secret_basic), `token_body` (form or JSON) and
+  `requires_https_redirect`, and drop `client_id` and `redirect_uri_override`. Reason: Notion, Zoom,
+  Intuit and Supabase want HTTP Basic client authentication, Notion and Atlassian document JSON bodies,
+  the vendor client ids are useless without the vendor's secret, and the override only ever held the
+  vendor relay.
+- **HTTPS-only providers (Slack, Zoom, Calendly, QuickBooks).** Decision: there is no default redirect
+  for them; the OAuth app dialog requires a redirect URI, and saving without one fails with an
+  explanation. Any `https://` URL or a loopback `http://` URL is accepted. Reason: the spec asks for a
+  user-supplied relay with no Freenpipe-hosted one; accepting an explicit loopback URL keeps Intuit
+  development keys (which allow localhost) usable, and the provider itself rejects what it does not allow.
+- **Which providers get PKCE.** Decision: on for Google, Microsoft (365 and Teams), Zoom, Calendly and
+  Supabase; off for Notion, GitHub, Slack, Atlassian, Cal.com, Intuit and Vercel. Reason: enabled where
+  the provider documents S256 support; RFC 6749 servers ignore unknown parameters, but staying
+  conservative avoids surprises with strict endpoints.
+- **Cal.com token endpoint.** The spec asks to verify it against current Cal.com docs; the cloud VM has
+  no route to cal.com. Decision: `https://app.cal.com/api/auth/oauth/token`, form body, client secret in
+  the body. Reason: best available knowledge; a smoke test with a real Cal.com app should confirm it and
+  whether refreshes need a different path.
+- **Default loopback port.** `OAUTH_REDIRECT_URI` hard-codes port 3030. Decision: the app builds the
+  default redirect from the configured engine port (`recording.port`), which equals the constant on the
+  default port; the dialog shows the exact URI to register. Reason: dev builds run on 3035, where a
+  3030 redirect would land on an installed screenpipe.
+- **MCP OAuth redirect.** Decision: `POST /mcp-servers/:id/oauth/start` accepts a `redirect_uri` only when
+  it is the loopback `/mcp-servers/<id>/oauth/callback` of this engine; the default takes its port from
+  a loopback `Host` header (else 3030); an `app_scheme` field is ignored. Reason: the plan keeps MCP OAuth
+  on the local callback, and the old code passed any caller-supplied redirect through.
+- **Refresh without an OAuth app.** Decision: the background scheduler skips such tokens (counted as
+  `refreshes_skipped`, no failure cooldown), and on-demand refresh fails with a "no OAuth app is
+  configured" error. Removing an OAuth app keeps existing tokens. Reason: the fix is in settings, not in
+  waiting; deleting tokens on app removal would lose identity metadata the user may want back.
+- **Google's dedicated cards.** Decision: the OAuth app block is rendered above the Google Calendar, Docs,
+  Sheets and Gmail cards from `connections-section.tsx`, and the cards themselves are unchanged; their
+  connect button reports the backend's "no OAuth app" error. Reason: the cards are outside this WP's
+  owner paths.

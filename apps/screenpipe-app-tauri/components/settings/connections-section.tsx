@@ -12,11 +12,13 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Dialog, DialogClose, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
-import { Download, ExternalLink, Check, Loader2, Copy, Terminal, Lock, LogIn, LogOut, Send, X, HelpCircle, Search, Calendar as CalendarIcon, Eye, EyeOff, FolderOpen, Plus, Keyboard, AlertCircle, MessageSquare } from "lucide-react";
+import { Download, ExternalLink, Check, Loader2, Copy, Terminal, LogIn, LogOut, Send, X, HelpCircle, Search, Calendar as CalendarIcon, Eye, EyeOff, FolderOpen, Plus, Keyboard, AlertCircle, MessageSquare } from "lucide-react";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
 import { commands } from "@/lib/utils/tauri";
 import { useSettings } from "@/lib/hooks/use-settings";
-import { hasCloudEntitlement } from "@/lib/app-entitlement";
+import type { OAuthClientInfo } from "@/lib/utils/tauri";
+import { connectBlocker } from "@/lib/oauth-client-form";
+import { OAuthClientSetup } from "./oauth-client-dialog";
 import { useToast } from "@/components/ui/use-toast";
 import { ensureChatGptPreset } from "@/lib/utils/chatgpt-preset";
 import { notifyConnectionsUpdated } from "@/lib/connections-events";
@@ -2168,11 +2170,11 @@ function OAuthPanel({
   onConnected?: () => void;
   onDisconnected?: () => void;
 }) {
-  const { settings } = useSettings();
-  // Freenpipe has no plans: OAuth integrations are never locked.
-  const isPro = hasCloudEntitlement(settings.user);
   const [status, setStatus] = useState<"idle" | "loading">("idle");
   const [accounts, setAccounts] = useState<OAuthAccount[]>([]);
+  // The user's own OAuth app for this provider; connecting needs one.
+  const [clientInfo, setClientInfo] = useState<OAuthClientInfo | null>(null);
+  const [connectError, setConnectError] = useState<string | null>(null);
   const [disconnecting, setDisconnecting] = useState<string | null>(null);
   // Ref guard so a cancelled or timed-out connect attempt doesn't update state after cancel.
   const connectingRef = useRef(false);
@@ -2207,6 +2209,7 @@ function OAuthPanel({
 
   const handleConnect = async () => {
     setStatus("loading");
+    setConnectError(null);
     connectingRef.current = true;
     try {
       const res = await commands.oauthConnect(integrationId, null);
@@ -2216,10 +2219,14 @@ function OAuthPanel({
         notifyConnectionsUpdated();
         onConnected?.();
       } else {
+        if (res.status === "error") setConnectError(String(res.error));
         setStatus("idle");
       }
-    } catch {
-      if (connectingRef.current) setStatus("idle");
+    } catch (e) {
+      if (connectingRef.current) {
+        setConnectError(String(e));
+        setStatus("idle");
+      }
     } finally {
       connectingRef.current = false;
       setStatus("idle");
@@ -2257,12 +2264,18 @@ function OAuthPanel({
   };
 
   const connected = accounts.length > 0;
+  const blocker = connectBlocker(clientInfo);
 
   return (
     <div className="space-y-3">
       <p className="text-xs text-muted-foreground">
         Connect your {integrationName} account. AI can act on your behalf once connected.
       </p>
+      <OAuthClientSetup
+        integrationId={integrationId}
+        integrationName={integrationName}
+        onChange={setClientInfo}
+      />
       {connected && (
         <div className="space-y-2">
           {accounts.map((account) => {
@@ -2288,19 +2301,7 @@ function OAuthPanel({
         </div>
       )}
       <div className="flex flex-wrap gap-2">
-        {!isPro && !connected ? (
-          <div className="flex flex-col gap-1.5">
-            <Button disabled size="sm" className="gap-1.5 h-7 text-xs normal-case font-sans tracking-normal whitespace-nowrap opacity-60">
-              <Lock className="h-3 w-3" />pro required
-            </Button>
-            <button
-              onClick={() => openUrl("https://screenpipe.com/onboarding")}
-              className="text-[10px] text-muted-foreground hover:text-foreground underline"
-            >
-              upgrade to pro to connect
-            </button>
-          </div>
-        ) : status === "loading" ? (
+        {status === "loading" ? (
           <div className="flex gap-2 items-center">
             <Button disabled size="sm" className="gap-1.5 h-7 text-xs normal-case font-sans tracking-normal whitespace-nowrap">
               <Loader2 className="h-3 w-3 animate-spin" />connecting...
@@ -2310,13 +2311,22 @@ function OAuthPanel({
             </Button>
           </div>
         ) : (
-          <Button onClick={handleConnect} size="sm" className="gap-1.5 h-7 text-xs normal-case font-sans tracking-normal whitespace-nowrap">
+          <Button
+            onClick={handleConnect}
+            disabled={blocker !== null}
+            title={blocker ?? undefined}
+            size="sm"
+            className="gap-1.5 h-7 text-xs normal-case font-sans tracking-normal whitespace-nowrap"
+          >
             {connected
               ? (<><Plus className="h-3 w-3" />add another account</>)
               : (<><LogIn className="h-3 w-3" />connect with {integrationName}</>)}
           </Button>
         )}
       </div>
+      {connectError && (
+        <p className="text-xs text-destructive break-words">{connectError}</p>
+      )}
     </div>
   );
 }
@@ -3486,6 +3496,15 @@ export function ConnectionsSection({
 
   const selectedIntegration = integrations.find(i => i.id === selected);
 
+  // Google's dedicated cards keep their own connect buttons; the OAuth app
+  // they authorize as is set up in the block above them.
+  const withOAuthApp = (integrationId: string, integrationName: string, card: React.ReactNode) => (
+    <div className="space-y-3">
+      <OAuthClientSetup integrationId={integrationId} integrationName={integrationName} />
+      {card}
+    </div>
+  );
+
   const renderPanel = () => {
     if (!selected) return null;
     switch (selected) {
@@ -3509,13 +3528,13 @@ export function ConnectionsSection({
       case "apple-intelligence": return <AppleIntelligenceCard />;
       case "input-monitoring": return <InputMonitoringPanel onStatusChange={setInputMonitoringGranted} />;
       case "apple-calendar": return <AppleCalendarCard onStatusChange={setAppleCalendarConnected} />;
-      case "google-calendar": return <GoogleCalendarCard
+      case "google-calendar": return withOAuthApp("google-calendar", "Google Calendar", <GoogleCalendarCard
         onConnected={() => setGoogleCalendarConnected(true)}
         onDisconnected={() => { setGoogleCalendarConnected(false); notifyConnectionsUpdated(); fetchIntegrations(); }}
-      />;
-      case "google-docs": return <GoogleDocsCard />;
-      case "google-sheets": return <GoogleSheetsCard onConnectionChange={fetchIntegrations} />;
-      case "gmail": return <GmailCard />;
+      />);
+      case "google-docs": return withOAuthApp("google-docs", "Google Docs", <GoogleDocsCard />);
+      case "google-sheets": return withOAuthApp("google-sheets", "Google Sheets", <GoogleSheetsCard onConnectionChange={fetchIntegrations} />);
+      case "gmail": return withOAuthApp("gmail", "Gmail", <GmailCard />);
       case "ics-calendar": return <IcsCalendarCard />;
       case "openclaw": return <OpenClawCard />;
       case "whatsapp": return <WhatsAppPanel />;
