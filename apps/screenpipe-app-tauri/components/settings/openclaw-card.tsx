@@ -8,16 +8,9 @@ import {
   SCREENPIPE_API_SKILL_MD,
   SCREENPIPE_CLI_SKILL_MD,
 } from "./agent-card";
+import { mcpServersJson, type McpLaunch } from "@/lib/mcp-config";
 
-const OPENCLAW_MCP_SNIPPET = `{
-  "mcpServers": {
-    "screenpipe": {
-      "command": "npx",
-      "args": ["-y", "screenpipe-mcp@latest"]
-    }
-  }
-}
-`;
+const openClawMcpSnippet = (launch: McpLaunch) => `${mcpServersJson(launch)}\n`;
 
 export function OpenClawCard() {
   return (
@@ -29,7 +22,7 @@ export function OpenClawCard() {
       mcp={{
         format: "json",
         configPath: "~/openclaw/mcp.json",
-        snippet: OPENCLAW_MCP_SNIPPET,
+        snippet: openClawMcpSnippet,
       }}
       skills={[
         {

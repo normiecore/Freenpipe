@@ -121,12 +121,17 @@ impl RfdetrConfig {
             .join("rfdetr_v12.onnx")
     }
 
-    /// HuggingFace download URL for the canonical ONNX. Pinned to
-    /// `main` so a model bump goes through a deliberate code change
-    /// (URL + expected SHA-256 + [`RFDETR_VERSION`] all bumped
-    /// together).
-    pub const HF_DOWNLOAD_URL: &'static str =
-        "https://huggingface.co/screenpipe/pii-image-redactor/resolve/main/rfdetr_v12.onnx";
+    /// File name of the canonical ONNX inside the image model repository
+    /// ([`super::hf_source::IMAGE_REDACTOR`]). A model bump goes through a
+    /// deliberate code change (file + expected SHA-256 + [`RFDETR_VERSION`]
+    /// all bumped together).
+    pub const MODEL_FILE: &'static str = "rfdetr_v12.onnx";
+
+    /// Download URL of [`Self::MODEL_FILE`]. Honours `HF_ENDPOINT` and
+    /// `SCREENPIPE_PII_IMAGE_REDACTOR_REPO`; the SHA-256 pin still applies.
+    pub fn download_url() -> String {
+        super::hf_source::IMAGE_REDACTOR.file_url(Self::MODEL_FILE)
+    }
 
     /// Expected SHA-256 of the canonical `rfdetr_v12.onnx`. Verified
     /// after every download. If a future training run produces a new
@@ -140,13 +145,18 @@ impl RfdetrConfig {
     /// Make sure the ONNX is present on disk. Idempotent — does
     /// nothing if [`Self::model_path`] already exists with the
     /// expected SHA-256. Otherwise downloads from
-    /// [`Self::HF_DOWNLOAD_URL`], verifies, atomic-renames into place.
+    /// [`Self::download_url`], verifies, atomic-renames into place.
     ///
     /// Atomic semantics: the download lands at
     /// `<model_path>.partial`, gets verified, then renames over
     /// `<model_path>`. A killed process leaves at most a `.partial`
     /// that the next call cleans up.
     pub async fn ensure_model_present(&self) -> Result<(), RedactError> {
+        self.ensure_model_present_from(&Self::download_url()).await
+    }
+
+    /// [`Self::ensure_model_present`] with an explicit source URL.
+    pub async fn ensure_model_present_from(&self, url: &str) -> Result<(), RedactError> {
         if self.model_path.exists() && Self::sha256_matches(&self.model_path)? {
             return Ok(());
         }
@@ -162,12 +172,12 @@ impl RfdetrConfig {
         let _ = tokio::fs::remove_file(&tmp).await;
 
         tracing::info!(
-            url = Self::HF_DOWNLOAD_URL,
+            url = %url,
             target = %self.model_path.display(),
             "downloading rfdetr_v12.onnx (~54 MB) — first-run only"
         );
         let resp = reqwest::Client::new()
-            .get(Self::HF_DOWNLOAD_URL)
+            .get(url)
             .send()
             .await
             .map_err(|e| RedactError::Runtime(format!("rfdetr download GET: {e}")))?;
@@ -598,17 +608,31 @@ mod tests {
             input_size: 0,
             conf_threshold: 0.3,
         };
-        // Wrong-checksum file → ensure_model_present tries to
-        // download. Network may or may not be available in CI, so
-        // accept either Ok (downloaded successfully) or
-        // Err(Runtime("...checksum...")) / Err(Runtime("...GET...")).
-        let res = cfg.ensure_model_present().await;
-        if let Err(e) = &res {
-            let msg = e.to_string();
-            assert!(
-                msg.contains("rfdetr") || msg.contains("checksum") || msg.contains("GET"),
-                "unexpected error variant: {msg}"
-            );
-        }
+        // Wrong-checksum file → a re-download is attempted. The source
+        // is a closed local port, so the test never reaches the network
+        // and the attempt fails with a download error.
+        let res = cfg
+            .ensure_model_present_from("http://127.0.0.1:9/rfdetr_v12.onnx")
+            .await;
+        let msg = res.expect_err("unreachable source must fail").to_string();
+        assert!(
+            msg.contains("rfdetr") || msg.contains("checksum") || msg.contains("GET"),
+            "unexpected error variant: {msg}"
+        );
+        // The wrong file is left alone until a verified copy replaces it.
+        assert_eq!(std::fs::read(&p).unwrap(), b"not the real model");
+    }
+
+    #[test]
+    fn download_url_reads_the_image_model_repo() {
+        assert_eq!(
+            crate::adapters::hf_source::IMAGE_REDACTOR.file_url_with(
+                None,
+                None,
+                RfdetrConfig::MODEL_FILE
+            ),
+            "https://huggingface.co/screenpipe/pii-image-redactor/resolve/main/rfdetr_v12.onnx"
+        );
+        assert!(RfdetrConfig::download_url().ends_with("/resolve/main/rfdetr_v12.onnx"));
     }
 }

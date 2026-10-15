@@ -92,12 +92,12 @@ fn default_model_dir() -> PathBuf {
         .join("opf-v6")
 }
 
-/// HuggingFace base URL for the canonical v6 fine-tune. Pinned to the
-/// `v6` branch so a model bump goes through a deliberate code change
-/// (URLs + expected SHA-256s + [`OPF_TEXT_VERSION`] all bumped
-/// together). v3 still lives under `main` for backward compat with
-/// installs running older app versions.
-const HF_BASE_URL: &str = "https://huggingface.co/screenpipe/pii-text-redactor/resolve/v6";
+/// Repository and revision of the v6 fine-tune. The revision is pinned
+/// (see [`super::hf_source::OPF_TEXT_REDACTOR`]) so a model bump goes
+/// through a deliberate code change (revision + expected SHA-256s +
+/// [`OPF_TEXT_VERSION`] all bumped together). `HF_ENDPOINT` and
+/// `SCREENPIPE_PII_TEXT_REDACTOR_REPO` point the download at a mirror.
+const MODEL_SOURCE: super::hf_source::HfModelSource = super::hf_source::OPF_TEXT_REDACTOR;
 
 /// File-by-file SHA-256 manifest for v6. Verified after every download
 /// before landing the file at its final path. If a future training run
@@ -169,8 +169,9 @@ impl OpfAdapter {
         Self::load(OpfConfig::default())
     }
 
-    /// Async constructor: download the checkpoint from HuggingFace
-    /// (~2.8 GB, first-run only) and return a lazy adapter. The model
+    /// Async constructor: download the checkpoint from the model hub
+    /// (~2.8 GB, first-run only; see [`super::hf_source`] for mirrors)
+    /// and return a lazy adapter. The model
     /// itself doesn't get loaded into memory here — that happens on
     /// the first inference batch. Recommended call site for production.
     pub async fn load_or_download(cfg: OpfConfig) -> Result<Self, RedactError> {
@@ -280,7 +281,7 @@ async fn ensure_checkpoint_present(model_dir: &Path) -> Result<(), RedactError> 
 }
 
 async fn download_one(name: &str, expected_sha: &str, dst: &Path) -> Result<(), RedactError> {
-    let url = format!("{HF_BASE_URL}/{name}");
+    let url = MODEL_SOURCE.file_url(name);
     let tmp = dst.with_extension("partial");
     let _ = tokio::fs::remove_file(&tmp).await;
 

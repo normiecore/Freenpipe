@@ -181,6 +181,29 @@ Wave 0 ran on the PC before the cloud phase. Tick anything you already checked t
   - Expected: 1. The menu has "export pipe file" and no "copy share link" or "publish to store"; there is no upload icon on the pipe row. 2. The save dialog proposes `hello.md`; the file holds the pipe.md text and a toast confirms the export. 3. The pipe comes back under the same name.
   - Result:
 
+### W0-09 Bundled CLI/MCP runtime and self-hosted model sources
+
+- [ ] **SMK-W0-09-1** (Manual) The installer ships the CLI, the MCP server and the speaker models
+  - Setup: an NSIS bundle built with `FREENPIPE_BUILD_CLI=1` and `FREENPIPE_REQUIRE_BUNDLED_RUNTIME=1` in the environment of `bun tauri build` (the build fails if a piece is missing).
+  - Steps: 1. Install it. 2. In the install folder, check `screenpipe.exe`, `mcp\screenpipe-mcp.js`, `models\pyannote\segmentation-3.0.onnx` (5,983,836 bytes) and `models\pyannote\wespeaker_en_voxceleb_CAM++.onnx` (29,292,684 bytes). 3. Run `"<install>\screenpipe.exe" --help` from cmd.
+  - Expected: all four files exist with those sizes; the CLI prints its help without a missing-DLL error.
+  - Result:
+- [ ] **SMK-W0-09-2** (UI smoke) Claude Desktop is connected through the bundled MCP server by absolute path
+  - Setup: the installed build from SMK-W0-09-1, Claude Desktop installed and opened once; no Node.js needed.
+  - Steps: 1. Settings > Connections > Claude > connect. 2. Open `%APPDATA%\Claude\claude_desktop_config.json`. 3. Restart Claude Desktop and ask it to summarize your screen activity of the last few minutes.
+  - Expected: `mcpServers.screenpipe.command` is `<install>\bun.exe`, `args[0]` is `<install>\mcp\screenpipe-mcp.js`, `env.SCREENPIPE_LOCAL_API_KEY` is set; no `npx`, `bun x` or `@latest` anywhere; Claude lists the screenpipe tools and answers from local data.
+  - Result:
+- [ ] **SMK-W0-09-3** (Runtime) Agents run the bundled CLI, never a registry copy
+  - Setup: installed build, an AI preset that works; Process Monitor optional.
+  - Steps: 1. In chat, ask the agent to run `echo $SCREENPIPE_CLI && screenpipe pipe list`. 2. Check `<data dir>\pi-agent\bin\` for `screenpipe` and `screenpipe.cmd`. 3. Run a pipe once (Settings > Pipes > run) and read its log.
+  - Expected: `SCREENPIPE_CLI` is `<install>\screenpipe.exe`; `pipe list` prints the pipe table; both launchers exist and point at that path; no `bun x`/`npx` process starts during the run.
+  - Result:
+- [ ] **SMK-W0-09-4** (Runtime) Speaker models load from the install folder with the network off
+  - Setup: installed build; delete `segmentation-3.0.onnx` and `wespeaker_en_voxceleb_CAM++.onnx` from `%LOCALAPPDATA%\screenpipe\models` if present; disconnect the network.
+  - Steps: 1. Start recording with audio on and speak for a minute. 2. Search the app log for `using installed`.
+  - Expected: the log names both models under `<install>\models\pyannote\`; no download attempt is logged; speaker segments appear in the timeline.
+  - Result:
+
 ### W0-10 Logs and feedback upload replaced by a local diagnostics bundle
 
 - [ ] **SMK-W0-10-1** (UI smoke) "Share logs" writes a local diagnostics bundle

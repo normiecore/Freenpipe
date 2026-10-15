@@ -15,8 +15,9 @@
 //!
 //! MLX consumes safetensors, not ONNX, so this adapter ships its own
 //! download flow (mirroring [`super::rfdetr::RfdetrConfig`]): pulls
-//! `rfdetr_v9.safetensors` from
-//! `huggingface.co/screenpipe/pii-image-redactor` on first run
+//! `rfdetr_v9.safetensors` from the image model repository
+//! ([`super::hf_source::IMAGE_REDACTOR`], mirror-able through
+//! `HF_ENDPOINT` / `SCREENPIPE_PII_IMAGE_REDACTOR_REPO`) on first run
 //! (~108 MB), verifies SHA-256, atomic-renames into
 //! `~/.screenpipe/models/rfdetr_v9.safetensors`. Subsequent starts
 //! are instant.
@@ -106,11 +107,16 @@ impl RfdetrMlxConfig {
             .join("rfdetr_v9.safetensors")
     }
 
-    /// HuggingFace download URL for the safetensors weights. Pinned to
-    /// `main` so a model bump goes through a deliberate code change
-    /// (URL + expected SHA-256 + [`VERSION`] all bumped together).
-    pub const HF_DOWNLOAD_URL: &'static str =
-        "https://huggingface.co/screenpipe/pii-image-redactor/resolve/main/rfdetr_v9.safetensors";
+    /// File name of the safetensors weights inside the image model
+    /// repository. A model bump goes through a deliberate code change
+    /// (file + expected SHA-256 + [`VERSION`] all bumped together).
+    pub const MODEL_FILE: &'static str = "rfdetr_v9.safetensors";
+
+    /// Download URL of [`Self::MODEL_FILE`]. Honours `HF_ENDPOINT` and
+    /// `SCREENPIPE_PII_IMAGE_REDACTOR_REPO`; the SHA-256 pin still applies.
+    pub fn download_url() -> String {
+        super::hf_source::IMAGE_REDACTOR.file_url(Self::MODEL_FILE)
+    }
 
     /// Expected SHA-256 of the canonical `rfdetr_v9.safetensors`.
     /// Verified after every download. If a future training run
@@ -122,7 +128,7 @@ impl RfdetrMlxConfig {
     /// Make sure the safetensors is present on disk. Idempotent —
     /// does nothing if [`Self::model_path`] already exists with the
     /// expected SHA-256. Otherwise downloads from
-    /// [`Self::HF_DOWNLOAD_URL`], verifies, atomic-renames into place.
+    /// [`Self::download_url`], verifies, atomic-renames into place.
     ///
     /// Atomic semantics: download lands at
     /// `<model_path>.partial`, gets verified, then renames over
@@ -154,13 +160,14 @@ impl RfdetrMlxConfig {
         let tmp = self.model_path.with_extension("safetensors.partial");
         let _ = tokio::fs::remove_file(&tmp).await;
 
+        let url = Self::download_url();
         tracing::info!(
-            url = Self::HF_DOWNLOAD_URL,
+            url = %url,
             target = %self.model_path.display(),
             "downloading rfdetr_v9.safetensors (~108 MB) — first-run only"
         );
         let resp = reqwest::Client::new()
-            .get(Self::HF_DOWNLOAD_URL)
+            .get(&url)
             .send()
             .await
             .map_err(|e| RedactError::Runtime(format!("rfdetr-mlx download GET: {e}")))?;
@@ -463,6 +470,11 @@ mod tests {
         let p = RfdetrMlxConfig::default_model_path();
         let s = p.to_string_lossy();
         assert!(s.contains(".screenpipe/models/rfdetr_v9.safetensors"));
+    }
+
+    #[test]
+    fn weights_come_from_the_image_model_repo() {
+        assert!(RfdetrMlxConfig::download_url().ends_with("/resolve/main/rfdetr_v9.safetensors"));
     }
 
     #[test]

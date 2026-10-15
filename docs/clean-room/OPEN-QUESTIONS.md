@@ -103,3 +103,121 @@ work package.
 - **Should installs still bump a registry's install counter?**
   Decision: only for a registry API (best-effort `POST {base}/api/pipes/store/{slug}/install` to the user's own server); static indexes have none.
   Reason: there is no vendor default any more, so the counter only reaches a server the user chose.
+
+## W0-09
+
+1. **Where is the "Freenpipe-controlled mirror" for the pyannote models, and what are the file names?**
+   - Decision: this repository's own Git LFS storage, read through GitHub's media endpoint at the
+     import commit:
+     `https://media.githubusercontent.com/media/normiecore/Freenpipe/bcef0bcde5e6ea12db811a27047ef63869b7374a/crates/screenpipe-audio/models/pyannote/`
+     followed by the repository file name, percent-encoded (`segmentation-3.0.onnx`,
+     `wespeaker_en_voxceleb_CAM%2B%2B.onnx`). `DEFAULT_MODEL_BASE_URL` in
+     `crates/screenpipe-audio/src/speaker/models.rs` and `scripts/stage_bundled_runtime.js` use the same
+     base. Downloads are checked against the size and SHA-256 in the Git LFS pointers. An HTTP 404 or
+     410 is treated as permanent: the downloader does not retry it, and callers waiting for the model
+     get the error at once instead of after the two-minute timeout.
+   - Reason: those LFS objects were imported with the fork, the endpoint serves them byte-identical to
+     the pointers, and a commit id cannot move, so no release has to be created. An earlier draft of
+     this WP pointed at a release (`pyannote-models-v1`) that did not exist; the engine then spent about
+     four minutes retrying 404s before it started its server. The local file names are unchanged, so
+     existing caches keep working.
+   - No owner action is needed.
+
+2. **How do users override the model sources?**
+   - Decision: environment variables only, for now: `SCREENPIPE_PYANNOTE_BASE_URL` (mirror base URL),
+     `SCREENPIPE_PYANNOTE_DIR` (directory with pre-installed pyannote files), `HF_ENDPOINT`
+     (Hugging Face compatible host for the PII models) and one repository override per PII model
+     family: `SCREENPIPE_PII_REDACTOR_REPO`, `SCREENPIPE_PII_TEXT_REDACTOR_REPO`,
+     `SCREENPIPE_PII_IMAGE_REDACTOR_REPO` (`owner/name`).
+   - Reason: the target has no evidence of such settings, and settings keys belong to W1-02. The
+     names follow the `SCREENPIPE_*` convention; `HF_ENDPOINT` is the hub's own variable and is already
+     listed in shell.md. SHA-256 pins stay in force for every source, so a mirror cannot change the
+     weights.
+
+3. **Do the PII weights keep downloading from the vendor's Hugging Face organisation by default?**
+   - Decision: yes, as cloud.md cloud-024 says (opt-in only, when local AI PII removal is enabled;
+     regex-only redaction needs no download). The licence of those weights is still unknown and stays
+     an open question for the owner.
+
+4. **How is the CLI bundled, given that the base ships no standalone CLI?**
+   - Decision: the engine's `screenpipe` binary is staged by `scripts/stage_bundled_runtime.js`
+     (`FREENPIPE_CLI_BINARY=<path>` or `FREENPIPE_BUILD_CLI=1`) into `src-tauri/bundled/cli/` and
+     mapped as a resource into the install root next to the app, bun and the runtime DLLs. It is not an
+     `externalBin`, so development builds without a staged CLI still build. Only the Windows bundle
+     maps it (`tauri.windows.conf.json`); macOS and Linux keep working without it (agents use the
+     REST API, MCP snippets show placeholders, models download on first use).
+   - Reason: the CLI must sit beside the DLLs it loads; an `externalBin` would make every Windows dev
+     build depend on a release build of the engine.
+   - Hand-off to the release pipeline (`.github/workflows/release-app.yml`, W0-03, already merged):
+     the Windows "Run pre_build.js" step should set `FREENPIPE_BUILD_CLI=1` (or build the CLI in an
+     earlier step and pass `FREENPIPE_CLI_BINARY`) and `FREENPIPE_REQUIRE_BUNDLED_RUNTIME=1`. Until it
+     does, a Windows installer built the default way ships without the CLI. Agents then fall back to
+     the REST API: the screenpipe-cli skill and the pipe-creation prompts say so. In required mode the
+     staging step refuses a CLI left over from an earlier run.
+
+5. **Should agents fall back to a `screenpipe` found on `PATH`?**
+   - Decision: no. Agents get `SCREENPIPE_CLI`, a launcher directory (`<data dir>/pi-agent/bin`)
+     first on `PATH`, and a bash function in the `BASH_ENV` shim, all pointing at the bundled binary.
+     Only the MCP server's API-key discovery tries `screenpipe` on `PATH`, as its last CLI option.
+   - Reason: a `screenpipe` on `PATH` may belong to another install of a different product; agents
+     acting on the user's data should use the binary that came with this app.
+
+6. **How is the MCP server shipped?**
+   - Decision: `packages/screenpipe-mcp` is installed with `bun install --frozen-lockfile` and
+     bundled by `bun build --target=node --format=cjs` into one file, `mcp/screenpipe-mcp.js`. Every
+     generated MCP config runs `<bundled bun> <that file>` by absolute path (`lib/mcp-config.ts`),
+     with `--port` when the API does not use 3030. The staging step fails if the bundle mentions a
+     registry package (`screenpipe@latest`, `screenpipe-mcp@latest`) or a vendor host
+     (`screenpi.pe`, `screenpipe.com`, `mediar.ai`). To pass that check this branch drops the
+     enterprise `team-*` tools (`TEAM_API`, `fetchTeam`), with deletions identical to W0-05's, so
+     the two branches merge cleanly there.
+   - Reason: a single CommonJS file needs no install step and runs under bun or node, and the server
+     always matches the installed app version. The check turns a vendor call that slips back into
+     the package into a failed build instead of a shipped one.
+
+7. **What does the standalone CLI's update notice compare against?**
+   - Decision: nothing by default. `check_for_updates` runs only when the user configures an update
+     manifest (`SCREENPIPE_UPDATER_MANIFEST_URL`, the switchboard's `UpdaterManifest`; Tauri updater
+     format, top-level `version`). The npm registry query for the upstream `screenpipe` package is
+     gone, and so are the `npx screenpipe@latest record` banner line and the `npx -y screenpipe-mcp`
+     tip (now `screenpipe mcp setup`).
+   - Reason: new network calls must be user-configured, and the switchboard's contract is that an
+     unset updater manifest means no update checks (DECISIONS #3). `cli_reminder.rs` belongs to
+     W0-05, whose branch removes the update check and the remaining `npx screenpipe install / login /
+     survey` tips altogether; W0-09 keeps its edit to the lines above, and W0-05's version of the
+     file wins on merge.
+
+8. **Which SKILL.md do the agent cards serve?**
+   - Decision: `scripts/gen-skill-content.js` now reads the product copies under
+     `crates/screenpipe-core/assets/skills/`, and the Hermes card installs skills from that folder of
+     this repository. `.claude/skills/` (the repository's developer mirror, still mentioning the npm
+     CLI) is no longer read by the app.
+   - Reason: the product copies are what the app installs into its own agent sessions, and the
+     mirror is edited by other tooling.
+
+9. **Where does the local API key go in MCP configs written by onboarding?**
+   - Decision: when the app ships the CLI (`mcp_runtime_check` reports `cliPath`), onboarding writes
+     no key; the MCP server runs `<install>/screenpipe auth token` at start and reads it from the
+     secret store. Only builds without the CLI write `SCREENPIPE_LOCAL_API_KEY` into the Claude
+     Desktop, Cursor and Codex configs. Settings > Connections keeps writing the key, as the base app
+     did there.
+   - Reason: a plain-text copy of the key in third-party config files is avoidable once the CLI can
+     hand it over; the fallback keeps the tools working on builds without the CLI.
+
+10. **Does the PII model download honour the switchboard's model mirror setting?**
+    - Decision: not yet. `screenpipe-redact` reads `HF_ENDPOINT` directly (`adapters/hf_source.rs`),
+      which is the same variable the switchboard's `Endpoint::ModelMirror` reads, so environment
+      configuration behaves the same. A settings override of `ModelMirror` (W1-02) would not reach
+      it: `screenpipe-redact` does not depend on `screenpipe-core`.
+    - Hand-off to W1-02: when the `ModelMirror` settings key lands, pass
+      `screenpipe_core::endpoints::model_mirror_base()` into `screenpipe-redact` (a small setter or
+      resolver hook in `hf_source.rs`, installed by the engine at start).
+
+11. **What licences cover the bundled speaker models?**
+    - Decision: pyannote segmentation-3.0 is MIT; the WeSpeaker CAM++ VoxCeleb embedding model is
+      CC BY 4.0 (WeSpeaker ties VoxCeleb-trained models to the dataset licence). Attribution is in
+      `crates/screenpipe-audio/models/pyannote/NOTICE.md`, staged next to the models in the installer,
+      and `NOTICE.md` points to it.
+    - Open for the owner: the build VM could not reach the Hugging Face model card, so the MIT
+      declaration for segmentation-3.0 is from memory of that card and should be confirmed before a
+      release.

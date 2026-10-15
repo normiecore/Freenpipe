@@ -8,20 +8,22 @@
  *
  * Dispatches between two transports based on argv:
  *
- *   npx screenpipe-mcp               → stdio MCP server (Claude Desktop)
- *   npx screenpipe-mcp --http [...]  → Streamable HTTP MCP server
+ *   <bun|node> screenpipe-mcp.js               → stdio MCP server (Claude Desktop)
+ *   <bun|node> screenpipe-mcp.js --http [...]  → Streamable HTTP MCP server
+ *
+ * Freenpipe ships this entry point bundled into a single file
+ * (`<install>/mcp/screenpipe-mcp.js`, built by the desktop app's
+ * scripts/stage_bundled_runtime.js) and registers it by absolute path; it is
+ * not fetched from a package registry. `node dist/cli.js` works for a local
+ * `bun run build` of this package.
  *
  * We dispatch here — before evaluating `./index.js` — because index.ts
  * does heavy work at module-load time (API-key discovery shells out to
  * the screenpipe CLI). That work is irrelevant in HTTP mode and would
  * add multi-second startup latency for nothing.
  *
- * Background: the previous README told users to run
- * `npx screenpipe-mcp-http`, but no `screenpipe-mcp-http` *package*
- * exists — only a bin of that name inside the `screenpipe-mcp` package.
- * The direct bin still works (`npx -p screenpipe-mcp screenpipe-mcp-http`
- * or `dist/http-server.js`); this dispatcher just gives users the
- * working one-liner they expected.
+ * The HTTP server can also be started directly (`dist/http-server.js`);
+ * this dispatcher keeps both transports behind one entry point.
  */
 
 async function main(): Promise<void> {

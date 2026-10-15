@@ -15,6 +15,8 @@ import { openUrl } from "@tauri-apps/plugin-opener";
 import { readTextFile, writeFile, mkdir } from "@tauri-apps/plugin-fs";
 import { homeDir, join, dirname } from "@tauri-apps/api/path";
 import { platform } from "@tauri-apps/plugin-os";
+import { codexMcpToml, mergeMcpServer, type McpLaunch } from "@/lib/mcp-config";
+import { requireMcpLaunch } from "@/lib/mcp-runtime";
 import posthog from "posthog-js";
 
 // ─── Icons ───────────────────────────────────────────────────────────────────
@@ -75,30 +77,17 @@ function CursorIcon({ className = "w-5 h-5" }: { className?: string }) {
 // ─── MCP helpers (shared pattern for Claude Desktop & Cursor) ────────────────
 
 /**
- * MCP install config for screenpipe.
- *
- * Prefers our bundled `bun` binary (always present when the desktop app
- * is installed) over `npx`. Falls back to `npx` only if bun isn't found.
- *
- * Why: many users (incl. Louis's MBA, IT consultants like Brad) don't
- * have Node/npx installed at all. Claude Desktop tries to spawn `npx`,
- * gets "No such file or directory", and the MCP server never starts.
- * Using the bun we ship sidesteps the entire Node dependency.
- *
- * `@latest` is pinned so npx/bunx don't lock onto a stale cached version.
- *
- * Keep this in sync with the same helper in
- * `components/settings/connections-section.tsx` — both code paths must
- * write identical configs.
+ * Launch for the MCP server bundled with the app (`<bun> <install>/mcp/
+ * screenpipe-mcp.js`, absolute paths). The generators live in
+ * `lib/mcp-config.ts` and are shared with Settings → Connections. The local
+ * API key is written into the tool's config only when this build ships no
+ * CLI; otherwise the server reads it from the secret store through the
+ * bundled CLI, so no plain-text copy lands in third-party config files.
+ * Throws when this build has no bundled server, which the card surfaces as
+ * an error.
  */
-async function buildMcpConfig(): Promise<{ command: string; args: string[] }> {
-  try {
-    const res = await commands.bunCheck();
-    if (res.status === "ok" && res.data.available && res.data.path) {
-      return { command: res.data.path, args: ["x", "screenpipe-mcp@latest"] };
-    }
-  } catch { /* fall through to npx */ }
-  return { command: "npx", args: ["-y", "screenpipe-mcp@latest"] };
+async function buildMcpConfig(): Promise<McpLaunch> {
+  return requireMcpLaunch({ apiKey: "cli-or-env" });
 }
 
 async function readMcpConfig(configPath: string): Promise<Record<string, unknown>> {
@@ -110,11 +99,10 @@ async function readMcpConfig(configPath: string): Promise<Record<string, unknown
 }
 
 async function writeMcpConfig(configPath: string, config: Record<string, unknown>): Promise<void> {
-  if (!config.mcpServers || typeof config.mcpServers !== "object") config.mcpServers = {};
-  (config.mcpServers as Record<string, unknown>).screenpipe = await buildMcpConfig();
+  const next = mergeMcpServer(config, await buildMcpConfig());
   // Ensure parent directory exists (Claude Desktop may not have created it yet)
   await mkdir(await dirname(configPath), { recursive: true });
-  await writeFile(configPath, new TextEncoder().encode(JSON.stringify(config, null, 2)));
+  await writeFile(configPath, new TextEncoder().encode(JSON.stringify(next, null, 2)));
 }
 
 // Cursor
@@ -191,7 +179,7 @@ async function isCodexMcpInstalled(): Promise<boolean> {
 
 async function installCodexMcp(): Promise<void> {
   const configPath = await getCodexConfigPath();
-  const { command, args } = await buildMcpConfig();
+  const launch = await buildMcpConfig();
   let existing = "";
   try { existing = await readTextFile(configPath); } catch { /* fresh */ }
 
@@ -201,12 +189,7 @@ async function installCodexMcp(): Promise<void> {
     .replace(/\n{3,}/g, "\n\n")
     .trimEnd();
 
-  const block = [
-    "[mcp_servers.screenpipe]",
-    `command = ${JSON.stringify(command)}`,
-    `args = [${args.map(a => JSON.stringify(a)).join(", ")}]`,
-    "enabled = true",
-  ].join("\n");
+  const block = codexMcpToml(launch);
 
   const next = `${withoutScreenpipe}${withoutScreenpipe ? "\n\n" : ""}${block}\n`;
   await mkdir(await dirname(configPath), { recursive: true });

@@ -15,6 +15,7 @@ import {
 import * as fs from "fs";
 import * as path from "path";
 import * as os from "os";
+import { cliCandidates } from "./cli-locator.js";
 
 // Parse command line arguments
 const args = process.argv.slice(2);
@@ -29,109 +30,62 @@ const SCREENPIPE_API = `http://localhost:${port}`;
 
 // Discover the local API key, in priority order:
 //
-//   1. env vars set by the launcher (Claude Desktop config, terminal, etc.)
-//   2. CLI via bundled `bun` from screenpipe.app at a deterministic absolute
-//      path. Runs `bun x screenpipe@latest auth token` → goes through the
-//      Rust CLI's `find_api_auth_key` resolver, which handles the encrypted
-//      keychain-backed secret store. This is the canonical path: same
-//      contract as `screenpipe auth token` in a terminal, no PATH needed.
-//   3. CLI via node-adjacent npx — for dev environments that have node but
-//      not the desktop app.
-//   4. CLI via PATH-based npx — last CLI fallback.
-//   5. Direct sqlite3 read of ~/.screenpipe/db.sqlite — plaintext entries
+//   1. env vars set by the launcher (Claude Desktop config, terminal, etc.).
+//      The desktop app writes SCREENPIPE_LOCAL_API_KEY into the configs it
+//      generates, so this is the usual path.
+//   2. The `screenpipe` CLI shipped with the desktop app, run as
+//      `<cli> auth token`. The CLI's resolver handles the keychain-encrypted
+//      secret store. It is found, in order, at $SCREENPIPE_CLI, next to this
+//      script's install folder (the app ships this file as
+//      <install>/mcp/screenpipe-mcp.js and the CLI as <install>/screenpipe),
+//      at the app's standard install paths, and finally as `screenpipe` on
+//      PATH. Nothing is ever fetched from a package registry.
+//   3. Direct sqlite3 read of ~/.screenpipe/db.sqlite — plaintext entries
 //      only (encrypted entries need the keychain, which only the CLI can
-//      reach). Kept as a final last-resort for users who have screenpipe
-//      *data* but no working CLI install (rare). Demoted below the CLI
-//      paths because it reimplements logic that lives in `auth_key.rs` and
-//      can silently drift on storage-format changes.
+//      reach). Last resort for users who have the data but no CLI.
 //
-// If all 5 miss we log a loud stderr warning so it surfaces in the host's
-// MCP log instead of the user just seeing 403s with no explanation.
+// If everything misses we log a loud stderr warning so it surfaces in the
+// host's MCP log instead of the user just seeing 403s with no explanation.
+
 function discoverApiKey(): string {
   const envKey = process.env.SCREENPIPE_LOCAL_API_KEY || process.env.SCREENPIPE_API_KEY;
   if (envKey) return envKey;
 
   // eslint-disable-next-line @typescript-eslint/no-var-requires
-  const os = require("os");
-  // eslint-disable-next-line @typescript-eslint/no-var-requires
-  const path = require("path");
-  // eslint-disable-next-line @typescript-eslint/no-var-requires
-  const fs = require("fs");
-  // eslint-disable-next-line @typescript-eslint/no-var-requires
-  const { execFileSync, execSync } = require("child_process");
+  const { execFileSync } = require("child_process");
 
   const home = os.homedir();
-
-  // 2. CLI via bundled `bun` shipped with the desktop app. The Tauri
-  //    externalBin config places `bun` next to the main app exe at a
-  //    deterministic install path on each OS, so we don't need PATH —
-  //    which Claude Desktop's MCP launcher strips. The CLI's `auth
-  //    token` goes through `find_api_auth_key` and decrypts via
-  //    keychain when needed.
-  const bunCandidates: string[] =
-    process.platform === "darwin"
-      ? [
-          // Standard system-wide install
-          "/Applications/screenpipe.app/Contents/MacOS/bun",
-          // Per-user install
-          path.join(home, "Applications", "screenpipe.app", "Contents", "MacOS", "bun"),
-        ]
-      : process.platform === "win32"
-      ? [
-          // NSIS per-user (default on Windows)
-          path.join(home, "AppData", "Local", "screenpipe", "bun.exe"),
-          // Per-user under "screenpipe-app" (older builds)
-          path.join(home, "AppData", "Local", "screenpipe-app", "bun.exe"),
-          // System-wide install
-          "C:\\Program Files\\screenpipe\\bun.exe",
-        ]
-      : [
-          // Linux .deb
-          "/opt/screenpipe/bun",
-          "/usr/lib/screenpipe/bun",
-          "/usr/bin/bun",
-        ];
-  for (const bunPath of bunCandidates) {
-    if (!fs.existsSync(bunPath)) continue;
+  const runAuthToken = (cli: string): string | null => {
     try {
-      const token = execFileSync(bunPath, ["x", "screenpipe@latest", "auth", "token"], {
-        timeout: 30000, // first run downloads the package; subsequent runs are cached
+      const token = execFileSync(cli, ["auth", "token"], {
+        timeout: 15000,
         encoding: "utf-8",
         stdio: ["pipe", "pipe", "pipe"],
       }).trim();
-      if (token && token.startsWith("sp-")) return token;
+      return token && token.startsWith("sp-") ? token : null;
     } catch {
-      // try next candidate
+      return null;
     }
+  };
+
+  // 2a. Bundled / installed CLI at a known absolute path.
+  const candidates = cliCandidates({
+    platform: process.platform,
+    home,
+    env: process.env,
+    scriptPath: process.argv[1] ? path.resolve(process.argv[1]) : undefined,
+  });
+  for (const cli of candidates) {
+    if (!fs.existsSync(cli)) continue;
+    const token = runAuthToken(cli);
+    if (token) return token;
   }
 
-  // 3. CLI via npx adjacent to the running node. Works for dev
-  //    environments without the desktop app.
-  try {
-    const npxName = process.platform === "win32" ? "npx.cmd" : "npx";
-    const npxPath = path.join(path.dirname(process.execPath), npxName);
-    if (fs.existsSync(npxPath)) {
-      const token = execFileSync(npxPath, ["screenpipe@latest", "auth", "token"], {
-        timeout: 30000,
-        encoding: "utf-8",
-        stdio: ["pipe", "pipe", "pipe"],
-      }).trim();
-      if (token && token.startsWith("sp-")) return token;
-    }
-  } catch {}
+  // 2b. A `screenpipe` CLI on PATH (e.g. built from source).
+  const onPath = runAuthToken(process.platform === "win32" ? "screenpipe.exe" : "screenpipe");
+  if (onPath) return onPath;
 
-  // 4. CLI via PATH-based npx. Last CLI try; works on raw shells with
-  //    npx on PATH.
-  try {
-    const token = execSync("npx screenpipe@latest auth token", {
-      timeout: 30000,
-      encoding: "utf-8",
-      stdio: ["pipe", "pipe", "pipe"],
-    }).trim();
-    if (token && token.startsWith("sp-")) return token;
-  } catch {}
-
-  // 5. Direct sqlite3 read of the secret store (last-resort). Plaintext
+  // 3. Direct sqlite3 read of the secret store (last-resort). Plaintext
   //    entries only — encrypted ones live behind the keychain, which the
   //    CLI paths above already cover. Used when the user has screenpipe
   //    data on disk but no working CLI install.
@@ -173,18 +127,17 @@ function discoverApiKey(): string {
     }
   } catch {}
 
-  // All five paths missed. Log loudly to stderr so the host's MCP
-  // panel surfaces this instead of the user seeing cryptic 403s from
-  // the screenpipe server on every tool call.
+  // Every source missed. Log loudly to stderr so the host's MCP panel
+  // surfaces this instead of the user seeing cryptic 403s from the local
+  // server on every tool call.
   process.stderr.write(
     [
       "[screenpipe-mcp] could not discover SCREENPIPE_LOCAL_API_KEY from any source.",
       "  - env vars (SCREENPIPE_LOCAL_API_KEY / SCREENPIPE_API_KEY) not set",
-      "  - bundled `bun` from screenpipe.app not found at any known install path",
-      "  - npx fallback unavailable",
+      "  - no screenpipe CLI found ($SCREENPIPE_CLI, the app install folder, PATH)",
       "  - direct sqlite3 read of ~/.screenpipe/db.sqlite failed",
-      "Fix: set SCREENPIPE_LOCAL_API_KEY in your MCP launcher's env block,",
-      "or install the screenpipe desktop app (https://screenpi.pe).",
+      "Fix: set SCREENPIPE_LOCAL_API_KEY in your MCP launcher's env block, or",
+      "reconnect this tool from the Freenpipe app (Settings > Connections).",
       "",
     ].join("\n"),
   );
@@ -192,49 +145,6 @@ function discoverApiKey(): string {
 }
 
 const API_KEY = discoverApiKey();
-
-// Enterprise team token — when present, this MCP additionally registers
-// `team-*` tools that query the org-wide telemetry control plane
-// (https://screenpi.pe/api/enterprise/v1/*) instead of just the local
-// recordings. Same audience: an enterprise admin running screenpipe-mcp
-// inside Claude Desktop / Cursor / Windsurf wants to ask "what did MY
-// machine do" AND "what did MY TEAM do" without juggling two MCPs.
-//
-// Resolution order matches discoverApiKey() in spirit:
-//   1. SCREENPIPE_ENTERPRISE_TOKEN env var (Claude config, terminal)
-//   2. team_api_token field in ~/.screenpipe/enterprise.json (written by
-//      the desktop app's Settings → Privacy → Admin Team API Token)
-//
-// Token format is `sk_ent_…`. Empty / missing → team tools are not
-// registered; non-admin users of screenpipe-mcp see exactly what they
-// see today.
-function discoverTeamToken(): string {
-  const envTok = process.env.SCREENPIPE_ENTERPRISE_TOKEN;
-  if (envTok && envTok.startsWith("sk_ent_")) return envTok;
-  try {
-    const entPath = path.join(os.homedir(), ".screenpipe", "enterprise.json");
-    if (fs.existsSync(entPath)) {
-      const raw = fs.readFileSync(entPath, "utf-8");
-      const parsed = JSON.parse(raw);
-      const tok = typeof parsed?.team_api_token === "string" ? parsed.team_api_token : "";
-      if (tok && tok.startsWith("sk_ent_")) return tok;
-    }
-  } catch {}
-  return "";
-}
-
-const TEAM_TOKEN = discoverTeamToken();
-const TEAM_API = "https://screenpi.pe/api/enterprise/v1";
-
-async function fetchTeam(p: string, init: RequestInit = {}): Promise<Response> {
-  return fetch(`${TEAM_API}${p}`, {
-    ...init,
-    headers: {
-      Authorization: `Bearer ${TEAM_TOKEN}`,
-      ...(init.headers || {}),
-    },
-  });
-}
 
 // Read version from package.json (single source of truth)
 // eslint-disable-next-line @typescript-eslint/no-var-requires
@@ -661,99 +571,8 @@ const TOOLS: Tool[] = [
   },
 ];
 
-// ---------------------------------------------------------------------------
-// Enterprise team tools — registered only when a team API token is present.
-// Same endpoint surface as the desktop `screenpipe-team` pi-agent skill:
-// proxy GETs to https://screenpi.pe/api/enterprise/v1/* with Bearer auth.
-//
-// Naming convention: every team tool is `team-*` so it's obvious at a glance
-// which scope (just-me vs the-whole-org) any given call is hitting.
-// ---------------------------------------------------------------------------
-const TEAM_TOOLS: Tool[] = [
-  {
-    name: "team-search",
-    description:
-      "Substring-search across the ENTIRE ORG's telemetry (every enrolled " +
-      "device). Use when the question is about the team or another teammate " +
-      "(\"what did engineering work on yesterday\", \"did alice touch the auth code\"). " +
-      "For your own machine only, use search-content. " +
-      "Auth: enterprise admin token (sk_ent_…). " +
-      "Defaults: since=now-24h, limit=50. Returns matched records with device + timestamp.",
-    annotations: { title: "Team Search", readOnlyHint: true, openWorldHint: true, idempotentHint: true },
-    inputSchema: {
-      type: "object",
-      properties: {
-        q: { type: "string", description: "Substring to match (case-insensitive). Empty = all records in window." },
-        device_id: { type: "string", description: "Restrict to one device. Get the ID from team-devices." },
-        app_name: { type: "string", description: "Restrict to records whose app_name equals this (case-insensitive)." },
-        since: { type: "string", description: "ISO 8601 lower bound. Default = now - 24h." },
-        until: { type: "string", description: "ISO 8601 upper bound. Default = now." },
-        since_hours_ago: { type: "integer", description: "Convenience: equivalent to since=now-N*h." },
-        limit: { type: "integer", description: "Max records (default 50, max 200).", default: 50 },
-      },
-    },
-  },
-  {
-    name: "team-devices",
-    description:
-      "List all devices enrolled under this org's license — hostname, OS, " +
-      "app version, last-seen timestamp. Use to discover device IDs to pass " +
-      "to team-search or team-records, or to spot stale machines.",
-    annotations: { title: "Team Devices", readOnlyHint: true, openWorldHint: true, idempotentHint: true },
-    inputSchema: { type: "object", properties: {} },
-  },
-  {
-    name: "team-records",
-    description:
-      "Chronological dump of the org's data for a time window — both raw " +
-      "telemetry (frame/audio) and the structured outputs of the enterprise-" +
-      "worker pipes (sop/skill/trajectory/memory/workflow). " +
-      "Raw kinds return oldest → newest (vs team-search which is recency-ranked). " +
-      "Synthesized kinds return one record per device's latest run by default " +
-      "(set latest_only=false to walk run history). " +
-      "Use raw for ETL / \"walk me through X from Y to Z\". " +
-      "Use synthesized for \"what SOPs / skills / trajectories / memories did " +
-      "we extract from my team's work\" — each item carries evidence-cited " +
-      "event_ids/frame_ids that team-search can resolve back to raw records. " +
-      "Auth: enterprise admin token.",
-    annotations: { title: "Team Records", readOnlyHint: true, openWorldHint: true, idempotentHint: true },
-    inputSchema: {
-      type: "object",
-      properties: {
-        device_id: { type: "string", description: "Restrict to one device (optional). Raw kinds only." },
-        kind: {
-          type: "string",
-          enum: ["frame", "audio", "all", "sop", "skill", "trajectory", "memory", "workflow"],
-          description:
-            "What to return. Raw: frame|audio|all (telemetry). " +
-            "Synthesized: sop|skill|trajectory|memory|workflow (pipe outputs). " +
-            "Default: all.",
-          default: "all",
-        },
-        since: { type: "string", description: "ISO 8601 lower bound. Raw kinds only." },
-        until: { type: "string", description: "ISO 8601 upper bound. Raw kinds only." },
-        since_hours_ago: { type: "integer", description: "Convenience: equivalent to since=now-N*h. Raw kinds only." },
-        limit: { type: "integer", description: "Max records (default 50, max 200). Raw kinds only.", default: 50 },
-        latest_only: {
-          type: "boolean",
-          description:
-            "Synthesized kinds only: if true (default), collapse to the newest " +
-            "run per device. Set false to walk run history.",
-          default: true,
-        },
-      },
-    },
-  },
-];
-
-// Pipe-output kinds map to /workflows/generated, raw kinds map to /records.
-const SYNTHESIZED_KINDS = new Set(["sop", "skill", "trajectory", "memory", "workflow"]);
-
 server.setRequestHandler(ListToolsRequestSchema, async () => {
-  // Team tools only surface when an enterprise token was discovered at boot.
-  // No token = consumer / non-admin user; their MCP looks identical to today.
-  const tools = TEAM_TOKEN ? [...TOOLS, ...TEAM_TOOLS] : TOOLS;
-  return { tools };
+  return { tools: TOOLS };
 });
 
 // ---------------------------------------------------------------------------
@@ -1756,59 +1575,6 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         return {
           content: [{ type: "text", text: `Recording action '${action}' executed.` }],
         };
-      }
-
-      // ---------------------------------------------------------------------
-      // Enterprise team tools — only callable when TEAM_TOKEN is set at boot.
-      // If we got this far without one, the tool wasn't in the listed set the
-      // host saw, but a misbehaving client could still try to call it. Fail
-      // loudly so the host surfaces the misconfiguration.
-      // ---------------------------------------------------------------------
-      case "team-search":
-      case "team-devices":
-      case "team-records": {
-        if (!TEAM_TOKEN) {
-          return {
-            content: [
-              {
-                type: "text",
-                text:
-                  `team-* tools require an enterprise admin token. Set ` +
-                  `SCREENPIPE_ENTERPRISE_TOKEN in your MCP env, or mint one ` +
-                  `at https://screenpi.pe/enterprise → API Tokens and paste ` +
-                  `it into Settings → Privacy → Admin Team API Token in the ` +
-                  `screenpipe desktop app.`,
-              },
-            ],
-          };
-        }
-        // Map MCP tool name → /api/enterprise/v1 path. team-records also
-        // routes synthesized pipe outputs (kind=sop|skill|...) to the
-        // workflows endpoint so callers see one tool surface for "give me
-        // the org's data."
-        const kindArg = typeof args.kind === "string" ? args.kind : "";
-        const subpath =
-          name === "team-search" ? "/search"
-          : name === "team-devices" ? "/devices"
-          : name === "team-records" && SYNTHESIZED_KINDS.has(kindArg) ? "/workflows/generated"
-          : "/records";
-        // Forward every primitive arg as a query param. The server validates;
-        // unknown params are ignored, so we don't need to gatekeep here.
-        const params = new URLSearchParams();
-        for (const [k, v] of Object.entries(args)) {
-          if (v !== null && v !== undefined && v !== "") {
-            params.append(k, String(v));
-          }
-        }
-        const query = params.toString();
-        const response = await fetchTeam(`${subpath}${query ? `?${query}` : ""}`);
-        const body = await response.text();
-        if (!response.ok) {
-          throw new Error(
-            `${name} failed: HTTP ${response.status} ${response.statusText} — ${body.slice(0, 300)}`
-          );
-        }
-        return { content: [{ type: "text", text: body }] };
       }
 
       default:

@@ -16,7 +16,6 @@ use std::time::Duration;
 const REMINDER_INTERVAL: Duration = Duration::from_secs(5 * 60);
 const DESKTOP_APP_URL: &str = "https://screenpi.pe";
 const SURVEY_URL: &str = "https://screenpi.pe/survey";
-const NPM_LATEST_URL: &str = "https://registry.npmjs.org/screenpipe/latest";
 
 /// Spawn the background reminder loop. Safe to call once at CLI startup.
 pub fn spawn() {
@@ -51,13 +50,17 @@ async fn run_tip(idx: usize) {
     }
 }
 
-/// Non-blocking update check. Fetches the latest version from the npm registry
-/// and prints a banner if the current binary is outdated. Silent on success or
-/// any network/parse error so we never noise up the terminal.
+/// Non-blocking update check against the user-configured update manifest
+/// (`SCREENPIPE_UPDATER_MANIFEST_URL`, Tauri updater format with a top-level
+/// `version`). Off when none is configured. Silent on success or any
+/// network/parse error so we never noise up the terminal.
 pub async fn check_for_updates() {
     if env::var("SCREENPIPE_NO_UPDATE_CHECK").is_ok() {
         return;
     }
+    let Some(manifest_url) = screenpipe_core::endpoints::updater_manifest_url("stable") else {
+        return;
+    };
 
     let current = env!("CARGO_PKG_VERSION");
 
@@ -70,7 +73,7 @@ pub async fn check_for_updates() {
     };
 
     let resp = match client
-        .get(NPM_LATEST_URL)
+        .get(&manifest_url)
         .header("Accept", "application/json")
         .send()
         .await
@@ -96,7 +99,6 @@ pub async fn check_for_updates() {
             latest.green(),
             current,
         );
-        eprintln!("  run: {}", "npx screenpipe@latest record".cyan());
         eprintln!();
     }
 }
@@ -117,12 +119,7 @@ fn print_mcp_tip() {
         "  {} wire screenpipe into claude with one command:",
         "tip:".cyan().bold(),
     );
-    eprintln!(
-        "       {}",
-        "claude mcp add screenpipe -- npx -y screenpipe-mcp"
-            .green()
-            .bold(),
-    );
+    eprintln!("       {}", "screenpipe mcp setup".green().bold());
     eprintln!(
         "       then ask claude to {} from your screen activity",
         "build a pipe that tracks who you are, your todos, and how you spend your time".italic(),

@@ -1698,6 +1698,10 @@ pub async fn pi_start_inner(
         cmd.env("BASH_ENV", p);
     }
 
+    // Bundled CLI for the agent: SCREENPIPE_CLI plus a `screenpipe` launcher
+    // ahead of the PATH set above.
+    screenpipe_core::agents::cli_runtime::apply_to_command(&mut cmd);
+
     // Pass the user's API key as env var for non-screenpipe providers
     if let Some(ref config) = provider_config {
         // ChatGPT OAuth: inject token from secret store (no api_key in config)
@@ -2462,12 +2466,9 @@ pub async fn pi_check() -> Result<PiCheckResult, String> {
     })
 }
 
-/// Locate the bundled bun binary so the frontend can write absolute-path
-/// MCP configs (e.g. `{ command: <bun>, args: ["x", "screenpipe-mcp@latest"] }`)
-/// instead of `npx -y screenpipe-mcp`. npx requires a global Node install
-/// — many Claude Desktop users don't have it, and the silent first-run
-/// `npx` download often blows past Claude's MCP startup timeout. Using
-/// the bun we already ship sidesteps both failure modes.
+/// Locate the bun binary shipped with the app (falling back to a user
+/// install). MCP configs should use [`mcp_runtime_check`], which also
+/// returns the bundled MCP server entry point.
 #[tauri::command]
 #[specta::specta]
 pub async fn bun_check() -> Result<PiCheckResult, String> {
@@ -2475,6 +2476,49 @@ pub async fn bun_check() -> Result<PiCheckResult, String> {
     Ok(PiCheckResult {
         available: path.is_some(),
         path,
+    })
+}
+
+/// Absolute paths of the MCP server and CLI that ship with the app.
+#[derive(Debug, Clone, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct McpRuntimeCheck {
+    /// True when both `bun_path` and `entry_path` were found.
+    pub available: bool,
+    /// bun runtime that starts the MCP server.
+    pub bun_path: Option<String>,
+    /// Single-file build of `packages/screenpipe-mcp`.
+    pub entry_path: Option<String>,
+    /// The `screenpipe` CLI binary, when bundled.
+    pub cli_path: Option<String>,
+}
+
+/// Staging directory `scripts/pre_build.js` fills; searched after the
+/// install layout so development builds find a locally built MCP server.
+fn bundled_runtime_dev_roots() -> Vec<PathBuf> {
+    if cfg!(debug_assertions) {
+        vec![PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("bundled")]
+    } else {
+        Vec::new()
+    }
+}
+
+/// Locate the bundled MCP server so the frontend can write MCP configs that
+/// start it by absolute path (`<bun> <entry>`), with nothing fetched from a
+/// package registry.
+#[tauri::command]
+#[specta::specta]
+pub async fn mcp_runtime_check() -> Result<McpRuntimeCheck, String> {
+    use screenpipe_core::agents::cli_runtime;
+    let bun_path = find_bun_executable();
+    let entry_path = cli_runtime::bundled_mcp_entry(&bundled_runtime_dev_roots())
+        .map(|p| p.to_string_lossy().into_owned());
+    let cli_path = cli_runtime::bundled_cli().map(|p| p.to_string_lossy().into_owned());
+    Ok(McpRuntimeCheck {
+        available: bun_path.is_some() && entry_path.is_some(),
+        bun_path,
+        entry_path,
+        cli_path,
     })
 }
 

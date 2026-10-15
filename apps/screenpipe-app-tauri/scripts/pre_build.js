@@ -9,6 +9,7 @@ import os from 'os'
 import path from 'path'
 import { setupOpenBlas } from './setup_openblas.js'
 import { downloadFile, find7z } from './find_tools.js'
+import { stageBundledRuntime } from './stage_bundled_runtime.js'
 
 const originalCWD = process.cwd()
 // Change CWD to src-tauri
@@ -800,6 +801,9 @@ if (process.env.GITHUB_ENV) {
 
 // Near the end of the script, call these functions
 await copyBunBinary();
+
+// Freenpipe: CLI, MCP server and speaker models shipped as bundle resources.
+await stageBundledRuntime({ srcTauriDir: cwd, platform });
 
 // --dev or --build
 const action = process.argv?.[2]
