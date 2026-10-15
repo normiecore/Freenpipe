@@ -11,8 +11,6 @@ icon: "plug"
 
 connections give pipes and AI agents structured context from the source system, beyond what Freenpipe can infer from visible app text.
 
-<img src="https://docs.screenpi.pe/public/app-screenshots/settings-privacy.png" alt="Freenpipe privacy settings" width="1200" />
-
 ## finding credentials
 
 when setting up connections that require API keys, credentials, or URLs, Freenpipe provides **direct help links** in the settings UI:
@@ -28,7 +26,7 @@ this works for all API key, webhook, and custom credential fields.
 
 | pattern | examples | notes |
 | --- | --- | --- |
-| OAuth | Gmail, Google Calendar, Google Docs, Notion, Jira, Microsoft 365, Teams, Vercel, Supabase, Zoom | tokens are stored locally; you register an OAuth client with the provider instead of pasting an API key |
+| OAuth | Gmail, Google Calendar, Google Docs, Notion, Jira, Microsoft 365, Teams, Vercel, Supabase, Zoom | tokens are stored locally; with work package W0-07 you register an OAuth client with the provider (until then the token exchange still goes through the upstream vendor's broker) |
 | API key | Linear, HubSpot, PostHog, Sentry, Stripe, Toggl, Pipedrive, Glean, Mochi | simple and reliable; help links guide you to API settings pages; rotate keys if a device is lost |
 | webhook URL | n8n, Make, Zapier, Pushover, ntfy, Resend | best for one-way notifications or workflow triggers |
 | local path | Obsidian, Logseq | keeps notes local |

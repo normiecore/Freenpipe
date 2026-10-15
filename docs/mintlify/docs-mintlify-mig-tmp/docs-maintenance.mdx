@@ -46,6 +46,8 @@ this checks:
 
 ## screenshot workflow
 
+the docs carry no app screenshots for now. the screenshots inherited from upstream showed the vendor's branded app and were removed. they come back after the app itself is renamed (work package W0-12 in `docs/clean-room/PLAN.md`).
+
 screenshots come from app e2e specs:
 
 ```bash
@@ -62,11 +64,7 @@ copy selected images from `apps/screenpipe-app-tauri/e2e/screenshots/` into:
 docs/mintlify/docs-mintlify-mig-tmp/public/app-screenshots/
 ```
 
-then reference them as:
-
-```mdx
-<img src="https://docs.screenpi.pe/public/app-screenshots/home-home.png" alt="Freenpipe home" width="1200" />
-```
+do not reference images through the upstream docs domain. `docs/mintlify/validate-docs.mjs` still has a rule written for upstream's hosted path; change that rule to accept the Freenpipe location before the first screenshot is added back.
 
 ## ownership map
 

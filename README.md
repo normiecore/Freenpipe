@@ -56,7 +56,7 @@ source scripts/dev/msvc-env.sh
 cargo build --profile release-dev -p screenpipe-engine --bin screenpipe
 ```
 
-The engine binary is written to `target/release-dev/screenpipe.exe`. `screenpipe record` starts capture and serves the API.
+The engine binary is written to `target/release-dev/screenpipe.exe`. `screenpipe record` starts capture and serves the API. Put OpenBLAS on `PATH` before running the bare exe, or it exits at once (the build guide shows how; the files come from the native sidecar step).
 
 To connect an MCP client, build the server in `packages/screenpipe-mcp` (`bun install && bun run build`) and follow [its README](packages/screenpipe-mcp/README.md).
 

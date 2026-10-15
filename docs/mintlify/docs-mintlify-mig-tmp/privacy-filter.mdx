@@ -133,7 +133,7 @@ in local mode, the enclave is not in the path: redaction happens on your machine
 ## limits
 
 - **latency.** adds ~1-2 seconds per search on first hit. responses are cached by content hash for 1 hour so repeated data (same email thread, same IDE file) is nearly free.
-- **model imperfection.** >99% on common categories in our tests, but not perfect. don't rely on it as your only line of defense for critical secrets — combine with the "ignored windows" filter and don't record password managers.
+- **model imperfection.** the model can miss items. don't rely on it as your only defense for critical secrets: combine it with the "ignored windows" filter and don't record password managers.
 - **text only.** the filter operates on text already extracted from the accessibility tree or OCR fallback. raw image frames aren't uploaded.
 - **fail closed.** if the configured enclave is unreachable, your search call fails with a clear error rather than silently returning unredacted text. you never get redaction that didn't happen.
 

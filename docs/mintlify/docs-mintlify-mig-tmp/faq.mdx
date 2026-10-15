@@ -134,7 +134,7 @@ this FAQ covers the common questions: what to try first, why builds or pipes fai
 <Expandable title="how do I update Freenpipe?">
   Freenpipe has no release yet. to update, pull the latest commits and rebuild (see [getting started](/getting-started)).
 
-  releases will be published as [GitHub Releases](https://github.com/normiecore/Freenpipe/releases). the in-app updater targets them and is off by default; **settings → updates → check for updates** opens the releases page.
+  releases will be published as [GitHub Releases](https://github.com/normiecore/Freenpipe/releases). the in-app updater targets them and is off by default; **settings → general → check for updates** opens the releases page.
 </Expandable>
 
 <Expandable title="how do I uninstall Freenpipe and remove all local data?">
@@ -151,7 +151,7 @@ this FAQ covers the common questions: what to try first, why builds or pipes fai
 </Expandable>
 
 <Expandable title="is Freenpipe the same as screenpipe?">
-  no. Freenpipe is a fork of screenpipe at commit `892199f` (2026-06-10), the last upstream commit under the MIT licence. upstream moved to a commercial licence after that. Freenpipe stays MIT, does not use the vendor's services, and works toward feature parity with screenpipe v2.7.104 through clean-room work.
+  no. Freenpipe is a fork of screenpipe at commit `892199f` (2026-06-10), the last upstream commit under the MIT licence. upstream moved to a commercial licence after that. Freenpipe stays MIT, is removing its remaining calls to the vendor's services (wave 0 in `docs/clean-room/PLAN.md`), and works toward feature parity with screenpipe v2.7.104 through clean-room work.
 
   for compatibility, Freenpipe keeps screenpipe's CLI name (`screenpipe`), data directory (`~/.screenpipe`) and API port (3030), so the two cannot run at the same time. Freenpipe is not affiliated with or endorsed by the screenpipe project.
 </Expandable>
@@ -529,7 +529,7 @@ this FAQ covers the common questions: what to try first, why builds or pipes fai
 </Expandable>
 
 <Expandable title="does Freenpipe phone home or send telemetry?">
-  no. Freenpipe has no product analytics and no crash reporting; both were removed from the base. it does not contact the upstream vendor's services, and every remote service URL is unset until you configure it.
+  Freenpipe has no product analytics and no crash reporting; both were removed from the base. removing the remaining calls to the upstream vendor's services is still in progress: until work packages W0-05 to W0-10 land (see `docs/clean-room/STATUS.md`), some code paths still reach the vendor, for example the OAuth token exchange for connected apps, the changelog dialog, and the log upload offered during onboarding. once they land, Freenpipe contacts no vendor service and every remote service URL is unset until you configure it.
 </Expandable>
 
 ## performance and hardware

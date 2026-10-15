@@ -33,6 +33,10 @@ this takes you straight to where you need to be — no more hunting through docs
 
 **oauth integrations** (Slack, Notion, Gmail, etc.) skip the API key step entirely — just click the big "Connect with [App]" button and approve access in your browser.
 
+<Note>
+OAuth in this build still uses the upstream vendor's broker: the token exchange goes through the vendor's server, and Slack, Zoom, Calendly and QuickBooks redirect through a vendor page. work package W0-07 replaces this with OAuth client credentials you register with each provider. until it lands, the steps on this page that mention your own OAuth client describe that planned flow.
+</Note>
+
 <Tip>some pipes require specific connections. when you install a pipe that needs a connection (like Notion or Toggl), Freenpipe will prompt you to configure it automatically.</Tip>
 
 ## available integrations
@@ -216,7 +220,7 @@ if a pipe reports that a connection isn't available:
 - CLI-like environments can fall back to local `~/.screenpipe/connections.json`
 - connected app data stays on your device
 - you can disconnect any app at any time in **settings → connections**
-- Freenpipe has no servers of its own: connected app data goes only between your machine and the app's API
-- OAuth connections use client credentials you register with each provider, so no upstream account or subscription is involved (work package W0-07)
+- Freenpipe has no servers of its own. until W0-07 lands, the OAuth token exchange (and the redirect for Slack, Zoom, Calendly and QuickBooks) still passes through the upstream vendor's server; after that, connected app data goes only between your machine and the app's API
+- with W0-07, OAuth connections use client credentials you register with each provider, so no upstream account or subscription is involved
 
 questions? open a [GitHub issue](https://github.com/normiecore/Freenpipe/issues).

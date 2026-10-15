@@ -42,7 +42,7 @@ Include:
 
 ## close your loops
 
-*you jump between 10 projects a day. you forget where you left off. Freenpipe remembers for you.*
+*find where you left off on a task, across apps and projects.*
 
 - **ask AI**: "what was I working on before lunch?" → get the exact file, app, and context
 - **ask AI**: "what was that API endpoint I was looking at in Chrome yesterday?" → find it instantly
@@ -77,7 +77,7 @@ Flag any step that needs human verification.
 
 ## never miss a meeting detail
 
-*someone mentioned a deadline in a Zoom call but you weren't paying attention. Freenpipe was.*
+*search what was said in your meetings, with speaker labels and timestamps.*
 
 - **search transcriptions**: "what did John say about the deadline?" → find the exact quote
 - **run the Meeting Summary pipe**: AI summaries of the meeting that just ended, with action items
@@ -90,7 +90,7 @@ Flag any step that needs human verification.
 
 ## track your time automatically
 
-*you switch between coding, emails, meetings, and slack all day. Freenpipe tracks where your time actually goes.*
+*see how your time splits across apps and windows, based on recorded activity.*
 
 - **run Time Breakdown pipe**: see exactly how many hours you spent in each app
 - **write a Toggl pipe**: auto-log time entries based on active apps, with your Toggl key in the pipe's `.env` ([pipes](/pipes))
@@ -103,7 +103,7 @@ Flag any step that needs human verification.
 
 ## write standups and reports
 
-*your team uses daily standups. Freenpipe writes them for you based on what you actually did.*
+*draft standup updates and reports from the work you recorded.*
 
 - **run Standup Update pipe**: generates "what I did / what I'm doing / blockers" in under 150 words
 - **weekly reports**: create a custom pipe that summarizes your week
@@ -128,7 +128,7 @@ Flag any step that needs human verification.
 
 ## give AI memory of your screen
 
-*LLMs are stateless: they don't know what you were working on 5 minutes ago. Freenpipe gives them that context.*
+*let AI tools search your screen and audio history through MCP.*
 
 - **Claude Desktop**: ask "what was I working on?" and Claude searches your screen history via MCP
 - **Cursor**: give Cursor context about what you've been coding, what PRs you reviewed, what errors you saw
@@ -141,7 +141,7 @@ Flag any step that needs human verification.
 
 ## recover from AI context loss
 
-*when an AI chat compacts or a coding agent forgets the last hour, Freenpipe gives it somewhere real to look.*
+*when an AI chat compacts or a coding agent loses earlier context, it can search your recorded history instead.*
 
 - **recent activity**: "what did I do in the last 20 minutes?"
 - **terminal recovery**: "find the error I saw in Terminal before the chat reset"
@@ -201,7 +201,7 @@ If no matching data appears, log "no matching window data" instead of guessing.
 
 ## automate anything
 
-*if you can describe it, a pipe can do it.*
+*pipes are scheduled AI tasks that read your recorded data and act on it.*
 
 ideas for pipes:
 

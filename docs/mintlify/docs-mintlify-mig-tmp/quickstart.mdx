@@ -19,8 +19,6 @@ this page assumes you have built Freenpipe from source ([getting started](/getti
 | local search and API access | install, record for a few minutes, then try [API recipes](/api-recipes) | `/search` returns recent screen or audio results |
 | recurring automations | install your first pipe, then read [pipe debugging](/pipe-debugging) | the pipe runs manually, logs clearly, and writes a useful output |
 
-<img src="https://docs.screenpi.pe/public/app-screenshots/home-home.png" alt="Freenpipe home window after setup" width="1200" />
-
 ## setup
 
 <Steps>
@@ -57,6 +55,8 @@ this page assumes you have built Freenpipe from source ([getting started](/getti
 
     **Cursor**
     [click here to install in cursor](cursor://anysphere.cursor-deeplink/mcp/install?name=screenpipe&config=eyJ0eXBlIjoic3RkaW8iLCJjb21tYW5kIjoibnB4IiwiYXJncyI6WyIteSIsInNjcmVlbnBpcGUtbWNwIl19)
+
+    <Note>the Claude Code command and the Cursor link run the `screenpipe-mcp` package from npm, which is published by the upstream vendor, not by Freenpipe. it queries the same local API on port 3030. to run the server from this repository instead, see [MCP server](/mcp-server).</Note>
 
     **ChatGPT**
     in the Freenpipe chat (Home), click the model selector next to the input → select **ChatGPT** → sign in with your OpenAI account.

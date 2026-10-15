@@ -122,7 +122,7 @@ Replace `SCREENPIPE_IP` with the IP of the machine running Freenpipe. If the mac
 
 ### option 2: push data to the OpenClaw machine over SSH
 
-Use Freenpipe's built-in **remote sync** to push your `~/.screenpipe/` directory to the OpenClaw machine over SFTP. No screenpipe-cloud account needed — just SSH access to your server.
+Use Freenpipe's built-in **remote sync** to push your `~/.screenpipe/` directory to the OpenClaw machine over SFTP. All it needs is SSH access to your server.
 
 > **⚠️ clipboard sensitivity:** Remote sync includes clipboard events and content by default. If you're syncing to a less-trusted machine (VPS, shared server), disable clipboard capture first with `--disable-clipboard-capture` to avoid syncing passwords, API keys, or other sensitive data that flows through your clipboard.
 
@@ -158,7 +158,7 @@ Or set env vars instead of flags: `SCREENPIPE_REMOTE_HOST`, `SCREENPIPE_REMOTE_U
 
 On the OpenClaw machine, point its skill at the synced directory or run a local Freenpipe pointing to the same data dir — OpenClaw can then query `localhost:3030` as if the data were captured locally.
 
-> The deprecated **cloud sync** flow (Settings → Cloud, screenpipe-cloud account) is being phased out in favor of self-hosted remote sync. Use `screenpipe sync remote` for new setups.
+> Freenpipe does not use the vendor's hosted cloud sync. Archive and cross-device sync to storage you control are planned (see [archive](/cloud-archive)); until then, use `screenpipe sync remote`.
 
 ## available MCP tools
 
