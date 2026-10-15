@@ -1,6 +1,6 @@
 ---
 name: bug report
-about: report a bug in screenpipe
+about: report a bug in Freenpipe
 title: "[bug] "
 labels: bug
 assignees: ''
@@ -10,15 +10,13 @@ assignees: ''
 **describe the bug**
 brief description of the bug.
 
-please click the "send logs" button in the help section of the app (don't share the link here, we'll receive the logs)
-
 **system info**
 - os: [e.g. macos 10.15.7, windows 10, ubuntu 20.04]
-- screenpipe version: [e.g. 1.2.3]
+- Freenpipe version or commit: [e.g. 1.2.3 or f811975]
 
 **additional context**
 add any other context, screenshots, or error logs here.
 
-- you can find logs in `~/.screenpipe` on macOS/Linux, and `%APPDATA%\.screenpipe` on Windows.
+- log files are in the data directory: `~/.screenpipe` on macOS/Linux, `%USERPROFILE%\.screenpipe` on Windows. paste the relevant lines and remove anything private first.
 - you can get app logs by right clicking in the app background and clicking the console tab.
 

@@ -28,12 +28,12 @@ On a typical 8-hour workday at 0.5 fps with 2 monitors, the system produces **28
 
 ### 1.2 User Feedback
 
-From user Creon Levit (screenshot context):
+From a user report (screenshot context):
 
 > "3. Faster retrieval & display of screenshots when scrolling."
 > "4. (Optional) slightly higher quality compression. Less blurry."
 
-From user Menelaus (Discord):
+From another user report:
 
 > "I put it to 0.5 now. But since it seems to act so strangely, in terms of the timeline... it's hard to tell if things are working or just being buggy and glitchy"
 

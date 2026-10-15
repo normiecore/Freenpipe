@@ -5,6 +5,7 @@ self-contained: a session that starts with no other context follows it top to bo
 The owner's PC is usually off, so nothing here may depend on it.
 
 - **Owner setup** (done once): [cloud-environment.md](cloud-environment.md).
+- **Coordinator mode** (one session plays every role with Workflow batches): [cloud-coordinator.md](cloud-coordinator.md).
 - **Routine prompts and schedules**: [cloud-routines.md](cloud-routines.md).
 - **Reviewer briefs**: [cloud-reviewers.md](cloud-reviewers.md).
 - **CI**: [ci.md](ci.md). The "Freenpipe CI" workflow (`.github/workflows/freenpipe-ci.yml`, jobs

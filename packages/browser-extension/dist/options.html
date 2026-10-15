@@ -7,7 +7,7 @@
 <html lang="en">
   <head>
     <meta charset="utf-8" />
-    <title>Screenpipe Browser Bridge — Settings</title>
+    <title>Freenpipe Browser Bridge: settings</title>
     <style>
       :root {
         color-scheme: light dark;
@@ -174,23 +174,23 @@
     </style>
   </head>
   <body>
-    <h1>Screenpipe Browser Bridge</h1>
+    <h1>Freenpipe Browser Bridge</h1>
     <p class="subtitle">
-      Lets the screenpipe app use your open browser tabs when an agent needs web
+      Lets the Freenpipe app use your open browser tabs when an agent needs web
       context. Your data stays local.
     </p>
 
     <div class="panel">
       <div class="field">
-        <label id="connection-title">connect screenpipe</label>
+        <label id="connection-title">connect Freenpipe</label>
         <span id="connection-help" class="help">
-          click connect, then approve the request in the screenpipe desktop app.
+          click connect, then approve the request in the Freenpipe desktop app.
           no API token copy/paste needed.
         </span>
       </div>
 
       <div class="actions">
-        <button id="connect" class="primary" type="button">Connect to Screenpipe</button>
+        <button id="connect" class="primary" type="button">Connect to Freenpipe</button>
         <button id="advanced-toggle" type="button">Manual setup</button>
       </div>
       <details id="pair-details" hidden>
@@ -202,19 +202,19 @@
     <div id="manual-setup" hidden>
       <div class="field">
         <label for="token">API token</label>
-        <input id="token" type="password" placeholder="paste your screenpipe API token" autocomplete="off" spellcheck="false" />
+        <input id="token" type="password" placeholder="paste your Freenpipe API token" autocomplete="off" spellcheck="false" />
         <span class="help">
-          Advanced only. In screenpipe: Settings → Privacy → API Authentication
+          Advanced only. In Freenpipe: Settings → Privacy → API Authentication
           → reveal and copy the key. Or run <code>screenpipe auth token</code>.
         </span>
       </div>
 
       <div class="field">
-        <label for="baseUrl">screenpipe server URL</label>
+        <label for="baseUrl">Freenpipe server URL</label>
         <input id="baseUrl" type="text" value="http://127.0.0.1:3030" spellcheck="false" />
         <span class="help">
           Default is <code>http://127.0.0.1:3030</code>. Only change this if you
-          run screenpipe on a different host or port.
+          run Freenpipe on a different host or port.
         </span>
       </div>
 
@@ -227,8 +227,7 @@
     <div id="status" data-state="idle"></div>
 
     <footer>
-      <a href="https://screenpi.pe" target="_blank" rel="noopener noreferrer">screenpi.pe</a>
-      · <a href="https://github.com/screenpipe/screenpipe" target="_blank" rel="noopener noreferrer">source</a>
+      <a href="https://github.com/normiecore/Freenpipe" target="_blank" rel="noopener noreferrer">source</a>
     </footer>
 
     <script src="options.js" type="module"></script>
