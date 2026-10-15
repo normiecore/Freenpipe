@@ -45,7 +45,10 @@ Your job: is the WP correct and complete, and do its checks really pass?
 1. Re-run the checks yourself; do not trust the PR text. At least `cargo check --tests` and
    `cargo test` for every crate the change touches, the app crate check if it is touched, `bun test`
    for touched frontend code (if node_modules exists), and
-   `bun test scripts/ci/vendor-guard.test.ts`. Record each command and its result.
+   `bun test scripts/ci/vendor-guard.test.ts`. CI also runs two checks that are easy to miss:
+   `bun run bindings:check` when a `#[tauri::command]` or a type it uses changed (a stale
+   `lib/utils/tauri.ts` is a blocker), and `bun run build` in apps/screenpipe-app-tauri when frontend
+   code changed (type errors are blockers). Record each command and its result.
 2. Go through every acceptance check in the PLAN.md section. For each one, decide whether it passed
    here, is correctly left to CI (windows or linux job), or is correctly recorded as a Windows smoke
    checklist entry with clear steps and an expected result. A check marked done without evidence is
