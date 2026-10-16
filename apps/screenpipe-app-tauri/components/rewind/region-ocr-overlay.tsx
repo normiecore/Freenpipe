@@ -6,6 +6,8 @@ import { toast } from "@/components/ui/use-toast";
 import { commands } from "@/lib/utils/tauri";
 import { Loader2 } from "lucide-react";
 import { localFetch } from "@/lib/api";
+import { pickGatewayModel } from "@/lib/ai-gateway";
+import { useSettings } from "@/lib/hooks/use-settings";
 
 interface RegionOcrOverlayProps {
   /** Frame ID used to fetch a clean (non-tainted) copy for canvas cropping */
@@ -17,7 +19,6 @@ interface RegionOcrOverlayProps {
     offsetY: number;
   } | null;
   naturalDimensions: { width: number; height: number } | null;
-  userToken: string | null;
 }
 
 interface SelectionRect {
@@ -31,8 +32,11 @@ export const RegionOcrOverlay: FC<RegionOcrOverlayProps> = ({
   frameId,
   renderedImageInfo,
   naturalDimensions,
-  userToken,
 }) => {
+  // Region OCR asks a vision model on the user's AI gateway, through the
+  // local engine (which adds the gateway key, or answers 503 without one).
+  const { settings } = useSettings();
+  const gatewayModel = pickGatewayModel(settings.aiPresets as any);
   const [isSelecting, setIsSelecting] = useState(false);
   const [selectionRect, setSelectionRect] = useState<SelectionRect | null>(
     null
@@ -94,16 +98,6 @@ export const RegionOcrOverlay: FC<RegionOcrOverlayProps> = ({
         return;
       }
 
-      if (!userToken) {
-        toast({
-          title: "login required",
-          description: "login required for region OCR",
-          variant: "destructive",
-        });
-        setSelectionRect(null);
-        return;
-      }
-
       setIsProcessing(true);
       toast({ title: "reading text...", description: "analyzing selected region" });
 
@@ -149,17 +143,16 @@ export const RegionOcrOverlay: FC<RegionOcrOverlayProps> = ({
         const dataUrl = canvas.toDataURL("image/jpeg", 0.9);
         const base64 = dataUrl.replace(/^data:image\/jpeg;base64,/, "");
 
-        // Call screenpipe cloud API
-        const response = await fetch(
-          "https://api.screenpipe.com/v1/chat/completions",
+        // Ask the user's AI gateway through the local engine proxy
+        const response = await localFetch(
+          "/v1/chat/completions",
           {
             method: "POST",
             headers: {
-              Authorization: `Bearer ${userToken}`,
               "Content-Type": "application/json",
             },
             body: JSON.stringify({
-              model: "claude-haiku-4-5",
+              model: gatewayModel,
               max_tokens: 4096,
               messages: [
                 {
@@ -182,6 +175,11 @@ export const RegionOcrOverlay: FC<RegionOcrOverlayProps> = ({
           }
         );
 
+        if (response.status === 503) {
+          throw new Error(
+            "region OCR needs an AI gateway with a vision model (Settings > AI)"
+          );
+        }
         if (!response.ok) {
           const errText = await response.text().catch(() => "unknown error");
           throw new Error(`API error ${response.status}: ${errText}`);
@@ -221,7 +219,7 @@ export const RegionOcrOverlay: FC<RegionOcrOverlayProps> = ({
         setSelectionRect(null);
       }
     },
-    [frameId, renderedImageInfo, naturalDimensions, userToken]
+    [frameId, renderedImageInfo, naturalDimensions, gatewayModel]
   );
 
   const onMouseDown = useCallback(

@@ -45,16 +45,16 @@ async function readNotifications(): Promise<NotificationHistoryEntry[]> {
     await openHomeWindow();
   });
 
-  it('shows Cloud saved, Whisper active, and sends a notification', async () => {
+  it('shows the AI gateway saved, Whisper active, and sends a notification', async () => {
     await openRecordingSettings();
 
     const fallbackAlert = await $('[data-testid="audio-engine-fallback-alert"]');
     await fallbackAlert.waitForExist({ timeout: t(10_000) });
 
     const alertText = (await fallbackAlert.getText()).toLowerCase();
-    expect(alertText).toContain('screenpipe cloud is not active');
+    expect(alertText).toContain('ai gateway is not active');
     expect(alertText).toContain('saved choice');
-    expect(alertText).toContain('screenpipe cloud');
+    expect(alertText).toContain('no ai gateway url and key are set');
     expect(alertText).toContain('active now');
     expect(alertText).toContain('whisper turbo (fast)');
 
@@ -73,7 +73,7 @@ async function readNotifications(): Promise<NotificationHistoryEntry[]> {
           const title = entry.title ?? '';
           const body = entry.body ?? '';
           return (
-            title.includes('Screenpipe Cloud unavailable') &&
+            title.includes('AI gateway transcription unavailable') &&
             body.includes('Whisper Turbo (fast)')
           );
         });

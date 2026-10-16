@@ -546,7 +546,6 @@ export const CurrentFrameTimeline: FC<CurrentFrameTimelineProps> = ({
 				frameId={debouncedFrame?.frameId ?? null}
 				renderedImageInfo={renderedImageInfo}
 				naturalDimensions={naturalDimensions}
-				userToken={settings.user?.token ?? null}
 			/>
 
 		</div>

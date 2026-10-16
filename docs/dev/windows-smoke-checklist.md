@@ -120,6 +120,31 @@ Wave 0 ran on the PC before the cloud phase. Tick anything you already checked t
   - Steps: repeat the request from SMK-W0-06-1.
   - Expected: the mock logs the forwarded request; the engine returns the mock's answer.
   - Result:
+- [ ] **SMK-W0-06-3** (UI smoke) A fresh install starts on a local Ollama preset with nothing remote configured
+  - Setup: installed screenpipe quit; fresh `FP_DD` (no `store.bin`); `scripts/dev/app-dev.sh`.
+  - Steps: 1. Finish onboarding. 2. Open Settings > AI. 3. Open Settings > Privacy and Settings > Recording. 4. Optional: `netstat -b` while doing this.
+  - Expected: one preset named `default` on Ollama (`http://localhost:11434/v1`) with no model picked; the AI gateway card is not selected and says to set a gateway URL; transcription is Whisper Turbo (fast) or Parakeet; the AI gateway engine is not offered; "AI audio & video analysis" is off and disabled; no connection to any screenpipe or Tinfoil host.
+  - Result:
+- [ ] **SMK-W0-06-4** (UI smoke) A user gateway serves chat, models and the agent
+  - Setup: a local OpenAI-compatible server (for example LiteLLM in front of Ollama) at `http://127.0.0.1:4000/v1`; app dev run.
+  - Steps: 1. Settings > AI > new preset > **AI gateway**; enter the URL and key; leave the fields. 2. Pick a model from the list. 3. Make it the default and send a chat message. 4. Shift+drag a region in the timeline (region OCR) with a vision model on the gateway.
+  - Expected: the model list comes from the gateway; the chat answers; region OCR copies text; `%USERPROFILE%\.pi\agent\models.json` has a `screenpipe` provider whose `baseUrl` is your URL.
+  - Result:
+- [ ] **SMK-W0-06-5** (UI smoke) A screenpipe store on hosted settings is migrated once
+  - Setup: a synthetic `store.bin` (never a real one) whose settings hold presets with `"provider": "screenpipe-cloud"`, `"audioTranscriptionEngine": "screenpipe-cloud"`, `"piiBackend": "tinfoil"`, `"cloudMediaAnalysisEnabled": true`; no gateway configured.
+  - Steps: 1. Start the app on it. 2. Open Settings > AI, Recording and Privacy.
+  - Expected: the hosted presets became Ollama presets (same names, no model); the transcription alert says the AI gateway is not active and Whisper is in use, and a notification "AI gateway transcription unavailable" appears; the PII backend shows Local and no enclave option; media analysis is off.
+  - Result:
+- [ ] **SMK-W0-06-6** (Runtime) Live notes fall back to the local engine without a gateway relay
+  - Setup: engine/app with `meetingLiveTranscriptionProvider` set to `screenpipe-cloud`, no gateway; a microphone.
+  - Steps: start a meeting from the tray and talk for a minute.
+  - Expected: live captions arrive from the selected local engine; the log says live notes use the selected transcription engine; no websocket to any remote host.
+  - Result:
+- [ ] **SMK-W0-06-7** (Runtime) `filter_pii=true` redacts on the device without an enclave
+  - Setup: engine on `$FP_PORT` with a throwaway data dir, no `SCREENPIPE_PRIVACY_FILTER_*` variables; open a text editor showing a made-up address such as `rowan.pell@example.test` and a made-up name for a minute so it is captured.
+  - Steps: 1. `curl -s -H "Authorization: Bearer $SCREENPIPE_API_KEY" "http://127.0.0.1:$FP_PORT/search?q=example.test&limit=5&filter_pii=true" -w ' %{http_code}'`. 2. Restart the engine with AI PII removal on (`--async-pii-redaction`, a DirectML build), wait for the log line `filter_pii: local text model available`, and repeat step 1 with `q=` set to a word next to the name.
+  - Expected: step 1 returns HTTP 200 with the address replaced by a placeholder (no 503); step 2 also replaces the name, and the request takes at most about a second longer than without `filter_pii`.
+  - Result:
 
 ### W0-07 OAuth broker replaced by BYO client credentials
 

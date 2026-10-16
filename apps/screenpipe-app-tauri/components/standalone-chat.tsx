@@ -17,6 +17,7 @@ import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
 import { Tooltip, TooltipContent, TooltipTrigger, TooltipProvider } from "@/components/ui/tooltip";
 import { useSettings, ChatMessage, ChatConversation } from "@/lib/hooks/use-settings";
+import { useAiGateway } from "@/lib/hooks/use-ai-gateway";
 import { cn } from "@/lib/utils";
 import { Loader2, Send, Square, Settings, ExternalLink, X, ImageIcon, History, Search, Trash2, ChevronLeft, ChevronRight, ChevronDown, ChevronUp, Plus, Copy, Check, Clock, Calendar, Paperclip, Filter, RefreshCw, GitBranch, MoreHorizontal, Pencil, Pin, Sparkles, Plug, CornerDownRight } from "lucide-react";
 import { SchedulePromptDialog } from "@/components/chat/schedule-prompt-dialog";
@@ -4536,10 +4537,11 @@ export function StandaloneChat({
   // All providers now route through Pi — isPi is always true when we have a preset
   const isPi = true;
   const hasValidModel = activePreset?.model && activePreset.model.trim() !== "";
-  const needsLogin = activePreset?.provider === "screenpipe-cloud" && !settings.user?.token;
-  // needsLogin is advisory only — chat is allowed without auth (the cloud
-  // backend accepts unauthenticated requests for now). The login warning is
-  // surfaced in the UI banner but does not gate sends.
+  // An AI gateway preset cannot answer until the user configures a gateway.
+  // (Kept under its old name; it no longer has anything to do with signing in.)
+  const aiGateway = useAiGateway();
+  const needsLogin =
+    activePreset?.provider === "screenpipe-cloud" && !aiGateway.loading && !aiGateway.configured;
   // Pi auto-starts on first message, so don't block chat when Pi is not running
   const canChat = hasPresets && hasValidModel && !piStarting;
 
@@ -8402,20 +8404,20 @@ export function StandaloneChat({
             </div>
             <div className="text-center space-y-2">
               <h3 className="font-semibold tracking-tight">
-                {!hasPresets ? "No AI Presets" : !hasValidModel ? "No Model Selected" : needsLogin ? "Login to continue" : "Setup Required"}
+                {!hasPresets ? "No AI Presets" : !hasValidModel ? "No Model Selected" : needsLogin ? "AI gateway not set up" : "Setup Required"}
               </h3>
               <p className="text-sm text-muted-foreground max-w-sm">
-                {needsLogin ? "Sign in to use the AI assistant" : disabledReason}
+                {needsLogin ? "This preset uses your AI gateway. Add its URL in Settings > AI, or pick another preset." : disabledReason}
               </p>
             </div>
             {needsLogin && (
               <Button
                 variant="default"
                 size="lg"
-                onClick={() => commands.openLoginWindow()}
+                onClick={() => commands.showWindow({ Home: { page: "ai" } })}
                 className="gap-2 font-medium bg-foreground text-background hover:bg-foreground/90 transition-colors duration-150 px-8"
               >
-                Sign in
+                Open AI settings
               </Button>
             )}
             {!hasPresets && (

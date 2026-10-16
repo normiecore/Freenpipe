@@ -304,10 +304,10 @@ export default function GeneralSettings() {
                 <div>
                   <h3 className="text-sm font-medium text-foreground">Enhanced AI</h3>
                   <p className="text-xs text-muted-foreground">
-                    Use Screenpipe Cloud for smarter suggestions
+                    Use your default AI preset for smarter suggestions
                   </p>
                   <p className="text-[10px] text-muted-foreground/60 mt-0.5">
-                    sends recent activity to screenpipe cloud for processing. we don&apos;t store your data (zero retention).
+                    sends a summary of recent activity to the provider your default preset points at.
                   </p>
                 </div>
               </div>
@@ -316,9 +316,9 @@ export default function GeneralSettings() {
                 checked={settings?.enhancedAI ?? false}
                 onCheckedChange={async (checked) => {
                   handleSettingsChange({ enhancedAI: checked });
-                  const token = settings?.user?.token || "";
                   try {
-                    await commands.setEnhancedAiSuggestions(checked, token);
+                    // The token argument is unused; the preset carries its own key.
+                    await commands.setEnhancedAiSuggestions(checked, "");
                   } catch {}
                 }}
                 className="ml-4"

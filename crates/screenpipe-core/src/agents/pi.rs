@@ -18,7 +18,32 @@ use tracing::{debug, error, info, warn};
 const PI_PACKAGE: &str = "@earendil-works/pi-coding-agent@0.75.4";
 const PI_AI_PACKAGE: &str = "@earendil-works/pi-ai@0.75.4";
 const PI_NAMESPACE_DIR: &str = "@earendil-works";
-pub const SCREENPIPE_API_URL: &str = "https://api.screenpipe.com/v1";
+/// Gateway base argument meaning "use the user's AI gateway".
+///
+/// Kept under its screenpipe name because pipe code passes it to
+/// [`PiExecutor::ensure_pi_config`]. The empty string makes
+/// [`resolve_gateway_base`] consult the endpoint switchboard at call time
+/// (see [`crate::ai_gateway`]); there is no hosted default. A non-empty
+/// base passed by a caller is used as given.
+pub const SCREENPIPE_API_URL: &str = "";
+
+/// Resolve the base URL for the `screenpipe` provider: an explicit base when
+/// one is given, otherwise the configured AI gateway. `None` means the
+/// provider is unavailable and nothing may be sent anywhere for it.
+pub fn resolve_gateway_base(api_url: &str) -> Option<String> {
+    let explicit = api_url.trim().trim_end_matches('/');
+    if explicit.is_empty() {
+        crate::ai_gateway::base()
+    } else {
+        Some(explicit.to_string())
+    }
+}
+
+/// Message used when a run asks for the gateway-backed provider but no
+/// gateway is configured.
+const GATEWAY_REQUIRED: &str = "this preset uses the AI gateway provider (screenpipe-cloud), \
+     but no AI gateway is configured. Set one under Settings > AI \
+     (or SCREENPIPE_AI_GATEWAY_URL), or switch the pipe to another preset";
 
 /// Bounded retries for provider rate limiting (HTTP 429) in streaming runs.
 const MAX_RATE_LIMIT_RETRIES: usize = 3;
@@ -65,18 +90,82 @@ fn is_rate_limit_error(text: &str) -> bool {
         || lower.contains("\"reset_in\"")
 }
 
-/// Fetch the model catalog from the Cloudflare Worker gateway and convert
-/// it into the format Pi's `models.json` expects.
+/// Fetch the model catalog of the user's AI gateway and convert it into the
+/// format Pi's `models.json` expects.
 ///
-/// The gateway (`/v1/models`) is the single source of truth. On failure
-/// (offline, timeout, gateway down) we fall back to a minimal hardcoded list
-/// so the app still works without network.
+/// `api_url` is resolved with [`resolve_gateway_base`]; with no gateway
+/// configured nothing is fetched and the list is empty. When the gateway
+/// does not answer (offline, no `/models` route) a one-entry placeholder
+/// list is returned; [`ensure_model_listed`] adds the model a run actually
+/// asks for.
 pub async fn screenpipe_cloud_models(api_url: &str, token: Option<&str>) -> serde_json::Value {
-    match fetch_models_from_gateway(api_url, token).await {
+    let Some(base) = resolve_gateway_base(api_url) else {
+        return json!([]);
+    };
+    match fetch_models_from_gateway(&base, token).await {
         Some(models) => models,
         None => {
-            warn!("failed to fetch models from gateway, using fallback list");
+            warn!("could not list models from the AI gateway, using a placeholder list");
             fallback_cloud_models()
+        }
+    }
+}
+
+/// Append a minimal entry for `model` to a Pi model list when no entry with
+/// that id exists, so Pi accepts a model the gateway did not list.
+pub fn ensure_model_listed(models: serde_json::Value, model: Option<&str>) -> serde_json::Value {
+    let mut arr = models.as_array().cloned().unwrap_or_default();
+    if let Some(id) = model.map(str::trim).filter(|m| !m.is_empty()) {
+        let listed = arr
+            .iter()
+            .any(|m| m.get("id").and_then(|v| v.as_str()) == Some(id));
+        if !listed {
+            arr.push(json!({
+                "id": id,
+                "name": id,
+                "reasoning": false,
+                "input": ["text", "image"],
+                "cost": {"input": 0, "output": 0, "cacheRead": 0, "cacheWrite": 0},
+                "contextWindow": 128000,
+                "maxTokens": 32000,
+            }));
+        }
+    }
+    json!(arr)
+}
+
+/// Write (or, with no gateway, remove) the managed `screenpipe` provider in
+/// a Pi `models.json` document. Removing matters: a stale entry left by an
+/// earlier screenpipe install points at the vendor's hosted gateway.
+fn merge_gateway_provider(
+    models_config: &mut serde_json::Value,
+    base: Option<&str>,
+    api_key: &str,
+    models: serde_json::Value,
+) {
+    let Some(providers) = models_config
+        .get_mut("providers")
+        .and_then(|p| p.as_object_mut())
+    else {
+        return;
+    };
+    match base {
+        Some(base) => {
+            providers.insert(
+                "screenpipe".to_string(),
+                json!({
+                    "baseUrl": base,
+                    "api": "openai-completions",
+                    "apiKey": api_key,
+                    "authHeader": true,
+                    "models": models
+                }),
+            );
+        }
+        None => {
+            if providers.remove("screenpipe").is_some() {
+                info!("pi config: removed the screenpipe provider (no AI gateway configured)");
+            }
         }
     }
 }
@@ -86,7 +175,7 @@ async fn fetch_models_from_gateway(
     api_url: &str,
     token: Option<&str>,
 ) -> Option<serde_json::Value> {
-    let url = format!("{}/models", api_url.trim_end_matches('/'));
+    let url = crate::ai_gateway::models_url(api_url);
     let client = reqwest::Client::builder()
         .timeout(std::time::Duration::from_secs(5))
         .build()
@@ -99,7 +188,7 @@ async fn fetch_models_from_gateway(
 
     let resp = req.send().await.ok()?;
     if !resp.status().is_success() {
-        warn!("gateway /v1/models returned {}", resp.status());
+        warn!("AI gateway /models returned {}", resp.status());
         return None;
     }
 
@@ -137,8 +226,9 @@ async fn fetch_models_from_gateway(
     Some(json!(models))
 }
 
-/// Minimal fallback when the gateway is unreachable.
-/// Only auto — if the gateway is down, nothing works anyway.
+/// Placeholder list when the gateway does not list its models. `auto` is
+/// what gateways that route by themselves expect; the requested model is
+/// added separately by [`ensure_model_listed`].
 fn fallback_cloud_models() -> serde_json::Value {
     json!([
         {"id": "auto", "name": "Auto (recommended)", "reasoning": true, "input": ["text", "image"], "cost": {"input": 0, "output": 0, "cacheRead": 0, "cacheWrite": 0}, "contextWindow": 128000, "maxTokens": 32000},
@@ -147,17 +237,15 @@ fn fallback_cloud_models() -> serde_json::Value {
 
 /// Pi agent executor.
 pub struct PiExecutor {
-    /// Screenpipe cloud token (for LLM calls via screenpipe proxy).
+    /// Credential for the user's AI gateway (the `screenpipe` provider).
     ///
-    /// Wrapped in `ArcSwap` so the desktop app can refresh it at
-    /// runtime via the `set_cloud_token` Tauri command — without this the
-    /// token captured at engine boot would be permanent for the lifetime of
-    /// the process. Users who sign in AFTER the engine started would stay on
-    /// the gateway's anonymous tier (allowed_models = haiku/gemini only)
-    /// until they fully quit and restart, because logout/login from the
-    /// webview doesn't restart the screenpipe sidecar.
+    /// Wrapped in `ArcSwap` so the desktop app can change it at runtime via
+    /// the `set_cloud_token` Tauri command; the next run picks it up without
+    /// restarting the engine. When empty, [`crate::ai_gateway::KEY_ENV`] is
+    /// used.
     pub user_token: Arc<ArcSwap<Option<String>>>,
-    /// Screenpipe API base URL (default: `https://api.screenpipe.com/v1`).
+    /// Gateway base override. Empty (the default, [`SCREENPIPE_API_URL`])
+    /// means the configured AI gateway, resolved on every run.
     pub api_url: String,
     /// Bearer token for the *local* screenpipe-server API (localhost:3030).
     /// Exposed to the Pi subprocess as `SCREENPIPE_LOCAL_API_KEY` so bash/TS
@@ -195,9 +283,21 @@ impl PiExecutor {
         (**token).clone().filter(|s| !s.is_empty())
     }
 
-    /// Push a new cloud token. Called by the desktop app on login/logout so
-    /// the next pipe run picks up the fresh token instead of using whatever
-    /// was present at engine boot.
+    /// The gateway base for this executor: its explicit `api_url` when set,
+    /// otherwise the configured AI gateway. `None` when there is none.
+    pub fn gateway_base(&self) -> Option<String> {
+        resolve_gateway_base(&self.api_url)
+    }
+
+    /// The gateway credential: the pushed token, else
+    /// [`crate::ai_gateway::KEY_ENV`]. Never the local API key.
+    pub fn gateway_key(&self) -> Option<String> {
+        crate::ai_gateway::credential(self.current_user_token().as_deref())
+    }
+
+    /// Push a new gateway token. Called by the desktop app when the user
+    /// changes the gateway key so the next pipe run picks it up instead of
+    /// whatever was present at engine boot.
     pub fn set_user_token(&self, token: Option<String>) {
         self.user_token
             .store(Arc::new(token.filter(|s| !s.is_empty())));
@@ -217,26 +317,17 @@ impl PiExecutor {
         self
     }
 
-    /// User policy: when the marker file
-    /// `~/.screenpipe/cloud_media_analysis.disabled` exists, the
-    /// screenpipe-api skill is installed WITHOUT the Gemma 4 E4B
-    /// confidential-enclave block. Default (no marker) = enabled, so
-    /// fresh installs ship the capability documented and Pi knows to
-    /// call `api.screenpipe.com` with `model: "gemma4-e4b"` for audio /
-    /// video / image analysis.
+    /// Whether the screenpipe-api skill gets the cloud media analysis
+    /// section. Off by default: it needs the user's opt-in marker in the
+    /// data dir and a configured AI gateway (see
+    /// [`crate::ai_gateway::media_analysis_active`]). Without both, agents
+    /// are never told that media can leave the device.
     ///
     /// Gating happens at install time (here) rather than by mutating
     /// the rendered SKILL.md after the fact — those copies get
     /// overwritten on every Pi run, so post-install edits don't stick.
     fn cloud_media_analysis_enabled() -> bool {
-        let home = match dirs::home_dir() {
-            Some(h) => h,
-            None => return true,
-        };
-        !home
-            .join(".screenpipe")
-            .join("cloud_media_analysis.disabled")
-            .exists()
+        crate::ai_gateway::media_analysis_active(&crate::paths::default_screenpipe_data_dir())
     }
 
     fn render_screenpipe_api_skill() -> String {
@@ -669,20 +760,33 @@ impl PiExecutor {
         Ok(())
     }
 
-    /// Install or remove the web-search extension based on provider and offline mode.
-    /// Web search uses the screenpipe cloud backend, so we only enable it
-    /// for screenpipe-cloud to avoid sending data to our backend when the
-    /// user chose a local/custom provider. Always removed in offline mode.
+    /// Install or remove the web-search extension. The extension sends
+    /// queries to the user's AI gateway (`{gateway}/web-search`), so it is
+    /// installed only for the gateway-backed provider and only when a
+    /// gateway is configured; otherwise it is removed and no search tool is
+    /// offered.
     pub fn ensure_web_search_extension(project_dir: &Path, provider: Option<&str>) -> Result<()> {
+        Self::ensure_web_search_extension_with(
+            project_dir,
+            provider,
+            crate::ai_gateway::is_configured(),
+        )
+    }
+
+    fn ensure_web_search_extension_with(
+        project_dir: &Path,
+        provider: Option<&str>,
+        gateway_configured: bool,
+    ) -> Result<()> {
         let ext_dir = project_dir.join(".pi").join("extensions");
         let ext_path = ext_dir.join("web-search.ts");
 
-        let is_screenpipe_cloud = matches!(
+        let is_gateway_provider = matches!(
             provider,
             None | Some("screenpipe") | Some("screenpipe-cloud") | Some("pi")
         );
 
-        if is_screenpipe_cloud {
+        if is_gateway_provider && gateway_configured {
             std::fs::create_dir_all(&ext_dir)?;
             let ext_content = include_str!("../../assets/extensions/web-search.ts");
             std::fs::write(&ext_path, ext_content)?;
@@ -690,8 +794,8 @@ impl PiExecutor {
         } else if ext_path.exists() {
             std::fs::remove_file(&ext_path)?;
             info!(
-                "web-search extension removed (provider {:?} is not screenpipe-cloud)",
-                provider
+                "web-search extension removed (provider {:?}, gateway configured: {})",
+                provider, gateway_configured
             );
         }
 
@@ -744,39 +848,41 @@ impl PiExecutor {
             models_config = json!({"providers": {}});
         }
 
-        // Only add screenpipe cloud provider if it's the intended provider
-        // (or no provider specified). If the user explicitly chose ollama/openai/custom,
-        // do NOT write screenpipe into models.json to avoid silent credit drain via fallback.
+        // Only touch the gateway-backed `screenpipe` provider when it's the
+        // intended provider (or no provider specified). If the user explicitly
+        // chose ollama/openai/custom, leave it alone so a run can never fall
+        // back to the gateway behind the user's back.
         let should_add_screenpipe = match provider {
             None => true,
             Some("screenpipe") | Some("screenpipe-cloud") | Some("pi") => true,
             Some(_) => false,
         };
+        let gateway_base = resolve_gateway_base(api_url);
+        let gateway_key = crate::ai_gateway::credential(user_token);
 
         if should_add_screenpipe {
-            // Use actual token value in apiKey — Pi doesn't resolve env var names,
-            // so writing the literal string "SCREENPIPE_API_KEY" causes tier=anonymous.
-            // Resolve from: argument > env var > literal fallback (last resort).
-            let api_key_value = user_token
-                .map(|t| t.to_string())
-                .or_else(|| std::env::var("SCREENPIPE_API_KEY").ok())
+            // The apiKey is written as the literal credential; without one the
+            // env-var name is written and the spawned process gets the value
+            // through SCREENPIPE_API_KEY (see spawn_pi).
+            let api_key_value = gateway_key
+                .clone()
                 .unwrap_or_else(|| "SCREENPIPE_API_KEY".to_string());
-            let api_key_value = api_key_value.as_str();
-            let models = screenpipe_cloud_models(api_url, user_token).await;
-            let screenpipe_provider = json!({
-                "baseUrl": api_url,
-                "api": "openai-completions",
-                "apiKey": api_key_value,
-                "authHeader": true,
-                "models": models
-            });
-
-            if let Some(providers) = models_config
-                .get_mut("providers")
-                .and_then(|p| p.as_object_mut())
-            {
-                providers.insert("screenpipe".to_string(), screenpipe_provider);
-            }
+            let models = match gateway_base.as_deref() {
+                Some(base) => ensure_model_listed(
+                    screenpipe_cloud_models(base, gateway_key.as_deref()).await,
+                    model,
+                ),
+                None => {
+                    warn!("pi config: {}", GATEWAY_REQUIRED);
+                    json!([])
+                }
+            };
+            merge_gateway_provider(
+                &mut models_config,
+                gateway_base.as_deref(),
+                &api_key_value,
+                models,
+            );
         }
 
         // Add the pipe's own provider (ollama, openai, custom) if specified
@@ -905,10 +1011,10 @@ impl PiExecutor {
         std::fs::write(&models_tmp, serde_json::to_string_pretty(&models_config)?)?;
         std::fs::rename(&models_tmp, &models_path)?;
 
-        // -- auth.json: merge screenpipe token, preserve other providers --
-        // Only write screenpipe auth when screenpipe provider is actually being used
-        if should_add_screenpipe {
-            if let Some(token) = user_token {
+        // -- auth.json: merge the gateway credential, preserve other providers --
+        // Only written when the gateway provider is in use and configured.
+        if should_add_screenpipe && gateway_base.is_some() {
+            if let Some(token) = gateway_key.as_deref() {
                 let auth_path = config_dir.join("auth.json");
                 let mut auth: serde_json::Value = if auth_path.exists() {
                     let content = std::fs::read_to_string(&auth_path).unwrap_or_default();
@@ -966,143 +1072,29 @@ impl PiExecutor {
         requested.to_string()
     }
 
-    /// Resolve a screenpipe-cloud model AND validate it against the tier's
-    /// allowed model list returned by the gateway (`/v1/models`).
+    /// Resolve the model for a run. For the gateway-backed `screenpipe`
+    /// provider this only strips a date suffix ([`resolve_model`]): the
+    /// user's own gateway decides which models exist, there are no plan
+    /// tiers to validate against, and a model the gateway does not know
+    /// fails visibly there instead of being silently swapped for another.
     ///
-    /// Why this exists: a pipe's preset can resolve to a model the user's
-    /// current plan/tier does not allow (e.g. `claude-opus-4` on a tier whose
-    /// `allowed_models` are haiku/gemini only). Previously we passed the
-    /// requested model straight through to pi, which then sent it to the
-    /// gateway and got rejected — the pipe failed with an opaque error even
-    /// though the user had valid credits and a valid plan. Validating here
-    /// turns that hard failure into a graceful fallback to an allowed model.
-    ///
-    /// For non-screenpipe providers (ollama / openai-byok / anthropic-byok /
-    /// custom) we don't have an allow-list and must not touch the model — the
-    /// user owns that provider. We only strip the `@date` suffix via
-    /// [`resolve_model`].
-    ///
-    /// Tier-flicker self-heal: tier resolution can momentarily report a LOWER
-    /// tier than the user actually has (stale token captured at engine boot,
-    /// sidecar restart, token refresh mid-run). To avoid silently downgrading
-    /// a paying subscriber who deliberately picked a premium model, when the
-    /// requested model is missing we re-read the CURRENT token and re-fetch
-    /// the catalog once. If the fresh token reveals the model is allowed after
-    /// all, we keep it. Only if it's still disallowed do we fall back.
-    ///
-    /// Returns `(resolved_model, fell_back_from)` — `fell_back_from` is
-    /// `Some(original)` only when we actually downgraded, so the caller can
-    /// surface a visible notice instead of silently swapping the model.
+    /// Returns `(resolved_model, fell_back_from)`; `fell_back_from` is always
+    /// `None` now and is kept so callers keep their notice plumbing.
     async fn resolve_screenpipe_model(
         &self,
         requested: &str,
         provider: &str,
     ) -> (String, Option<String>) {
-        let base = Self::resolve_model(requested, provider);
-        if provider != "screenpipe" {
-            return (base, None);
-        }
-
-        let api_url = self.api_url.clone();
-
-        // Fetch the tier-filtered catalog. On any failure (offline, gateway
-        // down) we get the minimal fallback list — in that case we trust the
-        // requested model rather than forcing a fallback, since validation is
-        // best-effort and we don't want to break offline/degraded runs.
-        let fetch_allowed = |token: Option<String>| {
-            let api_url = api_url.clone();
-            async move {
-                let models = screenpipe_cloud_models(&api_url, token.as_deref()).await;
-                models
-                    .as_array()
-                    .map(|arr| {
-                        arr.iter()
-                            .filter_map(|m| m.get("id").and_then(|v| v.as_str()).map(String::from))
-                            .collect::<Vec<String>>()
-                    })
-                    .unwrap_or_default()
-            }
-        };
-
-        let allowed = fetch_allowed(self.current_user_token()).await;
-
-        let mut decision = Self::pick_allowed_model(&base, &allowed);
-
-        // Tier-flicker self-heal: model looks disallowed → re-read the token
-        // (it may have refreshed to the real tier since boot) and re-check
-        // once before committing to a downgrade.
-        if decision.is_err() {
-            let fresh = self.current_user_token();
-            let fresh_allowed = fetch_allowed(fresh).await;
-            if !fresh_allowed.is_empty() && fresh_allowed != allowed {
-                let retry = Self::pick_allowed_model(&base, &fresh_allowed);
-                if retry.is_ok() {
-                    info!(
-                        "model '{}' allowed after token refresh (tier flicker self-healed)",
-                        base
-                    );
-                }
-                decision = retry;
-            }
-        }
-
-        match decision {
-            Ok(m) => (m, None),
-            Err(fallback) => {
-                warn!(
-                    "model '{}' is not available on this tier (allowed: [{}]); \
-                     falling back to '{}' so the pipe doesn't fail",
-                    base,
-                    allowed.join(", "),
-                    fallback
-                );
-                (fallback, Some(base))
-            }
-        }
+        (Self::resolve_model(requested, provider), None)
     }
 
-    /// Pure validation step for [`resolve_screenpipe_model`] (network-free so
-    /// it's unit-testable).
-    ///
-    /// `Ok(model)`  → the requested model is allowed (or we can't validate).
-    /// `Err(model)` → requested not allowed; the returned value is the fallback.
-    fn pick_allowed_model(requested: &str, allowed: &[String]) -> Result<String, String> {
-        // No catalog, or only the offline/degraded fallback sentinel → we
-        // couldn't actually validate, so don't second-guess the requested
-        // model. Without the sentinel check the `["auto"]` list returned by
-        // `fallback_cloud_models` when the gateway is unreachable would
-        // masquerade as a one-model tier and spuriously downgrade a
-        // deliberately-chosen premium model, firing a bogus `model_fallback`
-        // notice on every offline run.
-        if allowed.is_empty() || Self::is_offline_fallback_catalog(allowed) {
-            return Ok(requested.to_string());
+    /// Refuse a run on the gateway-backed provider when no gateway is
+    /// configured, with a message that says how to fix it.
+    fn require_gateway_for(&self, resolved_provider: &str) -> Result<()> {
+        if resolved_provider == "screenpipe" && self.gateway_base().is_none() {
+            return Err(anyhow!(GATEWAY_REQUIRED));
         }
-        // "auto" is always valid: the gateway picks an allowed model server-side.
-        if requested == "auto" || allowed.iter().any(|m| m == requested) {
-            return Ok(requested.to_string());
-        }
-        // Requested model is NOT in the tier's allow-list. Pick a safe default:
-        // prefer "auto" (gateway chooses), else the first allowed model.
-        let fallback = if allowed.iter().any(|m| m == "auto") {
-            "auto".to_string()
-        } else {
-            allowed[0].clone()
-        };
-        Err(fallback)
-    }
-
-    /// `true` when `allowed` is exactly the offline/degraded fallback catalog
-    /// (`["auto"]`) produced by [`fallback_cloud_models`] when the gateway's
-    /// `/v1/models` is unreachable. It carries no real tier information, so we
-    /// treat it like an empty catalog and never let it drive a downgrade.
-    ///
-    /// Trade-off: this collides with a hypothetical real tier whose allow-list
-    /// is genuinely only `["auto"]`. No such tier exists today (real tiers list
-    /// concrete model ids), and even if one appeared `auto` is always accepted
-    /// by the gateway, so passing the requested model through for its
-    /// server-side auto-pick stays correct.
-    fn is_offline_fallback_catalog(allowed: &[String]) -> bool {
-        allowed.len() == 1 && allowed[0] == "auto"
+        Ok(())
     }
 
     /// Spawn the pi subprocess and wait for its output.
@@ -1134,9 +1126,23 @@ impl PiExecutor {
         }
         cmd.arg("-p").arg(prompt);
 
-        let cloud_token = self.current_user_token();
+        // SCREENPIPE_API_KEY in the agent process is the gateway credential
+        // (bash subshells unset it, see bash_env). Drop any inherited value
+        // first: in the engine process that name holds the *local* API key,
+        // which must never reach a remote gateway.
+        let cloud_token = self.gateway_key();
+        cmd.env_remove("SCREENPIPE_API_KEY");
         if let Some(ref token) = cloud_token {
             cmd.env("SCREENPIPE_API_KEY", token);
+        }
+        // The web-search extension reads the gateway base from here.
+        match self.gateway_base() {
+            Some(base) => {
+                cmd.env(crate::ai_gateway::URL_ENV, base);
+            }
+            None => {
+                cmd.env_remove(crate::ai_gateway::URL_ENV);
+            }
         }
 
         // Pi resolves apiKey values in models.json as env var names.
@@ -1262,9 +1268,23 @@ impl PiExecutor {
         }
         cmd.arg("-p").arg(prompt);
 
-        let cloud_token = self.current_user_token();
+        // SCREENPIPE_API_KEY in the agent process is the gateway credential
+        // (bash subshells unset it, see bash_env). Drop any inherited value
+        // first: in the engine process that name holds the *local* API key,
+        // which must never reach a remote gateway.
+        let cloud_token = self.gateway_key();
+        cmd.env_remove("SCREENPIPE_API_KEY");
         if let Some(ref token) = cloud_token {
             cmd.env("SCREENPIPE_API_KEY", token);
+        }
+        // The web-search extension reads the gateway base from here.
+        match self.gateway_base() {
+            Some(base) => {
+                cmd.env(crate::ai_gateway::URL_ENV, base);
+            }
+            None => {
+                cmd.env_remove(crate::ai_gateway::URL_ENV);
+            }
         }
 
         if let Some(key) = provider_api_key {
@@ -1448,6 +1468,7 @@ impl AgentExecutor for PiExecutor {
         // 1. Explicit provider from pipe frontmatter → use it
         // 2. No provider specified → screenpipe cloud (default)
         let resolved_provider = provider.unwrap_or("screenpipe").to_string();
+        self.require_gateway_for(&resolved_provider)?;
 
         let (resolved_model, fell_back_from) = self
             .resolve_screenpipe_model(model, &resolved_provider)
@@ -1556,6 +1577,7 @@ impl AgentExecutor for PiExecutor {
         session_owner: Option<&str>,
     ) -> Result<AgentOutput> {
         let resolved_provider = provider.unwrap_or("screenpipe").to_string();
+        self.require_gateway_for(&resolved_provider)?;
         let (resolved_model, fell_back_from) = self
             .resolve_screenpipe_model(model, &resolved_provider)
             .await;
@@ -2627,65 +2649,25 @@ mod tests {
         assert_eq!(parse_rate_limit_reset_secs("model not found"), None);
     }
 
-    #[test]
-    fn test_pick_allowed_model() {
-        let allowed: Vec<String> = ["auto", "claude-haiku-4-5", "gemini-3.5-flash"]
-            .iter()
-            .map(|s| s.to_string())
-            .collect();
-
-        // Allowed model passes through unchanged.
+    #[tokio::test]
+    async fn gateway_models_are_passed_through_without_tier_checks() {
+        let mut exec = PiExecutor::new(None);
+        // Unroutable on purpose: resolution must not need the network.
+        exec.api_url = "http://127.0.0.1:9/v1".to_string();
         assert_eq!(
-            PiExecutor::pick_allowed_model("gemini-3.5-flash", &allowed),
-            Ok("gemini-3.5-flash".to_string())
-        );
-        // "auto" is always valid.
-        assert_eq!(
-            PiExecutor::pick_allowed_model("auto", &allowed),
-            Ok("auto".to_string())
-        );
-        // Disallowed model (the reported bug: opus on a haiku/gemini tier)
-        // falls back to "auto" when present.
-        assert_eq!(
-            PiExecutor::pick_allowed_model("claude-opus-4", &allowed),
-            Err("auto".to_string())
-        );
-
-        // When "auto" is NOT offered, fall back to the first allowed model.
-        let no_auto: Vec<String> = ["claude-haiku-4-5", "gemini-3.5-flash"]
-            .iter()
-            .map(|s| s.to_string())
-            .collect();
-        assert_eq!(
-            PiExecutor::pick_allowed_model("claude-opus-4", &no_auto),
-            Err("claude-haiku-4-5".to_string())
-        );
-
-        // Empty catalog (gateway returned an empty list) → trust the requested
-        // model, don't break degraded runs.
-        assert_eq!(
-            PiExecutor::pick_allowed_model("claude-opus-4", &[]),
-            Ok("claude-opus-4".to_string())
-        );
-
-        // Offline sentinel ["auto"] (gateway unreachable → fallback_cloud_models)
-        // must be treated like an empty catalog: it is NOT a one-model tier, so
-        // a deliberately-chosen premium model passes through unchanged instead
-        // of being spuriously downgraded. This is the #3763 offline regression.
-        let offline_sentinel = vec!["auto".to_string()];
-        assert_eq!(
-            PiExecutor::pick_allowed_model("claude-opus-4", &offline_sentinel),
-            Ok("claude-opus-4".to_string())
+            exec.resolve_screenpipe_model("llama3.1:70b", "screenpipe")
+                .await,
+            ("llama3.1:70b".to_string(), None)
         );
         assert_eq!(
-            PiExecutor::pick_allowed_model("auto", &offline_sentinel),
-            Ok("auto".to_string())
+            exec.resolve_screenpipe_model("claude-haiku-4-5@20251001", "screenpipe")
+                .await,
+            ("claude-haiku-4-5".to_string(), None)
         );
-        assert!(PiExecutor::is_offline_fallback_catalog(&offline_sentinel));
-        // A real single-model tier on a concrete id is NOT the sentinel.
-        assert!(!PiExecutor::is_offline_fallback_catalog(&[
-            "claude-haiku-4-5".to_string()
-        ]));
+        assert_eq!(
+            exec.resolve_screenpipe_model("qwen3:8b@x", "ollama").await,
+            ("qwen3:8b@x".to_string(), None)
+        );
     }
 
     #[test]
@@ -2826,5 +2808,113 @@ mod tests {
             !lock_path.exists(),
             "stale bun.lock must be cleared so bun re-resolves from the fresh manifest"
         );
+    }
+
+    #[test]
+    fn explicit_gateway_base_is_used_as_given() {
+        assert_eq!(
+            resolve_gateway_base(" http://127.0.0.1:4000/v1/ ").as_deref(),
+            Some("http://127.0.0.1:4000/v1")
+        );
+    }
+
+    #[test]
+    fn gateway_provider_is_written_with_the_gateway_base() {
+        let mut cfg = json!({"providers": {"ollama": {"baseUrl": "http://localhost:11434/v1"}}});
+        merge_gateway_provider(
+            &mut cfg,
+            Some("http://127.0.0.1:4000/v1"),
+            "gw-key",
+            json!([{"id": "auto"}]),
+        );
+        let sp = &cfg["providers"]["screenpipe"];
+        assert_eq!(sp["baseUrl"], "http://127.0.0.1:4000/v1");
+        assert_eq!(sp["apiKey"], "gw-key");
+        assert_eq!(sp["api"], "openai-completions");
+        assert!(cfg["providers"]["ollama"].is_object(), "other providers survive");
+    }
+
+    #[test]
+    fn without_a_gateway_a_stale_hosted_provider_entry_is_removed() {
+        let mut cfg = json!({"providers": {
+            "screenpipe": {"baseUrl": "https://hosted.example.test/v1", "apiKey": "old"},
+            "anthropic-byok": {"baseUrl": "https://api.anthropic.com"}
+        }});
+        merge_gateway_provider(&mut cfg, None, "unused", json!([]));
+        let providers = cfg["providers"].as_object().unwrap();
+        assert!(!providers.contains_key("screenpipe"));
+        assert!(providers.contains_key("anthropic-byok"));
+    }
+
+    #[test]
+    fn requested_model_is_added_to_the_gateway_list_once() {
+        let listed = ensure_model_listed(json!([{"id": "auto"}]), Some("llama3.1:8b"));
+        let ids: Vec<&str> = listed
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|m| m["id"].as_str().unwrap())
+            .collect();
+        assert_eq!(ids, vec!["auto", "llama3.1:8b"]);
+
+        let again = ensure_model_listed(listed.clone(), Some("llama3.1:8b"));
+        assert_eq!(again.as_array().unwrap().len(), 2);
+        assert_eq!(ensure_model_listed(json!([]), Some("  ")), json!([]));
+    }
+
+    #[tokio::test]
+    async fn no_gateway_means_no_model_fetch() {
+        // An explicit unroutable base would be tried; an empty one with no
+        // configured gateway must short-circuit to an empty list. The
+        // switchboard has no override in this test binary, and the env var
+        // is only consulted, so clear it for the duration of the check.
+        if std::env::var(crate::ai_gateway::URL_ENV).is_ok() {
+            return; // a developer-provided gateway; nothing to assert
+        }
+        assert_eq!(screenpipe_cloud_models("", Some("k")).await, json!([]));
+    }
+
+    #[test]
+    fn web_search_extension_needs_the_gateway_provider_and_a_gateway() {
+        let dir = tempfile::tempdir().unwrap();
+        let ext = dir.path().join(".pi").join("extensions").join("web-search.ts");
+
+        PiExecutor::ensure_web_search_extension_with(dir.path(), Some("screenpipe"), false)
+            .unwrap();
+        assert!(!ext.exists(), "no gateway, no search tool");
+
+        PiExecutor::ensure_web_search_extension_with(dir.path(), Some("screenpipe"), true)
+            .unwrap();
+        assert!(ext.exists());
+        let body = std::fs::read_to_string(&ext).unwrap();
+        assert!(body.contains("SCREENPIPE_AI_GATEWAY_URL"));
+
+        PiExecutor::ensure_web_search_extension_with(dir.path(), Some("ollama"), true).unwrap();
+        assert!(!ext.exists(), "other providers never get the gateway tool");
+    }
+
+    #[test]
+    fn gateway_provider_run_is_refused_without_a_gateway() {
+        let mut exec = PiExecutor::new(None);
+        exec.api_url = "http://127.0.0.1:9/v1".to_string();
+        assert!(exec.require_gateway_for("screenpipe").is_ok());
+        assert!(exec.require_gateway_for("ollama").is_ok());
+
+        if std::env::var(crate::ai_gateway::URL_ENV).is_err() {
+            let exec = PiExecutor::new(None);
+            let err = exec.require_gateway_for("screenpipe").unwrap_err();
+            assert!(err.to_string().contains("no AI gateway is configured"));
+            assert!(exec.require_gateway_for("anthropic").is_ok());
+        }
+    }
+
+    #[test]
+    fn media_analysis_block_never_names_a_hosted_service() {
+        let block = include_str!("../../assets/skills/screenpipe-api/cloud_media_analysis_block.md");
+        assert!(block.contains("BEGIN_CLOUD_MEDIA_ANALYSIS"));
+        assert!(block.contains("/v1/chat/completions"));
+        for vendor in ["screenpipe.com", "screenpi.pe", "tinfoil", "gemma4-e4b"] {
+            assert!(!block.contains(vendor), "block mentions {vendor}");
+        }
     }
 }

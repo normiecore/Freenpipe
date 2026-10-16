@@ -47,6 +47,7 @@ import { useToast } from "@/components/ui/use-toast";
 import { useSqlAutocomplete } from "@/lib/hooks/use-sql-autocomplete";
 import { useInstalledApps } from "@/lib/hooks/use-installed-apps";
 import { commands } from "@/lib/utils/tauri";
+import { useAiGateway } from "@/lib/hooks/use-ai-gateway";
 import posthog from "posthog-js";
 import {
   validateField,
@@ -452,11 +453,29 @@ export function PrivacySection() {
     handlePiiModeChange(checked ? "basic" : "off");
   };
 
-  // Cloud media analysis (Gemma 4 E4B inside our Tinfoil enclave) —
-  // toggling this also rewrites the screenpipe-api skill markdown so
-  // agents see the capability iff the toggle is on. Defaults to true.
+  // Cloud media analysis: agents may send media to the user's own AI
+  // gateway. Toggling this records an opt-in marker that decides whether
+  // the screenpipe-api skill mentions the capability (it never does without
+  // a configured gateway). Defaults to false.
   const cloudMediaAnalysisEnabled =
-    settings.cloudMediaAnalysisEnabled ?? true;
+    settings.cloudMediaAnalysisEnabled ?? false;
+  const aiGateway = useAiGateway();
+
+  // The remote PII backend is offered only for an enclave the user
+  // configured (SCREENPIPE_PRIVACY_FILTER_ENCLAVE, _REPO and _API_KEY).
+  const [enclaveConfigured, setEnclaveConfigured] = useState(false);
+  useEffect(() => {
+    let cancelled = false;
+    commands
+      .getPrivacyFilterEnclaveConfigured()
+      .then((configured) => {
+        if (!cancelled) setEnclaveConfigured(configured === true);
+      })
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   const handleCloudMediaAnalysisChange = useCallback(
     async (checked: boolean) => {
@@ -474,10 +493,10 @@ export function PrivacySection() {
     [handleSettingsChange],
   );
 
-  // On first hydrate sync the skill file with the (default-true) setting.
-  // Cheap idempotent file write; ensures fresh installs land with the
-  // block present, and that flipping settings.json from outside the app
-  // (e.g. importing a config) keeps the skill in sync.
+  // On first hydrate sync the opt-in marker with the (default-false)
+  // setting. Cheap idempotent file write; keeps the marker in step when
+  // settings.json was changed from outside the app (e.g. an imported
+  // config).
   useEffect(() => {
     if (!settings) return;
     let cancelled = false;
@@ -1160,22 +1179,26 @@ export function PrivacySection() {
                     </span>
                   </span>
                 </label>
-                <label className={`flex items-start gap-2 text-xs ${managedPiiBackend ? "cursor-not-allowed opacity-60" : "cursor-pointer"}`}>
-                  <input
-                    type="radio"
-                    name="piiBackend"
-                    className="mt-0.5"
-                    checked={piiBackend === "tinfoil"}
-                    disabled={!!managedPiiBackend}
-                    onChange={() => handlePiiBackendChange("tinfoil")}
-                  />
-                  <span>
-                    <span className="font-medium text-foreground">Cloud (enclave)</span>
-                    <span className="text-muted-foreground">
-                      {" "}— screenpipe&apos;s confidential-compute enclave. Fast everywhere; your device cryptographically verifies the enclave is running the open-source build before sending anything.
+                {(enclaveConfigured || piiBackend === "tinfoil") && (
+                  <label className={`flex items-start gap-2 text-xs ${managedPiiBackend || !enclaveConfigured ? "cursor-not-allowed opacity-60" : "cursor-pointer"}`}>
+                    <input
+                      type="radio"
+                      name="piiBackend"
+                      className="mt-0.5"
+                      checked={piiBackend === "tinfoil"}
+                      disabled={!!managedPiiBackend || !enclaveConfigured}
+                      onChange={() => handlePiiBackendChange("tinfoil")}
+                    />
+                    <span>
+                      <span className="font-medium text-foreground">Your enclave</span>
+                      <span className="text-muted-foreground">
+                        {enclaveConfigured
+                          ? " — the confidential-compute enclave you configured. Before anything is sent, your device checks the enclave's attestation against the repository you named."
+                          : " — no enclave is configured, so redaction runs locally. Set SCREENPIPE_PRIVACY_FILTER_ENCLAVE, _REPO and _API_KEY to use one."}
+                      </span>
                     </span>
-                  </span>
-                </label>
+                  </label>
+                )}
 
                 <p className="text-xs font-medium text-foreground pt-2">
                   Fields to redact
@@ -1225,10 +1248,9 @@ export function PrivacySection() {
           </CardContent>
         </Card>
 
-        {/* Cloud media analysis — audio / video / image via Gemma 4 E4B
-            inside the same Tinfoil enclave. Toggle adds/removes the
-            section from ~/.claude/skills/screenpipe-api/SKILL.md so
-            agents literally don't see the capability when it's off. */}
+        {/* Media analysis through the user's AI gateway. The toggle records
+            an opt-in; agents only see the capability in their skill when it
+            is on and a gateway is configured. */}
         <Card className="border-border bg-card">
           <CardContent className="px-3 py-2.5">
             <div className="flex items-center justify-between">
@@ -1237,16 +1259,19 @@ export function PrivacySection() {
                 <div>
                   <h3 className="text-sm font-medium text-foreground flex items-center gap-1.5">
                     AI audio &amp; video analysis
-                    <HelpTooltip text="Lets Pi and Claude Code call screenpipe's confidential enclave (Gemma 4 E4B inside a Tinfoil-attested AMD SEV-SNP container, encrypted in flight + at rest, no plaintext at the provider) to transcribe meetings, describe video clips, and analyze image frames from your screenpipe data. When off, the capability is stripped from the agent skill markdown so Pi won't try to use it." />
+                    <HelpTooltip text="When on, agents may send selected audio clips, video frames and images from your recordings to the AI gateway you configured under Settings > AI, for example to describe a screen recording. Off by default. Without a gateway it stays inactive, and while it is off agents are not told the option exists." />
                   </h3>
                   <p className="text-xs text-muted-foreground">
-                    Confidential enclave for transcription, video, and image understanding.
+                    {aiGateway.configured
+                      ? "Let agents send media to your AI gateway for analysis."
+                      : "Needs an AI gateway (Settings > AI)."}
                   </p>
                 </div>
               </div>
               <Switch
                 id="cloudMediaAnalysisEnabled"
                 checked={cloudMediaAnalysisEnabled}
+                disabled={!aiGateway.configured && !cloudMediaAnalysisEnabled}
                 onCheckedChange={handleCloudMediaAnalysisChange}
               />
             </div>

@@ -42,6 +42,7 @@ export default defineConfig({
 			"lib/events/__tests__/types.test.ts",
 			"lib/hooks/__tests__/server-poll-logic.test.ts",
 			"lib/events/__tests__/bus.test.ts",
+			"lib/__tests__/ai-gateway-settings.test.ts",
 			// KNOWN-BROKEN: pre-existing failures surfaced when wiring tests
 			// into CI. Each is a real assertion failure (component drifted
 			// from its test) — excluded so we can ship the CI gate now and
