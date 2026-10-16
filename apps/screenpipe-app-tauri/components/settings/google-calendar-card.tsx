@@ -39,7 +39,16 @@ interface CalendarAccount {
   displayName: string | null;
 }
 
-export function GoogleCalendarCard({ onConnected, onDisconnected }: { onConnected?: () => void; onDisconnected?: () => void } = {}) {
+export function GoogleCalendarCard({
+  onConnected,
+  onDisconnected,
+  connectBlockedReason,
+}: {
+  onConnected?: () => void;
+  onDisconnected?: () => void;
+  /** Why connecting is impossible right now (e.g. no OAuth app yet). */
+  connectBlockedReason?: string | null;
+} = {}) {
   const [accounts, setAccounts] = useState<CalendarAccount[]>([]);
   const [needsAttention, setNeedsAttention] = useState(false);
   const [isConnecting, setIsConnecting] = useState(false);
@@ -249,7 +258,8 @@ export function GoogleCalendarCard({ onConnected, onDisconnected }: { onConnecte
                   variant="outline"
                   size="sm"
                   onClick={handleConnect}
-                  disabled={isConnecting}
+                  disabled={isConnecting || !!connectBlockedReason}
+                  title={connectBlockedReason ?? undefined}
                   className="text-xs"
                 >
                   {isConnecting ? (
@@ -298,7 +308,8 @@ export function GoogleCalendarCard({ onConnected, onDisconnected }: { onConnecte
                   variant="ghost"
                   size="sm"
                   onClick={handleConnect}
-                  disabled={isConnecting}
+                  disabled={isConnecting || !!connectBlockedReason}
+                  title={connectBlockedReason ?? undefined}
                   className="text-xs h-7 px-2"
                 >
                   {isConnecting ? (

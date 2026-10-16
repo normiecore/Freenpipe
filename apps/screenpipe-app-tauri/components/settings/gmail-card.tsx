@@ -9,6 +9,7 @@ import { Button } from "@/components/ui/button";
 import { Loader2, LogOut, Mail, Plus } from "lucide-react";
 import { commands } from "@/lib/utils/tauri";
 import { notifyConnectionsUpdated } from "@/lib/connections-events";
+import { toast } from "@/components/ui/use-toast";
 import posthog from "posthog-js";
 import { GoogleOAuthUnverifiedAppHint } from "./google-oauth-unverified-app-hint";
 
@@ -17,7 +18,12 @@ interface GmailAccount {
   displayName: string | null;
 }
 
-export function GmailCard() {
+export function GmailCard({
+  connectBlockedReason,
+}: {
+  /** Why connecting is impossible right now (e.g. no OAuth app yet). */
+  connectBlockedReason?: string | null;
+} = {}) {
   const [accounts, setAccounts] = useState<GmailAccount[]>([]);
   const [isConnecting, setIsConnecting] = useState(false);
   const [disconnecting, setDisconnecting] = useState<string | null>(null);
@@ -58,6 +64,9 @@ export function GmailCard() {
         posthog.capture("gmail_connected");
         await fetchAccounts();
         notifyConnectionsUpdated();
+      } else if (res.status === "error") {
+        // Usually a missing or rejected OAuth app; the backend message says which.
+        toast({ title: "gmail connect failed", description: String(res.error), variant: "destructive" });
       }
     } catch (e) {
       console.error("gmail oauth failed:", e);
@@ -152,7 +161,8 @@ export function GmailCard() {
                 variant="outline"
                 size="sm"
                 onClick={handleConnect}
-                disabled={isConnecting}
+                disabled={isConnecting || !!connectBlockedReason}
+                title={connectBlockedReason ?? undefined}
                 className="text-xs"
               >
                 {isConnecting ? (

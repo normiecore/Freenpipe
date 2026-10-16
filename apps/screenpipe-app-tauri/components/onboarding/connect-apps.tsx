@@ -606,6 +606,13 @@ export default function ConnectApps({ handleNextSlide }: ConnectAppsProps) {
             integration: integration.id,
             has_display_name: !!res.data.display_name,
           });
+        } else if (res.status === "error") {
+          // Usually no OAuth app is set up for this provider yet; the backend
+          // message says where to add one. Stay in the error state (the tile
+          // retries on click) so there is time to read it.
+          const msg = String(res.error);
+          setErrorMessages((prev) => ({ ...prev, [integration.cardKey]: msg }));
+          setCardState(integration.cardKey, "error");
         } else {
           // User cancelled or OAuth didn't complete — go back to idle quietly
           setCardState(integration.cardKey, "idle");

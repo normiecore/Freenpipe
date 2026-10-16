@@ -16,6 +16,9 @@ import { Download, ExternalLink, Check, Loader2, Copy, Terminal, LogIn, LogOut, 
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
 import { commands } from "@/lib/utils/tauri";
 import { useSettings } from "@/lib/hooks/use-settings";
+import type { OAuthClientInfo } from "@/lib/utils/tauri";
+import { connectBlocker } from "@/lib/oauth-client-form";
+import { OAuthClientSetup } from "./oauth-client-dialog";
 import { useToast } from "@/components/ui/use-toast";
 import { ensureChatGptPreset } from "@/lib/utils/chatgpt-preset";
 import { notifyConnectionsUpdated } from "@/lib/connections-events";
@@ -2156,6 +2159,33 @@ interface OAuthAccount {
   displayName: string | null;
 }
 
+/**
+ * OAuth app block for Google's dedicated cards, which keep their own connect
+ * buttons: the block sits above the card, and the card gets the reason its
+ * connect button is disabled (no OAuth app yet), or `null` once it can connect.
+ */
+function OAuthAppGate({
+  integrationId,
+  integrationName,
+  children,
+}: {
+  integrationId: string;
+  integrationName: string;
+  children: (connectBlockedReason: string | null) => React.ReactNode;
+}) {
+  const [clientInfo, setClientInfo] = useState<OAuthClientInfo | null>(null);
+  return (
+    <div className="space-y-3">
+      <OAuthClientSetup
+        integrationId={integrationId}
+        integrationName={integrationName}
+        onChange={setClientInfo}
+      />
+      {children(connectBlocker(clientInfo))}
+    </div>
+  );
+}
+
 function OAuthPanel({
   integrationId,
   integrationName,
@@ -2169,6 +2199,9 @@ function OAuthPanel({
 }) {
   const [status, setStatus] = useState<"idle" | "loading">("idle");
   const [accounts, setAccounts] = useState<OAuthAccount[]>([]);
+  // The user's own OAuth app for this provider; connecting needs one.
+  const [clientInfo, setClientInfo] = useState<OAuthClientInfo | null>(null);
+  const [connectError, setConnectError] = useState<string | null>(null);
   const [disconnecting, setDisconnecting] = useState<string | null>(null);
   // Ref guard so a cancelled or timed-out connect attempt doesn't update state after cancel.
   const connectingRef = useRef(false);
@@ -2203,6 +2236,7 @@ function OAuthPanel({
 
   const handleConnect = async () => {
     setStatus("loading");
+    setConnectError(null);
     connectingRef.current = true;
     try {
       const res = await commands.oauthConnect(integrationId, null);
@@ -2212,10 +2246,14 @@ function OAuthPanel({
         notifyConnectionsUpdated();
         onConnected?.();
       } else {
+        if (res.status === "error") setConnectError(String(res.error));
         setStatus("idle");
       }
-    } catch {
-      if (connectingRef.current) setStatus("idle");
+    } catch (e) {
+      if (connectingRef.current) {
+        setConnectError(String(e));
+        setStatus("idle");
+      }
     } finally {
       connectingRef.current = false;
       setStatus("idle");
@@ -2253,12 +2291,18 @@ function OAuthPanel({
   };
 
   const connected = accounts.length > 0;
+  const blocker = connectBlocker(clientInfo);
 
   return (
     <div className="space-y-3">
       <p className="text-xs text-muted-foreground">
         Connect your {integrationName} account. AI can act on your behalf once connected.
       </p>
+      <OAuthClientSetup
+        integrationId={integrationId}
+        integrationName={integrationName}
+        onChange={setClientInfo}
+      />
       {connected && (
         <div className="space-y-2">
           {accounts.map((account) => {
@@ -2294,13 +2338,22 @@ function OAuthPanel({
             </Button>
           </div>
         ) : (
-          <Button onClick={handleConnect} size="sm" className="gap-1.5 h-7 text-xs normal-case font-sans tracking-normal whitespace-nowrap">
+          <Button
+            onClick={handleConnect}
+            disabled={blocker !== null}
+            title={blocker ?? undefined}
+            size="sm"
+            className="gap-1.5 h-7 text-xs normal-case font-sans tracking-normal whitespace-nowrap"
+          >
             {connected
               ? (<><Plus className="h-3 w-3" />add another account</>)
               : (<><LogIn className="h-3 w-3" />connect with {integrationName}</>)}
           </Button>
         )}
       </div>
+      {connectError && (
+        <p className="text-xs text-destructive break-words">{connectError}</p>
+      )}
     </div>
   );
 }
@@ -3493,13 +3546,30 @@ export function ConnectionsSection({
       case "apple-intelligence": return <AppleIntelligenceCard />;
       case "input-monitoring": return <InputMonitoringPanel onStatusChange={setInputMonitoringGranted} />;
       case "apple-calendar": return <AppleCalendarCard onStatusChange={setAppleCalendarConnected} />;
-      case "google-calendar": return <GoogleCalendarCard
-        onConnected={() => setGoogleCalendarConnected(true)}
-        onDisconnected={() => { setGoogleCalendarConnected(false); notifyConnectionsUpdated(); fetchIntegrations(); }}
-      />;
-      case "google-docs": return <GoogleDocsCard />;
-      case "google-sheets": return <GoogleSheetsCard onConnectionChange={fetchIntegrations} />;
-      case "gmail": return <GmailCard />;
+      case "google-calendar": return (
+        <OAuthAppGate integrationId="google-calendar" integrationName="Google Calendar">
+          {(blocked) => <GoogleCalendarCard
+            connectBlockedReason={blocked}
+            onConnected={() => setGoogleCalendarConnected(true)}
+            onDisconnected={() => { setGoogleCalendarConnected(false); notifyConnectionsUpdated(); fetchIntegrations(); }}
+          />}
+        </OAuthAppGate>
+      );
+      case "google-docs": return (
+        <OAuthAppGate integrationId="google-docs" integrationName="Google Docs">
+          {(blocked) => <GoogleDocsCard connectBlockedReason={blocked} />}
+        </OAuthAppGate>
+      );
+      case "google-sheets": return (
+        <OAuthAppGate integrationId="google-sheets" integrationName="Google Sheets">
+          {(blocked) => <GoogleSheetsCard connectBlockedReason={blocked} onConnectionChange={fetchIntegrations} />}
+        </OAuthAppGate>
+      );
+      case "gmail": return (
+        <OAuthAppGate integrationId="gmail" integrationName="Gmail">
+          {(blocked) => <GmailCard connectBlockedReason={blocked} />}
+        </OAuthAppGate>
+      );
       case "ics-calendar": return <IcsCalendarCard />;
       case "openclaw": return <OpenClawCard />;
       case "whatsapp": return <WhatsAppPanel />;
