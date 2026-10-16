@@ -140,6 +140,11 @@ Wave 0 ran on the PC before the cloud phase. Tick anything you already checked t
   - Steps: start a meeting from the tray and talk for a minute.
   - Expected: live captions arrive from the selected local engine; the log says live notes use the selected transcription engine; no websocket to any remote host.
   - Result:
+- [ ] **SMK-W0-06-7** (Runtime) `filter_pii=true` redacts on the device without an enclave
+  - Setup: engine on `$FP_PORT` with a throwaway data dir, no `SCREENPIPE_PRIVACY_FILTER_*` variables; open a text editor showing a made-up address such as `rowan.pell@example.test` and a made-up name for a minute so it is captured.
+  - Steps: 1. `curl -s -H "Authorization: Bearer $SCREENPIPE_API_KEY" "http://127.0.0.1:$FP_PORT/search?q=example.test&limit=5&filter_pii=true" -w ' %{http_code}'`. 2. Restart the engine with AI PII removal on (`--async-pii-redaction`, a DirectML build), wait for the log line `filter_pii: local text model available`, and repeat step 1 with `q=` set to a word next to the name.
+  - Expected: step 1 returns HTTP 200 with the address replaced by a placeholder (no 503); step 2 also replaces the name, and the request takes at most about a second longer than without `filter_pii`.
+  - Result:
 
 ### W0-07 OAuth broker replaced by BYO client credentials
 
