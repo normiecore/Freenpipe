@@ -9,9 +9,7 @@ import {
   Workflow,
   Plus,
   Clock,
-  Gift,
   HelpCircle,
-  UserPlus,
   Monitor,
   Mic,
   MicOff,
@@ -68,7 +66,6 @@ import {
   type ChatLoadConversationPayload,
   shouldActivateHomeSectionForChatLoadConversation,
 } from "@/lib/chat-utils";
-import { useTeam } from "@/lib/hooks/use-team";
 import { useEnterprisePolicy } from "@/lib/hooks/use-enterprise-policy";
 import { EnterpriseLicensePrompt } from "@/components/enterprise-license-prompt";
 import { PipeActivityIndicator } from "@/components/pipe-activity-indicator";
@@ -125,7 +122,6 @@ function HomeContent() {
 
   const { settings } = useSettings();
   const { isTranslucent } = useSidebarContext();
-  const teamState = useTeam();
   const { isSectionHidden, isSettingLocked, needsLicenseKey, submitLicenseKey } = useEnterprisePolicy();
   const runningPipes = useRunningPipes();
   const runningPipeCount = runningPipes.length;
@@ -392,12 +388,10 @@ function HomeContent() {
 
   // Sidebar collapse state (persisted in localStorage)
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
-  const [teamPromoDismissed, setTeamPromoDismissed] = useState(false);
 
   useEffect(() => {
     const stored = localStorage.getItem("sidebar-collapsed");
     if (stored === "true") setSidebarCollapsed(true);
-    if (localStorage.getItem("team-promo-dismissed") === "true") setTeamPromoDismissed(true);
   }, []);
 
   const toggleSidebar = useCallback(() => {
@@ -1274,61 +1268,6 @@ function HomeContent() {
 
               {/* Bottom items */}
               <div className={cn("space-y-0.5 border-t pt-2", isTranslucent ? "vibrant-sidebar-border" : "border-border")}>
-                {/* Team link — hide invite promo in enterprise (unless team exists) */}
-                {(!isSectionHidden("team") || teamState.team) && (() => {
-                  const teamLabel = teamState.team
-                    ? `Your team (${teamState.members.length})`
-                    : "Invite your team";
-                  const btn = (
-                    <button
-                      onClick={() => openSettings("team")}
-                      className={cn(
-                        "w-full flex items-center px-2.5 py-1.5 rounded-lg transition-all duration-150 text-left group",
-                        sidebarCollapsed ? "justify-center" : "space-x-2.5",
-                        isTranslucent ? "vibrant-nav-item vibrant-nav-hover" : "hover:bg-card/50 text-muted-foreground hover:text-foreground",
-                      )}
-                    >
-                      <UserPlus className={cn("h-3.5 w-3.5 transition-colors flex-shrink-0", isTranslucent ? "" : "text-muted-foreground group-hover:text-foreground")} />
-                      {!sidebarCollapsed && <span className="font-medium text-xs truncate">{teamLabel}</span>}
-                    </button>
-                  );
-                  if (sidebarCollapsed) {
-                    return (
-                      <Tooltip>
-                        <TooltipTrigger asChild>{btn}</TooltipTrigger>
-                        <TooltipContent side="right" className="text-xs">{teamLabel}</TooltipContent>
-                      </Tooltip>
-                    );
-                  }
-                  return btn;
-                })()}
-
-                {/* Get free month — hidden in enterprise */}
-                {!isSectionHidden("referral") && (() => {
-                  const btn = (
-                    <button
-                      onClick={() => openSettings("referral")}
-                      className={cn(
-                        "w-full flex items-center px-2.5 py-1.5 rounded-lg transition-all duration-150 text-left group",
-                        sidebarCollapsed ? "justify-center" : "space-x-2.5",
-                        isTranslucent ? "vibrant-nav-item vibrant-nav-hover" : "hover:bg-card/50 text-muted-foreground hover:text-foreground",
-                      )}
-                    >
-                      <Gift className={cn("h-3.5 w-3.5 transition-colors flex-shrink-0", isTranslucent ? "" : "text-muted-foreground group-hover:text-foreground")} />
-                      {!sidebarCollapsed && <span className="font-medium text-xs truncate">Get free month</span>}
-                    </button>
-                  );
-                  if (sidebarCollapsed) {
-                    return (
-                      <Tooltip>
-                        <TooltipTrigger asChild>{btn}</TooltipTrigger>
-                        <TooltipContent side="right" className="text-xs">Get free month</TooltipContent>
-                      </Tooltip>
-                    );
-                  }
-                  return btn;
-                })()}
-
                 {/* Settings — always visible; individual sections are enterprise-filtered inside /settings */}
                 {(() => {
                   const btn = (

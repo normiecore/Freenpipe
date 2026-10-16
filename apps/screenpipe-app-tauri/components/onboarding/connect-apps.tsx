@@ -5,13 +5,10 @@
 "use client";
 
 import React, { useState, useEffect, useRef, useCallback } from "react";
-import { Check, Loader, Lock } from "lucide-react";
+import { Check, Loader } from "lucide-react";
 import { motion, AnimatePresence } from "framer-motion";
 import { commands } from "@/lib/utils/tauri";
-import { useSettings } from "@/lib/hooks/use-settings";
-import { hasCloudEntitlement } from "@/lib/app-entitlement";
 import { localFetch } from "@/lib/api";
-import { openUrl } from "@tauri-apps/plugin-opener";
 import { readTextFile, writeFile, mkdir } from "@tauri-apps/plugin-fs";
 import { homeDir, join, dirname } from "@tauri-apps/api/path";
 import { platform } from "@tauri-apps/plugin-os";
@@ -283,7 +280,6 @@ interface Integration {
   name: string;
   valueProp: string;
   ahaCopy?: string;
-  isPro: boolean;
   type: "oauth" | "mcp" | "chatgpt" | "claude" | "codex" | "obsidian";
 }
 
@@ -291,11 +287,9 @@ type CardState = "idle" | "connecting" | "connected" | "error";
 
 // ─── Integration list ─────────────────────────────────────────────────────────
 //
-// Notion is the only paid integration shown in onboarding. Gmail / Google
-// Calendar were removed: the Google Workspace OAuth verification process
-// blocks shipping them broadly, and consumer-pro upsell is no longer the
-// revenue engine (enterprise contracts are). Codex + Obsidian replace
-// those two slots — both are free, no OAuth, work fully offline.
+// Gmail / Google Calendar are not offered here because Google's OAuth
+// verification makes a shared client impractical; Codex and Obsidian need
+// no OAuth and work offline. Every integration is available to everyone.
 
 const INTEGRATIONS: Integration[] = [
   {
@@ -304,7 +298,6 @@ const INTEGRATIONS: Integration[] = [
     name: "Notion",
     valueProp: "search your notes alongside screen",
     ahaCopy: "notes context active",
-    isPro: true,
     type: "oauth",
   },
   {
@@ -312,7 +305,6 @@ const INTEGRATIONS: Integration[] = [
     cardKey: "codex",
     name: "Codex",
     valueProp: "give OpenAI Codex full memory of your work",
-    isPro: false,
     type: "codex",
   },
   {
@@ -321,7 +313,6 @@ const INTEGRATIONS: Integration[] = [
     name: "Obsidian",
     valueProp: "search your vault alongside screen",
     ahaCopy: "vault connected",
-    isPro: false,
     type: "obsidian",
   },
   {
@@ -329,7 +320,6 @@ const INTEGRATIONS: Integration[] = [
     cardKey: "claude",
     name: "Claude",
     valueProp: "give Claude Desktop full memory of your screen",
-    isPro: false,
     type: "claude",
   },
   {
@@ -337,7 +327,6 @@ const INTEGRATIONS: Integration[] = [
     cardKey: "cursor",
     name: "Cursor",
     valueProp: "give Cursor AI full memory of your work",
-    isPro: false,
     type: "mcp",
   },
   {
@@ -346,7 +335,6 @@ const INTEGRATIONS: Integration[] = [
     name: "ChatGPT",
     valueProp: "use ChatGPT Plus as screenpipe's AI brain",
     ahaCopy: "ChatGPT connected",
-    isPro: false,
     type: "chatgpt",
   },
 ];
@@ -373,22 +361,17 @@ const ICONS: Record<string, React.ReactNode> = {
 
 function IntegrationCard({
   integration,
-  isPro,
   state,
   displayName,
   errorMessage,
   onConnect,
-  onUpgradeToPro,
 }: {
   integration: Integration;
-  isPro: boolean;
   state: CardState;
   displayName: string | null;
   errorMessage: string | null;
   onConnect: () => void;
-  onUpgradeToPro: () => void;
 }) {
-  const isLocked = integration.isPro && !isPro;
   const isConnected = state === "connected";
   const isConnecting = state === "connecting";
   const isError = state === "error";
@@ -401,26 +384,9 @@ function IntegrationCard({
           : "border-border/50"
       }`}
     >
-      {isLocked && (
-        <div className="absolute inset-0 z-10 flex flex-col items-center justify-center gap-2 bg-background/50 backdrop-blur-[3px]">
-          <motion.div
-            animate={{ opacity: [0.55, 0.8, 0.55] }}
-            transition={{ duration: 2.8, repeat: Infinity, ease: "easeInOut" }}
-          >
-            <Lock className="w-5 h-5 text-foreground/70" strokeWidth={1.5} />
-          </motion.div>
-          <button
-            onClick={onUpgradeToPro}
-            className="font-mono text-[9px] text-foreground/55 hover:text-foreground transition-colors underline underline-offset-2"
-          >
-            upgrade to pro →
-          </button>
-        </div>
-      )}
-
       <motion.div
         className="flex flex-col gap-1.5 h-full"
-        animate={{ opacity: isLocked ? 0.62 : 1 }}
+        animate={{ opacity: 1 }}
         transition={{ duration: 0.4 }}
       >
         <div className="flex items-center gap-2 min-w-0">
@@ -430,11 +396,6 @@ function IntegrationCard({
           <span className="font-mono text-xs font-semibold truncate">
             {integration.name}
           </span>
-          {integration.isPro && !isPro && !isLocked && !isConnected && (
-            <span className="ml-auto shrink-0 font-mono text-[9px] px-1 py-0.5 border border-amber-500/40 text-amber-500/70 leading-none">
-              pro
-            </span>
-          )}
         </div>
 
         <p className="font-mono text-[10px] text-muted-foreground/60 leading-tight">
@@ -442,7 +403,7 @@ function IntegrationCard({
         </p>
 
         <div className="mt-auto min-h-[20px] flex items-center">
-          {isConnected && !isLocked ? (
+          {isConnected ? (
             <motion.div
               className="flex flex-col gap-0.5 w-full"
               initial={{ opacity: 0, y: 3 }}
@@ -469,8 +430,6 @@ function IntegrationCard({
               <Loader className="w-3 h-3 animate-spin shrink-0" />
               connecting...
             </span>
-          ) : isLocked ? (
-            null
           ) : isError ? (
             <button
               onClick={onConnect}
@@ -500,9 +459,6 @@ interface ConnectAppsProps {
 }
 
 export default function ConnectApps({ handleNextSlide }: ConnectAppsProps) {
-  const { settings, loadUser } = useSettings();
-  // Freenpipe has no plans: OAuth integrations are never locked.
-  const isPro = hasCloudEntitlement(settings.user);
 
   const [cardStates, setCardStates] = useState<Record<string, CardState>>({});
   const [displayNames, setDisplayNames] = useState<Record<string, string>>({});
@@ -568,22 +524,6 @@ export default function ConnectApps({ handleNextSlide }: ConnectAppsProps) {
     check();
   }, []);
 
-  // Poll for pro status while screen is open — catches payment completed via
-  // any checkout (account section, external browser, etc.), not just the one
-  // opened from this screen. Calls loadUser every 8s while user is free;
-  // stops as soon as isPro becomes true.
-  useEffect(() => {
-    if (isPro) return; // already pro — nothing to poll
-    if (!settings.user?.token) return;
-    const token = settings.user.token;
-    const interval = setInterval(async () => {
-      try {
-        await loadUser(token);
-      } catch { /* ignore — next tick will retry */ }
-    }, 8000);
-    return () => clearInterval(interval);
-  }, [isPro, settings.user?.token, loadUser]);
-
   // Seconds ticker
   useEffect(() => {
     const interval = setInterval(() => setSeconds((s) => s + 1), 1000);
@@ -599,55 +539,8 @@ export default function ConnectApps({ handleNextSlide }: ConnectAppsProps) {
     setCardStates((prev) => ({ ...prev, [key]: state }));
   }, []);
 
-  const handleUpgradeToPro = useCallback(async () => {
-    if (!settings.user?.id || !settings.user?.token) {
-      await commands.openLoginWindow();
-      return;
-    }
-
-    posthog.capture("onboarding_upgrade_clicked", {
-      source: "connect_apps",
-      user_type: isPro ? "pro" : "free",
-    });
-
-    try {
-      const response = await fetch("https://screenpi.pe/api/cloud-sync/checkout", {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          Authorization: `Bearer ${settings.user.token}`,
-        },
-        body: JSON.stringify({
-          tier: "pro",
-          billingPeriod: "yearly",
-          userId: settings.user.id,
-          email: settings.user.email,
-        }),
-      });
-
-      const data = await response.json();
-      if (data.url) {
-        await openUrl(data.url);
-      } else {
-        await openUrl("https://screenpipe.com/billing");
-        return;
-      }
-    } catch (error) {
-      console.error("failed to start onboarding checkout:", error);
-      await openUrl("https://screenpipe.com/billing");
-      return;
-    }
-
-    // The background interval (above) already polls loadUser every 8s —
-    // it will detect the activated subscription automatically once Stripe
-    // webhook fires and /api/user returns cloud_subscribed: true.
-  }, [isPro, settings.user, loadUser]);
-
   const handleConnect = useCallback(
     async (integration: Integration) => {
-      // Pro gate — locked cards show upsell inline, connect button is never shown for them
-      if (integration.isPro && !isPro) return;
-
       posthog.capture("onboarding_integration_connect_clicked", { integration: integration.id });
       setErrorMessages((prev) => { const next = { ...prev }; delete next[integration.cardKey]; return next; });
       setCardState(integration.cardKey, "connecting");
@@ -736,7 +629,7 @@ export default function ConnectApps({ handleNextSlide }: ConnectAppsProps) {
         }
       }
     },
-    [isPro, setCardState]
+    [setCardState]
   );
 
   const handleContinue = useCallback(() => {
@@ -790,9 +683,7 @@ export default function ConnectApps({ handleNextSlide }: ConnectAppsProps) {
       >
         <h2 className="font-mono text-base font-bold lowercase">connect your world</h2>
         <p className="font-mono text-[10px] text-muted-foreground/60 mt-1 max-w-[300px]">
-          {isPro
-            ? "everything is unlocked — connect what you use"
-            : "screenpipe sees your screen — connect the tools it acts on"}
+          screenpipe sees your screen — connect the tools it acts on
         </p>
       </motion.div>
 
@@ -807,33 +698,14 @@ export default function ConnectApps({ handleNextSlide }: ConnectAppsProps) {
           >
             <IntegrationCard
               integration={integration}
-              isPro={isPro}
               state={cardStates[integration.cardKey] ?? "idle"}
               displayName={displayNames[integration.cardKey] ?? null}
               errorMessage={errorMessages[integration.cardKey] ?? null}
               onConnect={() => handleConnect(integration)}
-              onUpgradeToPro={handleUpgradeToPro}
             />
           </motion.div>
         ))}
       </div>
-
-      {!isPro && (
-        <motion.p
-          className="font-mono text-[9px] text-muted-foreground/30 mt-3 text-center"
-          initial={{ opacity: 0 }}
-          animate={{ opacity: 1 }}
-          transition={{ delay: 0.5 }}
-        >
-          notion unlocks with{" "}
-          <button
-            onClick={handleUpgradeToPro}
-            className="underline underline-offset-2 hover:text-muted-foreground/50 transition-colors"
-          >
-            screenpipe pro
-          </button>
-        </motion.p>
-      )}
 
       {/* Actions */}
       <div className="mt-5 flex flex-col items-center gap-2 w-full">
