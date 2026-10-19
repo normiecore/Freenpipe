@@ -1,50 +1,47 @@
 # Coordinator handoff
 
-Updated 2026-10-16 after W0-05 merged. Git, PR heads and CI are the source of truth; this file is a snapshot.
-
-## Completed this session
-
-- Recovered the state from GitHub after the shell could not reach its configured network proxy.
-- Synced `main` at `8b13dff` into `wp/W0-05` as `3cd1bff`. Resolved the settings/OAuth overlaps while preserving commerce removal and BYO OAuth setup, readiness guidance and errors. Kept both sides' decisions and Windows smoke steps; removed one stale diff3 marker from the previous notes merge.
-- Two independent resolution reviewers approved `3cd1bff`. Seven TSX files parsed locally; all 27 parent blobs matched their GitHub hashes. The complete remote merge tree matched all 1,806 intended file entries.
-- All required checks passed on that PR head: Windows and Linux engine/app builds and tests, frontend build/tests, Tauri bindings, vendor guard, verbatim gate, Windows CLI integration and secret scan. [CI run](https://github.com/normiecore/Freenpipe/actions/runs/38840487237).
-- Published the [head-specific review record](https://github.com/normiecore/Freenpipe/pull/1#issuecomment-6208422140), marked PR #1 ready, and merged it as `63b3c8388ee18abd8267db33344e959d5b154121`. No force pushes or branch deletions.
+Updated 2026-10-19 after W0-09 merged. Git, PR heads and CI are the source of truth; this file is a snapshot.
 
 ## Wave 0 state
 
-Seven of the 154 planned work packages are merged (7/13 in wave 0). Four work-package PRs remain open.
+Ten of the 154 planned work packages are merged (10/13 in wave 0).
 
-| WP | PR | State at handoff | Next step |
+| WP | PR | State | Next step |
 |---|---|---|---|
-| W0-01..W0-04 | - | merged before this session | - |
+| W0-01..W0-04 | - | merged | - |
 | W0-05 | #1 | merged (`63b3c83`) | - |
+| W0-06 | #5 | merged (`aa8ec6a`) | - |
 | W0-07 | #6 | merged (`55174d9`) | - |
 | W0-08 | #7 | merged (`4c31752`) | - |
+| W0-09 | #2 | merged (`c83b674`) | - |
+| W0-10 | #3 | merged (`7869d46`) | - |
 | docs branding scrub | #8 | merged (`935f5ed`) | - |
-| W0-06 | #5 | draft at `c433f80`; latest head's CI green; conflicts with current main; PR body still a checkpoint and no fresh review record | the named PII finding was addressed by `ad1ad50` (local model after regex when no enclave); inspect the fix and finish acceptance/results; sync with current main, then run both resolution reviews and current-head CI |
-| W0-09 | #2 | draft at `ed4f0ac`; latest head's CI green; conflicts with current main; PR body still a checkpoint and no fresh review record | the automatic GitHub release check was removed by `2f18483`; final CLI runtime checkpoint still needs review. On sync, keep W0-05's network-free `cli_reminder.rs` and no startup update-check spawn |
-| W0-10 | #3 | draft at `4c6fc1e`; both reviewers approved that old head; conflicts with current main | now that W0-05 is merged, sync/resolve while preserving both sides; regenerate bindings rather than hand-merging; run both resolution reviewers, current-head CI and approval |
-| W0-11 | #4 | draft at `4134aa3`; old head approved and green; conflicts with current main | merge after W0-06/09/10 among the current wave-0 PRs; it moves Rust to 1.94.1/sqlx 0.9. Sync and review the resulting head, then confirm current-head CI |
-| W0-13 | - | blocked on W0-11 | vendor pinned dependencies after W0-11, with licence/provenance checks |
-| W0-12 | - | blocked on preceding wave-0 work | finish user-visible identity and strict vendor guard last |
+| W0-11 | #4 | approved at `4134aa3`; main merged as `172a93c` (green); a sync-resolve run is merging main at `c83b674` and checking that W0-06/09/10 database code builds on Rust 1.94.1 and sqlx 0.9 | resolution reviews, CI, `fp.py approve 4 --verification-file ... --compliance-file ...`, mark ready, `fp.py merge 4` |
+| W0-13 | - | blocked on W0-11 | vendor pinned dependencies with licence/provenance checks |
+| W0-12 | - | blocked on W0-02..W0-11 | user-visible identity and strict vendor guard, last in wave 0 |
 
-The earlier handoff's named W0-06 and W0-09 blockers describe findings before the latest fixes. Do not repeat those fixes blindly: review the pushed code and publish fresh results.
+The Rust 1.93.1 build cache in `~/.cache/freenpipe/target` was cleared on 2026-10-19 (W0-11 moves the toolchain to 1.94.1), so the next build anywhere is a full rebuild.
 
-## Resume order and shared-file hazards
+## Follow-ups from the wave 0 reviews
 
-1. Run bootstrap and inspect current main CI first. W0-05's PR-head gate passed; its new main merge starts a separate CI run. At this handoff, gates and secret scan passed while the Windows, Linux and CLI integration jobs were still running. Fix a reproducible red main before other work.
-2. Check for background work/active coordinator ownership before taking over a WP. Last observed implementation push was W0-06 at 2026-10-16 00:00:48 UTC; this alone does not prove whether the previous coordinator is still running.
-3. Continue the open PR queue in `docs/dev/cloud-coordinator.md`. W0-10 can now be synced after W0-05. W0-06 and W0-09 need fresh verification/compliance review and complete PR descriptions.
-4. Keep the W0-05 `use-usage-status.tsx` stub or drop its import/test block when W0-06's deletion wins. Check overlapping AI presets, privacy, standalone chat, onboarding and pi.rs changes.
-5. Merge W0-11 after the other current PRs. Clear the obsolete Rust 1.93.1 target cache with `cargo clean --target-dir ~/.cache/freenpipe/target`, then continue W0-13 and W0-12.
-6. Regenerate/publish the status board after each merge queue pass. Never hand-edit generated status files.
+Minor findings the reviewers allowed through. None blocks a merge; pick them up in the WP that owns the area or in a small fix PR.
 
-## Environment and routines
+- Privacy, W0-06: `/search?filter_pii=true` chooses the remote enclave from the switchboard and `SCREENPIPE_PRIVACY_FILTER_REPO` alone and ignores `piiBackend=local` (`crates/screenpipe-engine/src/privacy_filter.rs`). Make it honour `piiBackend` like `is_configured_for` does elsewhere.
+- Privacy, W0-06: the one-time privacy migration resets `piiBackend`, `analyticsEnabled` and `cloudMediaAnalysisEnabled` but not `enhancedAI` (`store.rs`, `lib/ai-gateway.ts`). An imported screenpipe store with `enhancedAI=true` keeps sending context to its configured provider.
+- W0-06: `aiGatewayApiKey` sits in plain `store.bin` unless store encryption is on, like the other provider keys; move provider keys to the SecretStore with W1 settings work.
+- W0-06: the gateway URL/key fields only show inside a gateway preset; Recording and Privacy hints point to Settings > AI where no field is visible. Custom presets without a URL get the wrong error text (`src-tauri/src/pi.rs`). The privacy-section hydrate effect can write the media-analysis marker before settings load.
+- W0-09: `is_cached_download()` uses `starts_with(cache_dir)`, which misfires when the per-user install dir nests under the cache dir on Windows (`crates/screenpipe-audio/src/speaker/models.rs`). The launcher-rename retry in `cli_runtime.rs` sleeps on async callers.
+- W0-09: the release pipeline must set `FREENPIPE_BUILD_CLI=1` (or `FREENPIPE_CLI_BINARY`) and `FREENPIPE_REQUIRE_BUNDLED_RUNTIME=1` so installers ship the CLI (OPEN-QUESTIONS W0-09 q4). Owner to confirm the PII weights' and pyannote's licences before a release (q11).
+- W0-09: the MCP server's last API-key fallback runs whatever `screenpipe` is on PATH, which can be the installed post-relicense product.
+- Tooling: `bun run build` regenerates `apps/screenpipe-app-tauri/lib/generated/screenpipe-skills.ts`, and the committed copy on main is stale against its SKILL.md sources. Regenerate and commit it once.
+- Tooling: `scripts/ci/vendor-guard.test.ts` can time out on its first cold run in a fresh worktree; reruns pass.
+- `packages/ai-gateway` still contains vendor hosts the vendor guard reports as informational (W0-06 q11); W0-12 or the owner should exclude or delete it.
+- Two merge commits (`f34b726` on W0-06, `5249b8f` on W0-09) lack the Co-Authored-By trailer; history is not rewritten.
 
-The status board was regenerated with the repository's unchanged `tools/plan/status.py` computation and writer, using a read-only connector snapshot adapter for git history, refs and REST reads. The adapter verified the generator's source hashes and complete first-parent history; the published JSON identifies its transport as `GitHub connector snapshot`. A normal `fp.py publish-status` run can refresh it from the next full checkout.
+## Resume order
 
-This Codex workspace had no checkout, Bun, Cargo or app dependencies. Shell HTTPS calls failed immediately because the configured proxy was unreachable; a network permission request did not complete. Work proceeded through the connected GitHub API, exact local file snapshots and GitHub CI. A fresh full build session should run `bash tools/cloud/bootstrap.sh`; local parser checks are not a replacement for the build.
+1. Bootstrap, read notifications, `df -h /`, `python3 tools/plan/status.py`.
+2. Finish W0-11 (above). Then start W0-13 with `tools/cloud/workflows/wp-batch.js` (impl mode), then W0-12.
+3. Wave 1 after wave 0 integration.
 
-The prior handoff said the hourly `freenpipe coordinator check-in` routine was enabled. This session did not inspect, create, re-enable or remove schedules. Check the actual routine/session state before starting a duplicate coordinator.
-
-Disk/build lessons still apply: regenerate Tauri bindings for command changes, run the frontend build for frontend edits, remove only idle build output when disk is low, and preserve both sides' intent in settings-component conflicts.
+Workflow notes: `wp-batch.js` has `mode: "review"` for a pushed head whose reviews were cut off; `sync-resolve.js` merges main into an approved branch and runs two resolution reviewers. Approve with the resolution review files (`fp.py approve <PR> --verification-file F --compliance-file F`), mark the PR ready through the GitHub MCP `update_pull_request` (`draft: false`), then `fp.py merge <PR>` and `fp.py publish-status`. Agents cannot `rm -rf`; the coordinator deletes worktree `.next` folders with `rm -r`.
