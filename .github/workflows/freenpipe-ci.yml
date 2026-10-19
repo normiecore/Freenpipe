@@ -346,13 +346,13 @@ jobs:
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
 
+      # Report-only: hits become warnings and a summary table; reviewers
+      # justify each one in the PR description.
+      - name: Clean-room verbatim gate (added lines)
+        run: bash scripts/ci/verbatim-diff.sh
+
       # Vendor-owned git dependencies stay vendored in third_party/ and listed
       # in third_party/README.md (W0-13). Fails on any regression.
       - name: Third-party dependency guard
         if: ${{ !cancelled() }}
         run: bun test scripts/ci/third-party.test.ts
-
-      # Report-only: hits become warnings and a summary table; reviewers
-      # justify each one in the PR description.
-      - name: Clean-room verbatim gate (added lines)
-        run: bash scripts/ci/verbatim-diff.sh
