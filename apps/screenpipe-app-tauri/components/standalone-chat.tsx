@@ -101,6 +101,8 @@ import {
   buildDailyLimitMessage,
   classifyQuotaError,
   buildRateLimitMessage,
+  isProviderNoticeMessage,
+  MODEL_NOT_ALLOWED_MESSAGE,
   parseRateLimitWaitSeconds,
   PI_MAX_RATE_LIMIT_RETRIES,
 } from "@/lib/chat/quota-errors";
@@ -5208,7 +5210,7 @@ export function StandaloneChat({
             if (piMessageIdRef.current) {
               const msgId = piMessageIdRef.current;
               setMessages((prev) =>
-                prev.map((m) => m.id === msgId ? { ...m, content: "This model requires an upgrade." } : m)
+                prev.map((m) => m.id === msgId ? { ...m, content: MODEL_NOT_ALLOWED_MESSAGE } : m)
               );
             }
           }
@@ -5241,7 +5243,7 @@ export function StandaloneChat({
               }
             } else if (fullError.includes("model_not_allowed")) {
                 setMessages((prev) =>
-                prev.map((m) => m.id === msgId ? { ...m, content: "This model requires an upgrade." } : m)
+                prev.map((m) => m.id === msgId ? { ...m, content: MODEL_NOT_ALLOWED_MESSAGE } : m)
               );
             } else if (fullError.includes("already processing")) {
               // Transient error — Pi was still busy when the prompt arrived.
@@ -5480,7 +5482,7 @@ export function StandaloneChat({
               } else if (quotaErrorType === "rate") {
                 content = buildRateLimitMessage(errStr);
               } else if (errStr.includes("model_not_allowed")) {
-                content = "This model requires an upgrade.";
+                content = MODEL_NOT_ALLOWED_MESSAGE;
               } else {
                 content = errStr;
               }
@@ -5497,10 +5499,7 @@ export function StandaloneChat({
               const existing = prev.find((m) => m.id === msgId);
               // Don't overwrite error messages with "Done" or empty content
               const isErrorMessage = existing?.content?.includes("daily") && existing?.content?.includes("limit") ||
-                existing?.content?.includes("free queries") ||
-                existing?.content?.includes("daily Pro limit") ||
-                existing?.content?.includes("daily query limit") ||
-                existing?.content?.includes("requires an upgrade") ||
+                isProviderNoticeMessage(existing?.content) ||
                 existing?.content?.includes("Rate limited") ||
                 existing?.content?.includes("rate limit") ||
                 existing?.content?.startsWith("Error:");
@@ -5674,7 +5673,7 @@ export function StandaloneChat({
               }
             } else if (errorStr.includes("model_not_allowed")) {
                 setMessages((prev) =>
-                prev.map((m) => m.id === msgId ? { ...m, content: "This model requires an upgrade." } : m)
+                prev.map((m) => m.id === msgId ? { ...m, content: MODEL_NOT_ALLOWED_MESSAGE } : m)
               );
             } else if (errorStr.includes("already processing")) {
               console.warn("[Pi] already-processing race in response event:", errorStr);
@@ -5878,7 +5877,7 @@ export function StandaloneChat({
           const msgId = piMessageIdRef.current;
           if (msgId) {
             setMessages((prev) =>
-              prev.map((m) => m.id === msgId ? { ...m, content: "This model requires an upgrade — try a different model in your AI preset." } : m)
+              prev.map((m) => m.id === msgId ? { ...m, content: MODEL_NOT_ALLOWED_MESSAGE } : m)
             );
           }
         } else if (line.includes("429") || line.includes("rate") || line.includes("daily_limit")) {
@@ -8735,7 +8734,7 @@ export function StandaloneChat({
                         <div className="text-xs text-muted-foreground px-2 py-1 mb-1">
                           {new Date(message.timestamp).toLocaleString([], { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" })}
                         </div>
-                        {!message.content.includes("used all your free queries") &&
+                        {!isProviderNoticeMessage(message.content) &&
                           !message.content.startsWith("Error") &&
                           message.content !== "Processing..." && (
                           <button

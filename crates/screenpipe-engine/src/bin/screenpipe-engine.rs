@@ -32,7 +32,6 @@ use screenpipe_engine::{
         search::handle_search_command,
         status::handle_status_command,
         sync::{handle_sync_command, start_sync_service},
-        team::handle_team_command,
         vision::handle_vision_command,
         Cli, Command, RecordArgSources,
     },
@@ -311,10 +310,6 @@ async fn main() -> anyhow::Result<()> {
             handle_search_command(args).await?;
             return Ok(());
         }
-        Command::Team { ref subcommand } => {
-            handle_team_command(subcommand).await?;
-            return Ok(());
-        }
         Command::Pipe { ref subcommand } => {
             handle_pipe_command(subcommand).await?;
             return Ok(());
@@ -445,11 +440,6 @@ async fn main() -> anyhow::Result<()> {
 
     // Store the guard in a variable that lives for the entire main function
     let _log_guard = Some(setup_logging(&local_data_dir, record_args.debug)?);
-
-    // Non-blocking update check — runs in background, prints banner if outdated
-    tokio::spawn(async {
-        screenpipe_engine::cli_reminder::check_for_updates().await;
-    });
 
     // Periodic terminal nudge to install the desktop app (CLI-only).
     screenpipe_engine::cli_reminder::spawn();
@@ -1050,7 +1040,12 @@ async fn main() -> anyhow::Result<()> {
     if std::env::var("SCREENPIPE_ANALYTICS_ID").is_err() {
         eprintln!();
         eprintln!("  tip: get the desktop app for chat, timeline, and search UI");
-        eprintln!("       → https://screenpi.pe/onboarding");
+        eprintln!(
+            "       → {}",
+            screenpipe_core::endpoints::freenpipe_link(
+                screenpipe_core::endpoints::FreenpipeLink::Releases
+            )
+        );
         eprintln!();
     }
 
