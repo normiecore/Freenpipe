@@ -5,18 +5,18 @@ description: Manage screenpipe pipes (scheduled AI automations) and connections 
 
 # Screenpipe CLI
 
-Use `bun x screenpipe@latest` to run CLI commands. No separate install needed.
+Run commands as `screenpipe <command>`. The CLI is installed with the desktop app, so nothing has to be downloaded first:
 
-**IMPORTANT**: Always run `bun x` commands from a clean temp directory to avoid node_modules conflicts:
-```bash
-cd "$(mktemp -d)" && bun x screenpipe@latest <command>
-```
+- In agent sessions started by the app, `screenpipe` already points at that binary, and its absolute path is in `$SCREENPIPE_CLI`. Use `"$SCREENPIPE_CLI" <command>` if a tool runs without a shell.
+- In your own terminal, call the `screenpipe` executable in the app's install folder (on Windows, next to the app's `.exe`).
+- Do not fetch the CLI from npm (`npx`, `bun x`); those packages are not this app.
+- Some builds ship without the CLI. If `screenpipe` is not found and `$SCREENPIPE_CLI` is empty, do the same work through the local REST API (screenpipe-api skill, same auth header): `GET /pipes`, `POST /pipes/install` with `{"source": "<url-or-path>"}`, `POST /pipes/<name>/enable` with `{"enabled": true}`, `POST /pipes/<name>/run`, `GET /connections`.
 
 ## Shell
 
-- **All platforms** → `bash` (on Windows, the bundled git-portable bash is used automatically)
+- Every platform uses `bash`. On Windows the app provides a portable Git bash for agents, so nothing needs installing.
 
-> **Note:** the bash tool truncates output around ~50 KB. Long listings (`connection list`, `pipe list`, etc.) are sorted with connected/enabled rows first, but if you need a specific row, pipe through `grep` or `head` rather than scanning the full output — e.g. `bun x screenpipe@latest connection list | grep -E 'browser|connected'`.
+> **Note:** tool output is cut off at roughly 50 KB. Listings such as `pipe list` and `connection list` put enabled or connected entries first; to find one row, filter the output instead of reading all of it, e.g. `screenpipe connection list | grep -E 'browser|connected'`.
 
 ---
 
@@ -27,14 +27,14 @@ Pipes are markdown-based AI automations that run on schedule. Each pipe lives at
 ### Commands
 
 ```bash
-bun x screenpipe@latest pipe list                    # List all pipes (compact table)
-bun x screenpipe@latest pipe enable <name>           # Enable a pipe
-bun x screenpipe@latest pipe disable <name>          # Disable a pipe
-bun x screenpipe@latest pipe run <name>              # Run once immediately (for testing)
-bun x screenpipe@latest pipe logs <name>             # View execution logs
-bun x screenpipe@latest pipe install <url-or-path>   # Install from GitHub or local path
-bun x screenpipe@latest pipe delete <name>           # Delete a pipe
-bun x screenpipe@latest pipe models list             # View AI model presets
+screenpipe pipe list                   # List all pipes (compact table)
+screenpipe pipe enable <name>          # Enable a pipe
+screenpipe pipe disable <name>         # Disable a pipe
+screenpipe pipe run <name>             # Run once immediately (for testing)
+screenpipe pipe logs <name>            # View execution logs
+screenpipe pipe install <url-or-path>  # Install from GitHub or local path
+screenpipe pipe delete <name>          # Delete a pipe
+screenpipe pipe models list            # View AI model presets
 ```
 
 ### Creating a Pipe
@@ -85,9 +85,9 @@ Screenpipe prepends a context header with time range, timezone, OS, and API URL 
 
 After creating:
 ```bash
-bun x screenpipe@latest pipe install ~/.screenpipe/pipes/my-pipe
-bun x screenpipe@latest pipe enable my-pipe
-bun x screenpipe@latest pipe run my-pipe   # test immediately
+screenpipe pipe install ~/.screenpipe/pipes/my-pipe
+screenpipe pipe enable my-pipe
+screenpipe pipe run my-pipe            # test immediately
 ```
 
 ### Editing Config
@@ -116,29 +116,29 @@ Manage integrations (Telegram, Slack, Discord, Email, Todoist, Teams) from the C
 ### Commands
 
 ```bash
-bun x screenpipe@latest connection list              # List all connections + status
-bun x screenpipe@latest connection list --json       # JSON output
-bun x screenpipe@latest connection get <id>          # Show saved credentials
-bun x screenpipe@latest connection get <id> --json   # JSON output
-bun x screenpipe@latest connection set <id> key=val  # Save credentials
-bun x screenpipe@latest connection test <id>         # Test a connection
-bun x screenpipe@latest connection remove <id>       # Remove credentials
+screenpipe connection list             # List all connections + status
+screenpipe connection list --json      # JSON output
+screenpipe connection get <id>         # Show saved credentials
+screenpipe connection get <id> --json  # JSON output
+screenpipe connection set <id> key=val # Save credentials
+screenpipe connection test <id>        # Test a connection
+screenpipe connection remove <id>      # Remove credentials
 ```
 
 ### Examples
 
 ```bash
 # Set up Telegram
-bun x screenpipe@latest connection set telegram bot_token=123456:ABC-DEF chat_id=5776185278
+screenpipe connection set telegram bot_token=123456:ABC-DEF chat_id=5776185278
 
 # Set up Slack webhook
-bun x screenpipe@latest connection set slack webhook_url=https://hooks.slack.com/services/...
+screenpipe connection set slack webhook_url=https://hooks.slack.com/services/...
 
 # Verify it works
-bun x screenpipe@latest connection test telegram
+screenpipe connection test telegram
 
 # Check what's connected
-bun x screenpipe@latest connection list
+screenpipe connection list
 ```
 
 Connection IDs: `telegram`, `slack`, `discord`, `email`, `todoist`, `teams`, `google-calendar`, `apple-intelligence`, `openclaw`

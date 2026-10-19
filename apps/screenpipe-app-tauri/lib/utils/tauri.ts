@@ -14,12 +14,9 @@ async awaitSafeRestart(timeoutSecs: number | null) : Promise<string> {
     return await TAURI_INVOKE("await_safe_restart", { timeoutSecs });
 },
 /**
- * Locate the bundled bun binary so the frontend can write absolute-path
- * MCP configs (e.g. `{ command: <bun>, args: ["x", "screenpipe-mcp@latest"] }`)
- * instead of `npx -y screenpipe-mcp`. npx requires a global Node install
- * — many Claude Desktop users don't have it, and the silent first-run
- * `npx` download often blows past Claude's MCP startup timeout. Using
- * the bun we already ship sidesteps both failure modes.
+ * Locate the bun binary shipped with the app (falling back to a user
+ * install). MCP configs should use [`mcp_runtime_check`], which also
+ * returns the bundled MCP server entry point.
  */
 async bunCheck() : Promise<Result<PiCheckResult, string>> {
     try {
@@ -938,6 +935,19 @@ async livetextUpdatePosition(frameId: string, x: number, y: number, w: number, h
 async lockSync() : Promise<Result<null, string>> {
     try {
     return { status: "ok", data: await TAURI_INVOKE("lock_sync") };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
+ * Locate the bundled MCP server so the frontend can write MCP configs that
+ * start it by absolute path (`<bun> <entry>`), with nothing fetched from a
+ * package registry.
+ */
+async mcpRuntimeCheck() : Promise<Result<McpRuntimeCheck, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("mcp_runtime_check") };
 } catch (e) {
     if(e instanceof Error) throw e;
     else return { status: "error", error: e  as any };
@@ -2419,6 +2429,26 @@ path: string }
 export type JsonValue = null | boolean | number | string | JsonValue[] | { [key in string]: JsonValue }
 export type KeychainStatus = { state: string }
 export type LogFile = { name: string; path: string; modified_at: number }
+/**
+ * Absolute paths of the MCP server and CLI that ship with the app.
+ */
+export type McpRuntimeCheck = {
+/**
+ * True when both `bun_path` and `entry_path` were found.
+ */
+available: boolean;
+/**
+ * bun runtime that starts the MCP server.
+ */
+bunPath: string | null;
+/**
+ * Single-file build of `packages/screenpipe-mcp`.
+ */
+entryPath: string | null;
+/**
+ * The `screenpipe` CLI binary, when bundled.
+ */
+cliPath: string | null }
 export type MeetingExportSummary = { output_path: string; frame_count: number; audio_chunk_count: number; duration_secs: number; file_size_bytes: number }
 export type MonitorDevice = { id: number; stableId: string; name: string; isDefault: boolean; width: number; height: number }
 /**

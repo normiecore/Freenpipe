@@ -104,12 +104,19 @@ impl OnnxConfig {
         self.model_dir.join("tokenizer.json")
     }
 
-    /// HuggingFace repo where the canonical v45 phase 3 ONNX artifacts
-    /// live. Pinned to `main` so a model bump goes through a deliberate
-    /// code change (URL + expected SHA-256 + [`ONNX_REDACTOR_VERSION`]
-    /// all bumped together — same discipline as `RfdetrConfig`).
-    pub const HF_REPO_BASE: &'static str =
-        "https://huggingface.co/screenpipe/pii-redactor/resolve/main/v45_phase5_pruned";
+    /// Folder inside the model repository ([`super::hf_source::TEXT_REDACTOR`])
+    /// that holds the canonical ONNX artifacts. A model bump goes through a
+    /// deliberate code change (folder + expected SHA-256 +
+    /// [`ONNX_REDACTOR_VERSION`] all bumped together — same discipline as
+    /// `RfdetrConfig`).
+    pub const HF_SUBDIR: &'static str = "v45_phase5_pruned";
+
+    /// Download URL of one artifact. Honours `HF_ENDPOINT` and
+    /// `SCREENPIPE_PII_REDACTOR_REPO` so users can read from a mirror; the
+    /// SHA-256 pins in [`Self::FILES`] still apply.
+    pub fn download_url(filename: &str) -> String {
+        super::hf_source::TEXT_REDACTOR.file_url(&format!("{}/{filename}", Self::HF_SUBDIR))
+    }
 
     /// Files to download from the HF repo on first run. Each is
     /// (filename, expected sha256). Recompute via
@@ -144,8 +151,9 @@ impl OnnxConfig {
         ),
     ];
 
-    /// Download the model + tokenizer + config from HuggingFace into
-    /// [`Self::model_dir`] if not already present. Idempotent.
+    /// Download the model + tokenizer + config from the model hub (see
+    /// [`Self::download_url`]) into [`Self::model_dir`] if not already
+    /// present. Idempotent.
     ///
     /// SHA-256 verification: when [`Self::FILES`] sha values are real
     /// (post-upload), corrupt downloads are detected and re-attempted.
@@ -173,7 +181,7 @@ impl OnnxConfig {
                 }
             }
 
-            let url = format!("{}/{}", Self::HF_REPO_BASE, filename);
+            let url = Self::download_url(filename);
             let tmp = target.with_extension(format!(
                 "{}.partial",
                 target

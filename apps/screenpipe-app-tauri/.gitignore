@@ -52,5 +52,7 @@ ffprobe*
 *src-tauri/deno*
 *src-tauri/ollama*
 *src-tauri/bun*
+# Freenpipe: CLI, MCP server and models staged by scripts/stage_bundled_runtime.js
+src-tauri/bundled/
 *src-tauri/ollama*
 
