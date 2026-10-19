@@ -2,15 +2,15 @@
 
 > Generated file: the merger routine regenerates it with `python3 tools/plan/status.py --write`. Do not edit it by hand. The plan is [PLAN.md](PLAN.md); the process is [docs/dev/cloud-runbook.md](../dev/cloud-runbook.md).
 
-Generated 2026-10-16T05:01:31Z from `origin/main` (latest code commit `63b3c83`). GitHub data: available (via GitHub connector snapshot).
+Generated 2026-10-19T17:38:00Z from `origin/main` (latest code commit `564f281`). GitHub data: available (via gh).
 
 ## Progress
 
-**7 of 154 work packages merged (4.5%)**: 4 in review, 0 claimed, 0 ready, 143 blocked.
+**8 of 154 work packages merged (5.2%)**: 3 in review, 0 claimed, 0 ready, 143 blocked.
 
 | Wave | Theme | Merged | In review | Claimed | Ready | Blocked | Progress |
 |---|---|---|---|---|---|---|---|
-| 0 | Foundation: build, ee/ stubs, de-cloud, rebrand | 7/13 | 4 | 0 | 0 | 2 | `#####-----` 54% |
+| 0 | Foundation: build, ee/ stubs, de-cloud, rebrand | 8/13 | 3 | 0 | 0 | 2 | `######----` 62% |
 | 1 | Cross-cutting foundations: schema v2.7, settings schema, integration seams | 0/4 | 0 | 0 | 0 | 4 | `----------` 0% |
 | 2 | Engine data layer and core backends | 0/27 | 0 | 0 | 0 | 27 | `----------` 0% |
 | 3 | Feature backends (search, pipes, connections, capture, audio) | 0/31 | 0 | 0 | 0 | 31 | `----------` 0% |
@@ -19,18 +19,17 @@ Generated 2026-10-16T05:01:31Z from `origin/main` (latest code commit `63b3c83`)
 | 6 | Agent/workflow UIs, piggyback, hybrid bulk | 0/21 | 0 | 0 | 0 | 21 | `----------` 0% |
 | 7 | Hybrid lifecycle, overlays, chat follow-ups | 0/9 | 0 | 0 | 0 | 9 | `----------` 0% |
 | 8 | Final UI pieces and surface audit | 0/3 | 0 | 0 | 0 | 3 | `----------` 0% |
-| all | | 7/154 | 4 | 0 | 0 | 143 | `----------` 4.5% |
+| all | | 8/154 | 3 | 0 | 0 | 143 | `#---------` 5.2% |
 
-CI on main (merge gate on the latest non-status commit `63b3c83`): **pending** (linux: in_progress; test-windows: in_progress; windows: in_progress)
+CI on main (merge gate on the latest non-status commit `564f281`): **pending** (test-windows: in_progress; waiting for windows, linux, gates)
 
 ## In review
 
 | WP | PR | Head | CI | Review | Mergeable | Worker |
 |---|---|---|---|---|---|---|
-| W0-06 | [#5](https://github.com/normiecore/Freenpipe/pull/5) | `c433f80` | success | pending | conflict | - |
-| W0-09 | [#2](https://github.com/normiecore/Freenpipe/pull/2) | `ed4f0ac` | success | pending | conflict | - |
-| W0-10 | [#3](https://github.com/normiecore/Freenpipe/pull/3) | `4c6fc1e` | none | pending | conflict | - |
-| W0-11 | [#4](https://github.com/normiecore/Freenpipe/pull/4) | `4134aa3` | success | approved | conflict | - |
+| W0-06 | [#5](https://github.com/normiecore/Freenpipe/pull/5) | `a6c0075` | pending (linux: in_progress; test-windows: in_progress; windows: in_progress) | pending | unknown | - |
+| W0-09 | [#2](https://github.com/normiecore/Freenpipe/pull/2) | `5aac623` | pending (linux: in_progress; test-windows: in_progress; windows: in_progress) | pending | unknown | - |
+| W0-11 | [#4](https://github.com/normiecore/Freenpipe/pull/4) | `172a93c` | success | stale | unknown | - |
 
 ## Claimed
 
@@ -46,7 +45,7 @@ No wave integration has been recorded by the merger yet.
 
 ## Board
 
-### Wave 0: Foundation: build, ee/ stubs, de-cloud, rebrand (7/13 merged)
+### Wave 0: Foundation: build, ee/ stubs, de-cloud, rebrand (8/13 merged)
 
 | WP | Size | Status | Title | Detail |
 |---|---|---|---|---|
@@ -55,13 +54,13 @@ No wave integration has been recorded by the merger yet.
 | W0-03 | M | merged | Updater on GitHub releases, release pipeline de-vendoring, restart_for_update | merge `6c659c4` |
 | W0-04 | L | merged | Remove entitlement, login and plan gates | merge `61d5b1a` |
 | W0-05 | L | merged | Remove commerce, team and vendor UI surfaces | merge `63b3c83` |
-| W0-06 | L | in_review | AI gateway, transcription, PII backend and media analysis to bring-your-own | PR #5: CI success, review pending |
+| W0-06 | L | in_review | AI gateway, transcription, PII backend and media analysis to bring-your-own | PR #5: CI pending, review pending |
 | W0-07 | L | merged | OAuth broker replaced by BYO client credentials | merge `55174d9` |
 | W0-08 | M | merged | Cloud sync, archive and pipe store off by default | merge `4c31752` |
-| W0-09 | M | in_review | Bundled CLI/MCP runtime and self-hosted model sources | PR #2: CI success, review pending |
-| W0-10 | M | in_review | Logs and feedback upload replaced by a local diagnostics bundle | PR #3: CI none, review pending |
-| W0-11 | L | in_review | SQLite toolchain upgrade (sqlx 0.9, libsqlite3-sys 0.37, rusqlite vtab) | PR #4: CI success, review approved |
-| W0-12 | M | blocked | Rebrand user-visible identity to Freenpipe | waits for W0-06, W0-09, W0-10, W0-11 |
+| W0-09 | M | in_review | Bundled CLI/MCP runtime and self-hosted model sources | PR #2: CI pending, review pending |
+| W0-10 | M | merged | Logs and feedback upload replaced by a local diagnostics bundle | merge `7869d46` |
+| W0-11 | L | in_review | SQLite toolchain upgrade (sqlx 0.9, libsqlite3-sys 0.37, rusqlite vtab) | PR #4: CI success, review stale |
+| W0-12 | M | blocked | Rebrand user-visible identity to Freenpipe | waits for W0-06, W0-09, W0-11 |
 | W0-13 | M | blocked | Vendor git dependencies into third_party/ | waits for W0-11 |
 
 ### Wave 1: Cross-cutting foundations: schema v2.7, settings schema, integration seams (0/4 merged)
