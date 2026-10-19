@@ -44,6 +44,8 @@ pub fn is_app_deep_link(url: &str) -> bool {
 
 /// The part of an in-app deep link after `scheme://`, e.g. `meeting/12?live=1`.
 /// `None` for anything that is not an in-app deep link.
+// Outside tests only the macOS notification router needs it.
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
 pub fn deep_link_route(url: &str) -> Option<&str> {
     deep_link_scheme(url)?;
     url.trim().split_once("://").map(|(_, rest)| rest)
