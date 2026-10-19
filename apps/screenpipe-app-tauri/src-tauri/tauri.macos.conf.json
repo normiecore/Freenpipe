@@ -1,10 +1,9 @@
 {
     "bundle": {
-        "publisher": "Mediar, Inc.",
+        "publisher": "normiecore",
         "macOS": {
             "entitlements": "entitlements.plist",
             "hardenedRuntime": true,
-            "exceptionDomain": "screenpi.pe",
             "provisioningProfile": null,
             "dmg": {
                 "background": "assets/dmg-background.png"

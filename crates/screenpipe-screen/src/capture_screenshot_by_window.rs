@@ -97,6 +97,10 @@ static SKIP_APPS: Lazy<HashSet<&'static str>> = Lazy::new(|| {
         "screenpipe",
         "screenpipe - Development",
         "screenpipe beta",
+        // Freenpipe: product names from the Tauri configs
+        "Freenpipe",
+        "Freenpipe Dev",
+        "Freenpipe Beta",
     ])
 });
 
@@ -114,6 +118,10 @@ static SKIP_APPS: Lazy<HashSet<&'static str>> = Lazy::new(|| {
         "screenpipe",
         "screenpipe - Development",
         "screenpipe beta",
+        // Freenpipe: product names from the Tauri configs
+        "Freenpipe",
+        "Freenpipe Dev",
+        "Freenpipe Beta",
     ])
 });
 
@@ -135,6 +143,10 @@ static SKIP_APPS: Lazy<HashSet<&'static str>> = Lazy::new(|| {
         "screenpipe",
         "screenpipe - Development",
         "screenpipe beta",
+        // Freenpipe: product names from the Tauri configs
+        "Freenpipe",
+        "Freenpipe Dev",
+        "Freenpipe Beta",
         "screenpipe-app",
     ])
 });
@@ -597,7 +609,7 @@ pub fn find_topmost_pid_on_monitor(
             continue;
         }
         // Skip screenpipe's own UI
-        if w.owner_name.to_lowercase().contains("screenpipe") {
+        if screenpipe_core::brand::is_own_app_name(&w.owner_name) {
             continue;
         }
         // Skip known system title windows
@@ -1066,7 +1078,7 @@ pub async fn capture_all_visible_windows(
         // have internal windows with empty titles that create duplicate DB records
         // Also skip system UI elements that have no owning app (empty app_name)
         // Safety-net: always exclude screenpipe's own UI regardless of exact app name variant
-        let is_screenpipe_ui = app_name.to_lowercase().contains("screenpipe");
+        let is_screenpipe_ui = screenpipe_core::brand::is_own_app_name(&app_name);
         let is_valid = !is_screenpipe_ui
             && !SKIP_APPS.contains(app_name.as_str())
             && !app_name.is_empty()
@@ -1802,6 +1814,18 @@ mod tests {
                     "screenpipe - Development",
                     "Overlay",
                 ),
+                make_window(100, 0, 0, 0, 1920, 1080, "Arc", "GitHub"),
+            ];
+            assert_eq!(
+                find_topmost_pid_on_monitor(&windows, &monitor_1080p()),
+                Some(100)
+            );
+        }
+
+        #[test]
+        fn test_topmost_skips_freenpipe_ui() {
+            let windows = vec![
+                make_window(999, 0, 0, 0, 1920, 1080, "Freenpipe", "Main"),
                 make_window(100, 0, 0, 0, 1920, 1080, "Arc", "GitHub"),
             ];
             assert_eq!(

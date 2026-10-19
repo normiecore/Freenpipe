@@ -226,7 +226,7 @@ impl HotFrameCache {
                     // Convert FrameData to HotFrames
                     for ocr_entry in &frame_data.ocr_entries {
                         // Skip screenpipe's own frames
-                        if ocr_entry.app_name.to_lowercase().contains("screenpipe") {
+                        if screenpipe_core::brand::is_own_app_name(&ocr_entry.app_name) {
                             continue;
                         }
                         let hot = HotFrame {

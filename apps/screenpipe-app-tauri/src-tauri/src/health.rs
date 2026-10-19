@@ -978,7 +978,7 @@ async fn show_capture_stall_notification(app: &tauri::AppHandle, system: &str) -
         "id": format!("capture_stall_{}", system),
         "type": "capture_stall",
         "title": format!("{} capture may be stalled", system),
-        "body": format!("screenpipe has not received recent {} updates. this may recover on its own, but restarting usually fixes it.", system),
+        "body": format!("Freenpipe has not received recent {} updates. this may recover on its own, but restarting usually fixes it.", system),
         "actions": [
             { "label": "RESTART", "action": "restart_recording", "primary": true }
         ],

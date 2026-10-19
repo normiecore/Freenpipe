@@ -3,21 +3,21 @@
 <plist version="1.0">
 <dict>
     <key>NSMicrophoneUsageDescription</key>
-    <string>This app requires microphone access to record audio.</string>
+    <string>Freenpipe uses the microphone to record and transcribe audio on this Mac.</string>
     <key>NSScreenCaptureUsageDescription</key>
-    <string>This app requires screen capture access to record the screen.</string>
+    <string>Freenpipe needs screen recording access to capture what is on your screen.</string>
     <key>CGRequestScreenCaptureAccess</key>
-    <string>This app requires screen capture access to record the screen.</string>
+    <string>Freenpipe needs screen recording access to capture what is on your screen.</string>
     <key>NSAudioCaptureUsageDescription</key>
-    <string>screenpipe captures system audio (via the CoreAudio Process Tap) for local transcription. Specific apps can be excluded by listing their bundle IDs in ~/.screenpipe/audio-exclusions.json.</string>
+    <string>Freenpipe captures system audio through a CoreAudio process tap and transcribes it on this Mac. To leave an app out, add its bundle ID to ~/.screenpipe/audio-exclusions.json.</string>
     <key>NSSystemExtensionUsageDescription</key>
-    <string>This app requires system extension access to capture audio output.</string>
+    <string>Freenpipe needs system extension access to capture audio output.</string>
     <key>NSRemindersUsageDescription</key>
-    <string>screenpipe saves action items it detects from your screen and audio activity to Apple Reminders.</string>
+    <string>Freenpipe adds the action items it finds in your screen and audio activity to Apple Reminders.</string>
     <key>NSCalendarsUsageDescription</key>
-    <string>screenpipe reads your calendar to detect meetings. Your calendar data stays on-device.</string>
+    <string>Freenpipe reads your calendar to recognise meetings. Calendar data never leaves this Mac.</string>
     <key>NSCalendarsFullAccessUsageDescription</key>
-    <string>screenpipe reads your calendar to detect meetings. Your calendar data stays on-device.</string>
+    <string>Freenpipe reads your calendar to recognise meetings. Calendar data never leaves this Mac.</string>
     <key>NSAppTransportSecurity</key>
     <dict>
         <key>NSAllowsLocalNetworking</key>

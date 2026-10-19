@@ -240,7 +240,7 @@ pub fn start(app: AppHandle) {
             };
             client::send_typed_with_actions(
                 &header,
-                format!("screenpipe is ready to transcribe: {title}"),
+                format!("Freenpipe is ready to transcribe: {title}"),
                 "meeting",
                 Some(30_000),
                 actions,
@@ -341,7 +341,7 @@ pub fn start(app: AppHandle) {
 
             client::send_typed_with_actions(
                 "meeting detected",
-                format!("screenpipe is saving this meeting for transcription: {title}"),
+                format!("Freenpipe is saving this meeting for transcription: {title}"),
                 "meeting",
                 Some(30_000),
                 actions,
