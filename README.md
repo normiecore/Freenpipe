@@ -14,7 +14,7 @@ Freenpipe is in active development and has no release yet. Work is organised in 
 - [docs/clean-room/STATUS.md](docs/clean-room/STATUS.md) is the generated progress board.
 - [docs/clean-room/DECISIONS.md](docs/clean-room/DECISIONS.md) records the owner decisions that bind every work package.
 
-Wave 0 removes the upstream vendor's services, telemetry and paid-plan gates and renames the product. Until the rename work package (W0-12) lands, the desktop app and some of its text still say screenpipe.
+Wave 0 removed the upstream vendor's services, telemetry and paid-plan gates and renamed the product. The desktop app is called Freenpipe, has its own bundle identifier (`com.normiecore.freenpipe`, and `com.normiecore.freenpipe.dev` for development builds), and opens `freenpipe://` links.
 
 ## What works from the base
 
@@ -36,6 +36,7 @@ Freenpipe keeps screenpipe's defaults so that existing setups keep working (deci
 - Data lives in `~/.screenpipe`.
 - The API listens on `localhost:3030`, and the app's control server on port 11435.
 - Existing pipes, skills and MCP client configurations work unchanged.
+- Links in screenpipe's `screenpipe://` form (from pipes, skills or notifications) still open inside Freenpipe. Freenpipe registers only `freenpipe://` with the operating system, so an installed screenpipe keeps its own link handler.
 
 Because it uses the same paths and ports, Freenpipe does not run alongside an installed screenpipe. Quit one before starting the other. Crate names, package names, HTTP routes, JSON fields, settings keys and `SCREENPIPE_*` environment variables keep their upstream names for the same reason.
 
@@ -66,7 +67,7 @@ Tests: `cargo test` for Rust and `bun test` for TypeScript. [TESTING.md](TESTING
 
 - Captured data stays on your machine, in the data directory.
 - There is no telemetry and no crash reporting. Both were removed in wave 0.
-- Freenpipe does not use the upstream vendor's services. Remote service URLs go through an endpoint switchboard (`crates/screenpipe-core/src/endpoints.rs`) in which every entry is unset until you configure it. Vendor wiring that is still present in the code is being removed by the open wave 0 work packages.
+- Freenpipe does not use the upstream vendor's services. Remote service URLs go through an endpoint switchboard (`crates/screenpipe-core/src/endpoints.rs`) in which every entry is unset until you configure it. A CI check (`scripts/ci/vendor-guard.test.ts`) fails the build if a vendor host, key or the upstream identity comes back.
 - Cloud AI features use your own API keys, or a local model server such as Ollama. Features that upstream ran on its own servers (sync, archive, pipe store, team management) come back as bring-your-own or self-hosted options (decision 5 in [DECISIONS.md](docs/clean-room/DECISIONS.md)).
 
 ## Licence
