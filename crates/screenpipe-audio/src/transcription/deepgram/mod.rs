@@ -32,9 +32,17 @@ impl DeepgramTranscriptionConfig {
         }
     }
 
-    pub fn screenpipe_cloud(token: String) -> Self {
+    /// The `screenpipe-cloud` engine: the user's AI gateway (`{gateway}/listen`,
+    /// Deepgram wire format, Bearer auth). `None` when no gateway is
+    /// configured, so the engine is never offered without one.
+    pub fn screenpipe_cloud(token: String) -> Option<Self> {
+        screenpipe_core::ai_gateway::base().map(|base| Self::gateway(&base, token))
+    }
+
+    /// Transcription through a gateway at `base` (`{base}/listen`).
+    pub fn gateway(base: &str, token: String) -> Self {
         Self {
-            endpoint: "https://api.screenpipe.com/v1/listen".to_string(),
+            endpoint: screenpipe_core::ai_gateway::listen_url(base),
             auth_token: token,
             auth_header_prefix: "Bearer",
         }
@@ -48,10 +56,16 @@ impl DeepgramTranscriptionConfig {
         format!("{} {}", self.auth_header_prefix, self.auth_token)
     }
 
-    /// Distinguishes Screenpipe Cloud proxy from personal Deepgram; safe for logs.
+    /// Whether this config talks to the user's AI gateway (Bearer auth)
+    /// rather than to Deepgram with the user's own key (Token auth).
+    pub fn is_gateway(&self) -> bool {
+        self.auth_header_prefix == "Bearer"
+    }
+
+    /// Distinguishes the AI gateway from personal Deepgram; safe for logs.
     pub fn provider_slug_for_log(&self) -> &'static str {
-        if self.auth_header_prefix == "Bearer" && self.endpoint.contains("screenpi.pe") {
-            "screenpipe-cloud"
+        if self.is_gateway() {
+            "ai-gateway"
         } else {
             "deepgram-direct"
         }

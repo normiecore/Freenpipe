@@ -444,7 +444,17 @@ async fn run_deepgram_prediction(args: &Args, fixtures: &[Fixture]) -> Result<Pr
     let mut deepgram_config = std::env::var("CUSTOM_DEEPGRAM_API_TOKEN")
         .ok()
         .filter(|v| !v.trim().is_empty())
-        .map(DeepgramTranscriptionConfig::screenpipe_cloud)
+        .map(|token| {
+            // Gateway-style Bearer auth: the configured AI gateway when there
+            // is one, otherwise DEEPGRAM_API_URL below must name the server.
+            DeepgramTranscriptionConfig::screenpipe_cloud(token.clone()).unwrap_or(
+                DeepgramTranscriptionConfig {
+                    endpoint: String::new(),
+                    auth_token: token,
+                    auth_header_prefix: "Bearer",
+                },
+            )
+        })
         .or_else(|| {
             std::env::var("DEEPGRAM_API_KEY")
                 .ok()

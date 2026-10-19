@@ -58,12 +58,51 @@ const EVENT_LABELS: &[&str] = &[
     "no_event",
 ];
 
-/// Default endpoint for the event classifier — routes through the screenpipe
-/// AI gateway, which forwards the `screenpipe-event-classifier` model to the
-/// self-hosted vLLM. Going through the gateway means infra moves only need a
-/// `wrangler secret put EVENT_CLASSIFIER_URL` — no client release.
-/// Override with the `SCREENPIPE_EVENT_CLASSIFIER_URL` env var for self-host.
-pub const DEFAULT_CLASSIFIER_URL: &str = "https://api.screenpipe.com";
+// There is no default classifier endpoint. The engine starts the loop only
+// when the user points `SCREENPIPE_EVENT_CLASSIFIER_URL` at a classifier they
+// run (see `screenpipe_core::endpoints::event_classifier_url`).
+
+/// Bearer token for a classifier the user runs.
+pub const CLASSIFIER_KEY_ENV: &str = "SCREENPIPE_EVENT_CLASSIFIER_KEY";
+
+/// The bearer token sent to the classifier: [`CLASSIFIER_KEY_ENV`], else the
+/// AI gateway key, but only when the classifier is served from the gateway's
+/// own origin (scheme, host and port). A gateway key never goes to a
+/// different host.
+pub fn classifier_credential(classifier_url: &str, gateway_key: Option<&str>) -> Option<String> {
+    classifier_credential_with(
+        classifier_url,
+        screenpipe_core::endpoints::ai_gateway_base().as_deref(),
+        gateway_key,
+        |name| std::env::var(name).ok(),
+    )
+}
+
+/// Pure form of [`classifier_credential`].
+pub fn classifier_credential_with(
+    classifier_url: &str,
+    gateway_base: Option<&str>,
+    gateway_key: Option<&str>,
+    env: impl Fn(&str) -> Option<String>,
+) -> Option<String> {
+    let non_empty = |v: &str| Some(v.trim().to_string()).filter(|v| !v.is_empty());
+    if let Some(key) = env(CLASSIFIER_KEY_ENV).as_deref().and_then(non_empty) {
+        return Some(key);
+    }
+    let key = gateway_key.and_then(non_empty)?;
+    let gateway_base = gateway_base?;
+    same_origin(classifier_url, gateway_base).then_some(key)
+}
+
+fn same_origin(a: &str, b: &str) -> bool {
+    match (url::Url::parse(a.trim()), url::Url::parse(b.trim())) {
+        (Ok(a), Ok(b)) => {
+            let a = a.origin();
+            a.is_tuple() && a == b.origin()
+        }
+        _ => false,
+    }
+}
 
 /// Start the workflow classifier polling loop.
 pub async fn start_workflow_classifier(
@@ -333,6 +372,48 @@ fn hash_activities(activities: &[ActivityEntry]) -> u64 {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn classifier_key_never_reaches_a_host_other_than_the_gateway() {
+        use super::{classifier_credential_with, CLASSIFIER_KEY_ENV};
+        let no_env = |_: &str| None;
+        let gw = Some("https://gw.example.test/v1");
+        // Same origin as the gateway: the gateway key is reused.
+        assert_eq!(
+            classifier_credential_with(
+                "https://gw.example.test/v1/classify",
+                gw,
+                Some("gw-key"),
+                no_env
+            )
+            .as_deref(),
+            Some("gw-key")
+        );
+        // Another host, scheme or port: no key.
+        for other in [
+            "https://classifier.example.test",
+            "http://gw.example.test/v1",
+            "https://gw.example.test:8443/v1",
+        ] {
+            assert_eq!(
+                classifier_credential_with(other, gw, Some("gw-key"), no_env),
+                None,
+                "{other}"
+            );
+        }
+        // No gateway configured: no key.
+        assert_eq!(
+            classifier_credential_with("https://gw.example.test", None, Some("gw-key"), no_env),
+            None
+        );
+        // A dedicated classifier key always wins.
+        let env = |name: &str| (name == CLASSIFIER_KEY_ENV).then(|| " cls-key ".to_string());
+        assert_eq!(
+            classifier_credential_with("https://classifier.example.test", gw, Some("gw-key"), env)
+                .as_deref(),
+            Some("cls-key")
+        );
+    }
+
     use super::*;
 
     #[test]

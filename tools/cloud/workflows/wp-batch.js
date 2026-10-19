@@ -1,7 +1,7 @@
 export const meta = {
   name: 'freenpipe-wp-batch',
   description: 'Freenpipe work packages: implement (or fix CI) in worktrees, verification + compliance review with up to two fix rounds, then push and record on a draft PR',
-  whenToUse: 'Coordinator sessions (docs/dev/cloud-coordinator.md). args: {base, repo?, session_url, wps: [{id, title, mode?: "impl"|"ci-fix"|"publish", ci_failure?, result?, result_file?, status?, head?, extra?, extraReview?}]}',
+  whenToUse: 'Coordinator sessions (docs/dev/cloud-coordinator.md). args: {base, repo?, session_url, wps: [{id, title, mode?: "impl"|"ci-fix"|"review"|"publish", ci_failure?, impl?, result?, result_file?, status?, head?, extra?, extraReview?}]}',
   phases: [
     { title: 'Implement', detail: 'one worker per WP in its own git worktree (resumes a pushed branch)' },
     { title: 'Review', detail: 'verification and compliance reviewers in parallel' },
@@ -185,6 +185,10 @@ async function runWP(w) {
     ciFix = await agent(ciFixPrompt(w), { label: `ci-fix:${w.id}`, phase: 'Fix', schema: FIX_SCHEMA })
     if (!ciFix) return { wp: w.id, status: 'ci_fix_failed' }
     head = ciFix.head_sha
+  } else if (mode === 'review') {   // w.head is pushed and complete; w.impl (optional) is the earlier worker's result
+    if (!w.head) return { wp: w.id, status: 'no_head' }
+    impl = w.impl || null
+    head = w.head
   } else {
     impl = await agent(implPrompt(w), { label: `impl:${w.id}`, phase: 'Implement', schema: IMPL_SCHEMA })
     if (!impl) return { wp: w.id, status: 'impl_failed' }

@@ -189,11 +189,11 @@ pub struct AppState {
     pub api_auth: bool,
     /// The API key to validate against (from SCREENPIPE_API_KEY or auth.json)
     pub api_auth_key: Option<String>,
-    /// Cloud JWT (Clerk) used to authenticate proxied requests to api.screenpipe.com.
-    /// Held in ArcSwap so the desktop shell can refresh it after login/logout
-    /// without rebuilding the server. The pi-agent's bash deliberately can't see
-    /// this token — agent calls localhost/v1/chat/completions and the server
-    /// signs the upstream request here. See routes/cloud_proxy.rs.
+    /// Credential for the user's AI gateway, attached to proxied requests.
+    /// Held in ArcSwap so the desktop shell can change it without rebuilding
+    /// the server. The pi-agent's bash deliberately can't see this token —
+    /// agent calls localhost/v1/chat/completions and the server signs the
+    /// upstream request here. See routes/cloud_proxy.rs.
     pub cloud_token: Arc<ArcSwap<Option<String>>>,
     /// Unified credential store for OAuth tokens, API keys, etc.
     pub secret_store: Option<Arc<screenpipe_secrets::SecretStore>>,
@@ -236,7 +236,7 @@ pub struct SCServer {
     pub api_auth: bool,
     /// API key for remote auth validation
     pub api_auth_key: Option<String>,
-    /// Cloud JWT for proxied /v1/chat/completions calls. See AppState::cloud_token.
+    /// AI gateway credential for proxied /v1/chat/completions calls. See AppState::cloud_token.
     pub cloud_token: Arc<ArcSwap<Option<String>>>,
     /// Unified credential store for OAuth tokens, API keys, etc.
     pub secret_store: Option<Arc<screenpipe_secrets::SecretStore>>,
@@ -320,8 +320,8 @@ impl SCServer {
         self
     }
 
-    /// Set the cloud JWT used to authenticate proxied chat-completion calls
-    /// to api.screenpipe.com. Safe to call before or after `start()` — the route
+    /// Set the credential used to authenticate proxied chat-completion calls
+    /// to the user's AI gateway. Safe to call before or after `start()` — the route
     /// reads the inner Arc on each request. Callers can also clone the Arc
     /// directly (see `cloud_token_handle`) to update it from elsewhere.
     pub fn with_cloud_token(self, token: Option<String>) -> Self {
@@ -698,10 +698,11 @@ impl SCServer {
                 axum::routing::post(crate::routes::transcribe::transcribe_handler)
                     .layer(axum::extract::DefaultBodyLimit::max(250 * 1024 * 1024)), // 250MB
             )
-            // Local proxy → api.screenpipe.com/v1/chat/completions. Lets the
-            // pi-agent's bash do cloud media analysis without ever seeing the
-            // cloud JWT (which the wrapper unsets). Body limit bumped because
-            // requests embed base64'd audio/images.
+            // Local proxy → {user's AI gateway}/chat/completions. Lets the
+            // pi-agent's bash do media analysis without ever seeing the
+            // gateway key (which the wrapper unsets). 503 when no gateway is
+            // configured. Body limit bumped because requests embed base64'd
+            // audio/images.
             .route(
                 "/v1/chat/completions",
                 axum::routing::post(crate::routes::cloud_proxy::chat_completions)

@@ -290,9 +290,10 @@ impl RecordingConfig {
                 .collect(),
             deepgram_api_key: settings.effective_deepgram_key().map(|s| s.to_string()),
             deepgram_config: match engine_str {
+                // The user's AI gateway; unavailable (None) without one.
                 "screenpipe-cloud" => settings
                     .effective_user_id()
-                    .map(|s| DeepgramTranscriptionConfig::screenpipe_cloud(s.to_string())),
+                    .and_then(|s| DeepgramTranscriptionConfig::screenpipe_cloud(s.to_string())),
                 "deepgram" => settings
                     .effective_deepgram_key()
                     .map(|s| DeepgramTranscriptionConfig::direct(s.to_string())),

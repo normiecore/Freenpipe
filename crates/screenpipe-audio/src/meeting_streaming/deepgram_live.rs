@@ -90,7 +90,9 @@ async fn run_stream(
             .auth_token
             .as_deref()
             .filter(|s| !s.trim().is_empty())
-            .context("ScreenPipe Cloud login is required for live meeting transcription")?,
+            .context(
+                "an AI gateway key is required for live meeting transcription through the gateway",
+            )?,
         MeetingStreamingProvider::DeepgramLive => config
             .api_key
             .as_deref()
