@@ -258,107 +258,27 @@ impl PiExecutor {
         s
     }
 
-    /// Install or wipe the `screenpipe-team` enterprise-admin skill in
+    /// Remove a stale `screenpipe-team` skill from
     /// `project_dir/.pi/skills/screenpipe-team/`.
     ///
-    /// This skill teaches pi how to query org-wide telemetry (devices,
-    /// search, records) via `https://screenpi.pe/api/enterprise/v1/*`. It
-    /// MUST only be present when the user is an enterprise admin with an
-    /// active license, because exposing the prompts to non-admins is
-    /// misleading (every call would 403) and dropping it onto a personal
-    /// build leaks our enterprise affordances.
-    ///
-    /// Source of truth: `~/.screenpipe/enterprise.json`. The Tauri host
-    /// keeps that file populated with `{is_admin, license_active,
-    /// team_api_token, ...}` based on the user's current license + role.
-    /// We re-check on every pi-agent boot, so role downgrades + license
-    /// expirations wipe the skill automatically.
+    /// Upstream installed this skill for enterprise admins; it taught the
+    /// agent to query the vendor's hosted team console. Freenpipe has no such
+    /// service, so the skill is never installed. Sessions created by an older
+    /// build (or by screenpipe itself, which shares the data dir) may still
+    /// carry a copy, and this deletes it so the agent cannot follow it.
     pub fn ensure_screenpipe_team_skill(project_dir: &Path) -> Result<()> {
         let skill_dir = project_dir
             .join(".pi")
             .join("skills")
             .join("screenpipe-team");
-        let skill_path = skill_dir.join("SKILL.md");
-
-        let should_install = Self::is_enterprise_admin();
-
-        if should_install {
-            std::fs::create_dir_all(&skill_dir)?;
-            std::fs::write(
-                &skill_path,
-                include_str!("../../assets/skills/screenpipe-team/SKILL.md"),
-            )?;
-            debug!("screenpipe-team skill installed at {:?}", skill_path);
-        } else if skill_dir.exists() {
-            // Wipe the whole dir — defense against partial state if a user
-            // hand-edited or we ever ship sub-files in the future.
+        if skill_dir.exists() {
             std::fs::remove_dir_all(&skill_dir)?;
             info!(
-                "screenpipe-team skill removed (no longer an enterprise admin or license inactive)"
+                "removed the retired screenpipe-team skill from {:?}",
+                skill_dir
             );
         }
-
         Ok(())
-    }
-
-    /// True when `~/.screenpipe/enterprise.json` declares this user as an
-    /// active admin AND the user is signed into screenpipe cloud (the
-    /// Clerk JWT at `~/.screenpipe/auth.json` is what authenticates the
-    /// skill's HTTP calls to `screenpi.pe/api/enterprise/v1`).
-    ///
-    /// Conservative: any I/O or parse error means "no" so we fail closed —
-    /// we'd rather under-install the skill than show team affordances to
-    /// someone who shouldn't see them. Even if the skill DID get installed
-    /// to a non-admin, the server-side `authorizeApiRequest` re-checks
-    /// admin status on every call and returns 403, so this client-side
-    /// check is defense-in-depth, not the security boundary.
-    fn is_enterprise_admin() -> bool {
-        let home = match dirs::home_dir() {
-            Some(h) => h,
-            None => return false,
-        };
-        let ent_path = home.join(".screenpipe").join("enterprise.json");
-        let raw = match std::fs::read_to_string(&ent_path) {
-            Ok(s) => s,
-            Err(_) => return false,
-        };
-        let parsed: serde_json::Value = match serde_json::from_str(&raw) {
-            Ok(v) => v,
-            Err(_) => return false,
-        };
-        let is_admin = parsed
-            .get("is_admin")
-            .and_then(|v| v.as_bool())
-            .unwrap_or(false);
-        // license_active defaults to true if the field is absent so older
-        // enterprise.json files don't lose skill access on upgrade. The
-        // website-side claim flow writes `license_active: false` when a
-        // license lapses.
-        let license_active = parsed
-            .get("license_active")
-            .and_then(|v| v.as_bool())
-            .unwrap_or(true);
-        let license_key_present = parsed
-            .get("license_key")
-            .and_then(|v| v.as_str())
-            .map(|s| !s.is_empty())
-            .unwrap_or(false);
-
-        // The skill authenticates v1/* calls with a dedicated admin API
-        // token (sk_ent_…) the admin mints once at
-        // screenpi.pe/enterprise?tab=tokens and pastes into Settings →
-        // Enterprise → Admin API token. Stored on disk under
-        // `team_api_token`. This is intentionally separate from the
-        // license_key: any employee has the license_key (deployed by
-        // IT) but only admins should be able to query teammates'
-        // telemetry, so a per-admin revocable token gates the skill.
-        let team_token_present = parsed
-            .get("team_api_token")
-            .and_then(|v| v.as_str())
-            .map(|s| !s.is_empty())
-            .unwrap_or(false);
-
-        is_admin && license_active && license_key_present && team_token_present
     }
 
     /// Ensure screenpipe skills exist in `project_dir/.pi/skills/`.
@@ -404,8 +324,7 @@ impl PiExecutor {
             debug!("{} skill installed at {:?}", name, skill_path);
         }
 
-        // Conditional: enterprise admins get the team skill, others get it
-        // wiped if a stale copy exists (e.g. after a role downgrade).
+        // The hosted team skill is retired; drop any copy an older build left.
         Self::ensure_screenpipe_team_skill(project_dir)?;
 
         // Mirror user-imported skills (Settings → Connections → Skills) into
@@ -424,7 +343,8 @@ impl PiExecutor {
     const USER_SKILL_MARKER: &'static str = ".screenpipe-managed";
 
     /// Baseline skills screenpipe writes into every session itself
-    /// ([`Self::ensure_screenpipe_skill`] / [`Self::ensure_screenpipe_team_skill`]).
+    /// ([`Self::ensure_screenpipe_skill`]), plus the retired `screenpipe-team`
+    /// name that [`Self::ensure_screenpipe_team_skill`] keeps clear.
     /// A store entry under one of these names must never be mirrored: it would
     /// clobber the real baseline and, once stamped with
     /// [`Self::USER_SKILL_MARKER`], be deleted by a later sync. The desktop
@@ -2517,6 +2437,26 @@ pub fn ensure_bash_available() -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The retired `screenpipe-team` skill is removed when present and never
+    /// written, whatever an `enterprise.json` might say.
+    #[test]
+    fn team_skill_is_removed_and_never_installed() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let team_dir = tmp
+            .path()
+            .join(".pi")
+            .join("skills")
+            .join("screenpipe-team");
+        std::fs::create_dir_all(&team_dir).unwrap();
+        std::fs::write(team_dir.join("SKILL.md"), "stale").unwrap();
+
+        PiExecutor::ensure_screenpipe_team_skill(tmp.path()).unwrap();
+        assert!(!team_dir.exists(), "stale team skill must be deleted");
+
+        PiExecutor::ensure_screenpipe_team_skill(tmp.path()).unwrap();
+        assert!(!team_dir.exists(), "team skill must not be recreated");
+    }
 
     /// `sync_user_skills_from` mirrors store skills into a session's
     /// `.pi/skills/`, leaves baseline/hand-authored skills alone, and removes

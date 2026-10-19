@@ -8,16 +8,12 @@ import {
   Brain,
   Video,
   Keyboard,
-  User,
   Settings as SettingsIcon,
   HardDrive,
   Shield,
   Layout,
-  Users,
   Mic,
   Bell,
-  BarChart3,
-  Gift,
   ChevronLeft,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
@@ -25,27 +21,22 @@ import * as PopoverPrimitive from "@radix-ui/react-popover";
 import { AppSidebar, SidebarProvider, useSidebarContext } from "@/components/app-sidebar";
 import { useQueryState } from "nuqs";
 import { useRouter } from "next/navigation";
-import { AccountSection, searchIndex as accountSearchIndex } from "@/components/settings/account-section";
 import ShortcutSection, { searchIndex as shortcutsSearchIndex } from "@/components/settings/shortcut-section";
 import { AIPresets, searchIndex as aiSearchIndex } from "@/components/settings/ai-presets";
 import { RecordingSettings, searchIndex as recordingSearchIndex } from "@/components/settings/recording-settings";
 import GeneralSettings, { searchIndex as generalSearchIndex } from "@/components/settings/general-settings";
-import { TeamSection, searchIndex as teamSearchIndex } from "@/components/settings/team-section";
 import { DisplaySection, searchIndex as displaySearchIndex } from "@/components/settings/display-section";
 import { PrivacySection, searchIndex as privacySearchIndex } from "@/components/settings/privacy-section";
 import { StorageSection, searchIndex as storageSearchIndex } from "@/components/settings/storage-section";
 import { NotificationsSettings, searchIndex as notificationsSearchIndex } from "@/components/settings/notifications-settings";
-import { UsageSection, searchIndex as usageSearchIndex } from "@/components/settings/usage-section";
 import { SpeakersSection, searchIndex as speakersSearchIndex } from "@/components/settings/speakers-section";
-import { SettingsSearchInput, SettingsSearchPopover, searchSettingsNav, scrollToSettingsField, type IndexedSettingsField, type SettingsField } from "@/components/settings/settings-search";
-
-// Settings search index for the inline ReferralSection defined further down in
-// this file. Lives here because the section itself lives here; same co-location
-// principle as the standalone sections.
-const referralSearchIndex: SettingsField[] = [
-  { label: "Invite link", keywords: ["invite", "refer", "promo"] },
-  { label: "Free month", keywords: ["discount", "earn"] },
-];
+import { SettingsSearchInput, SettingsSearchPopover, searchSettingsNav, scrollToSettingsField, type IndexedSettingsField } from "@/components/settings/settings-search";
+import {
+  DEFAULT_SETTINGS_SECTION,
+  SETTINGS_SECTION_IDS,
+  parseSettingsSection,
+  type SettingsSectionId,
+} from "@/lib/settings-sections";
 
 /**
  * Aggregate every section's co-located `searchIndex` export into one flat list,
@@ -65,150 +56,22 @@ const ALL_SETTINGS_FIELDS: IndexedSettingsField[] = [
   ...recordingSearchIndex.map((f) => ({ ...f, section: "recording" })),
   ...shortcutsSearchIndex.map((f) => ({ ...f, section: "shortcuts" })),
   ...notificationsSearchIndex.map((f) => ({ ...f, section: "notifications" })),
-  ...usageSearchIndex.map((f) => ({ ...f, section: "usage" })),
   ...privacySearchIndex.map((f) => ({ ...f, section: "privacy" })),
   ...storageSearchIndex.map((f) => ({ ...f, section: "storage" })),
   ...speakersSearchIndex.map((f) => ({ ...f, section: "speakers" })),
-  ...teamSearchIndex.map((f) => ({ ...f, section: "team" })),
-  ...accountSearchIndex.map((f) => ({ ...f, section: "account" })),
-  ...referralSearchIndex.map((f) => ({ ...f, section: "referral" })),
 ];
 import { useEnterprisePolicy } from "@/lib/hooks/use-enterprise-policy";
-import { useSettings } from "@/lib/hooks/use-settings";
-import { commands } from "@/lib/utils/tauri";
-import { toast } from "@/components/ui/use-toast";
 
-type SettingsSection =
-  | "account"
-  | "recording"
-  | "ai"
-  | "general"
-  | "display"
-  | "shortcuts"
-  | "privacy"
-  | "storage"
-  | "team"
-  | "notifications"
-  | "referral"
-  | "usage"
-  | "speakers";
-
-const ALL_SETTINGS_SECTIONS: SettingsSection[] = [
-  "display", "general", "ai", "recording", "shortcuts", "notifications",
-  "usage", "privacy", "storage", "speakers",
-  "team", "account", "referral",
-];
-
-function ReferralSection() {
-  const { settings } = useSettings();
-  const [copied, setCopied] = useState(false);
-  const [inviteEmail, setInviteEmail] = useState("");
-  const [sending, setSending] = useState(false);
-  const referralCode = settings.user?.id ? `REF-${settings.user.id.slice(0, 8).toUpperCase()}` : "";
-  const referralLink = referralCode ? `https://screenpipe.com/?ref=${referralCode}` : "";
-
-  const handleCopy = async () => {
-    if (!referralLink) return;
-    await navigator.clipboard.writeText(referralLink);
-    setCopied(true);
-    setTimeout(() => setCopied(false), 2000);
-  };
-
-  const handleInvite = async () => {
-    if (!inviteEmail || !referralLink || sending) return;
-    setSending(true);
-    try {
-      const res = await fetch("https://screenpi.pe/api/referral/invite", {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          Authorization: `Bearer ${settings.user?.token}`,
-        },
-        body: JSON.stringify({ email: inviteEmail, referralLink, senderName: settings.user?.email }),
-      });
-      if (!res.ok) {
-        const data = await res.json().catch(() => ({}));
-        throw new Error(data.error || "failed to send invite");
-      }
-      setInviteEmail("");
-      toast({ title: "invite sent!" });
-    } catch (e: any) {
-      toast({ title: e.message || "failed to send invite", variant: "destructive" });
-    } finally {
-      setSending(false);
-    }
-  };
-
-  return (
-    <div className="space-y-6">
-      <p className="text-sm text-muted-foreground mb-4">
-        give <span className="font-semibold text-foreground">10% off</span> screenpipe and get{" "}
-        <span className="font-semibold text-foreground">1 free month</span> for each person you refer.
-      </p>
-      <div className="space-y-4">
-        <div>
-          <h3 className="text-sm font-medium text-foreground mb-2">how it works</h3>
-          <div className="space-y-1.5 text-sm text-muted-foreground">
-            <p>1. share your invite link</p>
-            <p>2. they sign up and get <span className="font-semibold text-foreground">10% off</span> screenpipe</p>
-            <p>3. you get a <span className="font-semibold text-foreground">free month</span> when they start using it</p>
-          </div>
-        </div>
-        {settings.user?.token ? (
-          <div>
-            <h3 className="text-sm font-medium text-foreground mb-2">your invite link</h3>
-            <div className="flex gap-2">
-              <input readOnly value={referralLink} className="flex-1 px-3 py-2 text-xs font-mono border border-border bg-card text-foreground" />
-              <button onClick={handleCopy} className="px-4 py-2 text-xs font-medium border border-border bg-background hover:bg-foreground hover:text-background transition-colors duration-150">
-                {copied ? "COPIED" : "COPY"}
-              </button>
-            </div>
-            <p className="text-xs text-muted-foreground mt-2">rewards auto-applied to your next subscription payment.</p>
-            <div className="mt-4 pt-4 border-t border-border">
-              <h3 className="text-sm font-medium text-foreground mb-2">invite by email</h3>
-              <div className="flex gap-2">
-                <input
-                  type="email"
-                  placeholder="friend@email.com"
-                  value={inviteEmail}
-                  onChange={(e) => setInviteEmail(e.target.value)}
-                  onKeyDown={(e) => e.key === "Enter" && handleInvite()}
-                  className="flex-1 px-3 py-2 text-xs border border-border bg-card text-foreground"
-                />
-                <button
-                  onClick={handleInvite}
-                  disabled={!inviteEmail || sending}
-                  className="px-4 py-2 text-xs font-medium border border-border bg-background hover:bg-foreground hover:text-background transition-colors duration-150 disabled:opacity-50 disabled:pointer-events-none"
-                >
-                  {sending ? "SENDING..." : "INVITE"}
-                </button>
-              </div>
-            </div>
-          </div>
-        ) : (
-          <div className="border border-border p-4 bg-card">
-            <p className="text-sm text-muted-foreground mb-3">sign in to get your referral link</p>
-            <button
-              onClick={() => commands.openLoginWindow()}
-              className="px-4 py-2 text-xs font-medium border border-border bg-background hover:bg-foreground hover:text-background transition-colors duration-150"
-            >
-              SIGN IN
-            </button>
-          </div>
-        )}
-      </div>
-    </div>
-  );
-}
+type SettingsSection = SettingsSectionId;
 
 function SettingsContent() {
   const router = useRouter();
-  const { isSectionHidden, isEnterprise } = useEnterprisePolicy();
+  const { isSectionHidden } = useEnterprisePolicy();
   const { isTranslucent } = useSidebarContext();
 
   const [section, setSection] = useQueryState<SettingsSection>("section", {
-    defaultValue: "display",
-    parse: (v) => (ALL_SETTINGS_SECTIONS.includes(v as SettingsSection) ? (v as SettingsSection) : "display"),
+    defaultValue: DEFAULT_SETTINGS_SECTION,
+    parse: parseSettingsSection,
     serialize: (v) => v,
   });
 
@@ -222,8 +85,8 @@ function SettingsContent() {
   // first visible section. Prevents direct-URL bypass of enterprise restrictions.
   useEffect(() => {
     if (!isSectionHidden(section)) return;
-    const fallback = ALL_SETTINGS_SECTIONS.find((s) => !isSectionHidden(s)) ?? "display";
-    setSection(fallback as SettingsSection);
+    const fallback = SETTINGS_SECTION_IDS.find((s) => !isSectionHidden(s)) ?? DEFAULT_SETTINGS_SECTION;
+    setSection(fallback);
   }, [section, isSectionHidden, setSection]);
 
   const navGroups = [
@@ -241,24 +104,9 @@ function SettingsContent() {
     {
       label: "Data & Privacy",
       items: [
-        { id: "usage" as const, label: "Usage", icon: <BarChart3 className="h-4 w-4" /> },
         { id: "privacy" as const, label: "Privacy", icon: <Shield className="h-4 w-4" /> },
         { id: "storage" as const, label: "Storage", icon: <HardDrive className="h-4 w-4" /> },
         { id: "speakers" as const, label: "Speakers", icon: <Mic className="h-4 w-4" /> },
-      ].filter((s) => !isSectionHidden(s.id)),
-    },
-    {
-      label: "Account",
-      items: [
-        // Hide "Team" on enterprise builds — those installs are already
-        // org-managed; the desktop has nothing to manage. Admins use the
-        // /enterprise dashboard on the web. On consumer builds we still
-        // surface Team as a marketing entry point to /team.
-        ...(isEnterprise
-          ? []
-          : [{ id: "team" as const, label: "Team", icon: <Users className="h-4 w-4" /> }]),
-        { id: "account" as const, label: "Account", icon: <User className="h-4 w-4" /> },
-        { id: "referral" as const, label: "Get free month", icon: <Gift className="h-4 w-4" /> },
       ].filter((s) => !isSectionHidden(s.id)),
     },
   ];
@@ -343,15 +191,11 @@ function SettingsContent() {
       case "general":       return <GeneralSettings />;
       case "display":       return <DisplaySection />;
       case "ai":            return <AIPresets />;
-      case "account":       return <AccountSection />;
       case "recording":     return <RecordingSettings />;
       case "shortcuts":     return <ShortcutSection />;
       case "privacy":       return <PrivacySection />;
       case "storage":       return <StorageSection />;
-      case "team":          return <TeamSection />;
       case "notifications": return <NotificationsSettings />;
-      case "referral":      return <ReferralSection />;
-      case "usage":         return <UsageSection />;
       case "speakers":      return <SpeakersSection />;
     }
   };
