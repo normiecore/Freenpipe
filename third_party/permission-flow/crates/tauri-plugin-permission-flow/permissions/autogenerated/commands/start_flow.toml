@@ -6,10 +6,8 @@
 identifier = "allow-start-flow"
 description = "Enables the start_flow command without any pre-configured scope."
 commands.allow = ["start_flow"]
-platforms = ["macOS"]
 
 [[permission]]
 identifier = "deny-start-flow"
 description = "Denies the start_flow command without any pre-configured scope."
 commands.deny = ["start_flow"]
-platforms = ["macOS"]

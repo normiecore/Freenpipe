@@ -6,10 +6,8 @@
 identifier = "allow-suggested-host-app-path"
 description = "Enables the suggested_host_app_path command without any pre-configured scope."
 commands.allow = ["suggested_host_app_path"]
-platforms = ["macOS"]
 
 [[permission]]
 identifier = "deny-suggested-host-app-path"
 description = "Denies the suggested_host_app_path command without any pre-configured scope."
 commands.deny = ["suggested_host_app_path"]
-platforms = ["macOS"]
