@@ -114,6 +114,7 @@ pub use permissions::request_permission;
 use tauri::AppHandle;
 #[cfg(target_os = "macos")]
 mod dock_menu;
+mod feedback_upload;
 mod health;
 mod log_files;
 mod native_notification;

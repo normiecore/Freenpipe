@@ -203,6 +203,26 @@ Wave 0 ran on the PC before the cloud phase. Tick anything you already checked t
   - Steps: Help > share logs.
   - Expected: `<FP_DD>/feedback/<timestamp>.zip` appears, the UI shows the completion state, and nothing is uploaded.
   - Result:
+- [ ] **SMK-W0-10-2** (UI smoke) The bundle is complete and scrubbed
+  - Setup: app dev run with a fresh `FP_DD`; in Settings add an AI preset with a fake API key such as `sk-test-0123456789abcdef`; copy any small file to `<FP_DD>\crash-dumps\test.dmp`.
+  - Steps: 1. Help > share logs, type a note that contains an e-mail address, tick "include recent chat history", save. 2. Open the newest zip in `<FP_DD>\feedback\` with Explorer.
+  - Expected: the zip holds `README.txt`, `feedback.txt`, `settings.json`, `health.json`, `report.json`, `logs\screenpipe-app.*.log` and `crash-dumps\test.dmp`; the API key appears as `[redacted]` in `settings.json`; the e-mail address appears as `[EMAIL]` in `feedback.txt`; paths in the logs read `C:\Users\[USER]\...`; `report.json` says `"uploaded": false`.
+  - Result:
+- [ ] **SMK-W0-10-3** (UI smoke) Completion actions: show in folder and the prefilled GitHub issue
+  - Setup: as SMK-W0-10-1, after a bundle was saved.
+  - Steps: 1. Click "show in folder". 2. Click "open github issue".
+  - Expected: 1. Explorer opens with the zip selected. 2. The browser opens `https://github.com/normiecore/Freenpipe/issues/new` with the title and body filled in (note, Freenpipe version, Windows version, bundle file name) and no full local path; nothing is attached or submitted automatically.
+  - Result:
+- [ ] **SMK-W0-10-4** (UI smoke) "Save logs" on the engine-down and onboarding-stuck screens
+  - Setup: app dev run; make the engine fail to start (for example, occupy the dev port first with `python -m http.server 3035`).
+  - Steps: 1. On the timeline overlay's "server not running" screen click "save logs", then click it again. 2. With a fresh `FP_DD`, reach the onboarding engine-startup step, wait for the stuck state and click "save logs".
+  - Expected: each first click writes a new zip under `<FP_DD>\feedback\` whose `report.json` `source` is `server-not-running` and `onboarding-stuck` respectively; a second click opens Explorer on the saved zip instead of writing another.
+  - Result:
+- [ ] **SMK-W0-10-5** (Runtime) Saving a bundle makes no outbound connection
+  - Setup: app dev run; Resource Monitor > Network > TCP Connections, filtered to the Freenpipe dev process.
+  - Steps: save a bundle from Help > share logs with a screenshot attached.
+  - Expected: no connection to any host other than 127.0.0.1 appears while the bundle is written.
+  - Result:
 
 ### W0-12 Rebrand user-visible identity to Freenpipe
 
