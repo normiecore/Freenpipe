@@ -1,10 +1,10 @@
 {
- "generated_at": "2026-10-19T17:38:00Z",
+ "generated_at": "2026-10-19T18:55:23Z",
  "generator": "python3 tools/plan/status.py --write",
  "main": {
   "ref": "origin/main",
-  "sha": "564f2810c25e5e1cdf19788b3b0f53ae329775ab",
-  "code_sha": "564f2810c25e5e1cdf19788b3b0f53ae329775ab",
+  "sha": "aa8ec6a5dab08dce52ad1d387008e784e2fad29b",
+  "code_sha": "aa8ec6a5dab08dce52ad1d387008e784e2fad29b",
   "ci": {
    "state": "pending",
    "checks": {
@@ -19,31 +19,31 @@
    "max_attempt": 1,
    "runs": [
     {
-     "id": 39295626353,
-     "name": "Freenpipe CI",
-     "event": "push",
-     "status": "pending",
-     "conclusion": null,
-     "attempt": 1,
-     "url": "https://github.com/normiecore/Freenpipe/actions/runs/39295626353"
-    },
-    {
-     "id": 39295626431,
-     "name": "Windows CLI Integration Test",
-     "event": "push",
-     "status": "in_progress",
-     "conclusion": null,
-     "attempt": 1,
-     "url": "https://github.com/normiecore/Freenpipe/actions/runs/39295626431"
-    },
-    {
-     "id": 39295626621,
+     "id": 39306543312,
      "name": "Secret Scan (trufflehog)",
      "event": "push",
      "status": "completed",
      "conclusion": "success",
      "attempt": 1,
-     "url": "https://github.com/normiecore/Freenpipe/actions/runs/39295626621"
+     "url": "https://github.com/normiecore/Freenpipe/actions/runs/39306543312"
+    },
+    {
+     "id": 39306543511,
+     "name": "Windows CLI Integration Test",
+     "event": "push",
+     "status": "in_progress",
+     "conclusion": null,
+     "attempt": 1,
+     "url": "https://github.com/normiecore/Freenpipe/actions/runs/39306543511"
+    },
+    {
+     "id": 39306543561,
+     "name": "Freenpipe CI",
+     "event": "push",
+     "status": "pending",
+     "conclusion": null,
+     "attempt": 1,
+     "url": "https://github.com/normiecore/Freenpipe/actions/runs/39306543561"
     }
    ]
   }
@@ -63,21 +63,21 @@
   ]
  },
  "summary": {
-  "merged": 8,
-  "in_review": 3,
+  "merged": 9,
+  "in_review": 2,
   "claimed": 0,
   "ready": 0,
   "blocked": 143,
   "total": 154,
-  "percent_merged": 5.2
+  "percent_merged": 5.8
  },
  "waves": [
   {
    "wave": 0,
    "name": "Foundation: build, ee/ stubs, de-cloud, rebrand",
    "total": 13,
-   "merged": 8,
-   "in_review": 3,
+   "merged": 9,
+   "in_review": 2,
    "claimed": 0,
    "ready": 0,
    "blocked": 2,
@@ -243,73 +243,9 @@
    "depends_on": [
     "W0-01"
    ],
-   "branch": {
-    "name": "wp/W0-06",
-    "sha": "a6c00756d12b54b91dedb2f0d60bae4f5f19aff5",
-    "claimed_by": null,
-    "claimed_at": null,
-    "last_commit_at": "2026-10-19T17:34:41Z",
-    "head_subject": "Merge origin/main into wp/W0-06",
-    "commits_ahead": 20,
-    "work_commits": 20
-   },
-   "status": "in_review",
-   "pr": {
-    "number": 5,
-    "url": "https://github.com/normiecore/Freenpipe/pull/5",
-    "head_sha": "a6c00756d12b54b91dedb2f0d60bae4f5f19aff5",
-    "title": "W0-06: AI gateway, transcription, PII backend and media analysis to bring-your-own",
-    "created_at": "2026-10-15T16:26:04Z",
-    "updated_at": "2026-10-19T17:36:05Z",
-    "ci": {
-     "state": "pending",
-     "checks": {
-      "gates": "success",
-      "linux": "in_progress",
-      "test-windows": "in_progress",
-      "trufflehog": "success",
-      "windows": "in_progress"
-     },
-     "missing": [],
-     "max_attempt": 1,
-     "runs": [
-      {
-       "id": 39295521739,
-       "name": "Freenpipe CI",
-       "event": "pull_request",
-       "status": "in_progress",
-       "conclusion": null,
-       "attempt": 1,
-       "url": "https://github.com/normiecore/Freenpipe/actions/runs/39295521739"
-      },
-      {
-       "id": 39295521898,
-       "name": "Windows CLI Integration Test",
-       "event": "pull_request",
-       "status": "in_progress",
-       "conclusion": null,
-       "attempt": 1,
-       "url": "https://github.com/normiecore/Freenpipe/actions/runs/39295521898"
-      },
-      {
-       "id": 39295665089,
-       "name": "Secret Scan (trufflehog)",
-       "event": "pull_request",
-       "status": "completed",
-       "conclusion": "success",
-       "attempt": 1,
-       "url": "https://github.com/normiecore/Freenpipe/actions/runs/39295665089"
-      }
-     ]
-    },
-    "review": {
-     "state": "pending",
-     "comment": null,
-     "reason": null
-    },
-    "mergeable": null,
-    "mergeable_state": "unknown"
-   }
+   "status": "merged",
+   "merge_commit": "aa8ec6a5dab08dce52ad1d387008e784e2fad29b",
+   "merged_at": "2026-10-19T18:54:57Z"
   },
   {
    "id": "W0-07",
@@ -360,15 +296,15 @@
     "head_sha": "5aac62339524b64e69477bd0c15be1711e6620e3",
     "title": "W0-09: Bundled CLI/MCP runtime and self-hosted model sources",
     "created_at": "2026-10-15T15:30:47Z",
-    "updated_at": "2026-10-19T17:36:14Z",
+    "updated_at": "2026-10-19T18:54:11Z",
     "ci": {
-     "state": "pending",
+     "state": "success",
      "checks": {
       "gates": "success",
-      "linux": "in_progress",
-      "test-windows": "in_progress",
+      "linux": "success",
+      "test-windows": "success",
       "trufflehog": "success",
-      "windows": "in_progress"
+      "windows": "success"
      },
      "missing": [],
      "max_attempt": 1,
@@ -377,8 +313,8 @@
        "id": 39295544270,
        "name": "Windows CLI Integration Test",
        "event": "pull_request",
-       "status": "in_progress",
-       "conclusion": null,
+       "status": "completed",
+       "conclusion": "success",
        "attempt": 1,
        "url": "https://github.com/normiecore/Freenpipe/actions/runs/39295544270"
       },
@@ -386,8 +322,8 @@
        "id": 39295544290,
        "name": "Freenpipe CI",
        "event": "pull_request",
-       "status": "in_progress",
-       "conclusion": null,
+       "status": "completed",
+       "conclusion": "success",
        "attempt": 1,
        "url": "https://github.com/normiecore/Freenpipe/actions/runs/39295544290"
       },
@@ -517,7 +453,6 @@
     "W0-11"
    ],
    "unmet_deps": [
-    "W0-06",
     "W0-09",
     "W0-11"
    ],
