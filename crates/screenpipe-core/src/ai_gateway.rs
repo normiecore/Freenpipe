@@ -95,7 +95,10 @@ pub fn realtime_url(base: &str) -> Option<String> {
     if rest.is_empty() {
         return None;
     }
-    Some(endpoints::join(&format!("{ws_scheme}://{rest}"), "realtime"))
+    Some(endpoints::join(
+        &format!("{ws_scheme}://{rest}"),
+        "realtime",
+    ))
 }
 
 /// The gateway credential: an explicit value when non-empty, else
@@ -138,9 +141,15 @@ pub fn media_analysis_opted_in(data_dir: &Path) -> bool {
 /// the other, so the state is unambiguous for both Freenpipe and screenpipe.
 pub fn set_media_analysis_opt_in(data_dir: &Path, enabled: bool) -> io::Result<()> {
     let (write, remove) = if enabled {
-        (MEDIA_ANALYSIS_ENABLED_MARKER, MEDIA_ANALYSIS_DISABLED_MARKER)
+        (
+            MEDIA_ANALYSIS_ENABLED_MARKER,
+            MEDIA_ANALYSIS_DISABLED_MARKER,
+        )
     } else {
-        (MEDIA_ANALYSIS_DISABLED_MARKER, MEDIA_ANALYSIS_ENABLED_MARKER)
+        (
+            MEDIA_ANALYSIS_DISABLED_MARKER,
+            MEDIA_ANALYSIS_ENABLED_MARKER,
+        )
     };
     std::fs::create_dir_all(data_dir)?;
     let note = if enabled {

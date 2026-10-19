@@ -23,9 +23,7 @@ fn gateway_realtime_endpoint_with(
 ) -> String {
     explicit_relay
         .and_then(|value| normalize_realtime_endpoint(&value, SCREENPIPE_CLOUD_REALTIME_PATH))
-        .or_else(|| {
-            gateway_base.and_then(|base| screenpipe_core::ai_gateway::realtime_url(&base))
-        })
+        .or_else(|| gateway_base.and_then(|base| screenpipe_core::ai_gateway::realtime_url(&base)))
         .unwrap_or_default()
 }
 
@@ -402,7 +400,10 @@ mod tests {
 
         assert_eq!(config.provider, MeetingStreamingProvider::SelectedEngine);
         assert!(config.live_transcription_ready());
-        assert!(config.endpoint.is_empty(), "nothing may be streamed anywhere");
+        assert!(
+            config.endpoint.is_empty(),
+            "nothing may be streamed anywhere"
+        );
     }
 
     #[test]

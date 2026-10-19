@@ -2771,7 +2771,10 @@ mod tests {
         assert_eq!(sp["baseUrl"], "http://127.0.0.1:4000/v1");
         assert_eq!(sp["apiKey"], "gw-key");
         assert_eq!(sp["api"], "openai-completions");
-        assert!(cfg["providers"]["ollama"].is_object(), "other providers survive");
+        assert!(
+            cfg["providers"]["ollama"].is_object(),
+            "other providers survive"
+        );
     }
 
     #[test]
@@ -2817,14 +2820,17 @@ mod tests {
     #[test]
     fn web_search_extension_needs_the_gateway_provider_and_a_gateway() {
         let dir = tempfile::tempdir().unwrap();
-        let ext = dir.path().join(".pi").join("extensions").join("web-search.ts");
+        let ext = dir
+            .path()
+            .join(".pi")
+            .join("extensions")
+            .join("web-search.ts");
 
         PiExecutor::ensure_web_search_extension_with(dir.path(), Some("screenpipe"), false)
             .unwrap();
         assert!(!ext.exists(), "no gateway, no search tool");
 
-        PiExecutor::ensure_web_search_extension_with(dir.path(), Some("screenpipe"), true)
-            .unwrap();
+        PiExecutor::ensure_web_search_extension_with(dir.path(), Some("screenpipe"), true).unwrap();
         assert!(ext.exists());
         let body = std::fs::read_to_string(&ext).unwrap();
         assert!(body.contains("SCREENPIPE_AI_GATEWAY_URL"));
@@ -2850,7 +2856,8 @@ mod tests {
 
     #[test]
     fn media_analysis_block_never_names_a_hosted_service() {
-        let block = include_str!("../../assets/skills/screenpipe-api/cloud_media_analysis_block.md");
+        let block =
+            include_str!("../../assets/skills/screenpipe-api/cloud_media_analysis_block.md");
         assert!(block.contains("BEGIN_CLOUD_MEDIA_ANALYSIS"));
         assert!(block.contains("/v1/chat/completions"));
         for vendor in ["screenpipe.com", "screenpi.pe", "tinfoil", "gemma4-e4b"] {

@@ -180,12 +180,8 @@ mod tests {
     #[tokio::test]
     async fn unreachable_gateway_is_a_502() {
         // Port 9 (discard) on loopback is closed in test environments.
-        let resp = forward_chat_completions(
-            Some("http://127.0.0.1:9/v1".into()),
-            None,
-            "{}".into(),
-        )
-        .await;
+        let resp =
+            forward_chat_completions(Some("http://127.0.0.1:9/v1".into()), None, "{}".into()).await;
         assert_eq!(resp.status(), StatusCode::BAD_GATEWAY);
         let body = to_bytes(resp.into_body(), usize::MAX).await.unwrap();
         let v: serde_json::Value = serde_json::from_slice(&body).unwrap();
