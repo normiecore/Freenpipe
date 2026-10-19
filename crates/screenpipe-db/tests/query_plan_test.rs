@@ -67,7 +67,7 @@ mod query_plan_tests {
     /// Run EXPLAIN QUERY PLAN and return the plan lines.
     async fn explain(db: &DatabaseManager, sql: &str) -> Vec<String> {
         let eqp_sql = format!("EXPLAIN QUERY PLAN {}", sql);
-        let rows = sqlx::query_as::<_, (i32, i32, i32, String)>(&eqp_sql)
+        let rows = sqlx::query_as::<_, (i32, i32, i32, String)>(sqlx::AssertSqlSafe(eqp_sql))
             .fetch_all(&db.pool)
             .await
             .unwrap();

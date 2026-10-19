@@ -272,6 +272,19 @@ Wave 0 ran on the PC before the cloud phase. Tick anything you already checked t
   - Expected: no connection to any host other than 127.0.0.1 appears while the bundle is written.
   - Result:
 
+### W0-11 SQLite toolchain upgrade (sqlx 0.9, libsqlite3-sys 0.37, rusqlite vtab)
+
+- [ ] **SMK-W0-11-1** (Runtime) The release-dev engine on the new SQLite toolchain records, restarts and searches
+  - Setup: release-dev engine built from `main` (Rust 1.94.1 from `rust-toolchain.toml`), a fresh `$FP_DD`, port `$FP_PORT`.
+  - Steps: 1. Start the engine and let it record for two minutes, running `GET /search?q=<a word on screen>&limit=5` a few times while it records. 2. Stop it and start it again on the same `$FP_DD`; within its first 10 seconds run the same search twice, then leave it recording for at least another minute (the startup integrity check runs 10 seconds after start, while recording keeps merging the search index). 3. `GET /search?limit=5` and `GET /health`. 4. Search the engine log for `DATABASE CORRUPTION DETECTED` and `startup integrity check`.
+  - Expected: both starts reach a healthy state; the second start logs no migration error and no "checksum mismatch" repair; `/search` returns 200 with the recorded content; the engine log has no `DATABASE CORRUPTION DETECTED` and no `startup integrity check could not run` line from either start.
+  - Result:
+- [ ] **SMK-W0-11-2** (UI smoke) The app on the new SQLite toolchain opens the engine database
+  - Setup: installed screenpipe quit; isolated dev setup from windows-build.md.
+  - Steps: 1. `scripts/dev/app-dev.sh`. 2. Open the timeline and the search window and run a search.
+  - Expected: the app and its engine start, the timeline and search load, and neither the app log nor the engine log shows SQLite or sqlx errors.
+  - Result:
+
 ### W0-12 Rebrand user-visible identity to Freenpipe
 
 - [ ] **SMK-W0-12-1** (UI smoke) The installer and the running app say Freenpipe

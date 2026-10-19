@@ -18,6 +18,11 @@ rustflags = "-lc++ -l framework=Accelerate"
 # Use prebuilt NASM objects on Windows (no NASM install needed in CI): https://aws.github.io/aws-lc-rs/requirements/windows.html#prebuilt-nasm-objects
 AWS_LC_SYS_PREBUILT_NASM = "1"
 CMAKE_POLICY_VERSION_MINIMUM = "3.5"
+# Extra compile options for the SQLite that libsqlite3-sys bundles (one copy per
+# process, shared by sqlx and rusqlite). The sqlite_dbpage virtual table is what
+# the page-level recover extension reads from; sqlite3_recover cannot run without
+# it. crates/screenpipe-db/tests/sqlite_toolchain_test.rs asserts it is compiled in.
+LIBSQLITE3_FLAGS = "-DSQLITE_ENABLE_DBPAGE_VTAB"
 
 # Faster builds - use more threads for codegen
 [build]

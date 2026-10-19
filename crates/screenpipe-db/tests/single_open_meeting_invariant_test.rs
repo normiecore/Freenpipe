@@ -62,7 +62,7 @@ mod tests {
             if trimmed.is_empty() {
                 continue;
             }
-            sqlx::query(trimmed)
+            sqlx::query(sqlx::AssertSqlSafe(trimmed))
                 .execute(&db.pool)
                 .await
                 .unwrap_or_else(|e| panic!("stmt failed: {}\n{}", e, trimmed));

@@ -488,7 +488,7 @@ async fn snapshot_db(live_db: &Path, dest: &Path) -> Result<()> {
     // We escape single quotes by doubling them — SQLite's standard escape.
     let dest_str = dest.to_string_lossy();
     let stmt = format!("VACUUM INTO '{}'", dest_str.replace('\'', "''"));
-    let result = sqlx::query(&stmt).execute(&pool).await;
+    let result = sqlx::query(sqlx::AssertSqlSafe(stmt)).execute(&pool).await;
 
     pool.close().await;
 

@@ -45,8 +45,8 @@ base64 = "0.22.1"
 sha2 = "0.10.6"
 lettre = { version = "0.11", default-features = false, features = ["smtp-transport", "tokio1-rustls-tls", "builder"] }
 mdns-sd = "0.13"
-sqlx = { version = "0.7", features = ["sqlite", "runtime-tokio-rustls"] }
-libsqlite3-sys = { version = "0.26", features = ["bundled"] }
+sqlx = { workspace = true }
+libsqlite3-sys = { workspace = true }
 
 [dev-dependencies]
 wiremock = "0.6"

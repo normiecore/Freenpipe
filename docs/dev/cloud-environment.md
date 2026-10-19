@@ -79,7 +79,7 @@ Rust builds. Add no tokens or secrets. The GitHub proxy authenticates `gh` and `
 
 Paste the script below. It runs as root on Ubuntu 24.04 before Claude Code starts. It installs the
 system packages for the Rust workspace and the Tauri app, plus the Rust toolchain pinned by
-`rust-toolchain.toml` (1.93.1 with every listed target). The apt install and the Rust install run in
+`rust-toolchain.toml` (1.94.1 with every listed target). The apt install and the Rust install run in
 parallel, which typically keeps the script under the roughly five-minute limit for the environment
 cache. Once it is cached, new sessions start from the snapshot and skip it. The script always exits 0.
 Anything that did not finish is repeated by `tools/cloud/bootstrap.sh` in the session.
@@ -121,7 +121,7 @@ install_rust() {
     curl -fsSL -o /tmp/rustup-init https://static.rust-lang.org/rustup/dist/x86_64-unknown-linux-gnu/rustup-init &&
       chmod +x /tmp/rustup-init && /tmp/rustup-init -y --profile minimal --default-toolchain none || return 1
   fi
-  rustup toolchain install 1.93.1 --profile minimal -c rustfmt -c clippy \
+  rustup toolchain install 1.94.1 --profile minimal -c rustfmt -c clippy \
     -t aarch64-apple-darwin -t x86_64-apple-darwin -t x86_64-pc-windows-msvc -t x86_64-unknown-linux-gnu
 }
 
@@ -145,6 +145,12 @@ Notes:
   block with `bash tools/cloud/bootstrap.sh --print-setup-script`, and paste the new script into the
   environment. Changing the script or the allowed domains rebuilds the cache. The cache also expires
   after about seven days, and the script then runs again.
+- When `rust-toolchain.toml` moves to a new Rust release (it moved from 1.93.1 to 1.94.1 with
+  W0-11), paste the regenerated script into the environment again. Until then the cached snapshot
+  holds only the old toolchain, and every session's `bootstrap.sh` downloads the new one with all
+  four std targets. Build output from the old compiler cannot be reused either: once the change is on
+  `main`, clear the shared `$FP_STATE/target` once (the coordinator does this after the merge), and
+  expect the next CI runs to start without a Rust cache.
 
 ## 3. Check the environment
 
