@@ -15,7 +15,8 @@ rust-version = "1.94"
 
 [build-dependencies]
 tauri-build = { version = "=2.6.2", features = [] }
-tauri-helper = { git = "https://github.com/divanshu-go/tauri-helper", rev = "e25ff1d2c5026189305a0251a1e06788efe1d2b3" }
+# divanshu-go/tauri-helper @ e25ff1d, vendored in third_party/tauri-helper
+tauri-helper = { path = "../../../third_party/tauri-helper" }
 # Used by build.rs on Windows MSVC targets (incl. cross-compiles from
 # Linux/macOS CI runners) to compile c/bswap_shim.c — provides
 # __builtin_bswap{16,32,64} as real functions to satisfy the aws-lc-sys
@@ -24,7 +25,7 @@ tauri-helper = { git = "https://github.com/divanshu-go/tauri-helper", rev = "e25
 cc = "1"
 
 [dependencies]
-tauri-helper = { git = "https://github.com/divanshu-go/tauri-helper", rev = "e25ff1d2c5026189305a0251a1e06788efe1d2b3" }
+tauri-helper = { path = "../../../third_party/tauri-helper" }
 tauri = { version = "=2.11.2", features = [
   "protocol-asset",
   "macos-private-api",
@@ -48,7 +49,8 @@ tauri-plugin-autostart = "=2.5.1"
 tauri-plugin-shell = "=2.3.5"
 tauri-plugin-store = "=2.4.2"
 tauri-plugin-http = "=2.5.7"
-tauri-plugin-permission-flow = { git = "https://github.com/divanshu-go/permission-flow", rev = "d7376a1b95acb78700e93505d8ca058e5ddb94ce", package = "tauri-plugin-permission-flow" }
+# divanshu-go/permission-flow @ d7376a1, vendored in third_party/permission-flow
+tauri-plugin-permission-flow = { path = "../../../third_party/permission-flow/crates/tauri-plugin-permission-flow" }
 
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
@@ -139,7 +141,8 @@ screenpipe-vault = { path = "../../../crates/screenpipe-vault" }
 screenpipe-connect = { path = "../../../crates/screenpipe-connect", features = ["specta"] }
 screenpipe-secrets = { path = "../../../crates/screenpipe-secrets" }
 screenpipe-events = { path = "../../../crates/screenpipe-events" }
-eventkit-rs = { git = "https://github.com/divanshu-go/eventkit-rs", rev = "9dd52787c8435d734ed443e2d5641f45b0177cae", default-features = false, features = ["events"] }
+# divanshu-go/eventkit-rs @ 9dd5278, vendored in third_party/eventkit-rs
+eventkit-rs = { path = "../../../third_party/eventkit-rs", default-features = false, features = ["events"] }
 # Async PII reconciliation (issue #3185 / PR #3188). `onnx-coreml` is
 # the right execution-provider for Apple Silicon (image PII via
 # rfdetr_v8); `opf-text` enables the local pure-Rust candle text
@@ -200,7 +203,8 @@ sha1 = "0.10"
 winreg = "0.52.0"
 lazy_static = "1.5.0"
 image = "0.25.5"
-windows-icons = { git = "https://github.com/tribhuwan-kumar/windows-icons.git", rev = "4dcd086b36bed286181cb87636ad6eb058ab7684" }
+# tribhuwan-kumar/windows-icons @ 4dcd086, vendored in third_party/windows-icons
+windows-icons = { path = "../../../third_party/windows-icons" }
 base64 = "0.22.1"
 aes-gcm = "0.10"
 rusqlite = { version = "0.39.0", features = ["bundled"] }
@@ -286,9 +290,9 @@ ignored = ["tauri-utils", "screenpipe-redact", "eventkit-rs"]
 # macOS tray menus can outlive the Rust `Menu` that created them while the
 # native menu is open. This fork stores an Rc<MenuChild> on NSMenuItem instead
 # of a raw pointer so stale AppKit items keep their Rust click data alive.
-# Pinned by commit (not branch) for reproducible builds; drop once
+# The divanshu-go/muda fork @ 9dc5de5, vendored in third_party/muda; drop once
 # upstream tauri-apps/muda#361 merges and ships in a released muda.
-muda = { git = "https://github.com/divanshu-go/muda", rev = "9dc5de53e84040a63c9a5423b669ec892de8a671" }
+muda = { path = "../../../third_party/muda" }
 
 [profile.release]
 codegen-units = 1

@@ -5,6 +5,10 @@ members = [
 exclude = [
     "apps/screenpipe-app-tauri/src-tauri",
     "crates/screenpipe-integrations",
+    # Vendored third-party crates (third_party/README.md). They are path
+    # dependencies, not members: their own tests and dev-dependencies stay out
+    # of the workspace and of Cargo.lock.
+    "third_party",
 ]
 # What a bare `cargo build` / `cargo test` at the root operates on: every
 # member except screenpipe-team-memory, which nothing depends on until the
@@ -43,7 +47,8 @@ edition = "2021"
 [workspace.dependencies]
 # AI
 tokenizers = "0.21.0"
-hf-hub = { version = "0.3.2", git = "https://github.com/neo773/hf-hub", rev = "437dcf4049233f4a0e0cfc4e1c1dbf5ed2c57760", default-features = false, features = [
+# Vendored: neo773/hf-hub @ 437dcf4 (third_party/README.md).
+hf-hub = { version = "0.3.2", path = "third_party/hf-hub", default-features = false, features = [
     "native-tls",
     "tokio",
     "ureq",
@@ -82,7 +87,8 @@ rusqlite = { version = "0.39.0", features = ["bundled"] }
 
 [patch.crates-io]
 # enables chinese mirror (hf is banned in china) and rustls-tls
-hf-hub = { git = "https://github.com/neo773/hf-hub", rev = "437dcf4049233f4a0e0cfc4e1c1dbf5ed2c57760" }
+# (the neo773/hf-hub fork, vendored in third_party/hf-hub)
+hf-hub = { path = "third_party/hf-hub" }
 
 [profile.release]
 codegen-units = 1

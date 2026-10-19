@@ -1,0 +1,78 @@
+[package]
+name = "audiopipe"
+version = "0.2.0"
+edition = "2021"
+description = "Fast speech-to-text inference in Rust. Metal, Vulkan, CUDA, CoreML, DirectML."
+license = "MIT"
+repository = "https://github.com/screenpipe/audiopipe"
+keywords = ["speech-to-text", "asr", "whisper", "parakeet", "onnx"]
+categories = ["multimedia::audio", "science"]
+
+[dependencies]
+ort = { version = "=2.0.0-rc.10", default-features = false, features = ["ndarray", "half"], optional = true }
+ort-sys = { version = "=2.0.0-rc.10", default-features = false, optional = true }
+hf-hub = "0.4"
+ndarray = { version = "0.16", optional = true }
+realfft = { version = "3", optional = true }
+thiserror = "2"
+tracing = "0.1"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+half = { version = "2", optional = true }
+mlx-rs = { version = "0.25", optional = true }
+safetensors = { version = "0.4", optional = true }
+# Must match screenpipe-audio (single native `whisper` link in the app graph).
+# Freenpipe: the vendored copy next to this crate (third_party/whisper-rs), the
+# same package screenpipe-audio uses.
+whisper-rs = { path = "../whisper-rs", optional = true, features = ["tracing_backend"] }
+qwen3-asr-sys = { path = "crates/qwen3-asr-sys", optional = true }
+antirez-asr-sys = { path = "crates/antirez-asr-sys", optional = true }
+
+[dev-dependencies]
+hound = "3"
+tracing-subscriber = "0.3"
+dirs = "6"
+
+[[example]]
+name = "transcribe"
+path = "examples/transcribe.rs"
+
+[[example]]
+name = "benchmark"
+path = "examples/benchmark.rs"
+
+[[example]]
+name = "bench_batch"
+path = "examples/bench_batch.rs"
+
+[[example]]
+name = "bench_asr"
+path = "examples/bench_asr.rs"
+
+[features]
+default = ["ort-defaults"]
+
+# ONNX Runtime deps (needed for parakeet, qwen3-asr ONNX engines)
+onnx-deps = ["dep:ort", "dep:ort-sys", "dep:ndarray", "dep:realfft", "dep:half"]
+ort-defaults = ["onnx-deps", "ort/default"]
+
+# Execution providers — pick one (or none for CPU)
+cuda = ["onnx-deps", "ort/cuda"]
+tensorrt = ["onnx-deps", "ort/tensorrt"]
+coreml = ["onnx-deps", "ort/coreml"]
+directml = ["onnx-deps", "ort/directml"]
+
+# Models
+whisper = ["dep:whisper-rs"]
+parakeet = ["onnx-deps"]
+qwen3-asr = ["onnx-deps"]
+qwen3-asr-ggml = ["dep:qwen3-asr-sys"]
+qwen3-asr-antirez = ["dep:antirez-asr-sys"]
+qwen3-asr-antirez-blas = ["qwen3-asr-antirez", "antirez-asr-sys/openblas"]
+parakeet-mlx = ["dep:mlx-rs", "dep:safetensors", "dep:half"]
+all-models = ["whisper", "parakeet", "qwen3-asr"]
+
+# GGML GPU backends
+metal = ["qwen3-asr-ggml", "qwen3-asr-sys/metal"]
+vulkan-ggml = ["qwen3-asr-ggml", "qwen3-asr-sys/vulkan"]
+cuda-ggml = ["qwen3-asr-ggml", "qwen3-asr-sys/cuda"]

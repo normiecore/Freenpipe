@@ -1,0 +1,20 @@
+Freenpipe local change to audiopipe (applied by third_party/vendor.sh).
+
+Point audiopipe's optional whisper-rs dependency at the vendored copy in
+third_party/whisper-rs instead of the screenpipe/whisper-rs git repository.
+It is the same revision (97e4070) that screenpipe-audio uses, so the graph
+still holds a single whisper-rs-sys (it declares `links = "whisper"`).
+
+--- a/Cargo.toml
++++ b/Cargo.toml
+@@ -22,7 +22,9 @@
+ mlx-rs = { version = "0.25", optional = true }
+ safetensors = { version = "0.4", optional = true }
+ # Must match screenpipe-audio (single native `whisper` link in the app graph).
+-whisper-rs = { git = "https://github.com/screenpipe/whisper-rs.git", rev = "97e4070", optional = true, features = ["tracing_backend"] }
++# Freenpipe: the vendored copy next to this crate (third_party/whisper-rs), the
++# same package screenpipe-audio uses.
++whisper-rs = { path = "../whisper-rs", optional = true, features = ["tracing_backend"] }
+ qwen3-asr-sys = { path = "crates/qwen3-asr-sys", optional = true }
+ antirez-asr-sys = { path = "crates/antirez-asr-sys", optional = true }
+ 

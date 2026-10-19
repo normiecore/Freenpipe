@@ -1,0 +1,90 @@
+//! Helper code for registering audio object property listeners.
+use super::coreaudio::sys::{
+    AudioObjectAddPropertyListener, AudioObjectID, AudioObjectPropertyAddress,
+    AudioObjectRemovePropertyListener, OSStatus,
+};
+
+use crate::BuildStreamError;
+
+/// A double-indirection to be able to pass a closure (a fat pointer)
+/// via a single c_void.
+struct PropertyListenerCallbackWrapper(Box<dyn FnMut()>);
+
+/// Maintain an audio object property listener.
+/// The listener will be removed when this type is dropped.
+pub struct AudioObjectPropertyListener {
+    callback: Box<PropertyListenerCallbackWrapper>,
+    property_address: AudioObjectPropertyAddress,
+    audio_object_id: AudioObjectID,
+    removed: bool,
+}
+
+impl AudioObjectPropertyListener {
+    /// Attach the provided callback as a audio object property listener.
+    pub fn new<F: FnMut() + 'static>(
+        audio_object_id: AudioObjectID,
+        property_address: AudioObjectPropertyAddress,
+        callback: F,
+    ) -> Result<Self, BuildStreamError> {
+        let callback = Box::new(PropertyListenerCallbackWrapper(Box::new(callback)));
+        unsafe {
+            coreaudio::Error::from_os_status(AudioObjectAddPropertyListener(
+                audio_object_id,
+                &property_address as *const _,
+                Some(property_listener_handler_shim),
+                &*callback as *const _ as *mut _,
+            ))?;
+        };
+        Ok(Self {
+            callback,
+            audio_object_id,
+            property_address,
+            removed: false,
+        })
+    }
+
+    /// Explicitly remove the property listener.
+    /// Use this method if you need to explicitly handle failure to remove
+    /// the property listener.
+    pub fn remove(mut self) -> Result<(), BuildStreamError> {
+        self.remove_inner()
+    }
+
+    fn remove_inner(&mut self) -> Result<(), BuildStreamError> {
+        unsafe {
+            coreaudio::Error::from_os_status(AudioObjectRemovePropertyListener(
+                self.audio_object_id,
+                &self.property_address as *const _,
+                Some(property_listener_handler_shim),
+                &*self.callback as *const _ as *mut _,
+            ))?;
+        }
+        self.removed = true;
+        Ok(())
+    }
+}
+
+impl Drop for AudioObjectPropertyListener {
+    fn drop(&mut self) {
+        if !self.removed {
+            let _ = self.remove_inner();
+        }
+    }
+}
+
+/// Callback used to call user-provided closure as a property listener.
+///
+/// This is called from CoreAudio (C FFI) — panics must not cross this boundary
+/// or the process will abort. We wrap the call in `catch_unwind` as a safety net.
+unsafe extern "C" fn property_listener_handler_shim(
+    _: AudioObjectID,
+    _: u32,
+    _: *const AudioObjectPropertyAddress,
+    callback: *mut ::std::os::raw::c_void,
+) -> OSStatus {
+    let wrapper = callback as *mut PropertyListenerCallbackWrapper;
+    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        (*wrapper).0();
+    }));
+    0
+}

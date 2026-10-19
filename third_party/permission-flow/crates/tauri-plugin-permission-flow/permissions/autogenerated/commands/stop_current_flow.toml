@@ -1,0 +1,15 @@
+# Automatically generated - DO NOT EDIT!
+
+"$schema" = "../../schemas/schema.json"
+
+[[permission]]
+identifier = "allow-stop-current-flow"
+description = "Enables the stop_current_flow command without any pre-configured scope."
+commands.allow = ["stop_current_flow"]
+platforms = ["macOS"]
+
+[[permission]]
+identifier = "deny-stop-current-flow"
+description = "Denies the stop_current_flow command without any pre-configured scope."
+commands.deny = ["stop_current_flow"]
+platforms = ["macOS"]

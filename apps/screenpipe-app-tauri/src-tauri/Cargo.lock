@@ -284,7 +284,6 @@ dependencies = [
 [[package]]
 name = "antirez-asr-sys"
 version = "0.1.0"
-source = "git+https://github.com/divanshu-go/audiopipe.git?rev=2fd5c360651157a5df504394066e509ad4d1bdc9#2fd5c360651157a5df504394066e509ad4d1bdc9"
 dependencies = [
  "cc",
 ]
@@ -771,7 +770,6 @@ dependencies = [
 [[package]]
 name = "audiopipe"
 version = "0.2.0"
-source = "git+https://github.com/divanshu-go/audiopipe.git?rev=2fd5c360651157a5df504394066e509ad4d1bdc9#2fd5c360651157a5df504394066e509ad4d1bdc9"
 dependencies = [
  "antirez-asr-sys",
  "half",
@@ -2312,7 +2310,6 @@ dependencies = [
 [[package]]
 name = "cpal"
 version = "0.15.3"
-source = "git+https://github.com/screenpipe/cpal.git?rev=c7a610aee5c6037c9c69dc5bf7f2a850da8d8b12#c7a610aee5c6037c9c69dc5bf7f2a850da8d8b12"
 dependencies = [
  "alsa",
  "cidre 0.15.1 (git+https://github.com/yury/cidre.git?rev=8481f3f0dc7dd39bb5be80d9424bfac0cad3801a)",
@@ -3658,7 +3655,6 @@ dependencies = [
 [[package]]
 name = "eventkit-rs"
 version = "0.5.6"
-source = "git+https://github.com/divanshu-go/eventkit-rs?rev=9dd52787c8435d734ed443e2d5641f45b0177cae#9dd52787c8435d734ed443e2d5641f45b0177cae"
 dependencies = [
  "block2 0.6.2",
  "chrono",
@@ -5095,7 +5091,6 @@ checksum = "e712f64ec3850b98572bffac52e2c6f282b29fe6c5fa6d42334b30be438d95c1"
 [[package]]
 name = "hf-hub"
 version = "0.3.2"
-source = "git+https://github.com/neo773/hf-hub?rev=437dcf4049233f4a0e0cfc4e1c1dbf5ed2c57760#437dcf4049233f4a0e0cfc4e1c1dbf5ed2c57760"
 dependencies = [
  "dirs 5.0.1",
  "futures",
@@ -7006,7 +7001,6 @@ dependencies = [
 [[package]]
 name = "muda"
 version = "0.19.2"
-source = "git+https://github.com/divanshu-go/muda?rev=9dc5de53e84040a63c9a5423b669ec892de8a671#9dc5de53e84040a63c9a5423b669ec892de8a671"
 dependencies = [
  "crossbeam-channel",
  "dpi",
@@ -8135,7 +8129,6 @@ dependencies = [
 [[package]]
 name = "opf"
 version = "0.1.0"
-source = "git+https://github.com/screenpipe/opf-rs?rev=e725ad5e8a89ae46e4cb38022a26e746c37329b6#e725ad5e8a89ae46e4cb38022a26e746c37329b6"
 dependencies = [
  "candle-core",
  "candle-nn",
@@ -8492,7 +8485,6 @@ checksum = "9b4f627cb1b25917193a259e49bdad08f671f8d9708acfd5fe0a8c1455d87220"
 [[package]]
 name = "permission-flow"
 version = "0.1.40"
-source = "git+https://github.com/divanshu-go/permission-flow?rev=d7376a1b95acb78700e93505d8ca058e5ddb94ce#d7376a1b95acb78700e93505d8ca058e5ddb94ce"
 dependencies = [
  "swift-rs",
 ]
@@ -9336,7 +9328,6 @@ checksum = "478e0585659a122aa407eb7e3c0e1fa51b1d8a870038bd29f0cf4a8551eea972"
 [[package]]
 name = "qwen3-asr-sys"
 version = "0.1.0"
-source = "git+https://github.com/divanshu-go/audiopipe.git?rev=2fd5c360651157a5df504394066e509ad4d1bdc9#2fd5c360651157a5df504394066e509ad4d1bdc9"
 dependencies = [
  "cc",
  "cmake",
@@ -10304,7 +10295,6 @@ checksum = "b39cdef0fa800fc44525c84ccb54a029961a8215f9619753635a9c0d2538d46d"
 [[package]]
 name = "rusty-tesseract"
 version = "1.1.10"
-source = "git+https://github.com/screenpipe/rusty-tesseract.git?rev=08346c1de08d122c7121425abc79081c30dbf778#08346c1de08d122c7121425abc79081c30dbf778"
 dependencies = [
  "dirs 5.0.1",
  "image 0.25.10",
@@ -10480,7 +10470,6 @@ dependencies = [
 [[package]]
 name = "sck-rs"
 version = "0.1.0"
-source = "git+https://github.com/screenpipe/sck-rs?rev=b7f48a1236b2339350baa1375a805c7ce32f88df#b7f48a1236b2339350baa1375a805c7ce32f88df"
 dependencies = [
  "cidre 0.15.1 (git+https://github.com/yury/cidre.git)",
  "image 0.25.10",
@@ -12789,7 +12778,6 @@ dependencies = [
 [[package]]
 name = "tauri-helper"
 version = "0.2.1"
-source = "git+https://github.com/divanshu-go/tauri-helper?rev=e25ff1d2c5026189305a0251a1e06788efe1d2b3#e25ff1d2c5026189305a0251a1e06788efe1d2b3"
 dependencies = [
  "rayon",
  "serde",
@@ -13037,7 +13025,6 @@ dependencies = [
 [[package]]
 name = "tauri-plugin-permission-flow"
 version = "0.1.40"
-source = "git+https://github.com/divanshu-go/permission-flow?rev=d7376a1b95acb78700e93505d8ca058e5ddb94ce#d7376a1b95acb78700e93505d8ca058e5ddb94ce"
 dependencies = [
  "permission-flow",
  "serde",
@@ -13320,7 +13307,6 @@ dependencies = [
 [[package]]
 name = "tauri_helper_core"
 version = "0.2.1"
-source = "git+https://github.com/divanshu-go/tauri-helper?rev=e25ff1d2c5026189305a0251a1e06788efe1d2b3#e25ff1d2c5026189305a0251a1e06788efe1d2b3"
 dependencies = [
  "serde",
  "toml 0.9.12+spec-1.1.0",
@@ -13329,7 +13315,6 @@ dependencies = [
 [[package]]
 name = "tauri_helper_macros"
 version = "0.1.4"
-source = "git+https://github.com/divanshu-go/tauri-helper?rev=e25ff1d2c5026189305a0251a1e06788efe1d2b3#e25ff1d2c5026189305a0251a1e06788efe1d2b3"
 dependencies = [
  "proc-macro-error",
  "proc-macro2",
@@ -14582,7 +14567,6 @@ dependencies = [
 [[package]]
 name = "vad-rs"
 version = "0.2.0"
-source = "git+https://github.com/divanshu-go/vad-rs-1.git?rev=b14b26ec7093f5398ef6658020259cd7c130ea6c#b14b26ec7093f5398ef6658020259cd7c130ea6c"
 dependencies = [
  "eyre",
  "ndarray",
@@ -15099,7 +15083,6 @@ dependencies = [
 [[package]]
 name = "whisper-rs"
 version = "0.16.0"
-source = "git+https://github.com/screenpipe/whisper-rs.git?rev=97e4070#97e40705033724dee601e89f3bd701af8096c846"
 dependencies = [
  "tracing",
  "whisper-rs-sys",
@@ -15108,7 +15091,6 @@ dependencies = [
 [[package]]
 name = "whisper-rs-sys"
 version = "0.15.0"
-source = "git+https://github.com/screenpipe/whisper-rs.git?rev=97e4070#97e40705033724dee601e89f3bd701af8096c846"
 dependencies = [
  "bindgen 0.72.1",
  "cfg-if 1.0.4",
@@ -15345,7 +15327,6 @@ dependencies = [
 [[package]]
 name = "windows-icons"
 version = "0.1.1"
-source = "git+https://github.com/tribhuwan-kumar/windows-icons.git?rev=4dcd086b36bed286181cb87636ad6eb058ab7684#4dcd086b36bed286181cb87636ad6eb058ab7684"
 dependencies = [
  "base64 0.22.1",
  "image 0.25.10",

@@ -1,0 +1,22 @@
+[package]
+name = "permission-flow-iced"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+authors.workspace = true
+homepage.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+description = "Iced-friendly permission flow helpers for macOS apps"
+documentation = "https://docs.rs/permission-flow-iced"
+readme = "README.md"
+keywords = ["macos", "permissions", "iced", "gui", "tcc"]
+
+[package.metadata.docs.rs]
+default-target = "aarch64-apple-darwin"
+targets = ["aarch64-apple-darwin", "x86_64-apple-darwin"]
+
+[dependencies]
+iced = { version = "0.13.1", features = ["tokio"] }
+permission-flow = { version = "0.1.40", path = "../flow" }
+thiserror = "2"
