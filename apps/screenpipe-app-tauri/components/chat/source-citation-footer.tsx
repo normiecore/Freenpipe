@@ -233,7 +233,7 @@ function SourceCitationIcon({
 
 function sourceIconSrc(citation: SourceCitation): string | undefined {
   if (citation.kind === "screenpipe") {
-    return "/images/screenpipe.png";
+    return "/images/freenpipe.png";
   }
 
   if (citation.kind === "connector") {

@@ -1247,7 +1247,7 @@ const AISection = ({
               type="screenpipe-cloud"
               title="AI gateway"
               description="Your own OpenAI-compatible gateway (LiteLLM, a self-hosted proxy, …). Also used for gateway transcription, media analysis and web search."
-              imageSrc="/images/screenpipe.png"
+              imageSrc="/images/freenpipe.png"
               selected={settingsPreset?.provider === "screenpipe-cloud"}
               onClick={() => handleAiProviderChange("screenpipe-cloud")}
               warningText={!aiGateway.loading && !aiGateway.configured ? "Set a gateway URL below" : undefined}
@@ -1871,9 +1871,9 @@ const providerImageSrc: Record<string, string> = {
   anthropic: "/images/claude-ai.svg",
   "native-ollama": "/images/ollama.png",
   custom: "/images/custom.png",
-  pi: "/images/screenpipe.png",
-  screenpipe: "/images/screenpipe.png",
-  "screenpipe-cloud": "/images/screenpipe.png",
+  pi: "/images/freenpipe.png",
+  screenpipe: "/images/freenpipe.png",
+  "screenpipe-cloud": "/images/freenpipe.png",
 };
 
 // Sortable preset card for drag-and-drop reordering
