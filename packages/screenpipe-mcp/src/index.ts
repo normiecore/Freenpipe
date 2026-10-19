@@ -31,8 +31,8 @@ const SCREENPIPE_API = `http://localhost:${port}`;
 // Discover the local API key, in priority order:
 //
 //   1. env vars set by the launcher (Claude Desktop config, terminal, etc.).
-//      The desktop app writes SCREENPIPE_LOCAL_API_KEY into the configs it
-//      generates, so this is the usual path.
+//      Settings > Connections writes SCREENPIPE_LOCAL_API_KEY into the configs
+//      it generates; onboarding writes it only when the build has no CLI.
 //   2. The `screenpipe` CLI shipped with the desktop app, run as
 //      `<cli> auth token`. The CLI's resolver handles the keychain-encrypted
 //      secret store. It is found, in order, at $SCREENPIPE_CLI, next to this

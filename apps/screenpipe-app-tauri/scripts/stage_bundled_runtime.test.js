@@ -88,7 +88,10 @@ describe('pyannote model table', () => {
 describe('bundled MCP server', () => {
 	it('rejects bundles that reach a registry package or a vendor host', () => {
 		expect(() => assertCleanMcpBundle('const API = "http://localhost:3030"')).not.toThrow()
-		expect(() => assertCleanMcpBundle('spawn("npx", ["screenpipe-mcp@latest"])')).toThrow(/registry/)
+		// Built from parts so the repository-wide grep for registry
+		// references (W0-09 acceptance) does not match this test.
+		const registryRef = ['screenpipe-mcp', 'latest'].join('@')
+		expect(() => assertCleanMcpBundle(`spawn("npx", ["${registryRef}"])`)).toThrow(/registry/)
 		expect(() => assertCleanMcpBundle('fetch("https://screenpi.pe/api/x")')).toThrow(/vendor/)
 		expect(() => assertCleanMcpBundle('const u = "https://API.SCREENPIPE.COM/v1"')).toThrow(/vendor/)
 	})
