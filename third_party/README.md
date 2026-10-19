@@ -39,7 +39,7 @@ organisation's repositories the pinned commit's committer date was checked again
 | `sck-rs` | sck-rs 0.1.0 | https://github.com/screenpipe/sck-rs | `b7f48a1236b2339350baa1375a805c7ce32f88df` | 2026-05-30 | MIT (Cargo.toml only, see below) | screenpipe-screen (macOS) |
 | `opf-rs` | opf 0.1.0 | https://github.com/screenpipe/opf-rs | `e725ad5e8a89ae46e4cb38022a26e746c37329b6` | 2026-05-08 | **CC BY-NC 4.0** (`LICENSE`, `NOTICE`), see below | screenpipe-redact (`opf-text`) |
 | `tauri-helper` | tauri-helper 0.2.1, tauri_helper_core 0.2.1, tauri_helper_macros 0.1.4 | https://github.com/divanshu-go/tauri-helper | `e25ff1d2c5026189305a0251a1e06788efe1d2b3` | 2026-05-31 | MIT (`LICENSE`) | app crate (dependency and build dependency) |
-| `eventkit-rs` | eventkit-rs 0.5.6 | https://github.com/divanshu-go/eventkit-rs | `9dd52787c8435d734ed443e2d5641f45b0177cae` | 2026-06-07 | Apache-2.0 (`LICENSE`) | screenpipe-connect, app crate (macOS) |
+| `eventkit-rs` | eventkit-rs 0.5.6 | https://github.com/divanshu-go/eventkit-rs | `9dd52787c8435d734ed443e2d5641f45b0177cae` | 2026-06-07 | Apache-2.0 (`LICENSE`) | screenpipe-connect (macOS), app crate |
 | `vad-rs` | vad-rs 0.2.0 | https://github.com/divanshu-go/vad-rs-1 | `b14b26ec7093f5398ef6658020259cd7c130ea6c` | 2026-04-18 | MIT (Cargo.toml only, see below) | screenpipe-audio |
 | `permission-flow` | permission-flow 0.1.40, tauri-plugin-permission-flow 0.1.40 (permission-flow-iced 0.1.40 is a member of its workspace, unused) | https://github.com/divanshu-go/permission-flow | `d7376a1b95acb78700e93505d8ca058e5ddb94ce` | 2026-06-09 | MIT (`LICENSE`; Swift package `crates/flow/PermissionFlow/LICENSE`, MIT) | app crate |
 | `muda` | muda 0.19.2 | https://github.com/divanshu-go/muda | `9dc5de53e84040a63c9a5423b669ec892de8a671` | 2026-06-04 | Apache-2.0 OR MIT (`LICENSE-APACHE`, `LICENSE-MIT`, `LICENSE.spdx`) | app crate (`[patch.crates-io]`; used by tauri and tray-icon) |
@@ -126,7 +126,7 @@ git dependencies:
 | accessibility 0.3.0, accessibility-sys 0.2.0 | https://github.com/eiz/accessibility | `173e898d4a52ee0afe0224ecb458d324057856e7` | 2025-12-31 | MIT OR Apache-2.0 | screenpipe-core, screenpipe-screen (macOS) |
 | tinfoil 0.1.0 | https://github.com/tinfoilsh/tinfoil-rs | `82143d767b540195dea265df0b01c4b4fc93c424` | 2026-05-08 | **AGPL-3.0** | screenpipe-engine, screenpipe-redact |
 | cidre 0.15.1 | https://github.com/yury/cidre | `8481f3f0dc7dd39bb5be80d9424bfac0cad3801a` | 2026-05-17 | MIT | screenpipe-engine, screenpipe-audio, screenpipe-screen, vendored cpal (macOS) |
-| cidre 0.15.1 (unpinned `git` requirement of vendored sck-rs) | https://github.com/yury/cidre | locked at `8481f3f0dc7dd39bb5be80d9424bfac0cad3801a` (root lockfile) and `7049fbfbb92a5b3ed034d3c3162e2fccf3dd5f3e`, 2026-05-25 (app lockfile) | see revision | MIT | sck-rs (macOS) |
+| cidre 0.15.1 (unpinned `git` requirement of vendored sck-rs) | https://github.com/yury/cidre | root lockfile: `8481f3f0dc7dd39bb5be80d9424bfac0cad3801a`; app lockfile: `7049fbfbb92a5b3ed034d3c3162e2fccf3dd5f3e` | 2026-05-17; 2026-05-25 | MIT | sck-rs (macOS) |
 | fix-path-env 0.0.0 | https://github.com/tauri-apps/fix-path-env-rs | `c4c45d503ea115a839aae718d02f79e7c7f0f673` | 2025-08-25 | Apache-2.0 OR MIT | app crate |
 | nokhwa-bindings-macos 0.2.0, nokhwa-core 0.1.0 | https://github.com/CapSoftware/nokhwa | `0d3d1f30a78bb4616b4a4d0939a29ad0c1a8e14f` | 2024-11-13 | Apache-2.0 | app crate (macOS) |
 | tauri-nspanel 2.0.1 | https://github.com/ahkohd/tauri-nspanel | `18ffb9a201fbf6fedfaa382fd4b92315ea30ab1a` | 2025-06-15 | Apache-2.0 OR MIT (licence files; no `license` field) | app crate (macOS) |
@@ -171,7 +171,7 @@ third_party/vendor.sh --check          # rebuild every tree in a temp dir and di
 ```
 
 To move a crate to another revision: make cargo fetch that revision once (a scratch project with a
-git dependency on it, then `cargo fetch`), update `REV` in the crate's `v_*` function in
-`vendor.sh`, refresh or drop its patches, run the script, update the tables above and run
+git dependency on it, then `cargo fetch`), change the revision passed to `start` in the crate's
+`v_*` function in `vendor.sh`, refresh or drop its patches, run the script, update the tables above and run
 `cargo metadata --locked --offline` for both workspaces. Never take a revision of a `screenpipe`
 organisation repository committed after 2026-06-10 (`CLAUDE.md`, provenance rules).

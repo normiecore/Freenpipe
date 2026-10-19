@@ -22,7 +22,9 @@
 # The cache only holds these revisions while some Cargo.toml still points at
 # the git sources (or on a machine that built Freenpipe before W0-13). To move
 # a crate to a new revision, point a scratch project at the new git revision,
-# `cargo fetch` it, update REV below, and run this script.
+# `cargo fetch` it, change the revision its v_* function passes to `start`
+# below, and run this script. Needs bash 4 or newer (macOS ships 3.2; use the
+# Homebrew bash there).
 set -euo pipefail
 
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
