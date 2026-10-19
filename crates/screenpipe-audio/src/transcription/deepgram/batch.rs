@@ -15,7 +15,9 @@ use tokio::net::lookup_host;
 use tracing::{debug, error, info};
 use url::Url;
 
-use crate::transcription::deepgram::DeepgramTranscriptionConfig;
+use crate::transcription::deepgram::{
+    transcription_endpoint_host_for_log, DeepgramTranscriptionConfig,
+};
 
 pub async fn transcribe_with_deepgram(
     config: &DeepgramTranscriptionConfig,
@@ -64,7 +66,8 @@ pub async fn transcribe_with_deepgram_detailed(
 
     let response = get_deepgram_response(config, audio_bytes, query_params, content_type).await;
 
-    handle_deepgram_response(response, device).await
+    let host = transcription_endpoint_host_for_log(&config.endpoint);
+    handle_deepgram_response(response, device, &host).await
 }
 
 fn create_mp3_data(audio_data: &[f32], sample_rate: u32) -> Result<(Vec<u8>, &'static str)> {
@@ -248,9 +251,12 @@ fn should_retry_ipv4(err: &reqwest::Error) -> bool {
         || err.contains("network is unreachable")
 }
 
+/// `host` is the transcription server's host name (no path, no token), used
+/// so network errors name the server the user actually configured.
 async fn handle_deepgram_response(
     response: Result<Response, reqwest::Error>,
     device: &str,
+    host: &str,
 ) -> Result<TranscriptionOutput> {
     match response {
         Ok(resp) => {
@@ -278,14 +284,16 @@ async fn handle_deepgram_response(
                 error!(
                     "device: {}, deepgram request blocked — received HTML instead of JSON (status {}). \
                      this usually means a firewall, corporate proxy, or captive portal is intercepting \
-                     requests to api.screenpipe.com. body preview: {}",
+                     requests to {}. body preview: {}",
                     device,
                     status,
+                    host,
                     &body_text[..body_text.len().min(500)]
                 );
                 return Err(anyhow::anyhow!(
                     "Audio transcription blocked by network (firewall/proxy). \
-                     Please check that api.screenpipe.com is accessible from your network."
+                     Please check that {} is reachable from your network.",
+                    host
                 ));
             }
 
@@ -377,11 +385,12 @@ async fn handle_deepgram_response(
             let err_str = format!("{:?}", e);
             if err_str.contains("timed out") || err_str.contains("timeout") {
                 error!(
-                    "device: {}, deepgram request timed out — possible firewall blocking api.screenpipe.com: {:?}",
-                    device, e
+                    "device: {}, deepgram request timed out — possible firewall blocking {}: {:?}",
+                    device, host, e
                 );
                 return Err(anyhow::anyhow!(
-                    "Audio transcription request timed out. Check if api.screenpipe.com is accessible from your network."
+                    "Audio transcription request timed out. Check that {} is reachable from your network.",
+                    host
                 ));
             }
             if err_str.contains("dns") || err_str.contains("resolve") {
@@ -399,7 +408,8 @@ async fn handle_deepgram_response(
                     device, e
                 );
                 return Err(anyhow::anyhow!(
-                    "Connection refused to audio transcription server. A firewall may be blocking api.screenpipe.com."
+                    "The transcription server at {} refused the connection; a firewall may be in the way.",
+                    host
                 ));
             }
 

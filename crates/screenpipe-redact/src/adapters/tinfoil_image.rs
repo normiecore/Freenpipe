@@ -5,7 +5,9 @@
 //! Tinfoil-enclave image-PII redactor.
 //!
 //! Sibling of [`crate::adapters::tinfoil::TinfoilRedactor`] — same auth /
-//! enclave / Bearer-token shape, but for the image modality. Sends a
+//! enclave / Bearer-token shape, but for the image modality. Like the text
+//! adapter it has no built-in enclave: without a user-configured enclave and
+//! attestation repo it refuses every request before touching the network. Sends a
 //! base64-encoded JPG/PNG to `POST {url}/image/detect` and parses
 //! `[{bbox, label, score}, …]` back out.
 //!
@@ -51,12 +53,13 @@ use reqwest::header::{HeaderValue, AUTHORIZATION};
 use serde::{Deserialize, Serialize};
 use tokio::sync::RwLock;
 
-use crate::adapters::tinfoil::{looks_like_attestation_drift, strip_scheme_and_path};
+use crate::adapters::tinfoil::{
+    looks_like_attestation_drift, not_configured_error, resolve_api_key_with, resolve_target,
+    TinfoilTarget,
+};
 use crate::image::{ImageRedactor, ImageRegion};
 use crate::{RedactError, SpanLabel};
 
-const DEFAULT_ENCLAVE: &str = "pii.screenpipe.containers.tinfoil.dev";
-const DEFAULT_REPO: &str = "screenpipe/privacy-filter";
 // Image inference is faster than text on the enclave (single forward
 // pass per frame, no per-row tokenization) — but allow generous
 // headroom for first-call cold-start + larger payloads.
@@ -73,15 +76,14 @@ const CLIENT_REFRESH: Duration = Duration::from_secs(60 * 60 * 12);
 /// adapter so users only configure auth once.
 #[derive(Debug, Clone, Default)]
 pub struct TinfoilImageConfig {
-    /// Override the enclave host. Falls back to
-    /// `SCREENPIPE_PRIVACY_FILTER_ENCLAVE`, then `SCREENPIPE_PRIVACY_FILTER_URL`,
-    /// then [`DEFAULT_ENCLAVE`]. Scheme + path are stripped.
+    /// Enclave host. Falls back to `SCREENPIPE_PRIVACY_FILTER_ENCLAVE`, then
+    /// `SCREENPIPE_PRIVACY_FILTER_URL`. Scheme + path are stripped. No default.
     pub enclave: Option<String>,
     /// GitHub repo (`org/repo`) cross-checked via Sigstore. Falls back
-    /// to `SCREENPIPE_PRIVACY_FILTER_REPO`, then [`DEFAULT_REPO`].
+    /// to `SCREENPIPE_PRIVACY_FILTER_REPO`. No default.
     pub repo: Option<String>,
-    /// Bearer token. Falls back through `SCREENPIPE_PRIVACY_FILTER_API_KEY`,
-    /// `SCREENPIPE_LOCAL_API_KEY`, then `SCREENPIPE_API_AUTH_KEY` (deprecated alias).
+    /// Bearer token. Falls back to `SCREENPIPE_PRIVACY_FILTER_API_KEY`;
+    /// never the local API key.
     pub api_key: Option<String>,
     /// Per-request timeout. Default 30 s.
     pub timeout: Option<Duration>,
@@ -105,8 +107,8 @@ struct CachedClient {
 }
 
 pub struct TinfoilImageRedactor {
-    enclave: String,
-    repo: String,
+    /// `None` when no enclave is configured.
+    target: Option<TinfoilTarget>,
     bearer: Option<HeaderValue>,
     timeout: Duration,
     threshold: f32,
@@ -120,8 +122,7 @@ pub struct TinfoilImageRedactor {
 impl std::fmt::Debug for TinfoilImageRedactor {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("TinfoilImageRedactor")
-            .field("enclave", &self.enclave)
-            .field("repo", &self.repo)
+            .field("target", &self.target)
             .field("threshold", &self.threshold)
             .field("has_auth", &self.has_auth)
             .finish()
@@ -130,24 +131,13 @@ impl std::fmt::Debug for TinfoilImageRedactor {
 
 impl TinfoilImageRedactor {
     pub fn new(cfg: TinfoilImageConfig) -> Self {
-        let enclave_raw = cfg
-            .enclave
-            .or_else(|| std::env::var("SCREENPIPE_PRIVACY_FILTER_ENCLAVE").ok())
-            .or_else(|| std::env::var("SCREENPIPE_PRIVACY_FILTER_URL").ok())
-            .unwrap_or_else(|| DEFAULT_ENCLAVE.to_string());
-        let enclave = strip_scheme_and_path(&enclave_raw).to_string();
-
-        let repo = cfg
-            .repo
-            .or_else(|| std::env::var("SCREENPIPE_PRIVACY_FILTER_REPO").ok())
-            .unwrap_or_else(|| DEFAULT_REPO.to_string());
-
-        let api_key = cfg.api_key.or_else(|| {
-            std::env::var("SCREENPIPE_PRIVACY_FILTER_API_KEY")
-                .ok()
-                .or_else(|| std::env::var("SCREENPIPE_LOCAL_API_KEY").ok())
-                .or_else(|| std::env::var("SCREENPIPE_API_AUTH_KEY").ok())
-        });
+        let target = resolve_target(cfg.enclave, cfg.repo);
+        if target.is_none() {
+            tracing::info!(
+                "tinfoil_image redactor has no enclave configured; it will not send anything"
+            );
+        }
+        let api_key = resolve_api_key_with(cfg.api_key, |name| std::env::var(name).ok());
 
         let (bearer, has_auth) = match api_key.as_deref() {
             Some(key) => match HeaderValue::from_str(&format!("Bearer {key}")) {
@@ -176,8 +166,7 @@ impl TinfoilImageRedactor {
         };
 
         Self {
-            enclave,
-            repo,
+            target,
             bearer,
             timeout: cfg.timeout.unwrap_or(DEFAULT_TIMEOUT),
             threshold,
@@ -196,10 +185,16 @@ impl TinfoilImageRedactor {
         self.has_auth
     }
 
+    /// Whether an enclave target was resolved at construction.
+    pub fn is_configured(&self) -> bool {
+        self.target.is_some()
+    }
+
     /// Verify the enclave and return its attested HTTP client. Mirrors
     /// [`crate::adapters::tinfoil::TinfoilRedactor::http`] — re-attests
     /// after `CLIENT_REFRESH`, or whenever [`invalidate`] is called.
     async fn http(&self) -> Result<reqwest::Client, RedactError> {
+        let target = self.target.as_ref().ok_or_else(not_configured_error)?;
         if let Some(c) = self.client.read().await.as_ref() {
             if c.created_at.elapsed() < CLIENT_REFRESH {
                 return Ok(c.http.clone());
@@ -211,12 +206,12 @@ impl TinfoilImageRedactor {
                 return Ok(c.http.clone());
             }
         }
-        let inner = tinfoil::Client::new(&self.enclave, &self.repo, "")
+        let inner = tinfoil::Client::new(&target.enclave, &target.repo, "")
             .await
             .map_err(|e| {
                 RedactError::Runtime(format!(
                     "tinfoil_image attestation failed for {}: {}",
-                    self.enclave, e
+                    target.enclave, e
                 ))
             })?;
         let http = inner
@@ -277,11 +272,12 @@ impl ImageRedactor for TinfoilImageRedactor {
         let bytes = tokio::fs::read(image_path)
             .await
             .map_err(|e| RedactError::Runtime(format!("read {}: {e}", image_path.display())))?;
+        let target = self.target.as_ref().ok_or_else(not_configured_error)?;
         let image_b64 = B64.encode(&bytes);
 
         let http = self.http().await?;
         let mut req = http
-            .post(format!("https://{}/image/detect", self.enclave))
+            .post(format!("https://{}/image/detect", target.enclave))
             .timeout(self.timeout)
             .json(&DetectRequest {
                 image_b64: &image_b64,
@@ -384,12 +380,30 @@ mod tests {
 
     #[test]
     fn no_api_key_means_no_auth() {
-        // Make sure no env var is leaking in.
+        // Make sure no env var is leaking in; the local API key must not be
+        // picked up as the enclave credential.
         std::env::remove_var("SCREENPIPE_PRIVACY_FILTER_API_KEY");
-        std::env::remove_var("SCREENPIPE_LOCAL_API_KEY");
-        std::env::remove_var("SCREENPIPE_API_AUTH_KEY");
+        std::env::set_var("SCREENPIPE_LOCAL_API_KEY", "local-only");
         let r = TinfoilImageRedactor::new(cfg());
         assert!(!r.has_auth());
+        assert!(r.is_configured());
+    }
+
+    #[tokio::test]
+    async fn unconfigured_detector_refuses_before_any_request() {
+        let r = TinfoilImageRedactor::new(TinfoilImageConfig {
+            enclave: None,
+            repo: None,
+            ..cfg()
+        });
+        if r.is_configured() {
+            return; // a developer exported an enclave in the environment
+        }
+        let dir = tempfile::tempdir().unwrap();
+        let img = dir.path().join("frame.jpg");
+        std::fs::write(&img, b"not really a jpeg").unwrap();
+        let err = r.detect(&img).await.unwrap_err();
+        assert!(err.to_string().contains("not configured"), "{err}");
     }
 
     #[test]

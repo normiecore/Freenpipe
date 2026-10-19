@@ -7,10 +7,34 @@ use std::{env, str::FromStr};
 use serde::{Deserialize, Serialize};
 use url::Url;
 
-const SCREENPIPE_CLOUD_REALTIME_URL: &str = "wss://api.screenpipe.com/v1/realtime";
 const DEEPGRAM_LIVE_URL: &str = "wss://api.deepgram.com/v1/listen";
+/// Path appended to an explicit `SCREENPIPE_MEETING_REALTIME_URL` that has
+/// none. The `screenpipe-cloud` live provider has no hosted default: it
+/// streams to that relay, or to `{AI gateway}/realtime`, and is unavailable
+/// when neither is configured.
 const SCREENPIPE_CLOUD_REALTIME_PATH: &str = "/v1/realtime";
 const DEEPGRAM_LIVE_PATH: &str = "/v1/listen";
+
+/// Relay endpoint for the `screenpipe-cloud` live provider, from an explicit
+/// relay URL or the AI gateway base. Empty when neither is configured.
+fn gateway_realtime_endpoint_with(
+    explicit_relay: Option<String>,
+    gateway_base: Option<String>,
+) -> String {
+    explicit_relay
+        .and_then(|value| normalize_realtime_endpoint(&value, SCREENPIPE_CLOUD_REALTIME_PATH))
+        .or_else(|| gateway_base.and_then(|base| screenpipe_core::ai_gateway::realtime_url(&base)))
+        .unwrap_or_default()
+}
+
+/// [`gateway_realtime_endpoint_with`] over the endpoint switchboard
+/// (`SCREENPIPE_MEETING_REALTIME_URL`, the AI gateway setting or env).
+fn gateway_realtime_endpoint() -> String {
+    gateway_realtime_endpoint_with(
+        screenpipe_core::endpoints::meeting_realtime_url(),
+        screenpipe_core::ai_gateway::base(),
+    )
+}
 
 /// Live transcription provider for meeting-only streaming.
 ///
@@ -73,11 +97,7 @@ impl Default for MeetingStreamingConfig {
                 DEEPGRAM_LIVE_URL,
                 DEEPGRAM_LIVE_PATH,
             ),
-            _ => endpoint_from_env(
-                &["SCREENPIPE_MEETING_REALTIME_URL"],
-                SCREENPIPE_CLOUD_REALTIME_URL,
-                SCREENPIPE_CLOUD_REALTIME_PATH,
-            ),
+            _ => gateway_realtime_endpoint(),
         };
         let default_model = match provider {
             MeetingStreamingProvider::SelectedEngine => "selected transcription engine",
@@ -86,12 +106,11 @@ impl Default for MeetingStreamingConfig {
             | MeetingStreamingProvider::DeepgramLive => "nova-3",
         };
 
-        Self {
+        let config = Self {
             enabled: true,
             provider,
-            auth_token: env::var("SCREENPIPE_MEETING_CLOUD_TOKEN")
-                .ok()
-                .filter(|s| !s.trim().is_empty()),
+            auth_token: env_non_empty("SCREENPIPE_MEETING_CLOUD_TOKEN")
+                .or_else(|| screenpipe_core::ai_gateway::credential(None)),
             api_key,
             endpoint,
             model: Some(
@@ -103,7 +122,8 @@ impl Default for MeetingStreamingConfig {
                 .filter(|s| !s.trim().is_empty()),
             local_speaker_name: env_non_empty("SCREENPIPE_MEETING_LOCAL_SPEAKER_NAME"),
             persist_finals: true,
-        }
+        };
+        config.local_fallback_if_gateway_unready()
     }
 }
 
@@ -145,11 +165,7 @@ impl MeetingStreamingConfig {
             }
             MeetingStreamingProvider::ScreenpipeCloud => {
                 self.api_key = None;
-                self.endpoint = endpoint_from_env(
-                    &["SCREENPIPE_MEETING_REALTIME_URL"],
-                    SCREENPIPE_CLOUD_REALTIME_URL,
-                    SCREENPIPE_CLOUD_REALTIME_PATH,
-                );
+                self.endpoint = gateway_realtime_endpoint();
                 self.model = Some(
                     env_non_empty("SCREENPIPE_MEETING_TRANSCRIPTION_MODEL")
                         .unwrap_or_else(|| "nova-3".to_string()),
@@ -172,6 +188,10 @@ impl MeetingStreamingConfig {
         self
     }
 
+    /// Build the config from app settings. `cloud_token` is the AI gateway
+    /// credential. A `screenpipe-cloud` choice that cannot run (no relay or
+    /// gateway, or no credential) falls back to the selected local engine so
+    /// live notes keep working.
     pub fn from_settings(
         enabled: bool,
         provider: &str,
@@ -180,11 +200,35 @@ impl MeetingStreamingConfig {
         language: Option<String>,
         local_speaker_name: Option<String>,
     ) -> Self {
+        Self::from_settings_with_relay(
+            enabled,
+            provider,
+            cloud_token,
+            provider_api_key_override,
+            language,
+            local_speaker_name,
+            gateway_realtime_endpoint(),
+        )
+    }
+
+    /// [`Self::from_settings`] with the gateway relay endpoint supplied by
+    /// the caller (empty when none is configured).
+    pub fn from_settings_with_relay(
+        enabled: bool,
+        provider: &str,
+        cloud_token: Option<String>,
+        provider_api_key_override: Option<String>,
+        language: Option<String>,
+        local_speaker_name: Option<String>,
+        gateway_relay: String,
+    ) -> Self {
         let requested_provider = MeetingStreamingProvider::from_str(provider)
             .unwrap_or(MeetingStreamingProvider::SelectedEngine);
         let auth_token = cloud_token.and_then(|token| non_empty_trimmed(&token));
-        let provider =
-            resolve_settings_provider(enabled, requested_provider, auth_token.as_deref());
+        // `selected-engine` is never promoted to a remote provider just
+        // because a credential exists: live notes stay on the local engine
+        // unless the user picks something else.
+        let provider = requested_provider;
         let provider_api_key_override =
             provider_api_key_override.and_then(|key| non_empty_trimmed(&key));
         let mut config = Self {
@@ -213,53 +257,46 @@ impl MeetingStreamingConfig {
                     .unwrap_or_else(|| "nova-3".to_string()),
             );
         } else if config.provider == MeetingStreamingProvider::ScreenpipeCloud {
-            config.endpoint = endpoint_from_env(
-                &["SCREENPIPE_MEETING_REALTIME_URL"],
-                SCREENPIPE_CLOUD_REALTIME_URL,
-                SCREENPIPE_CLOUD_REALTIME_PATH,
-            );
+            config.endpoint = gateway_relay;
             config.model = Some(
                 env_non_empty("SCREENPIPE_MEETING_TRANSCRIPTION_MODEL")
                     .unwrap_or_else(|| "nova-3".to_string()),
             );
         }
 
-        config
+        config.local_fallback_if_gateway_unready()
+    }
+
+    /// Swap an unusable `screenpipe-cloud` live provider for the selected
+    /// local engine. Other providers are returned unchanged.
+    fn local_fallback_if_gateway_unready(self) -> Self {
+        if self.provider == MeetingStreamingProvider::ScreenpipeCloud
+            && !self.live_transcription_ready()
+        {
+            tracing::info!(
+                "meeting streaming: no AI gateway relay or credential configured; live notes use the selected transcription engine"
+            );
+            return self.with_provider(MeetingStreamingProvider::SelectedEngine);
+        }
+        self
     }
 
     pub fn live_transcription_ready(&self) -> bool {
         match self.provider {
             MeetingStreamingProvider::Disabled => false,
             MeetingStreamingProvider::SelectedEngine => true,
-            MeetingStreamingProvider::ScreenpipeCloud => self
-                .auth_token
-                .as_deref()
-                .is_some_and(|token| !token.trim().is_empty()),
+            MeetingStreamingProvider::ScreenpipeCloud => {
+                !self.endpoint.trim().is_empty()
+                    && self
+                        .auth_token
+                        .as_deref()
+                        .is_some_and(|token| !token.trim().is_empty())
+            }
             MeetingStreamingProvider::DeepgramLive => self
                 .api_key
                 .as_deref()
                 .is_some_and(|key| !key.trim().is_empty()),
         }
-    }
-}
-
-fn resolve_settings_provider(
-    enabled: bool,
-    requested_provider: MeetingStreamingProvider,
-    cloud_token: Option<&str>,
-) -> MeetingStreamingProvider {
-    if !enabled || requested_provider != MeetingStreamingProvider::SelectedEngine {
-        return requested_provider;
-    }
-
-    if cloud_token.is_some_and(|token| !token.trim().is_empty()) {
-        // Paid/cloud users expect live meeting notes to use Screenpipe Cloud by
-        // default. `selected-engine` remains the non-cloud default, but once a
-        // cloud token is configured we promote it to cloud live unless the user
-        // disables live transcription or explicitly chooses another provider.
-        MeetingStreamingProvider::ScreenpipeCloud
-    } else {
-        MeetingStreamingProvider::SelectedEngine
     }
 }
 
@@ -329,29 +366,75 @@ fn normalize_realtime_endpoint(value: &str, default_path: &str) -> Option<String
 mod tests {
     use super::*;
 
+    const RELAY: &str = "wss://gateway.example.test/v1/realtime";
+
     #[test]
-    fn screenpipe_cloud_uses_cloud_token_for_readiness() {
-        let config = MeetingStreamingConfig::from_settings(
+    fn gateway_live_provider_streams_to_the_gateway_relay() {
+        let config = MeetingStreamingConfig::from_settings_with_relay(
             true,
             "screenpipe-cloud",
-            Some("cloud-token".to_string()),
+            Some("gateway-key".to_string()),
             None,
             None,
             Some("Alice".to_string()),
+            RELAY.to_string(),
         );
 
         assert_eq!(config.provider, MeetingStreamingProvider::ScreenpipeCloud);
+        assert_eq!(config.endpoint, RELAY);
         assert!(config.live_transcription_ready());
         assert_eq!(config.local_speaker_name.as_deref(), Some("Alice"));
     }
 
     #[test]
-    fn screenpipe_cloud_is_not_ready_without_cloud_login() {
-        let config =
-            MeetingStreamingConfig::from_settings(true, "screenpipe-cloud", None, None, None, None);
+    fn gateway_live_provider_falls_back_to_the_local_engine_without_a_relay() {
+        let config = MeetingStreamingConfig::from_settings_with_relay(
+            true,
+            "screenpipe-cloud",
+            Some("gateway-key".to_string()),
+            None,
+            None,
+            None,
+            String::new(),
+        );
 
-        assert_eq!(config.provider, MeetingStreamingProvider::ScreenpipeCloud);
-        assert!(!config.live_transcription_ready());
+        assert_eq!(config.provider, MeetingStreamingProvider::SelectedEngine);
+        assert!(config.live_transcription_ready());
+        assert!(
+            config.endpoint.is_empty(),
+            "nothing may be streamed anywhere"
+        );
+    }
+
+    #[test]
+    fn gateway_live_provider_falls_back_without_a_credential() {
+        let config = MeetingStreamingConfig::from_settings_with_relay(
+            true,
+            "screenpipe-cloud",
+            None,
+            None,
+            None,
+            None,
+            RELAY.to_string(),
+        );
+
+        assert_eq!(config.provider, MeetingStreamingProvider::SelectedEngine);
+    }
+
+    #[test]
+    fn relay_endpoint_comes_from_an_explicit_relay_or_the_gateway() {
+        assert_eq!(gateway_realtime_endpoint_with(None, None), "");
+        assert_eq!(
+            gateway_realtime_endpoint_with(None, Some("https://gateway.example.test/v1".into())),
+            "wss://gateway.example.test/v1/realtime"
+        );
+        assert_eq!(
+            gateway_realtime_endpoint_with(
+                Some("https://relay.example.test".into()),
+                Some("https://gateway.example.test/v1".into())
+            ),
+            "wss://relay.example.test/v1/realtime"
+        );
     }
 
     #[test]
@@ -367,19 +450,23 @@ mod tests {
     }
 
     #[test]
-    fn selected_engine_promotes_to_cloud_when_cloud_is_configured() {
-        let config = MeetingStreamingConfig::from_settings(
+    fn selected_engine_is_never_promoted_to_the_gateway() {
+        let config = MeetingStreamingConfig::from_settings_with_relay(
             true,
             "selected-engine",
-            Some("cloud-token".to_string()),
+            Some("gateway-key".to_string()),
             None,
             None,
             None,
+            RELAY.to_string(),
         );
 
-        assert_eq!(config.provider, MeetingStreamingProvider::ScreenpipeCloud);
+        assert_eq!(config.provider, MeetingStreamingProvider::SelectedEngine);
         assert!(config.live_transcription_ready());
-        assert_eq!(config.model.as_deref(), Some("nova-3"));
+        assert_eq!(
+            config.model.as_deref(),
+            Some("selected transcription engine")
+        );
     }
 
     #[test]
@@ -448,9 +535,12 @@ mod tests {
     #[test]
     fn realtime_endpoint_normalization_accepts_https_base_url() {
         assert_eq!(
-            normalize_realtime_endpoint("https://api.screenpi.pe", SCREENPIPE_CLOUD_REALTIME_PATH)
-                .as_deref(),
-            Some("wss://api.screenpi.pe/v1/realtime")
+            normalize_realtime_endpoint(
+                "https://relay.example.test",
+                SCREENPIPE_CLOUD_REALTIME_PATH
+            )
+            .as_deref(),
+            Some("wss://relay.example.test/v1/realtime")
         );
     }
 
