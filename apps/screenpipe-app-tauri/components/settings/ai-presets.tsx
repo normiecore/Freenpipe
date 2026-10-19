@@ -1559,7 +1559,7 @@ const AISection = ({
                           ))}
                         </CommandGroup>
                       )}
-                      <CommandGroup heading={models?.some((m) => m.free) ? "Included with Screenpipe" : "Available Models"}>
+                      <CommandGroup heading={models?.some((m) => m.free) ? "Included with your gateway" : "Available Models"}>
                         {models?.filter((m) => !m.free).map((model) => {
                           const costLabel = model.cost_tier === 'low' ? '$' : model.cost_tier === 'medium' ? '$$' : model.cost_tier === 'high' ? '$$$' : model.cost_tier === 'very_high' ? '$$$$' : '';
                           return (

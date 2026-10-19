@@ -8,6 +8,7 @@ import { MediaComponent } from "@/components/rewind/media";
 import { getApiBaseUrl } from "@/lib/api";
 import { isMediaFilePath, normalizeLocalMediaMarkdown, normalizeMediaFilePath } from "@/lib/utils/media-file-path";
 import { convertFileSrc } from "@tauri-apps/api/core";
+import { appDeepLink, isAppDeepLink, isAppDeepLinkProtocol } from "@/lib/brand";
 
 export function createScreenpipeUrlTransform(allowedHosts: readonly string[]) {
   const allowed = new Set(allowedHosts);
@@ -15,7 +16,7 @@ export function createScreenpipeUrlTransform(allowedHosts: readonly string[]) {
   return (url: string): string => {
     try {
       const parsed = new URL(url);
-      if (parsed.protocol === "screenpipe:" && allowed.has(parsed.host)) {
+      if (isAppDeepLinkProtocol(parsed.protocol) && allowed.has(parsed.host)) {
         return url;
       }
     } catch {
@@ -33,7 +34,7 @@ export const chatUrlTransform = createScreenpipeUrlTransform(["timeline", "frame
 export function screenpipeViewerPathFromHref(href: string): string | null {
   try {
     const url = new URL(href);
-    if (url.protocol !== "screenpipe:" || url.host !== "view") {
+    if (!isAppDeepLinkProtocol(url.protocol) || url.host !== "view") {
       return null;
     }
     return url.searchParams.get("path");
@@ -63,7 +64,7 @@ function unwrapMarkdownUrl(url: string): string {
 
 export function resolveLocalPathFromMarkdownUrl(url: string): string | null {
   const raw = unwrapMarkdownUrl(url);
-  if (!raw || raw.startsWith("screenpipe://")) {
+  if (!raw || isAppDeepLink(raw)) {
     return null;
   }
 
@@ -133,7 +134,7 @@ export function rewriteLocalMarkdownLinksForChat(text: string): string {
         return `[${label}](${wrapPathForMarkdown(normalizedMediaPath)})`;
       }
 
-      return `[${label}](screenpipe://view?path=${encodeURIComponent(localPath)})`;
+      return `[${label}](${appDeepLink(`view?path=${encodeURIComponent(localPath)}`)})`;
     },
   );
 }

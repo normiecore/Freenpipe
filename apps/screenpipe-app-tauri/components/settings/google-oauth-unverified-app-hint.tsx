@@ -29,7 +29,7 @@ export function GoogleOAuthUnverifiedAppHint() {
               <span className="font-medium text-foreground">Advanced</span>{" "}
               <ArrowRight className="mx-1 inline h-3 w-3 align-[-2px] text-muted-foreground" />
               <span className="font-medium text-foreground">
-                Go to Screenpipe
+                Go to Freenpipe
               </span>
             </span>
             .
@@ -54,7 +54,7 @@ export function GoogleOAuthUnverifiedAppHint() {
           </DialogHeader>
           <img
             src={WALKTHROUGH_IMAGE}
-            alt="Google OAuth warning walkthrough showing Advanced, then Go to Screenpipe unsafe"
+            alt="Google OAuth warning walkthrough showing Advanced, then Go to Freenpipe unsafe"
             className="max-h-[calc(100vh-10rem)] w-full rounded-md border border-border object-contain"
           />
         </DialogContent>

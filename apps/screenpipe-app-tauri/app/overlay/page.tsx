@@ -303,7 +303,7 @@ export default function OverlayPage() {
     try {
       toast({
         title: "restarting server",
-        description: "stopping screenpipe server...",
+        description: "stopping Freenpipe server...",
         duration: 3000,
       });
 
@@ -315,7 +315,7 @@ export default function OverlayPage() {
       
       toast({
         title: "restarting server",
-        description: "starting screenpipe server...",
+        description: "starting Freenpipe server...",
         duration: 3000,
       });
 
@@ -324,7 +324,7 @@ export default function OverlayPage() {
       
       toast({
         title: "server restarted",
-        description: "screenpipe server has been restarted successfully.",
+        description: "Freenpipe server has been restarted successfully.",
         duration: 3000,
       });
     } catch (error) {
@@ -333,7 +333,7 @@ export default function OverlayPage() {
         title: "restart failed",
         description: (
           <span>
-            failed to restart screenpipe server.{" "}
+            failed to restart Freenpipe server.{" "}
             <button
               type="button"
               className="underline underline-offset-2 text-inherit opacity-80 hover:opacity-100"
@@ -389,7 +389,7 @@ export default function OverlayPage() {
                 <div className="absolute inset-0 z-50 flex items-center justify-center bg-background/80 backdrop-blur-sm">
                   <div className="flex flex-col items-center gap-3">
                     <RefreshCw className="h-6 w-6 animate-spin text-muted-foreground" />
-                    <p className="text-sm text-muted-foreground">connecting to screenpipe...</p>
+                    <p className="text-sm text-muted-foreground">connecting to Freenpipe...</p>
                   </div>
                 </div>
               )}
@@ -409,7 +409,7 @@ export default function OverlayPage() {
                     <div>
                       <h2 className="text-2xl font-bold">Server Not Active</h2>
                       <p className="text-muted-foreground mt-2">
-                        The screenpipe server is not running. Start the server or check permissions to continue.
+                        The Freenpipe server is not running. Start the server or check permissions to continue.
                       </p>
                     </div>
                   </div>
@@ -423,7 +423,7 @@ export default function OverlayPage() {
                       <div>
                         <h3 className="font-semibold">Server Control</h3>
                         <p className="text-sm text-muted-foreground">
-                          Start or restart the screenpipe server
+                          Start or restart the Freenpipe server
                         </p>
                       </div>
                       <Button
@@ -445,7 +445,7 @@ export default function OverlayPage() {
                         <div>
                           <h3 className="font-semibold">System Permissions</h3>
                           <p className="text-sm text-muted-foreground">
-                            Ensure screenpipe has the necessary permissions to function properly
+                            Ensure Freenpipe has the necessary permissions to function properly
                           </p>
                         </div>
                         <div className="space-y-3">

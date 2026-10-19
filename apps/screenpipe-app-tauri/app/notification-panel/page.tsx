@@ -17,6 +17,7 @@ import {
 import { showChatWithPrefill } from "@/lib/chat-utils";
 import localforage from "localforage";
 import { localFetch } from "@/lib/api";
+import { isAppDeepLink, isDeepLinkTo } from "@/lib/brand";
 
 interface NotificationAction {
   label: string;
@@ -47,8 +48,7 @@ interface NotificationPayload {
 }
 
 function windowForDeeplink(url: string) {
-  return url.startsWith("screenpipe://meeting/") ||
-    url.startsWith("screenpipe://meeting?")
+  return isDeepLinkTo(url, "meeting")
     ? { Home: { page: "meetings" } }
     : "Main";
 }
@@ -168,7 +168,7 @@ export default function NotificationPanelPage() {
             }
             case "deeplink": {
               if (actionObj.url) {
-                if (actionObj.url.startsWith("screenpipe://")) {
+                if (isAppDeepLink(actionObj.url)) {
                   // Show the Main window FIRST — its DeeplinkHandler only
                   // routes events once mounted, and on macOS the window
                   // won't actually come to the foreground unless we activate
@@ -208,7 +208,7 @@ export default function NotificationPanelPage() {
                 }
               }
               const deeplink = actionObj.deeplink_url || actionObj.deeplinkUrl;
-              if (typeof deeplink === "string" && deeplink.startsWith("screenpipe://")) {
+              if (isAppDeepLink(deeplink)) {
                 await commands.showWindowActivated(windowForDeeplink(deeplink));
                 await new Promise((r) => setTimeout(r, 150));
                 await emit("deep-link-received", deeplink);
@@ -508,7 +508,7 @@ export default function NotificationPanelPage() {
           >
             {/* eslint-disable-next-line @next/next/no-img-element */}
             <img src="/32x32.png" alt="" width={14} height={14} style={{ borderRadius: "3px" }} />
-            screenpipe
+            Freenpipe
           </span>
           <button
             onClick={() => hide(false)}
@@ -785,17 +785,17 @@ export default function NotificationPanelPage() {
   );
 }
 
-const PIPE_SUGGESTION_PROMPT = `you are a screenpipe automation advisor. the user wants ideas for pipes (scheduled AI agents) they can create based on their actual workflow.
+const PIPE_SUGGESTION_PROMPT = `you are a Freenpipe automation advisor. the user wants ideas for pipes (scheduled AI agents) they can create based on their actual workflow.
 
-## what is screenpipe?
+## what is Freenpipe?
 
-screenpipe is a desktop app that continuously captures screen text (via accessibility APIs) and audio (transcription).
+Freenpipe is a desktop app that continuously captures screen text (via accessibility APIs) and audio (transcription).
 it runs a local API at http://localhost:3030 that lets you query everything you've seen, said, or heard.
 
 ## what is a pipe?
 
 a pipe is a scheduled AI agent defined as a single markdown file: ~/.screenpipe/pipes/{name}/pipe.md
-every N minutes, screenpipe runs a coding agent with the pipe's prompt.
+every N minutes, Freenpipe runs a coding agent with the pipe's prompt.
 the agent can query screen data, write files, call external APIs, send notifications, etc.
 
 ## your task
