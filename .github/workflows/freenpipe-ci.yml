@@ -333,13 +333,14 @@ jobs:
         with:
           bun-version: ${{ env.BUN_VERSION }}
 
-      # Report mode until W0-12 makes strict the default (see the test header).
+      # Strict by default since W0-12: any vendor host, commerce surface,
+      # upstream identity or "screenpipe" UI copy fails the job (see the test header).
       - name: Vendor-host guard
         run: |
           set -o pipefail
           bun test scripts/ci/vendor-guard.test.ts 2>&1 | tee "$RUNNER_TEMP/vendor-guard.log"
           {
-            echo "## Vendor-host guard (${VENDOR_GUARD_MODE:-report} mode)"
+            echo "## Vendor-host guard (${VENDOR_GUARD_MODE:-strict} mode)"
             echo
             echo '```'
             grep -E '^(vendor-guard:|  [a-z])' "$RUNNER_TEMP/vendor-guard.log" | head -n 40 || true

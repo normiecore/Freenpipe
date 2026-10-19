@@ -99,10 +99,11 @@ fn should_skip(name: &str) -> bool {
         || name.ends_with(".log")
 }
 
-/// Screenpipe skill file dropped on the remote so AI agents know how to query the data.
-const SCREENPIPE_SKILL: &str = r#"# Screenpipe Data Reference
+/// Skill file dropped on the remote so AI agents know how to query the data.
+/// The constant keeps its upstream name; the text names Freenpipe.
+const SCREENPIPE_SKILL: &str = r#"# Freenpipe Data Reference
 
-This directory contains synced data from [screenpipe](https://screenpi.pe) — an AI that knows everything you've seen, said, or heard.
+This directory holds data synced from [Freenpipe](https://github.com/normiecore/Freenpipe), a local-first memory of your screen and audio. The layout is the same as screenpipe's, so queries written for screenpipe data work here too.
 
 ## Database: db.sqlite
 

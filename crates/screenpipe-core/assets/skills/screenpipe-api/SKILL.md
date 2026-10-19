@@ -517,9 +517,9 @@ curl -X POST http://localhost:11435/notify \
 | `actions` | array | No | Action buttons |
 
 **Supported link types in body markdown:**
-- Web URLs: `[docs](https://docs.screenpi.pe)` — opens in browser
+- Web URLs: `[docs](https://example.com/docs)` — opens in browser
 - File paths: `[notes](~/notes/file.md)` or `[log](/var/log/app.log)` — opens in default app
-- Deeplinks: `[timeline](screenpipe://timeline)` — navigates within screenpipe
+- Deeplinks: `[timeline](screenpipe://timeline)` — navigates within the app (Freenpipe also accepts `freenpipe://`)
 
 Returns `{"success": true, "message": "Notification sent successfully"}`.
 
