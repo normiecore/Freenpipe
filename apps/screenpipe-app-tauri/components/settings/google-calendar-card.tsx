@@ -9,17 +9,13 @@ import { Button } from "@/components/ui/button";
 import {
   AlertTriangle,
   Loader2,
-  Lock,
   Plus,
   RefreshCw,
   Users,
   LogOut,
 } from "lucide-react";
 import { commands } from "@/lib/utils/tauri";
-import { useSettings } from "@/lib/hooks/use-settings";
-import { hasCloudEntitlement } from "@/lib/app-entitlement";
 import { notifyConnectionsUpdated } from "@/lib/connections-events";
-import { openUrl } from "@tauri-apps/plugin-opener";
 import { toast } from "@/components/ui/use-toast";
 import posthog from "posthog-js";
 import { localFetch } from "@/lib/api";
@@ -43,10 +39,16 @@ interface CalendarAccount {
   displayName: string | null;
 }
 
-export function GoogleCalendarCard({ onConnected, onDisconnected }: { onConnected?: () => void; onDisconnected?: () => void } = {}) {
-  const { settings } = useSettings();
-  // Freenpipe has no plans: OAuth integrations are never locked.
-  const isPro = hasCloudEntitlement(settings.user);
+export function GoogleCalendarCard({
+  onConnected,
+  onDisconnected,
+  connectBlockedReason,
+}: {
+  onConnected?: () => void;
+  onDisconnected?: () => void;
+  /** Why connecting is impossible right now (e.g. no OAuth app yet). */
+  connectBlockedReason?: string | null;
+} = {}) {
   const [accounts, setAccounts] = useState<CalendarAccount[]>([]);
   const [needsAttention, setNeedsAttention] = useState(false);
   const [isConnecting, setIsConnecting] = useState(false);
@@ -169,12 +171,9 @@ export function GoogleCalendarCard({ onConnected, onDisconnected }: { onConnecte
         onConnected?.();
       } else if (res.status === "error") {
         const msg = String(res.error ?? "");
-        const isProGate = msg.toLowerCase().includes("pro subscription");
         toast({
-          title: isProGate ? "business required" : "google calendar connect failed",
-          description: isProGate
-            ? "OAuth integrations need Business. Upgrade to connect Google Calendar."
-            : msg || "Unknown error",
+          title: "google calendar connect failed",
+          description: msg || "Unknown error",
           variant: "destructive",
         });
       }
@@ -255,36 +254,23 @@ export function GoogleCalendarCard({ onConnected, onDisconnected }: { onConnecte
                     </span>
                   </div>
                 )}
-                {!isPro ? (
-                  <div className="flex flex-col gap-1.5">
-                    <Button disabled size="sm" className="gap-1.5 h-7 text-xs opacity-60">
-                      <Lock className="h-3 w-3" />pro required
-                    </Button>
-                    <button
-                      onClick={() => openUrl("https://screenpi.pe/onboarding")}
-                      className="text-[10px] text-muted-foreground hover:text-foreground underline self-start"
-                    >
-                      upgrade to pro to connect
-                    </button>
-                  </div>
-                ) : (
-                  <Button
-                    variant="outline"
-                    size="sm"
-                    onClick={handleConnect}
-                    disabled={isConnecting}
-                    className="text-xs"
-                  >
-                    {isConnecting ? (
-                      <Loader2 className="h-3 w-3 mr-1.5 animate-spin" />
-                    ) : (
-                      <img src="/google-calendar-icon.svg" alt="" className="h-3 w-3 mr-1.5" />
-                    )}
-                    {isConnecting
-                      ? "Waiting for Google..."
-                      : "Connect Google Calendar"}
-                  </Button>
-                )}
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={handleConnect}
+                  disabled={isConnecting || !!connectBlockedReason}
+                  title={connectBlockedReason ?? undefined}
+                  className="text-xs"
+                >
+                  {isConnecting ? (
+                    <Loader2 className="h-3 w-3 mr-1.5 animate-spin" />
+                  ) : (
+                    <img src="/google-calendar-icon.svg" alt="" className="h-3 w-3 mr-1.5" />
+                  )}
+                  {isConnecting
+                    ? "Waiting for Google..."
+                    : "Connect Google Calendar"}
+                </Button>
                 <GoogleOAuthUnverifiedAppHint />
               </div>
             ) : (
@@ -322,7 +308,8 @@ export function GoogleCalendarCard({ onConnected, onDisconnected }: { onConnecte
                   variant="ghost"
                   size="sm"
                   onClick={handleConnect}
-                  disabled={isConnecting}
+                  disabled={isConnecting || !!connectBlockedReason}
+                  title={connectBlockedReason ?? undefined}
                   className="text-xs h-7 px-2"
                 >
                   {isConnecting ? (

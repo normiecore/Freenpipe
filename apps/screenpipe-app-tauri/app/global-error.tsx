@@ -7,6 +7,7 @@
 import { useEffect } from "react";
 import { commands } from "@/lib/utils/tauri";
 import { open as openUrl } from "@tauri-apps/plugin-shell";
+import { freenpipeLink } from "@/lib/web-url";
 
 export default function GlobalError({
   error,
@@ -79,10 +80,11 @@ export default function GlobalError({
               </button>
               <button
                 onClick={() => {
-                  // App is fully crashed — React providers are down.
-                  // Open Discord in default browser so user can report with the error message.
-                  openUrl("https://discord.com/invite/screenpipe").catch(() => {
-                    window.open("https://discord.com/invite/screenpipe", "_blank");
+                  // The React tree is gone, so open the issue tracker in the
+                  // system browser, where the error below can be pasted.
+                  const issueUrl = freenpipeLink("newIssue");
+                  openUrl(issueUrl).catch(() => {
+                    window.open(issueUrl, "_blank");
                   });
                 }}
                 style={{

@@ -25,10 +25,11 @@ import { ModelDownloadTracker } from "@/components/model-download-tracker";
 import Timeline from "@/components/rewind/timeline";
 import { Button } from "@/components/ui/button";
 import { Separator } from "@/components/ui/separator";
-import { RefreshCw, AlertTriangle, WifiOff, Upload, Loader, Check, Calendar, X } from "lucide-react";
+import { RefreshCw, AlertTriangle, WifiOff, Upload, Loader, Check, HelpCircle, X } from "lucide-react";
 import { useFeedbackStore } from "@/lib/stores/feedback-store";
 
 import { open as openUrl } from "@tauri-apps/plugin-shell";
+import { freenpipeLink } from "@/lib/web-url";
 import { readTextFile } from "@tauri-apps/plugin-fs";
 import { getVersion } from "@tauri-apps/api/app";
 import { version as osVersion, platform as osPlatform } from "@tauri-apps/plugin-os";
@@ -308,8 +309,9 @@ export default function OverlayPage() {
     }
   };
 
-  const openBookingLink = () => {
-    openUrl("https://cal.com/team/screenpipe/chat");
+  // Help lives in the project's GitHub discussions; there is no support call.
+  const openHelpLink = () => {
+    openUrl(freenpipeLink("discussions"));
   };
 
   const handleRestartServer = async () => {
@@ -499,11 +501,11 @@ export default function OverlayPage() {
                   <Button
                     variant="outline"
                     size="sm"
-                    onClick={openBookingLink}
+                    onClick={openHelpLink}
                     className="text-muted-foreground"
                   >
-                    <Calendar className="h-4 w-4 mr-1.5" />
-                    schedule call
+                    <HelpCircle className="h-4 w-4 mr-1.5" />
+                    get help
                   </Button>
                   <Button
                     variant="outline"

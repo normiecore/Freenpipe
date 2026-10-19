@@ -15,13 +15,16 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { Button } from "@/components/ui/button";
-import { Badge } from "@/components/ui/badge";
 import { useToast } from "@/components/ui/use-toast";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Lock, CloudUpload, AlertTriangle, Loader2, Play } from "lucide-react";
 import { open as openUrl } from "@tauri-apps/plugin-shell";
-import { commands } from "@/lib/utils/tauri";
+import { freenpipeLink } from "@/lib/web-url";
 import { localFetch } from "@/lib/api";
+import {
+  cloudStorageAvailability,
+  cloudStorageUnavailableMessage,
+} from "@/lib/cloud-storage";
 
 interface ArchiveStatus {
   enabled: boolean;
@@ -68,6 +71,19 @@ function formatRelativeTime(isoString: string): string {
 }
 
 export function ArchiveSettings() {
+  // Archiving uploads old data to a sync server. Without one the archive tab
+  // is hidden (see lib/cloud-storage.ts) and nothing here may run.
+  if (!cloudStorageAvailability.archive) {
+    return (
+      <p className="text-sm text-muted-foreground" data-testid="cloud-archive-unavailable">
+        {cloudStorageUnavailableMessage("archive")}
+      </p>
+    );
+  }
+  return <CloudArchivePanel />;
+}
+
+function CloudArchivePanel() {
   const { settings, updateSettings } = useSettings();
   const { toast } = useToast();
   const [status, setStatus] = useState<ArchiveStatus | null>(null);
@@ -184,71 +200,27 @@ export function ArchiveSettings() {
     }
   };
 
-  const handleCheckout = async () => {
-    if (!settings.user?.id) {
-      await commands.openLoginWindow();
-      return;
-    }
-    try {
-      const response = await fetch(
-        "https://screenpi.pe/api/cloud-sync/checkout",
-        {
-          method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-            Authorization: `Bearer ${settings.user?.token}`,
-          },
-          body: JSON.stringify({
-            tier: "pro",
-            billingPeriod: "monthly",
-            userId: settings.user?.id,
-            email: settings.user?.email,
-          }),
-        }
-      );
-      const data = await response.json();
-      if (data.url) {
-        openUrl(data.url);
-      }
-    } catch (error) {
-      toast({
-        title: "Failed to start checkout",
-        description: String(error),
-        variant: "destructive",
-      });
-    }
-  };
-
-  // Not a pro user — show upgrade prompt
+  // No hosted archive account: explain instead of selling one.
   if (!isProUser) {
     return (
       <div className="space-y-6">
         <p className="text-muted-foreground text-sm mb-4">
           Encrypt and archive old data to the cloud to free disk space.{" "}
           <button
-            onClick={() => openUrl("https://docs.screenpi.pe/cloud-archive")}
+            onClick={() => openUrl(freenpipeLink("docs"))}
             className="underline underline-offset-2 hover:text-foreground transition-colors"
           >
             Learn more
           </button>
         </p>
-        <div className="flex items-center gap-2">
-            <Badge variant="secondary" className="text-[10px]">
-              pro
-            </Badge>
-        </div>
-
         <Card>
           <CardContent className="p-5">
             <div className="flex items-center gap-3 mb-3">
               <Lock className="h-5 w-5 text-muted-foreground" />
               <p className="text-sm text-muted-foreground">
-                Cloud archive is available with Screenpipe Pro.
+                Cloud archive is not available: this build has no hosted archive service.
               </p>
             </div>
-            <Button size="sm" onClick={handleCheckout}>
-              {isLoggedIn ? "Upgrade to pro" : "Log in to upgrade"}
-            </Button>
           </CardContent>
         </Card>
       </div>
@@ -257,12 +229,6 @@ export function ArchiveSettings() {
 
   return (
     <div className="space-y-6">
-      <div className="flex items-center gap-2">
-          <Badge variant="secondary" className="text-[10px]">
-            pro
-          </Badge>
-      </div>
-
       {/* Retention selector */}
       <p className="text-sm text-muted-foreground">
           Encrypt and archive data older than{" "}
@@ -283,7 +249,7 @@ export function ArchiveSettings() {
           </Select>{" "}
           to free disk space.{" "}
           <button
-            onClick={() => openUrl("https://docs.screenpi.pe/cloud-archive")}
+            onClick={() => openUrl(freenpipeLink("docs"))}
             className="underline underline-offset-2 hover:text-foreground transition-colors"
           >
             Learn more

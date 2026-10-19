@@ -6,12 +6,10 @@
 import React, { useState, useEffect, useCallback } from "react";
 import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
-import { Loader2, Lock, LogOut, Mail, Plus } from "lucide-react";
+import { Loader2, LogOut, Mail, Plus } from "lucide-react";
 import { commands } from "@/lib/utils/tauri";
-import { useSettings } from "@/lib/hooks/use-settings";
-import { hasCloudEntitlement } from "@/lib/app-entitlement";
 import { notifyConnectionsUpdated } from "@/lib/connections-events";
-import { openUrl } from "@tauri-apps/plugin-opener";
+import { toast } from "@/components/ui/use-toast";
 import posthog from "posthog-js";
 import { GoogleOAuthUnverifiedAppHint } from "./google-oauth-unverified-app-hint";
 
@@ -20,10 +18,12 @@ interface GmailAccount {
   displayName: string | null;
 }
 
-export function GmailCard() {
-  const { settings } = useSettings();
-  // Freenpipe has no plans: OAuth integrations are never locked.
-  const isPro = hasCloudEntitlement(settings.user);
+export function GmailCard({
+  connectBlockedReason,
+}: {
+  /** Why connecting is impossible right now (e.g. no OAuth app yet). */
+  connectBlockedReason?: string | null;
+} = {}) {
   const [accounts, setAccounts] = useState<GmailAccount[]>([]);
   const [isConnecting, setIsConnecting] = useState(false);
   const [disconnecting, setDisconnecting] = useState<string | null>(null);
@@ -64,6 +64,9 @@ export function GmailCard() {
         posthog.capture("gmail_connected");
         await fetchAccounts();
         notifyConnectionsUpdated();
+      } else if (res.status === "error") {
+        // Usually a missing or rejected OAuth app; the backend message says which.
+        toast({ title: "gmail connect failed", description: String(res.error), variant: "destructive" });
       }
     } catch (e) {
       console.error("gmail oauth failed:", e);
@@ -153,43 +156,30 @@ export function GmailCard() {
             )}
 
             {/* Connect / Add account button */}
-            {!isPro && !connected ? (
-              <div className="flex flex-col gap-1.5">
-                <Button disabled size="sm" className="gap-1.5 h-7 text-xs opacity-60">
-                  <Lock className="h-3 w-3" />pro required
-                </Button>
-                <button
-                  onClick={() => openUrl("https://screenpipe.com/onboarding")}
-                  className="text-[10px] text-muted-foreground hover:text-foreground underline"
-                >
-                  upgrade to pro to connect
-                </button>
-              </div>
-            ) : (
-              <div className="space-y-2">
-                <Button
-                  variant="outline"
-                  size="sm"
-                  onClick={handleConnect}
-                  disabled={isConnecting}
-                  className="text-xs"
-                >
-                  {isConnecting ? (
-                    <Loader2 className="h-3 w-3 mr-1.5 animate-spin" />
-                  ) : connected ? (
-                    <Plus className="h-3 w-3 mr-1.5" />
-                  ) : (
-                    <Mail className="h-3 w-3 mr-1.5" />
-                  )}
-                  {isConnecting
-                    ? "Waiting for Google..."
-                    : connected
-                    ? "Add another account"
-                    : "Connect Gmail"}
-                </Button>
-                {!connected && <GoogleOAuthUnverifiedAppHint />}
-              </div>
-            )}
+            <div className="space-y-2">
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={handleConnect}
+                disabled={isConnecting || !!connectBlockedReason}
+                title={connectBlockedReason ?? undefined}
+                className="text-xs"
+              >
+                {isConnecting ? (
+                  <Loader2 className="h-3 w-3 mr-1.5 animate-spin" />
+                ) : connected ? (
+                  <Plus className="h-3 w-3 mr-1.5" />
+                ) : (
+                  <Mail className="h-3 w-3 mr-1.5" />
+                )}
+                {isConnecting
+                  ? "Waiting for Google..."
+                  : connected
+                  ? "Add another account"
+                  : "Connect Gmail"}
+              </Button>
+              {!connected && <GoogleOAuthUnverifiedAppHint />}
+            </div>
           </div>
         </div>
 

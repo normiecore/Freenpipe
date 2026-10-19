@@ -107,6 +107,21 @@ Wave 0 ran on the PC before the cloud phase. Tick anything you already checked t
   - Steps: open the tray menu.
   - Expected: no plan, upgrade or subscription entry.
   - Result:
+- [ ] **SMK-W0-05-3** (UI smoke) Help links and the changelog go to GitHub
+  - Setup: app dev run; network available.
+  - Steps: 1. Home > Help. 2. Click Documentation, Discussions, Feature ideas, Bug reports and Changelog in turn. 3. Open the changelog dialog (overlay window, or a `screenpipe://changelog` deep link). 4. Disconnect the network, clear `freenpipe:changelog-cache` from the webview's localStorage (devtools) and open the dialog again.
+  - Expected: every Help link opens a page under github.com/normiecore/Freenpipe; there is no Discord, YouTube or booking link. The dialog lists GitHub releases (or the empty-state link to the releases page when none are published); offline with no cache it shows the bundled CHANGELOG.md.
+  - Result:
+- [ ] **SMK-W0-05-4** (UI smoke) No plan lock or upgrade prompt on connections and onboarding
+  - Setup: fresh `FP_DD`; app dev run through onboarding.
+  - Steps: 1. On the "connect your world" onboarding step, look at the Notion card. 2. Open Connections and expand Gmail, Google Calendar, Google Sheets and Google Docs. 3. With the engine stopped, open the overlay window and click "get help".
+  - Expected: no lock overlay, "pro required" button or "upgrade to pro" link anywhere; every OAuth card shows its connect button; "get help" opens the GitHub Discussions page.
+  - Result:
+- [ ] **SMK-W0-05-5** (Runtime) The CLI has no team command and no vendor links
+  - Setup: release-dev engine build.
+  - Steps: 1. `screenpipe.exe team devices`. 2. `screenpipe.exe survey`. 3. Run `screenpipe.exe record --port 3035 --data-dir "$FP_DD"` for 6 minutes with a network monitor (Resource Monitor) open.
+  - Expected: 1 fails with a clap "unrecognized subcommand" error. 2 prints the GitHub Discussions and new-issue links and opens nothing. 3 prints at most a tip pointing at github.com/normiecore/Freenpipe; no connection to registry.npmjs.org or any vendor host.
+  - Result:
 
 ### W0-06 AI gateway, transcription, PII backend and media analysis to bring-your-own
 
@@ -128,13 +143,57 @@ Wave 0 ran on the PC before the cloud phase. Tick anything you already checked t
   - Steps: 1. Enter the client id and secret in the connection settings. 2. Connect Google Calendar and finish the browser consent.
   - Expected: the loopback callback completes; tokens are stored in the secret store (not in plain files); calendar events load.
   - Result:
+- [ ] **SMK-W0-07-2** (UI smoke) Without an OAuth app the connect button stays disabled and explains why
+  - Setup: app dev run with a fresh `FP_DD`; nothing entered under any connection's OAuth app.
+  - Steps: 1. Settings > Connections > Notion (any generic OAuth tile). 2. Open Zoom. 3. In Zoom, click "set up OAuth app", enter any client id and no redirect URI, save. 4. Open Google Calendar, then Gmail. 5. In Google Calendar click "set up OAuth app" and read the redirect URI to register. 6. Pipe onboarding or a pipe's post-install connections dialog: click connect on an OAuth tile (Notion).
+  - Expected: 1. A "Connecting needs your own Notion OAuth app" line with "set up OAuth app"; "connect with Notion" is disabled. 2. Same for Zoom. 3. Saving is refused with a message asking for an HTTPS relay URL; nothing is stored. 4. The same OAuth app line sits above each card, and the card's "Connect ..." button is disabled. 5. `http://localhost:3035/connections/oauth/callback` (the dev engine's port, not 3030). 6. The tile shows the "no OAuth app is configured ... Settings > Connections" message instead of silently going back to idle.
+  - Result:
+- [ ] **SMK-W0-07-3** (Manual) Token refresh goes straight to the provider with your client
+  - Setup: Google Calendar connected as in SMK-W0-07-1; engine log at `$FP_DD/engine.log`.
+  - Steps: 1. Wait for the access token to expire (about an hour) or leave the app running past the next refresh-scheduler tick after expiry. 2. Load upcoming events in the Google Calendar card. 3. `grep -iE 'oauth refresh' "$FP_DD/engine.log"`.
+  - Expected: events load without reconnecting; no refresh failure is logged; the only token host contacted is `oauth2.googleapis.com` (check with Resource Monitor or a proxy if in doubt).
+  - Result:
+- [ ] **SMK-W0-07-4** (Manual) MCP OAuth finishes on the local callback
+  - Setup: app dev run on port 3035; a remote MCP server that signs in with OAuth (Krisp, Plaud or any server added through Custom MCP).
+  - Steps: 1. Start its sign-in from Settings > Connections. 2. Look at the `redirect_uri` in the provider's browser URL. 3. Finish the consent.
+  - Expected: the redirect is `http://localhost:3035/mcp-servers/<id>/oauth/callback`; the tab shows the connected page and the server lists its tools.
+  - Result:
+- [ ] **SMK-W0-07-5** (Manual) Cal.com connects and refreshes with your own OAuth client
+  - Setup: a Cal.com OAuth client you registered, with redirect `http://localhost:3035/connections/oauth/callback`; app dev run; engine log at `$FP_DD/engine.log`.
+  - Steps: 1. Settings > Connections > Cal.com > "set up OAuth app": enter the client id and secret. 2. Connect and finish the browser consent. 3. After the access token expires (or the next refresh-scheduler tick after expiry), use the connection again. 4. `grep -iE 'oauth refresh|token exchange' "$FP_DD/engine.log"`.
+  - Expected: the code exchange at `https://app.cal.com/api/auth/oauth/token` succeeds and Cal.com shows as connected; the later refresh succeeds without reconnecting; no exchange or refresh failure is logged. If either fails, record the HTTP status and error body so the token endpoint in `crates/screenpipe-connect/src/connections/calcom.rs` can be corrected.
+  - Result:
 
 ### W0-08 Cloud sync, archive and pipe store off by default
 
-- [ ] **SMK-W0-08-1** (Runtime) The pipe store is empty without a base URL, and lists a self-hosted index
-  - Setup: engine on `$FP_PORT` with `SCREENPIPE_API_BASE_URL` unset; then a local static JSON server.
-  - Steps: 1. `GET /pipes/store`. 2. Restart with `SCREENPIPE_API_BASE_URL` pointing at the static server, then `GET /pipes/store` again.
-  - Expected: 1. HTTP 200 with an empty `data` array. 2. The store lists the server's pipes.
+- [ ] **SMK-W0-08-1** (Runtime) The pipe store is empty without a registry, and lists and installs from a local static index
+  - Setup: engine on `$FP_PORT` with `SCREENPIPE_API_BASE_URL` unset. A static registry in a temp dir:
+    `mkdir -p "$FP_DD/registry/pipes/hello"`,
+    `printf -- '---\nschedule: manual\nenabled: false\n---\n\nSay hello.\n' > "$FP_DD/registry/pipes/hello/pipe.md"`,
+    `echo '{"data":[{"slug":"hello","title":"Hello","version":1,"source_path":"pipes/hello/pipe.md"}]}' > "$FP_DD/registry/index.json"`,
+    then `python -m http.server 8765 --directory "$FP_DD/registry"` in a second shell.
+  - Steps: 1. `GET /pipes/store` and `GET /pipes/store/hello`. 2. Restart the engine with `SCREENPIPE_API_BASE_URL=http://127.0.0.1:8765/index.json`, then `GET /pipes/store` and `POST /pipes/store/install` with body `{"slug":"hello"}` (`-H "Content-Type: application/json" -d ...`). 3. `POST /pipes/store/publish` with `{}`.
+  - Expected: 1. HTTP 200 `{"data":[],"registry_configured":false}`; the detail call answers 503 with `"error_code":"registry_not_configured"`. 2. The list holds `hello`; install answers `{"success":true,"name":"hello",...}` and `$FP_DD/pipes/hello/pipe.md` exists with `source_slug: hello`. 3. HTTP 501 with `"error_code":"registry_read_only"`.
+  - Result:
+- [ ] **SMK-W0-08-2** (UI smoke) Storage settings offer no cloud archive or cloud sync
+  - Setup: app dev run against the isolated data dir.
+  - Steps: 1. Settings > Storage. 2. Search settings for "archive" and for "sync".
+  - Expected: only the Local tab is shown (no Archive or Sync tab), the section subtitle reads "Local disk", and the settings search finds no Archive or Sync entry.
+  - Result:
+- [ ] **SMK-W0-08-3** (Runtime) Cloud sync and archive never start, even for a store that had them enabled
+  - Setup: app dev run against the isolated data dir; engine reachable on `$FP_PORT`.
+  - Steps: 1. Start the app and read its log for the first minute. 2. `POST /archive/init` with `{"token":"x"}` and `POST /sync/init` with `{"token":"x","password":"y"}` (`-H "Content-Type: application/json"`).
+  - Expected: 1. The log shows "cloud sync: no sync server configured, skipping auto-start" and the same for cloud archive; these checks run before any stored setting is read, so an old `store.bin` with sync or archive enabled behaves the same. 2. Both answer HTTP 501 with an error saying cloud sync is not configured.
+  - Result:
+- [ ] **SMK-W0-08-4** (UI smoke) Pipe store tab explains the missing registry and has no publish or review controls
+  - Setup: app dev run with `SCREENPIPE_API_BASE_URL` unset; then again with the static index from SMK-W0-08-1.
+  - Steps: 1. Pipes > Discover. 2. Restart with the registry set, open Discover, open the `hello` pipe, install it.
+  - Expected: 1. A "no pipe registry configured" card, no PUBLISH button. 2. `hello` is listed; its detail page shows FORK and GET only (no EDIT, PUBLISH UPDATE or UNPUBLISH); GET installs it and switches to My Pipes.
+  - Result:
+- [ ] **SMK-W0-08-5** (UI smoke) "export pipe file" replaces share and publish
+  - Setup: app dev run with at least one pipe in My Pipes (the `hello` pipe from SMK-W0-08-4 works).
+  - Steps: 1. Open the pipe's overflow menu. 2. Choose "export pipe file" and save to the desktop. 3. Delete the pipe, then run `screenpipe pipe install <saved file>` (or use the install dialog).
+  - Expected: 1. The menu has "export pipe file" and no "copy share link" or "publish to store"; there is no upload icon on the pipe row. 2. The save dialog proposes `hello.md`; the file holds the pipe.md text and a toast confirms the export. 3. The pipe comes back under the same name.
   - Result:
 
 ### W0-10 Logs and feedback upload replaced by a local diagnostics bundle

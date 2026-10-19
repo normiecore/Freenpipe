@@ -102,7 +102,7 @@ Never fabricate frame IDs or timestamps.
 
 # Full API reference
 
-60+ endpoints (frames, audio, pipes, tags, etc.) at https://docs.screenpi.pe/llms-full.txt. Fetch when you need anything beyond /search, /activity-summary, or /speakers.
+The local server describes every endpoint (frames, audio, pipes, tags and more) itself: GET localhost:3030/openapi.json. Read it when you need anything beyond /search, /activity-summary or /speakers.
 
 # Rich rendering — only when it earns its space
 

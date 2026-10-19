@@ -6,6 +6,30 @@ exclude = [
     "apps/screenpipe-app-tauri/src-tauri",
     "crates/screenpipe-integrations",
 ]
+# What a bare `cargo build` / `cargo test` at the root operates on: every
+# member except screenpipe-team-memory, which nothing depends on until the
+# self-hosted team hub returns. `--workspace` and `-p` still reach it.
+# Add new crates here as well as under crates/.
+default-members = [
+    "crates/screenpipe-a11y",
+    "crates/screenpipe-apple-intelligence",
+    "crates/screenpipe-audio",
+    "crates/screenpipe-audio-eval",
+    "crates/screenpipe-capture",
+    "crates/screenpipe-config",
+    "crates/screenpipe-connect",
+    "crates/screenpipe-core",
+    "crates/screenpipe-db",
+    "crates/screenpipe-engine",
+    "crates/screenpipe-events",
+    "crates/screenpipe-meeting-eval",
+    "crates/screenpipe-redact",
+    "crates/screenpipe-rfdetr-mlx",
+    "crates/screenpipe-screen",
+    "crates/screenpipe-secrets",
+    "crates/screenpipe-sync",
+    "crates/screenpipe-vault",
+]
 resolver = "2"
 
 [workspace.package]
