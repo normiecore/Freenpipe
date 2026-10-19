@@ -30,8 +30,9 @@ function schemeOf(url: string): string | null {
   return match ? match[1].toLowerCase() : null;
 }
 
-/** True for `freenpipe://…` and the `screenpipe://…` alias. */
-export function isAppDeepLink(url: unknown): url is string {
+/** True for `freenpipe://…` and the `screenpipe://…` alias. Not a type
+ *  guard on purpose: a `false` must not narrow a string to `never`. */
+export function isAppDeepLink(url: unknown): boolean {
   if (typeof url !== "string") return false;
   const scheme = schemeOf(url);
   return scheme !== null && ACCEPTED_DEEP_LINK_SCHEMES.includes(scheme);
@@ -47,7 +48,7 @@ export function isAppDeepLinkProtocol(protocol: string): boolean {
  * `null` when the URL is not an in-app link.
  */
 export function deepLinkRoute(url: unknown): string | null {
-  if (!isAppDeepLink(url)) return null;
+  if (typeof url !== "string" || !isAppDeepLink(url)) return null;
   return url.trim().replace(/^[^:]+:\/\//, "");
 }
 

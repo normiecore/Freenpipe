@@ -206,7 +206,7 @@ const NotificationHandler: React.FC = () => {
           await open(action.url);
 
           const deeplink = action.deeplink_url || action.deeplinkUrl;
-          if (isAppDeepLink(deeplink)) {
+          if (typeof deeplink === "string" && isAppDeepLink(deeplink)) {
             await commands.showWindowActivated(windowForDeeplink(deeplink));
             await new Promise((r) => setTimeout(r, 150));
             const { emit } = await import("@tauri-apps/api/event");
@@ -226,7 +226,7 @@ const NotificationHandler: React.FC = () => {
         // Routing is on URL scheme, not the declared type, so a mislabeled
         // payload still works.
         if ((action.type === "link" || action.type === "deeplink") && action.url) {
-          if (isAppDeepLink(action.url)) {
+          if (typeof action.url === "string" && isAppDeepLink(action.url)) {
             await commands.showWindowActivated(windowForDeeplink(action.url));
             await new Promise((r) => setTimeout(r, 150));
             const { emit } = await import("@tauri-apps/api/event");

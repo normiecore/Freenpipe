@@ -860,6 +860,16 @@ mod tests {
     use super::*;
 
     #[test]
+    fn own_app_rows_are_filtered_under_either_name() {
+        // On Windows the captured app name is the exe's file description,
+        // which is the product name after the rebrand.
+        for name in ["Freenpipe", "Freenpipe Dev", "screenpipe", "screenpipe-app"] {
+            assert!(is_screenpipe_app(name), "{name}");
+        }
+        assert!(!is_screenpipe_app("Google Chrome"));
+    }
+
+    #[test]
     fn flexible_bool_accepts_common_truthy_falsy_values() {
         for s in ["true", "TRUE", "True", "1", "yes", "YES", "on", "  true  "] {
             assert_eq!(parse_flexible_bool(s), Ok(true), "expected true for `{s}`");

@@ -208,7 +208,7 @@ export default function NotificationPanelPage() {
                 }
               }
               const deeplink = actionObj.deeplink_url || actionObj.deeplinkUrl;
-              if (isAppDeepLink(deeplink)) {
+              if (typeof deeplink === "string" && isAppDeepLink(deeplink)) {
                 await commands.showWindowActivated(windowForDeeplink(deeplink));
                 await new Promise((r) => setTimeout(r, 150));
                 await emit("deep-link-received", deeplink);
