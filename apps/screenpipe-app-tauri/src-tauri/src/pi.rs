@@ -6,7 +6,8 @@
 //!
 //! Manages the pi coding agent via RPC mode (stdin/stdout JSON protocol).
 
-use screenpipe_core::agents::pi::screenpipe_cloud_models;
+use crate::ai_gateway::GatewayAccess;
+use screenpipe_core::agents::pi::{ensure_model_listed, screenpipe_cloud_models};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use specta::Type;
@@ -295,7 +296,11 @@ fn check_package_bin(pkg_dir: std::path::PathBuf, bin_name: &str) -> Option<Stri
 const PI_PACKAGE: &str = "@earendil-works/pi-coding-agent@0.75.4";
 const PI_AI_PACKAGE: &str = "@earendil-works/pi-ai@0.75.4";
 const PI_NAMESPACE_DIR: &str = "@earendil-works";
-const SCREENPIPE_API_URL: &str = "https://api.screenpipe.com/v1";
+
+/// Error returned when a chat asks for the gateway-backed provider but the
+/// user has not configured an AI gateway.
+const GATEWAY_REQUIRED: &str = "This preset uses the AI gateway provider, but no AI gateway is configured. \
+     Add one under Settings > AI, or pick another preset.";
 
 /// Pool of Pi sessions — each session_id gets its own PiManager/process.
 pub struct PiPool {
@@ -949,26 +954,25 @@ fn ensure_screenpipe_skill(project_dir: &str) -> Result<(), String> {
         .map_err(|e| format!("Failed to install screenpipe skills: {}", e))
 }
 
-/// Ensure the web-search extension exists in the project's .pi/extensions directory
-/// Install or remove the web-search extension based on provider.
-/// Web search uses the screenpipe cloud backend (Gemini + Google Search),
-/// so we only enable it for screenpipe-cloud presets to avoid sending
-/// user data to our backend when they chose a local/custom provider.
+/// Install or remove the web-search extension. Searches go to the user's AI
+/// gateway (`{gateway}/web-search`), so the tool is offered only to the
+/// gateway-backed provider and only when a gateway is configured.
 fn ensure_web_search_extension(
     project_dir: &str,
     provider_config: Option<&PiProviderConfig>,
+    gateway_configured: bool,
 ) -> Result<(), String> {
     let ext_dir = std::path::Path::new(project_dir)
         .join(".pi")
         .join("extensions");
     let ext_path = ext_dir.join("web-search.ts");
 
-    let is_screenpipe_cloud = match provider_config {
+    let is_gateway_provider = match provider_config {
         Some(config) => matches!(config.provider.as_str(), "screenpipe-cloud" | "pi"),
-        None => true, // default preset = screenpipe cloud
+        None => true, // no preset = the gateway provider
     };
 
-    if is_screenpipe_cloud {
+    if is_gateway_provider && gateway_configured {
         std::fs::create_dir_all(&ext_dir)
             .map_err(|e| format!("Failed to create extensions dir: {}", e))?;
 
@@ -982,8 +986,9 @@ fn ensure_web_search_extension(
             .map_err(|e| format!("Failed to remove web-search extension: {}", e))?;
 
         info!(
-            "Web search extension removed (provider {:?} is not screenpipe-cloud)",
-            provider_config.map(|c| &c.provider)
+            "Web search extension removed (provider {:?}, gateway configured: {})",
+            provider_config.map(|c| &c.provider),
+            gateway_configured
         );
     }
 
@@ -1039,23 +1044,33 @@ fn default_max_tokens() -> i32 {
 /// Returns a map of provider entries to merge into the existing models.json.
 /// We merge instead of rebuilding from scratch to avoid a race condition where
 /// concurrent pipes overwrite each other's providers.
+///
+/// The gateway-backed `screenpipe` provider is included only when the user
+/// configured an AI gateway; its model list comes from that gateway.
 async fn build_models_json(
-    user_token: Option<&str>,
+    gateway: Option<&GatewayAccess>,
     provider_config: Option<&PiProviderConfig>,
 ) -> serde_json::Value {
     let mut providers_map = serde_json::Map::new();
 
-    // Always add screenpipe cloud provider
-    let api_key_value = user_token.unwrap_or("SCREENPIPE_API_KEY");
-    let models = screenpipe_cloud_models(SCREENPIPE_API_URL, user_token).await;
-    let screenpipe_provider = json!({
-        "baseUrl": SCREENPIPE_API_URL,
-        "api": "openai-completions",
-        "apiKey": api_key_value,
-        "authHeader": true,
-        "models": models
-    });
-    providers_map.insert("screenpipe".to_string(), screenpipe_provider);
+    if let Some(gateway) = gateway {
+        let api_key_value = gateway.key.as_deref().unwrap_or("SCREENPIPE_API_KEY");
+        let wanted_model = provider_config
+            .filter(|c| matches!(c.provider.as_str(), "screenpipe-cloud" | "pi"))
+            .map(|c| c.model.as_str());
+        let models = ensure_model_listed(
+            screenpipe_cloud_models(&gateway.base, gateway.key.as_deref()).await,
+            wanted_model,
+        );
+        let screenpipe_provider = json!({
+            "baseUrl": gateway.base,
+            "api": "openai-completions",
+            "apiKey": api_key_value,
+            "authHeader": true,
+            "models": models
+        });
+        providers_map.insert("screenpipe".to_string(), screenpipe_provider);
+    }
 
     // Add the user's selected provider (if not screenpipe-cloud)
     if let Some(config) = provider_config {
@@ -1065,7 +1080,7 @@ async fn build_models_json(
             "native-ollama" => "ollama",
             "anthropic" => "anthropic-byok",
             "custom" => "custom",
-            _ => "", // screenpipe-cloud already added above
+            _ => "", // the gateway provider is handled above
         };
 
         if !provider_name.is_empty() {
@@ -1149,14 +1164,14 @@ async fn build_models_json(
 
 /// Write pi's provider config (models.json + auth.json).
 async fn ensure_pi_config(
-    user_token: Option<&str>,
+    gateway: Option<&GatewayAccess>,
     provider_config: Option<&PiProviderConfig>,
 ) -> Result<(), String> {
     let config_dir = get_pi_config_dir()?;
     std::fs::create_dir_all(&config_dir)
         .map_err(|e| format!("Failed to create pi config dir: {}", e))?;
 
-    let new_providers = build_models_json(user_token, provider_config).await;
+    let new_providers = build_models_json(gateway, provider_config).await;
 
     // Merge into existing models.json to avoid race conditions with concurrent pipes
     let models_path = config_dir.join("models.json");
@@ -1184,6 +1199,11 @@ async fn ensure_pi_config(
         for (k, v) in new {
             existing.insert(k.clone(), v.clone());
         }
+        // Without a gateway, drop our managed gateway entry: one left by an
+        // earlier screenpipe install points at the vendor's hosted gateway.
+        if gateway.is_none() && existing.remove("screenpipe").is_some() {
+            info!("Removed the screenpipe provider from pi config (no AI gateway configured)");
+        }
     }
 
     let models_str = serde_json::to_string_pretty(&models_config)
@@ -1191,8 +1211,8 @@ async fn ensure_pi_config(
     std::fs::write(&models_path, models_str)
         .map_err(|e| format!("Failed to write pi models config: {}", e))?;
 
-    // -- auth.json: merge screenpipe token, preserve other providers --
-    if let Some(token) = user_token {
+    // -- auth.json: merge the gateway key, preserve other providers --
+    if let Some(token) = gateway.and_then(|g| g.key.as_deref()) {
         let auth_path = config_dir.join("auth.json");
         let mut auth: serde_json::Value = if auth_path.exists() {
             let content = std::fs::read_to_string(&auth_path).unwrap_or_default();
@@ -1324,13 +1344,11 @@ fn kill_orphan_pi_processes(managed_alive: bool) {
 /// 200ms is enough to detect immediate-exit crashes without delaying first chat.
 const PI_READY_TIMEOUT: std::time::Duration = std::time::Duration::from_millis(200);
 
-/// Resolve a model name for the screenpipe provider.
+/// Resolve a model name for the gateway-backed `screenpipe` provider.
 ///
-/// The gateway (api.screenpipe.com) is the source of truth for model validation
-/// and supports many more models than the local hardcoded list (OpenRouter,
-/// Gemini, Anthropic, etc.). We only do lightweight normalization here
-/// (strip date suffixes) and pass through to the gateway which will reject
-/// unknown models with a proper error.
+/// The user's AI gateway is the source of truth for which models exist. We
+/// only do lightweight normalization here (strip date suffixes) and pass the
+/// name through; the gateway rejects unknown models with a proper error.
 fn resolve_screenpipe_model(requested: &str, provider: &str) -> String {
     // Only touch screenpipe provider — other providers use their own model names
     if provider != "screenpipe" {
@@ -1391,14 +1409,20 @@ pub async fn pi_start_inner(
     // Ensure screenpipe skills exist in project
     ensure_screenpipe_skill(&project_dir)?;
 
-    // Install web-search extension only for screenpipe-cloud presets
-    ensure_web_search_extension(&project_dir, provider_config.as_ref())?;
+    // The gateway provider talks to the user's AI gateway. `user_token` from
+    // the frontend is a cached screenpipe sign-in at best and is never used
+    // as a gateway credential; the key comes from the aiGatewayApiKey setting.
+    let _ = user_token;
+    let gateway = crate::ai_gateway::gateway_access(&app);
+
+    // Install web-search extension only for gateway presets with a gateway
+    ensure_web_search_extension(&project_dir, provider_config.as_ref(), gateway.is_some())?;
 
     // MCP bridge: lets the agent reach user-registered MCP servers.
     ensure_mcp_bridge_extension(&project_dir)?;
 
     // Ensure Pi is configured with the user's provider
-    ensure_pi_config(user_token.as_deref(), provider_config.as_ref()).await?;
+    ensure_pi_config(gateway.as_ref(), provider_config.as_ref()).await?;
 
     // Determine which Pi provider and model to use
     let (pi_provider, pi_model) = match &provider_config {
@@ -1417,6 +1441,9 @@ pub async fn pi_start_inner(
         }
         None => ("screenpipe".to_string(), "auto".to_string()),
     };
+    if pi_provider == "screenpipe" && gateway.is_none() {
+        return Err(GATEWAY_REQUIRED.to_string());
+    }
 
     let sid = session_id.to_string();
     let mut pool = state.0.lock().await;
@@ -1668,8 +1695,16 @@ pub async fn pi_start_inner(
         cmd.creation_flags(CREATE_NO_WINDOW);
     }
 
-    if let Some(ref token) = user_token {
-        cmd.env("SCREENPIPE_API_KEY", token);
+    // SCREENPIPE_API_KEY inside the agent is the gateway credential (bash
+    // subshells unset it). Never inherit the app's own value of that name.
+    cmd.env_remove("SCREENPIPE_API_KEY");
+    cmd.env_remove(screenpipe_core::ai_gateway::URL_ENV);
+    if let Some(ref gateway) = gateway {
+        if let Some(ref key) = gateway.key {
+            cmd.env("SCREENPIPE_API_KEY", key);
+        }
+        // Read by the web-search extension.
+        cmd.env(screenpipe_core::ai_gateway::URL_ENV, &gateway.base);
     }
 
     // Pass local API config so the Pi agent can authenticate to the runtime local API.
@@ -1697,6 +1732,10 @@ pub async fn pi_start_inner(
     if let Ok(p) = screenpipe_core::agents::bash_env::ensure_wrapper_in_default_dir() {
         cmd.env("BASH_ENV", p);
     }
+
+    // Bundled CLI for the agent: SCREENPIPE_CLI plus a `screenpipe` launcher
+    // ahead of the PATH set above.
+    screenpipe_core::agents::cli_runtime::apply_to_command(&mut cmd);
 
     // Pass the user's API key as env var for non-screenpipe providers
     if let Some(ref config) = provider_config {
@@ -2462,12 +2501,9 @@ pub async fn pi_check() -> Result<PiCheckResult, String> {
     })
 }
 
-/// Locate the bundled bun binary so the frontend can write absolute-path
-/// MCP configs (e.g. `{ command: <bun>, args: ["x", "screenpipe-mcp@latest"] }`)
-/// instead of `npx -y screenpipe-mcp`. npx requires a global Node install
-/// — many Claude Desktop users don't have it, and the silent first-run
-/// `npx` download often blows past Claude's MCP startup timeout. Using
-/// the bun we already ship sidesteps both failure modes.
+/// Locate the bun binary shipped with the app (falling back to a user
+/// install). MCP configs should use [`mcp_runtime_check`], which also
+/// returns the bundled MCP server entry point.
 #[tauri::command]
 #[specta::specta]
 pub async fn bun_check() -> Result<PiCheckResult, String> {
@@ -2475,6 +2511,49 @@ pub async fn bun_check() -> Result<PiCheckResult, String> {
     Ok(PiCheckResult {
         available: path.is_some(),
         path,
+    })
+}
+
+/// Absolute paths of the MCP server and CLI that ship with the app.
+#[derive(Debug, Clone, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct McpRuntimeCheck {
+    /// True when both `bun_path` and `entry_path` were found.
+    pub available: bool,
+    /// bun runtime that starts the MCP server.
+    pub bun_path: Option<String>,
+    /// Single-file build of `packages/screenpipe-mcp`.
+    pub entry_path: Option<String>,
+    /// The `screenpipe` CLI binary, when bundled.
+    pub cli_path: Option<String>,
+}
+
+/// Staging directory `scripts/pre_build.js` fills; searched after the
+/// install layout so development builds find a locally built MCP server.
+fn bundled_runtime_dev_roots() -> Vec<PathBuf> {
+    if cfg!(debug_assertions) {
+        vec![PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("bundled")]
+    } else {
+        Vec::new()
+    }
+}
+
+/// Locate the bundled MCP server so the frontend can write MCP configs that
+/// start it by absolute path (`<bun> <entry>`), with nothing fetched from a
+/// package registry.
+#[tauri::command]
+#[specta::specta]
+pub async fn mcp_runtime_check() -> Result<McpRuntimeCheck, String> {
+    use screenpipe_core::agents::cli_runtime;
+    let bun_path = find_bun_executable();
+    let entry_path = cli_runtime::bundled_mcp_entry(&bundled_runtime_dev_roots())
+        .map(|p| p.to_string_lossy().into_owned());
+    let cli_path = cli_runtime::bundled_cli().map(|p| p.to_string_lossy().into_owned());
+    Ok(McpRuntimeCheck {
+        available: bun_path.is_some() && entry_path.is_some(),
+        bun_path,
+        entry_path,
+        cli_path,
     })
 }
 
@@ -2490,6 +2569,7 @@ pub async fn bun_check() -> Result<PiCheckResult, String> {
 #[tauri::command]
 #[specta::specta]
 pub async fn pi_set_model(
+    app: AppHandle,
     state: State<'_, PiState>,
     session_id: Option<String>,
     provider_config: PiProviderConfig,
@@ -2508,6 +2588,9 @@ pub async fn pi_set_model(
         "screenpipe-cloud" | "pi" | _ => "screenpipe",
     };
     let pi_model = resolve_screenpipe_model(&provider_config.model, pi_provider);
+    if pi_provider == "screenpipe" && crate::ai_gateway::gateway_access(&app).is_none() {
+        return Err(GATEWAY_REQUIRED.to_string());
+    }
 
     let queue = {
         let mut pool = state.0.lock().await;
@@ -3428,15 +3511,32 @@ error: InstallFailed extracting tarball"#;
         }
     }
 
+    /// A gateway on a closed loopback port: model listing fails fast and the
+    /// placeholder list is used, so these tests never leave the machine.
+    fn test_gateway(key: Option<&str>) -> crate::ai_gateway::GatewayAccess {
+        crate::ai_gateway::GatewayAccess {
+            base: "http://127.0.0.1:9/v1".to_string(),
+            key: key.map(str::to_string),
+        }
+    }
+
     #[tokio::test]
-    async fn test_build_models_json_default_has_screenpipe_provider() {
+    async fn test_build_models_json_without_a_gateway_has_no_gateway_provider() {
         let config = build_models_json(None, None).await;
         let providers = config["providers"].as_object().unwrap();
-        assert!(providers.contains_key("screenpipe"));
+        assert!(providers.is_empty());
+        assert!(!config.to_string().contains("screenpipe.com"));
+    }
+
+    #[tokio::test]
+    async fn test_build_models_json_gateway_provider_uses_the_gateway() {
+        let gateway = test_gateway(None);
+        let config = build_models_json(Some(&gateway), None).await;
+        let providers = config["providers"].as_object().unwrap();
         assert_eq!(providers.len(), 1);
 
         let sp = &providers["screenpipe"];
-        assert_eq!(sp["baseUrl"], "https://api.screenpipe.com/v1");
+        assert_eq!(sp["baseUrl"], "http://127.0.0.1:9/v1");
         assert_eq!(sp["api"], "openai-completions");
         assert_eq!(sp["apiKey"], "SCREENPIPE_API_KEY");
         assert_eq!(sp["authHeader"], true);
@@ -3444,20 +3544,44 @@ error: InstallFailed extracting tarball"#;
     }
 
     #[tokio::test]
-    async fn test_build_models_json_with_user_token() {
-        let config = build_models_json(Some("tok_abc123"), None).await;
+    async fn test_build_models_json_with_gateway_key() {
+        let gateway = test_gateway(Some("gw_abc123"));
+        let config = build_models_json(Some(&gateway), None).await;
         let sp = &config["providers"]["screenpipe"];
-        assert_eq!(sp["apiKey"], "tok_abc123");
+        assert_eq!(sp["apiKey"], "gw_abc123");
     }
 
     #[tokio::test]
-    async fn test_build_models_json_screenpipe_cloud_no_extra_provider() {
-        let pc = make_provider_config("screenpipe-cloud", "auto");
-        let config = build_models_json(None, Some(&pc)).await;
+    async fn test_build_models_json_screenpipe_cloud_lists_the_chosen_model() {
+        let gateway = test_gateway(None);
+        let pc = make_provider_config("screenpipe-cloud", "llama3.1:70b");
+        let config = build_models_json(Some(&gateway), Some(&pc)).await;
         let providers = config["providers"].as_object().unwrap();
-        // screenpipe-cloud maps to "" (empty), so only the screenpipe provider is added
+        // screenpipe-cloud maps to "" (empty), so only the gateway provider is added
         assert_eq!(providers.len(), 1);
-        assert!(providers.contains_key("screenpipe"));
+        let ids: Vec<&str> = providers["screenpipe"]["models"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(|m| m["id"].as_str())
+            .collect();
+        assert!(ids.contains(&"llama3.1:70b"), "{ids:?}");
+    }
+
+    #[test]
+    fn test_web_search_extension_needs_a_gateway() {
+        let dir = tempfile::tempdir().unwrap();
+        let project = dir.path().to_string_lossy().to_string();
+        let ext = dir.path().join(".pi").join("extensions").join("web-search.ts");
+        let pc = make_provider_config("screenpipe-cloud", "auto");
+
+        super::ensure_web_search_extension(&project, Some(&pc), false).unwrap();
+        assert!(!ext.exists());
+        super::ensure_web_search_extension(&project, Some(&pc), true).unwrap();
+        assert!(ext.exists());
+        let ollama = make_provider_config("native-ollama", "llama3");
+        super::ensure_web_search_extension(&project, Some(&ollama), true).unwrap();
+        assert!(!ext.exists());
     }
 
     #[tokio::test]
@@ -3465,8 +3589,8 @@ error: InstallFailed extracting tarball"#;
         let pc = make_provider_config("openai", "gpt-4o");
         let config = build_models_json(None, Some(&pc)).await;
         let providers = config["providers"].as_object().unwrap();
-        assert_eq!(providers.len(), 2);
-        assert!(providers.contains_key("screenpipe"));
+        assert_eq!(providers.len(), 1);
+        assert!(!providers.contains_key("screenpipe"));
         assert!(providers.contains_key("openai-byok"));
 
         let openai = &providers["openai-byok"];
@@ -3506,7 +3630,7 @@ error: InstallFailed extracting tarball"#;
         let pc = make_provider_config("custom", "my-model");
         let config = build_models_json(None, Some(&pc)).await;
         let providers = config["providers"].as_object().unwrap();
-        assert_eq!(providers.len(), 1); // only screenpipe
+        assert!(providers.is_empty());
         assert!(!providers.contains_key("custom"));
     }
 
@@ -3516,7 +3640,7 @@ error: InstallFailed extracting tarball"#;
         pc.url = "http://my-server:8080/v1".to_string();
         let config = build_models_json(None, Some(&pc)).await;
         let providers = config["providers"].as_object().unwrap();
-        assert_eq!(providers.len(), 2);
+        assert_eq!(providers.len(), 1);
         assert!(providers.contains_key("custom"));
         assert_eq!(providers["custom"]["baseUrl"], "http://my-server:8080/v1");
     }
@@ -3603,7 +3727,8 @@ error: InstallFailed extracting tarball"#;
         // provider, build_models_json always produces a clean config with only
         // the providers we explicitly add. This is a pure function so there is
         // no file to corrupt — the test verifies the output shape is always valid.
-        let config = build_models_json(Some("tok"), None).await;
+        let gateway = test_gateway(Some("tok"));
+        let config = build_models_json(Some(&gateway), None).await;
         let providers = config["providers"].as_object().unwrap();
 
         // Only "screenpipe" — no leftover providers

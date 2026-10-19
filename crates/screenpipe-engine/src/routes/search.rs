@@ -548,7 +548,9 @@ pub(crate) async fn search(
 
     // Redact PII on the final item set (post-dedup, pre-frame-extract) so we
     // don't pay for Tinfoil calls on entries we're about to discard or on
-    // binary frame data. Fail closed — return 503 rather than leak raw text.
+    // binary frame data. Without an enclave this redacts on the device and
+    // cannot fail; a configured enclave fails closed — return 503 rather
+    // than leak raw text.
     if query.filter_pii {
         let filter = crate::privacy_filter::global();
 

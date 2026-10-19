@@ -23,7 +23,10 @@
             "onnxruntime*\\lib\\onnxruntime.dll": "./",
             "openblas\\bin\\*.dll": "./",
             "vcredist\\*.dll": "./",
-            "assets/*": "./assets/"
+            "assets/*": "./assets/",
+            "bundled\\cli": "./",
+            "bundled\\mcp": "./mcp/",
+            "bundled\\models": "./models/"
         }
     }
 }

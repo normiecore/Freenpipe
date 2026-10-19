@@ -135,6 +135,31 @@ Wave 0 ran on the PC before the cloud phase. Tick anything you already checked t
   - Steps: repeat the request from SMK-W0-06-1.
   - Expected: the mock logs the forwarded request; the engine returns the mock's answer.
   - Result:
+- [ ] **SMK-W0-06-3** (UI smoke) A fresh install starts on a local Ollama preset with nothing remote configured
+  - Setup: installed screenpipe quit; fresh `FP_DD` (no `store.bin`); `scripts/dev/app-dev.sh`.
+  - Steps: 1. Finish onboarding. 2. Open Settings > AI. 3. Open Settings > Privacy and Settings > Recording. 4. Optional: `netstat -b` while doing this.
+  - Expected: one preset named `default` on Ollama (`http://localhost:11434/v1`) with no model picked; the AI gateway card is not selected and says to set a gateway URL; transcription is Whisper Turbo (fast) or Parakeet; the AI gateway engine is not offered; "AI audio & video analysis" is off and disabled; no connection to any screenpipe or Tinfoil host.
+  - Result:
+- [ ] **SMK-W0-06-4** (UI smoke) A user gateway serves chat, models and the agent
+  - Setup: a local OpenAI-compatible server (for example LiteLLM in front of Ollama) at `http://127.0.0.1:4000/v1`; app dev run.
+  - Steps: 1. Settings > AI > new preset > **AI gateway**; enter the URL and key; leave the fields. 2. Pick a model from the list. 3. Make it the default and send a chat message. 4. Shift+drag a region in the timeline (region OCR) with a vision model on the gateway.
+  - Expected: the model list comes from the gateway; the chat answers; region OCR copies text; `%USERPROFILE%\.pi\agent\models.json` has a `screenpipe` provider whose `baseUrl` is your URL.
+  - Result:
+- [ ] **SMK-W0-06-5** (UI smoke) A screenpipe store on hosted settings is migrated once
+  - Setup: a synthetic `store.bin` (never a real one) whose settings hold presets with `"provider": "screenpipe-cloud"`, `"audioTranscriptionEngine": "screenpipe-cloud"`, `"piiBackend": "tinfoil"`, `"cloudMediaAnalysisEnabled": true`; no gateway configured.
+  - Steps: 1. Start the app on it. 2. Open Settings > AI, Recording and Privacy.
+  - Expected: the hosted presets became Ollama presets (same names, no model); the transcription alert says the AI gateway is not active and Whisper is in use, and a notification "AI gateway transcription unavailable" appears; the PII backend shows Local and no enclave option; media analysis is off.
+  - Result:
+- [ ] **SMK-W0-06-6** (Runtime) Live notes fall back to the local engine without a gateway relay
+  - Setup: engine/app with `meetingLiveTranscriptionProvider` set to `screenpipe-cloud`, no gateway; a microphone.
+  - Steps: start a meeting from the tray and talk for a minute.
+  - Expected: live captions arrive from the selected local engine; the log says live notes use the selected transcription engine; no websocket to any remote host.
+  - Result:
+- [ ] **SMK-W0-06-7** (Runtime) `filter_pii=true` redacts on the device without an enclave
+  - Setup: engine on `$FP_PORT` with a throwaway data dir, no `SCREENPIPE_PRIVACY_FILTER_*` variables; open a text editor showing a made-up address such as `rowan.pell@example.test` and a made-up name for a minute so it is captured.
+  - Steps: 1. `curl -s -H "Authorization: Bearer $SCREENPIPE_API_KEY" "http://127.0.0.1:$FP_PORT/search?q=example.test&limit=5&filter_pii=true" -w ' %{http_code}'`. 2. Restart the engine with AI PII removal on (`--async-pii-redaction`, a DirectML build), wait for the log line `filter_pii: local text model available`, and repeat step 1 with `q=` set to a word next to the name.
+  - Expected: step 1 returns HTTP 200 with the address replaced by a placeholder (no 503); step 2 also replaces the name, and the request takes at most about a second longer than without `filter_pii`.
+  - Result:
 
 ### W0-07 OAuth broker replaced by BYO client credentials
 
@@ -196,12 +221,55 @@ Wave 0 ran on the PC before the cloud phase. Tick anything you already checked t
   - Expected: 1. The menu has "export pipe file" and no "copy share link" or "publish to store"; there is no upload icon on the pipe row. 2. The save dialog proposes `hello.md`; the file holds the pipe.md text and a toast confirms the export. 3. The pipe comes back under the same name.
   - Result:
 
+### W0-09 Bundled CLI/MCP runtime and self-hosted model sources
+
+- [ ] **SMK-W0-09-1** (Manual) The installer ships the CLI, the MCP server and the speaker models
+  - Setup: an NSIS bundle built with `FREENPIPE_BUILD_CLI=1` and `FREENPIPE_REQUIRE_BUNDLED_RUNTIME=1` in the environment of `bun tauri build` (the build fails if a piece is missing).
+  - Steps: 1. Install it. 2. In the install folder, check `screenpipe.exe`, `mcp\screenpipe-mcp.js`, `models\pyannote\segmentation-3.0.onnx` (5,983,836 bytes) and `models\pyannote\wespeaker_en_voxceleb_CAM++.onnx` (29,292,684 bytes). 3. Run `"<install>\screenpipe.exe" --help` from cmd.
+  - Expected: all four files exist with those sizes; the CLI prints its help without a missing-DLL error.
+  - Result:
+- [ ] **SMK-W0-09-2** (UI smoke) Claude Desktop is connected through the bundled MCP server by absolute path
+  - Setup: the installed build from SMK-W0-09-1, Claude Desktop installed and opened once; no Node.js needed.
+  - Steps: 1. Settings > Connections > Claude > connect. 2. Open `%APPDATA%\Claude\claude_desktop_config.json`. 3. Restart Claude Desktop and ask it to summarize your screen activity of the last few minutes.
+  - Expected: `mcpServers.screenpipe.command` is `<install>\bun.exe`, `args[0]` is `<install>\mcp\screenpipe-mcp.js`, `env.SCREENPIPE_LOCAL_API_KEY` is set; no `npx`, `bun x` or `@latest` anywhere; Claude lists the screenpipe tools and answers from local data.
+  - Result:
+- [ ] **SMK-W0-09-3** (Runtime) Agents run the bundled CLI, never a registry copy
+  - Setup: installed build, an AI preset that works; Process Monitor optional.
+  - Steps: 1. In chat, ask the agent to run `echo $SCREENPIPE_CLI && screenpipe pipe list`. 2. Check `<data dir>\pi-agent\bin\` for `screenpipe` and `screenpipe.cmd`. 3. Run a pipe once (Settings > Pipes > run) and read its log.
+  - Expected: `SCREENPIPE_CLI` is `<install>\screenpipe.exe`; `pipe list` prints the pipe table; both launchers exist and point at that path; no `bun x`/`npx` process starts during the run.
+  - Result:
+- [ ] **SMK-W0-09-4** (Runtime) Speaker models load from the install folder with the network off
+  - Setup: installed build; delete `segmentation-3.0.onnx` and `wespeaker_en_voxceleb_CAM++.onnx` from `%LOCALAPPDATA%\screenpipe\models` if present; disconnect the network.
+  - Steps: 1. Start recording with audio on and speak for a minute. 2. Search the app log for `using installed`.
+  - Expected: the log names both models under `<install>\models\pyannote\`; no download attempt is logged; speaker segments appear in the timeline.
+  - Result:
+
 ### W0-10 Logs and feedback upload replaced by a local diagnostics bundle
 
 - [ ] **SMK-W0-10-1** (UI smoke) "Share logs" writes a local diagnostics bundle
   - Setup: app dev run.
   - Steps: Help > share logs.
   - Expected: `<FP_DD>/feedback/<timestamp>.zip` appears, the UI shows the completion state, and nothing is uploaded.
+  - Result:
+- [ ] **SMK-W0-10-2** (UI smoke) The bundle is complete and scrubbed
+  - Setup: app dev run with a fresh `FP_DD`; in Settings add an AI preset with a fake API key such as `sk-test-0123456789abcdef`; copy any small file to `<FP_DD>\crash-dumps\test.dmp`.
+  - Steps: 1. Help > share logs, type a note that contains an e-mail address, tick "include recent chat history", save. 2. Open the newest zip in `<FP_DD>\feedback\` with Explorer.
+  - Expected: the zip holds `README.txt`, `feedback.txt`, `settings.json`, `health.json`, `report.json`, `logs\screenpipe-app.*.log` and `crash-dumps\test.dmp`; the API key appears as `[redacted]` in `settings.json`; the e-mail address appears as `[EMAIL]` in `feedback.txt`; paths in the logs read `C:\Users\[USER]\...`; `report.json` says `"uploaded": false`.
+  - Result:
+- [ ] **SMK-W0-10-3** (UI smoke) Completion actions: show in folder and the prefilled GitHub issue
+  - Setup: as SMK-W0-10-1, after a bundle was saved.
+  - Steps: 1. Click "show in folder". 2. Click "open github issue".
+  - Expected: 1. Explorer opens with the zip selected. 2. The browser opens `https://github.com/normiecore/Freenpipe/issues/new` with the title and body filled in (note, Freenpipe version, Windows version, bundle file name) and no full local path; nothing is attached or submitted automatically.
+  - Result:
+- [ ] **SMK-W0-10-4** (UI smoke) "Save logs" on the engine-down and onboarding-stuck screens
+  - Setup: app dev run; make the engine fail to start (for example, occupy the dev port first with `python -m http.server 3035`).
+  - Steps: 1. On the timeline overlay's "server not running" screen click "save logs", then click it again. 2. With a fresh `FP_DD`, reach the onboarding engine-startup step, wait for the stuck state and click "save logs".
+  - Expected: each first click writes a new zip under `<FP_DD>\feedback\` whose `report.json` `source` is `server-not-running` and `onboarding-stuck` respectively; a second click opens Explorer on the saved zip instead of writing another.
+  - Result:
+- [ ] **SMK-W0-10-5** (Runtime) Saving a bundle makes no outbound connection
+  - Setup: app dev run; Resource Monitor > Network > TCP Connections, filtered to the Freenpipe dev process.
+  - Steps: save a bundle from Help > share logs with a screenshot attached.
+  - Expected: no connection to any host other than 127.0.0.1 appears while the bundle is written.
   - Result:
 
 ### W0-11 SQLite toolchain upgrade (sqlx 0.9, libsqlite3-sys 0.37, rusqlite vtab)

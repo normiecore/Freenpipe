@@ -32,6 +32,7 @@ mod analytics;
 #[allow(deprecated)]
 mod icons;
 mod agent_event_emitter;
+mod ai_gateway;
 mod audio_exclusions;
 mod calendar;
 mod capture_session;
@@ -114,6 +115,7 @@ pub use permissions::request_permission;
 use tauri::AppHandle;
 #[cfg(target_os = "macos")]
 mod dock_menu;
+mod feedback_upload;
 mod health;
 mod log_files;
 mod native_notification;
@@ -1505,16 +1507,14 @@ async fn main() {
             // Initialize enhanced AI config from saved settings
             {
                 if let Ok(Some(store)) = crate::store::SettingsStore::get(&app_handle) {
+                    // Enhanced AI uses the default AI preset; no account token.
                     if store.enhanced_ai {
-                        let token = store.user.token.clone().unwrap_or_default();
-                        if !token.is_empty() {
-                            // Use try_lock — blocking_lock panics inside a tokio runtime context
-                            if let Ok(mut guard) = suggestions_state.enhanced_ai.try_lock() {
-                                *guard = Some(suggestions::EnhancedAIConfig {
-                                    enabled: true,
-                                    token,
-                                });
-                            }
+                        // Use try_lock — blocking_lock panics inside a tokio runtime context
+                        if let Ok(mut guard) = suggestions_state.enhanced_ai.try_lock() {
+                            *guard = Some(suggestions::EnhancedAIConfig {
+                                enabled: true,
+                                token: String::new(),
+                            });
                         }
                     }
                 }

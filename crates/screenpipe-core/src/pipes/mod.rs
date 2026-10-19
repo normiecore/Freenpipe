@@ -935,25 +935,19 @@ fn resolve_preset(pipes_dir: &Path, preset_id: &str) -> Option<ResolvedPreset> {
     let store_path = pipes_dir.parent()?.join("store.bin");
 
     if !store_path.exists() {
-        // Bootstrap for CLI users who don't have the app.
-        // Default to screenpipe cloud — user needs SCREENPIPE_API_KEY env var.
-        // Mirrors the app's first-install seed (use-settings.tsx makeDefaultPresets):
-        // non-pro Sonnet for chat, Haiku for pipes. Users can swap to Opus 4.7 later.
+        // Bootstrap for CLI users who don't have the app. Mirrors the app's
+        // first-install seed: one local Ollama preset. The model is left for
+        // the user to pick (`screenpipe pipe models update default --model …`);
+        // nothing remote is configured.
         let default_store = serde_json::json!({
             "settings": {
                 "aiPresets": [
                     {
-                        "id": "chat",
-                        "model": "claude-sonnet-4-5",
-                        "provider": "screenpipe-cloud",
+                        "id": "default",
+                        "model": "",
+                        "provider": "native-ollama",
+                        "url": "http://localhost:11434/v1",
                         "defaultPreset": true,
-                        "maxContextChars": 200000
-                    },
-                    {
-                        "id": "pipes",
-                        "model": "claude-haiku-4-5",
-                        "provider": "screenpipe-cloud",
-                        "defaultPreset": false,
                         "maxContextChars": 200000
                     }
                 ]
@@ -968,7 +962,7 @@ fn resolve_preset(pipes_dir: &Path, preset_id: &str) -> Option<ResolvedPreset> {
                 let _ =
                     std::fs::set_permissions(&store_path, std::fs::Permissions::from_mode(0o600));
             }
-            info!("created store.bin with default presets (chat: sonnet, pipes: haiku)");
+            info!("created store.bin with a default local Ollama preset (pick a model to use it)");
         }
     }
 

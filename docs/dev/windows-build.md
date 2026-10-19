@@ -65,6 +65,22 @@ ffmpeg comes from the GyanD GitHub mirror. The files land in
 `apps/screenpipe-app-tauri/src-tauri/` (`ffmpeg/`, `openblas/`,
 `onnxruntime-win-x64-*/`, `vcredist/`, `bun-x86_64-pc-windows-msvc.exe`).
 
+`pre_build.js` also stages the runtime the installer puts next to the app
+(`scripts/stage_bundled_runtime.js`, output in `src-tauri/bundled/`): the MCP
+server built from `packages/screenpipe-mcp` into one file, the two pyannote
+speaker models (from an LFS checkout, otherwise downloaded from this
+repository's LFS storage and checked against their SHA-256), and the
+`screenpipe` CLI. The CLI is only staged when you ask for it, because it
+needs a release build of the engine:
+
+```bash
+FREENPIPE_BUILD_CLI=1 bun scripts/pre_build.js                        # builds and stages it
+FREENPIPE_CLI_BINARY=/path/to/screenpipe.exe bun scripts/pre_build.js  # stages a prebuilt one
+```
+
+Installer builds should also set `FREENPIPE_REQUIRE_BUNDLED_RUNTIME=1`, which
+turns a missing piece into a build error instead of a warning.
+
 ## 4. Engine (CLI) build
 
 ```bash

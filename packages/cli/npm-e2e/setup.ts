@@ -14,6 +14,8 @@ export type TestContext = {
   registryUrl: string;
   workDir: string;
   stagedCliRoot: string;
+  /** Version just published to the local registry (tests pin to it). */
+  version: string;
   verdaccioChild: ChildProcess;
   livenessSeconds: number;
 };
@@ -23,13 +25,14 @@ export async function setup(args: Args): Promise<TestContext> {
 
   const workDir = fs.mkdtempSync(path.join(os.tmpdir(), "screenpipe-npm-record-"));
   const server = await startVerdaccio(args, workDir);
-  const state = readJson<{ stagedCliRoot: string }>(STATE_FILE);
+  const state = readJson<{ stagedCliRoot: string; version: string }>(STATE_FILE);
   await publishPackages(state.stagedCliRoot, server.registryUrl, workDir);
 
   return {
     registryUrl: server.registryUrl,
     workDir,
     stagedCliRoot: state.stagedCliRoot,
+    version: state.version,
     verdaccioChild: server.child,
     livenessSeconds: Number(args["liveness-seconds"] || 10),
   };

@@ -17,7 +17,8 @@ export async function testRecord(ctx: TestContext): Promise<void> {
     "--yes",
     "--registry",
     ctx.registryUrl,
-    "screenpipe@latest",
+    // the exact build just published to the local registry
+    `screenpipe@${ctx.version}`,
     "record",
     "--disable-audio",
     "--disable-vision",
@@ -51,7 +52,7 @@ export async function testRecord(ctx: TestContext): Promise<void> {
   let earlyExit: { code: number | null; signal: NodeJS.Signals | null } | null = null;
   child.once("exit", (code, signal) => (earlyExit = { code, signal }));
   await sleep(ctx.livenessSeconds * 1000);
-  if (earlyExit) fail(`npx screenpipe@latest record exited before ${ctx.livenessSeconds}s`);
+  if (earlyExit) fail(`npx screenpipe@${ctx.version} record exited before ${ctx.livenessSeconds}s`);
   appendLog(logFile, `\nrecord stayed alive for ${ctx.livenessSeconds}s\n`);
 
   // clean shutdown

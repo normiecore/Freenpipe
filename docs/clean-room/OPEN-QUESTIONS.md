@@ -186,6 +186,292 @@ taken and the reason. Later work packages may revisit a decision; say so under t
   Decision: only for a registry API (best-effort `POST {base}/api/pipes/store/{slug}/install` to the user's own server); static indexes have none.
   Reason: there is no vendor default any more, so the counter only reaches a server the user chose.
 
+## W0-06
+
+1. **Where does the AI gateway credential come from?**
+   Decision: a new `aiGatewayApiKey` setting next to `aiGatewayUrl` (both typed fields on the app's
+   `SettingsStore`, optional in TypeScript), pushed into the running engine with the existing
+   `set_cloud_token` command; headless runs use `SCREENPIPE_AI_GATEWAY_KEY`. The engine's
+   `SCREENPIPE_API_KEY` (the local API key in Freenpipe) and any cached screenpipe sign-in token are
+   never sent to a gateway.
+   Reason: cloud-042 names only the URL setting, and cloud-013 says the cloud-token plumbing carries
+   the gateway key; reusing `SCREENPIPE_API_KEY` or `user.token` would leak the local key or a vendor
+   token to a third-party host. Two settings keys were added in this WP (PLAN.md section 2 rule 7).
+
+2. **What exactly is the gateway base URL?**
+   Decision: the OpenAI-style base including its version path (for example `http://127.0.0.1:4000/v1`),
+   like a custom preset URL. Feature paths are appended to it: `chat/completions`, `models`, `listen`,
+   `realtime` (websocket scheme) and `web-search`.
+   Reason: cloud-042 says the helper "appends paths `/chat/completions`, `/models`, `/usage`, `/listen…`"
+   to the base, which only works when the base carries the version segment.
+
+3. **How are stored `screenpipe-cloud` presets migrated?**
+   Decision: once (flag `_freenpipeCloudPresetMigrated`), when no gateway is configured, each preset on
+   `screenpipe-cloud` or legacy `pi` becomes a local Ollama preset in place, keeping its id, prompt and
+   default flag, with the model cleared. With a gateway configured they are kept (legacy `pi` renamed).
+   The Rust store and the frontend run the same step under the same flag.
+   Reason: keeping ids lets pipes that name a preset still resolve it; the vendor model names mean
+   nothing to Ollama. Running it in Rust too means pipes see migrated presets before the UI loads.
+
+4. **Fresh preset has an empty model.**
+   Decision: as the spec says (`model: ""`, the user picks). Consequence: pipes and chat on the default
+   preset fail until a model is picked. A clearer "pick a model" error in pipe preset resolution
+   (`crates/screenpipe-core/src/pipes/mod.rs`, not an owner path here) is left to the pipes WPs.
+
+5. **Should a stored `piiBackend: "tinfoil"` always become `local`?**
+   Decision: yes, once (flag `_freenpipePrivacyDefaultsApplied`, which also turns off the legacy
+   `analyticsEnabled` and `cloudMediaAnalysisEnabled`). The enclave option is shown only when
+   `SCREENPIPE_PRIVACY_FILTER_ENCLAVE` (or `_URL`), `SCREENPIPE_PRIVACY_FILTER_REPO` and
+   `SCREENPIPE_PRIVACY_FILTER_API_KEY` are all set; no settings field was added for it. The attestation
+   repo has no default any more, and the local API key is no longer an enclave credential fallback.
+   Reason: a stored `tinfoil` in a screenpipe store points at the vendor enclave; re-selecting it after
+   configuring your own enclave is one click. Environment-only configuration avoids more settings keys
+   for a power-user feature. The enclave host is read through the W0-01 switchboard
+   (`endpoints::privacy_filter_base()`, same variable names) by the engine and the app, so a later
+   settings override applies everywhere.
+
+6. **How is the cloud media analysis opt-in stored?**
+   Decision: a `cloud_media_analysis.enabled` marker in the data dir records the opt-in; the screenpipe
+   opt-out marker `cloud_media_analysis.disabled` is honoured and written on opt-out. The skill block is
+   injected only with the opt-in and a configured gateway. The block was rewritten for a user gateway and
+   names no model (the gateway decides which multimodal models exist).
+   Reason: cloud-M01 asks for "missing marker means disabled", which needs a positive marker.
+
+7. **Gateway transcription and live notes readiness.**
+   Decision: the `screenpipe-cloud` STT engine needs a gateway URL *and* key, otherwise it falls back to
+   Whisper with the new `gatewayNotConfigured` reason (the `notLoggedIn`/`notSubscribed` reasons are
+   gone). The live relay is an explicit `SCREENPIPE_MEETING_REALTIME_URL` or `{gateway}/realtime` and
+   also needs the key; a `screenpipe-cloud` live choice without them falls back to the selected local
+   engine. `selected-engine` stays on the service the batch engine already uses: with the gateway engine
+   it may use the gateway relay, with the user's own Deepgram engine it may use direct Deepgram live, and
+   otherwise (or when that live path is not ready) it keeps the selected engine. It is never moved to a
+   different remote service.
+   Reason: the existing live and batch clients always send a Bearer credential, and a chat-only gateway
+   (for example LiteLLM) has no Deepgram-format `/realtime`.
+
+8. **Web search without a vendor route.**
+   Decision: the agent web-search extension calls `{gateway}/web-search` directly (base exported to the
+   agent as `SCREENPIPE_AI_GATEWAY_URL`) and is installed only for the gateway provider with a gateway
+   configured. No engine `/v1/web-search` route was added.
+   Reason: PLAN.md section 5 gives the `web_search` route to a W1-03 stub filled by a later WP;
+   registering the path here would collide with it.
+
+9. **Enhanced AI suggestions and the workflow classifier.**
+   Decision: enhanced suggestions call the default AI preset (OpenAI-compatible chat; gateway presets go
+   through the local proxy; ChatGPT OAuth presets are not used). The classifier starts only when
+   `SCREENPIPE_EVENT_CLASSIFIER_URL` is set. Its bearer token is `SCREENPIPE_EVENT_CLASSIFIER_KEY` (new
+   variable), else the gateway key only when the classifier URL has the gateway's origin; a gateway key
+   is never sent to another host.
+   Reason: cloud-016 says both "use the default BYO preset" and "classifier only runs if … is set".
+
+10. **`use-usage-status.tsx` overlaps with W0-05.**
+    Decision: this WP removed the hook's only caller (the quota badge in `ai-presets.tsx`) and deleted the
+    file, because W0-06 must remove the `/v1/usage` poll. If W0-05 edited the file, resolve the conflict
+    by deleting it.
+
+11. **`packages/ai-gateway`.**
+    Decision: left in place, documented as not built or shipped (`packages/ai-gateway/FREENPIPE.md`); no
+    workspace or workflow referenced it. The vendor guard still reports its hosts; W0-12 should skip the
+    directory or the owner can delete it.
+
+12. **What does `/search?filter_pii=true` do without an enclave?**
+    Decision: it redacts on the device. The deterministic `screenpipe-redact` regex pass (emails,
+    phone numbers, cards, national IDs, connection strings, API-key and private-key shapes, every class
+    it detects) runs on every text. When the "AI PII removal" worker has loaded the local ONNX text
+    model, the engine registers it with the search filter and it also runs on the regex output, every
+    class it detects, cached per text and limited to a 1 s budget per request (texts it does not reach,
+    or fails on, keep the regex result). No model is downloaded or loaded at search time, and the OPF
+    fallback model is never used here (too slow and too large to load inside a request). This path
+    cannot fail. A configured enclave (`SCREENPIPE_PRIVACY_FILTER_ENCLAVE` or `_URL` plus `_REPO`) is
+    used instead and still fails closed with 503 `privacy_filter_unavailable` on enclave errors.
+    Reason: specs/api.md says "implement locally (`screenpipe-redact` regex/NER)". Failing closed when
+    nothing is configured would break the onboarding live feed, every pipe whose manifest sets
+    `privacy_filter: true` (DECISIONS #1) and the e2e search contract (no 5xx for `filter_pii=true`).
+
+13. **Where is the gateway key stored?**
+    Decision: for now `aiGatewayApiKey` sits in `store.bin` like the existing preset `apiKey`,
+    `deepgramApiKey` and `openaiCompatibleApiKey` (encrypted at rest only when `encryptStore` is on;
+    the `.last-good` recovery snapshot is plain JSON). It is visible to the webview through the
+    settings object and is written into the agent's `~/.pi/agent/models.json`/`auth.json` like other
+    provider keys. Follow-up (owner: the W1-02 settings
+    schema or a dedicated secrets WP): move every AI provider key, this one included, into
+    `screenpipe_secrets::SecretStore` and push it into the engine with `set_cloud_token`.
+    Reason: moving only the new key would leave the same exposure for the older keys and split one
+    settings page across two stores; the move is a cross-cutting change outside this WP's paths.
+
+## W0-09
+
+1. **Where is the "Freenpipe-controlled mirror" for the pyannote models, and what are the file names?**
+   - Decision: this repository's own Git LFS storage, read through GitHub's media endpoint at the
+     import commit:
+     `https://media.githubusercontent.com/media/normiecore/Freenpipe/bcef0bcde5e6ea12db811a27047ef63869b7374a/crates/screenpipe-audio/models/pyannote/`
+     followed by the repository file name, percent-encoded (`segmentation-3.0.onnx`,
+     `wespeaker_en_voxceleb_CAM%2B%2B.onnx`). `DEFAULT_MODEL_BASE_URL` in
+     `crates/screenpipe-audio/src/speaker/models.rs` and `scripts/stage_bundled_runtime.js` use the same
+     base. Downloads are checked against the size and SHA-256 in the Git LFS pointers. An HTTP 404 or
+     410 is treated as permanent: the downloader does not retry it, and callers waiting for the model
+     get the error at once instead of after the two-minute timeout.
+   - Reason: those LFS objects were imported with the fork, the endpoint serves them byte-identical to
+     the pointers, and a commit id cannot move, so no release has to be created. An earlier draft of
+     this WP pointed at a release (`pyannote-models-v1`) that did not exist; the engine then spent about
+     four minutes retrying 404s before it started its server. The local file names are unchanged, so
+     existing caches keep working.
+   - No owner action is needed.
+
+2. **How do users override the model sources?**
+   - Decision: environment variables only, for now: `SCREENPIPE_PYANNOTE_BASE_URL` (mirror base URL),
+     `SCREENPIPE_PYANNOTE_DIR` (directory with pre-installed pyannote files), `HF_ENDPOINT`
+     (Hugging Face compatible host for the PII models) and one repository override per PII model
+     family: `SCREENPIPE_PII_REDACTOR_REPO`, `SCREENPIPE_PII_TEXT_REDACTOR_REPO`,
+     `SCREENPIPE_PII_IMAGE_REDACTOR_REPO` (`owner/name`).
+   - Reason: the target has no evidence of such settings, and settings keys belong to W1-02. The
+     names follow the `SCREENPIPE_*` convention; `HF_ENDPOINT` is the hub's own variable and is already
+     listed in shell.md. SHA-256 pins stay in force for every source, so a mirror cannot change the
+     weights.
+
+3. **Do the PII weights keep downloading from the vendor's Hugging Face organisation by default?**
+   - Decision: yes, as cloud.md cloud-024 says (opt-in only, when local AI PII removal is enabled;
+     regex-only redaction needs no download). The licence of those weights is still unknown and stays
+     an open question for the owner.
+
+4. **How is the CLI bundled, given that the base ships no standalone CLI?**
+   - Decision: the engine's `screenpipe` binary is staged by `scripts/stage_bundled_runtime.js`
+     (`FREENPIPE_CLI_BINARY=<path>` or `FREENPIPE_BUILD_CLI=1`) into `src-tauri/bundled/cli/` and
+     mapped as a resource into the install root next to the app, bun and the runtime DLLs. It is not an
+     `externalBin`, so development builds without a staged CLI still build. Only the Windows bundle
+     maps it (`tauri.windows.conf.json`); macOS and Linux keep working without it (agents use the
+     REST API, MCP snippets show placeholders, models download on first use).
+   - Reason: the CLI must sit beside the DLLs it loads; an `externalBin` would make every Windows dev
+     build depend on a release build of the engine.
+   - Hand-off to the release pipeline (`.github/workflows/release-app.yml`, W0-03, already merged):
+     the Windows "Run pre_build.js" step should set `FREENPIPE_BUILD_CLI=1` (or build the CLI in an
+     earlier step and pass `FREENPIPE_CLI_BINARY`) and `FREENPIPE_REQUIRE_BUNDLED_RUNTIME=1`. Until it
+     does, a Windows installer built the default way ships without the CLI. Agents then fall back to
+     the REST API: the screenpipe-cli skill and the pipe-creation prompts say so. In required mode the
+     staging step refuses a CLI left over from an earlier run.
+
+5. **Should agents fall back to a `screenpipe` found on `PATH`?**
+   - Decision: no. Agents get `SCREENPIPE_CLI`, a launcher directory (`<data dir>/pi-agent/bin`)
+     first on `PATH`, and a bash function in the `BASH_ENV` shim, all pointing at the bundled binary.
+     Only the MCP server's API-key discovery tries `screenpipe` on `PATH`, as its last CLI option.
+   - Reason: a `screenpipe` on `PATH` may belong to another install of a different product; agents
+     acting on the user's data should use the binary that came with this app.
+
+6. **How is the MCP server shipped?**
+   - Decision: `packages/screenpipe-mcp` is installed with `bun install --frozen-lockfile` and
+     bundled by `bun build --target=node --format=cjs` into one file, `mcp/screenpipe-mcp.js`. Every
+     generated MCP config runs `<bundled bun> <that file>` by absolute path (`lib/mcp-config.ts`),
+     with `--port` when the API does not use 3030. The staging step fails if the bundle mentions a
+     registry package (`screenpipe@latest`, `screenpipe-mcp@latest`) or a vendor host
+     (`screenpi.pe`, `screenpipe.com`, `mediar.ai`). To pass that check this branch drops the
+     enterprise `team-*` tools (`TEAM_API`, `fetchTeam`), with deletions identical to W0-05's, so
+     the two branches merge cleanly there.
+   - Reason: a single CommonJS file needs no install step and runs under bun or node, and the server
+     always matches the installed app version. The check turns a vendor call that slips back into
+     the package into a failed build instead of a shipped one.
+
+7. **Does the standalone CLI show an update notice?**
+   - Decision: no. None of W0-09's items (cloud-024, cloud-046, cloud-M02, agents_pipes-040) asks
+     for one, so the merged `crates/screenpipe-engine/src/cli_reminder.rs` is W0-05's network-free
+     tip rotation unchanged: no version check, no registry query, no `npx` lines. Its MCP tip already
+     says `screenpipe mcp setup`, which is what W0-09 needed from that file. The CLI starts no update
+     fetch.
+   - Reason: an earlier draft of this branch kept an opt-in check against a user-configured updater
+     manifest; once W0-05 removed the check altogether there was nothing left for W0-09 to require,
+     and a startup fetch that no spec item asks for is not worth carrying. Desktop update checks stay
+     with the app updater (W0-03).
+
+8. **Which SKILL.md do the agent cards serve?**
+   - Decision: `scripts/gen-skill-content.js` now reads the product copies under
+     `crates/screenpipe-core/assets/skills/`, and the Hermes card installs skills from that folder of
+     this repository. `.claude/skills/` (the repository's developer mirror, still mentioning the npm
+     CLI) is no longer read by the app.
+   - Reason: the product copies are what the app installs into its own agent sessions, and the
+     mirror is edited by other tooling.
+
+9. **Where does the local API key go in MCP configs written by onboarding?**
+   - Decision: when the app ships the CLI (`mcp_runtime_check` reports `cliPath`), onboarding writes
+     no key; the MCP server runs `<install>/screenpipe auth token` at start and reads it from the
+     secret store. Only builds without the CLI write `SCREENPIPE_LOCAL_API_KEY` into the Claude
+     Desktop, Cursor and Codex configs. Settings > Connections keeps writing the key, as the base app
+     did there.
+   - Reason: a plain-text copy of the key in third-party config files is avoidable once the CLI can
+     hand it over; the fallback keeps the tools working on builds without the CLI.
+
+10. **Does the PII model download honour the switchboard's model mirror setting?**
+    - Decision: not yet. `screenpipe-redact` reads `HF_ENDPOINT` directly (`adapters/hf_source.rs`),
+      which is the same variable the switchboard's `Endpoint::ModelMirror` reads, so environment
+      configuration behaves the same. A settings override of `ModelMirror` (W1-02) would not reach
+      it: `screenpipe-redact` does not depend on `screenpipe-core`.
+    - Hand-off to W1-02: when the `ModelMirror` settings key lands, pass
+      `screenpipe_core::endpoints::model_mirror_base()` into `screenpipe-redact` (a small setter or
+      resolver hook in `hf_source.rs`, installed by the engine at start).
+
+11. **What licences cover the bundled speaker models?**
+    - Decision: pyannote segmentation-3.0 is MIT; the WeSpeaker CAM++ VoxCeleb embedding model is
+      CC BY 4.0 (WeSpeaker ties VoxCeleb-trained models to the dataset licence). Attribution is in
+      `crates/screenpipe-audio/models/pyannote/NOTICE.md`, staged next to the models in the installer,
+      and `NOTICE.md` points to it.
+    - Open for the owner: the build VM could not reach the Hugging Face model card, so the MIT
+      declaration for segmentation-3.0 is from memory of that card and should be confirmed before a
+      release.
+## W0-10
+
+1. **Where does the bundle go?** cloud-036 says `<data_dir>/feedback/`, shell-033 says Downloads.
+   **Decision:** `<data dir>/feedback/<YYYYMMDD-HHMMSS>.zip` (local time, `-2`, `-3` suffixes on a
+   clash), where the data dir is the default one (`SCREENPIPE_DATA_DIR` or `~/.screenpipe`) that holds
+   the logs, not a custom recording `dataDir`. Logs from the custom dir are still collected when it
+   differs. **Reason:** the WP acceptance check names `<FP_DD>/feedback/`, and keeping bundles beside
+   the logs needs no extra permission or folder picker.
+2. **`read_log_tail` arguments and limits.** **Decision:** `read_log_tail(path, maxBytes)` as the
+   shell-033 correction says; default 100 KB, clamped to 1 KB..8 MB; the file must resolve (symlinks
+   followed first) inside the default or configured data dir and have `.log` in its name; a cut tail
+   starts on a whole line and carries a one-line marker with the shown and total KB. **Reason:** a
+   renderer-callable file reader must not become a general file read.
+3. **Sensitive-key rule for settings.** **Decision:** the target's fragments plus `passphrase`,
+   `cookie`, `privatekey`, `devicename` and any key ending in `key`; exceptions are the target's list
+   plus `maxTokens`. The rule lives in `apps/screenpipe-app-tauri/lib/feedback/sensitive-keys.json`,
+   read by both the TypeScript helper and the Rust writer, with shared test vectors. **Reason:**
+   Freenpipe settings hold keys such as `deepgramApiKey`, `openaiKey` and `licenseKey` the target list
+   misses, and `maxTokens` matches `token` while being harmless and useful for debugging.
+4. **What does a masked value look like?** **Decision:** strings and numbers become `[redacted]`,
+   non-empty arrays and objects become `[redacted: N items]` / `[redacted: N keys]`; booleans, nulls,
+   empty strings and empty containers are kept. **Reason:** "is it set / is it on" stays answerable
+   without exposing the value.
+5. **How is free text scrubbed (`redact_pii_for_feedback`)?** **Decision:** the local deterministic
+   detector from `screenpipe-redact` with labels secret, email, phone, url and id always on, plus the
+   user's `piiRedactionLabels`; then user names in home-folder paths, IPv4 addresses other than
+   127.x and 0.0.0.0, bearer tokens and `password=`-style values, and the signed-in user's name,
+   e-mail, the computer's host name and the OS login name. Bare IPv4 addresses, which the shared
+   detector labels `url`, are left to the IPv4 rule so loopback stays readable; URLs with
+   credentials are still removed whole. Host and login names are scrubbed only when they have four
+   or more characters and are not generic (`admin`, `user`, `owner`, `desktop`, ...). `settingsJson`
+   is optional and bad JSON is ignored. No remote or model-based redaction. **Reason:** decloud (no
+   Tinfoil enclave), and a bundle may end up in a public issue; generic names would blank out
+   ordinary words in the logs.
+6. **Does the app open the GitHub issue by itself?** **Decision:** no. The completion event carries
+   `issueUrl` and the UI offers "open github issue". The body holds a scrubbed excerpt of the note
+   (shortened so the URL stays under 7,000 characters), the version, OS, report source and the bundle
+   file name, never the full local path. **Reason:** the WP says "offer"; opening a browser
+   unasked is surprising, and the full path contains the user name.
+7. **`feedback-upload-completed` payload.** **Decision:** `{ jobId, sent: false, path, fileName,
+   sizeBytes, issueUrl, error }`; failures send the same event with `error` set and `path` null.
+   **Reason:** superset of the spec's `{jobId, sent:false, path}` so the UI needs no second call.
+8. **Native notification on completion?** **Decision:** none. The dialog shows the completion
+   state, and a toast appears when the dialog was closed while the bundle was being written.
+   **Reason:** the bundle is user-initiated and usually finishes in seconds.
+9. **Retention.** **Decision:** keep the newest 10 bundles in `feedback/` and delete leftover
+   `.zip.partial` files; only files with the bundle naming pattern are touched. **Reason:** a bundle
+   can carry a 50 MB recording; unbounded growth in the data dir is a disk-pressure risk.
+10. **Defaults for optional content.** **Decision:** chat history is off by default (base had it on);
+    screenshot and recording (mp4/mov, 50 MB at most) only when the user adds them; up to three
+    newest crash dumps (64 MB each at most) from `<data dir>/crash-dumps/` are always included. The
+    README states that screenshots, recordings and dumps are not scrubbed. **Reason:** privacy by
+    default for content the user may post publicly; crash dumps are what shell-033 asks for.
+11. **More than one bundle at once?** **Decision:** one job at a time; a second
+    `start_feedback_upload` while one runs returns an error. **Reason:** avoids two jobs pruning or
+    naming bundles in the same second.
+
 ## W0-11
 
 1. **Which sqlx 0.9 release, and which SQLite crates go with it?**

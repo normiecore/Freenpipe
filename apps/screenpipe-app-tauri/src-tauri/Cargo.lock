@@ -10641,6 +10641,7 @@ dependencies = [
  "windows-icons",
  "winreg 0.52.0",
  "xdg 2.5.2",
+ "zip 4.6.1",
 ]
 
 [[package]]
@@ -10697,6 +10698,7 @@ dependencies = [
  "screenpipe-events",
  "serde",
  "serde_json",
+ "sha2 0.10.9",
  "symphonia",
  "sysinfo",
  "tokio",

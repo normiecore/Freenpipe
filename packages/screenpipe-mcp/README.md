@@ -6,9 +6,17 @@ The package keeps its upstream name, `screenpipe-mcp`, and talks to the Freenpip
 
 ## Installation
 
-### Option 1: NPX
+Freenpipe does not publish this server to a package registry, and the
+`screenpipe-mcp` package on npm belongs to the upstream project. Use the copy that ships
+with the desktop app, or build it from this repository.
 
-The `screenpipe-mcp` package on npm is published by the upstream screenpipe project, not by Freenpipe. It queries the same local API, so you can use it with Freenpipe. To run the code in this repository instead, use Option 3. Edit your Claude Desktop config:
+### Option 1: The copy bundled with the Freenpipe app (recommended)
+
+The app installs the server as one file, `mcp/screenpipe-mcp.js`, in its
+install folder and runs it with the `bun` binary it also ships. Settings >
+Connections writes the config for Claude Desktop, Cursor, Codex and other
+clients for you, with absolute paths and your local API key. To do it by
+hand, edit your Claude Desktop config:
 
 - **macOS**: `~/Library/Application Support/Claude/claude_desktop_config.json`
 - **Windows**: `%AppData%\Claude\claude_desktop_config.json`
@@ -17,34 +25,62 @@ The `screenpipe-mcp` package on npm is published by the upstream screenpipe proj
 {
   "mcpServers": {
     "screenpipe": {
-      "command": "npx",
-      "args": ["-y", "screenpipe-mcp"]
+      "command": "C:\\Users\\you\\AppData\\Local\\Freenpipe\\bun.exe",
+      "args": ["C:\\Users\\you\\AppData\\Local\\Freenpipe\\mcp\\screenpipe-mcp.js"],
+      "env": { "SCREENPIPE_LOCAL_API_KEY": "<your local API key>" }
     }
   }
 }
 ```
 
-### Option 2: HTTP Server (Remote / Network Access)
+Replace both paths with your install folder. Add `"--port", "<port>"` to
+`args` when the local API does not listen on 3030. The standalone CLI can
+write the same config: `screenpipe mcp setup`.
 
-The MCP server can run over HTTP using the [Streamable HTTP transport](https://modelcontextprotocol.io/specification/2025-03-26/basic/transports#streamable-http), allowing remote MCP clients to connect over the network instead of stdio. Use it when your AI assistant (e.g., OpenClaw) runs on a different machine than Freenpipe.
+### Option 2: Build from source
+
+```bash
+git clone https://github.com/normiecore/Freenpipe
+cd Freenpipe/packages/screenpipe-mcp
+bun install
+bun run build
+```
+
+Then point your client at the build with an absolute path:
+
+```json
+{
+  "mcpServers": {
+    "screenpipe": {
+      "command": "node",
+      "args": ["/absolute/path/to/packages/screenpipe-mcp/dist/cli.js"]
+    }
+  }
+}
+```
+
+The single-file build the app ships is made with
+`bun build ./src/cli.ts --target=node --format=cjs --outfile=screenpipe-mcp.js`
+(see `apps/screenpipe-app-tauri/scripts/stage_bundled_runtime.js`).
+
+**Note:** Restart Claude Desktop after making changes.
+
+### HTTP transport (remote / network access)
+
+The server can also speak the [Streamable HTTP transport](https://modelcontextprotocol.io/specification/2025-03-26/basic/transports#streamable-http),
+so an MCP client on another machine can connect over the network instead of
+stdio. Start it with `--http`, using either entry point from above:
 
 ```bash
 # loopback only (default)
-npx -y screenpipe-mcp --http --port 3031
+node dist/cli.js --http --port 3031
 
-# expose to your LAN with bearer auth
-npx -y screenpipe-mcp --http --listen-on-lan --api-key $(openssl rand -hex 16)
+# reachable from your LAN, bearer token required
+node dist/cli.js --http --listen-on-lan --api-key $(openssl rand -hex 16)
 
-# or from source — must build first so dist/ exists
-bun install && bun run build
+# or, from this package directory
 bun run start:http -- --port 3031
 ```
-
-> Tip: `npx screenpipe-mcp-http` (without `--http`) does **not** work —
-> npm resolves by package name, and there is no `screenpipe-mcp-http`
-> package. The HTTP server ships as a transport inside the
-> `screenpipe-mcp` package; use `--http` as shown above, or invoke the
-> bin directly with `npx -p screenpipe-mcp screenpipe-mcp-http`.
 
 The server exposes:
 - **MCP endpoint**: `http://localhost:3031/mcp` — Streamable HTTP transport (POST for requests, GET for SSE stream)
@@ -75,50 +111,28 @@ Point any MCP client that supports HTTP transport at the `/mcp` endpoint:
 }
 ```
 
-If your machines are on different networks, expose port 3031 via Tailscale, SSH tunnel, or similar. See the [OpenClaw integration guide](../../docs/mintlify/docs-mintlify-mig-tmp/openclaw.mdx) for detailed examples.
+If the machines are on different networks, reach port 3031 through
+Tailscale, an SSH tunnel or similar. The
+[OpenClaw integration guide](../../docs/mintlify/docs-mintlify-mig-tmp/openclaw.mdx)
+has examples.
 
 > **Note:** The HTTP server currently exposes `search_content` only. The stdio server has the full tool set (export-video, list-meetings, activity-summary, search-elements, frame-context).
 
-### Option 3: From Source
-
-Clone and build from source:
-
-```bash
-git clone https://github.com/normiecore/Freenpipe
-cd Freenpipe/packages/screenpipe-mcp
-bun install
-bun run build
-```
-
-Then configure Claude Desktop:
-
-```json
-{
-  "mcpServers": {
-    "screenpipe": {
-      "command": "node",
-      "args": ["/absolute/path/to/screenpipe-mcp/dist/index.js"]
-    }
-  }
-}
-```
-
-**Note:** Restart Claude Desktop after making changes.
-
 ## Testing
 
-Test with MCP Inspector:
+Run the MCP Inspector against a local build:
 
 ```bash
-npx @modelcontextprotocol/inspector npx screenpipe-mcp
+bun run build
+npx @modelcontextprotocol/inspector node dist/cli.js
 ```
 
 ## Transport Modes
 
 | Mode | Command | Use Case |
 |------|---------|----------|
-| **stdio** (default) | `npx screenpipe-mcp` | Claude Desktop, local MCP clients |
-| **HTTP** | `npx screenpipe-mcp --http` | Remote clients, network access, OpenClaw on VPS |
+| **stdio** (default) | `<bun or node> screenpipe-mcp.js` | Claude Desktop, local MCP clients |
+| **HTTP** | `<bun or node> screenpipe-mcp.js --http` | Remote clients, network access |
 
 ## Available Tools
 
@@ -167,8 +181,8 @@ Get accessibility text, parsed tree nodes, and extracted URLs for a specific fra
 
 ## Requirements
 
-- Freenpipe must be running on localhost:3030
-- Node.js >= 18.0.0
+- Freenpipe must be running on localhost:3030 (or pass `--port`)
+- bun, or Node.js >= 18.0.0 (the app ships bun)
 
 ## Notes
 
@@ -203,13 +217,11 @@ SQLite database under `~/.screenpipe/` on your device. Retention is
 whatever you configure in Freenpipe, usually in the storage settings.
 
 ### Third-party sharing
-None for the local tools: they only talk to `localhost:3030` and do
-not contact Anthropic, the upstream vendor's servers, or any other
-external service. The team tools are the exception until work package
-W0-05 lands: when a team token is configured they call the upstream
-vendor's enterprise API (`TEAM_API` in `src/index.ts`). If you configure
-a cloud AI provider or another remote service in Freenpipe itself, that
-data flow is governed by the provider you chose, not by this MCP server.
+None: the server only talks to `localhost:3030` and does not contact
+Anthropic, the upstream vendor's servers, or any other external service.
+If you configure a cloud AI provider or another remote service in
+Freenpipe itself, that data flow is governed by the provider you chose,
+not by this MCP server.
 
 ### Retention
 The MCP server has no persistent state. The data Freenpipe captures is

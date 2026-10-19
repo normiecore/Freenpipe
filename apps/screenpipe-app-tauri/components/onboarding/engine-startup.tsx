@@ -5,7 +5,7 @@
 "use client";
 
 import React, { useState, useEffect, useRef, useCallback } from "react";
-import { Check, Upload, Loader, HelpCircle } from "lucide-react";
+import { Check, Archive, Loader, HelpCircle } from "lucide-react";
 import { Button } from "../ui/button";
 import posthog from "posthog-js";
 import { commands } from "@/lib/utils/tauri";
@@ -13,16 +13,16 @@ import { openPermissionSettingsWithFlow } from "@/lib/utils/permission-flow";
 import { motion, AnimatePresence } from "framer-motion";
 import { useSettings, makeDefaultPresets } from "@/lib/hooks/use-settings";
 import { localFetch } from "@/lib/api";
+import { DEFAULT_OLLAMA_URL, isGatewayProvider } from "@/lib/ai-gateway";
 import { open as openUrl } from "@tauri-apps/plugin-shell";
 import { freenpipeLink } from "@/lib/web-url";
 import { revealItemInDir } from "@tauri-apps/plugin-opener";
 import { homeDir, join } from "@tauri-apps/api/path";
-import { readTextFile } from "@tauri-apps/plugin-fs";
-import { getVersion } from "@tauri-apps/api/app";
 import {
-  version as osVersion,
-  platform as osPlatform,
-} from "@tauri-apps/plugin-os";
+  createDiagnosticsBundle,
+  readConsoleLogTail,
+} from "@/lib/feedback/diagnostics-bundle";
+import { maskSensitiveSettings } from "@/lib/feedback/sensitive-settings";
 import { ParticleStream, ProgressSteps } from "./particle-stream";
 
 interface EngineStartupProps {
@@ -103,8 +103,8 @@ export default function EngineStartup({
   const [audioReady, setAudioReady] = useState(false);
   const [visionReady, setVisionReady] = useState(false);
   const [isTakingLonger, setIsTakingLonger] = useState(false);
-  const [isSendingLogs, setIsSendingLogs] = useState(false);
-  const [logsSent, setLogsSent] = useState(false);
+  const [isSavingLogs, setIsSavingLogs] = useState(false);
+  const [savedBundlePath, setSavedBundlePath] = useState<string | null>(null);
   // When spawn_screenpipe rejects (e.g. TCC permission denied) we used to
   // swallow the error and let the 15s "stuck" timer fire with empty boot phase.
   // PostHog showed 90% of stuck users had serverStarted=false / boot_phase=?,
@@ -458,9 +458,10 @@ export default function EngineStartup({
     return parts.join(". ") + ".";
   }, []);
 
-  // Stream a warm summary using the user's default preset, falling back to
-  // their cloud token. If neither is available, leave summary empty and let
-  // the fallback timer release the continue button.
+  // Stream a warm summary using the user's default preset. A gateway preset
+  // goes through the local engine, which forwards to the user's AI gateway.
+  // If the preset cannot be used yet (no model picked, no key), leave the
+  // summary empty and let the fallback timer release the continue button.
   // Track attempts so a transient failure (no token at first poll, network
   // blip) gets retried instead of permanently breaking the slide.
   const summaryAttemptsRef = useRef(0);
@@ -478,31 +479,30 @@ export default function EngineStartup({
         (presets.find((p: any) => p.defaultPreset) as any) ?? (presets[0] as any);
 
       let endpoint = "";
-      let model = "claude-haiku-4-5";
+      let model = "";
       let auth: Record<string, string> = {};
+      let viaLocalEngine = false;
 
-      const userToken = settings.user?.token;
-
-      if (preset?.provider === "screenpipe-cloud" && userToken) {
-        endpoint = "https://api.screenpipe.com/v1/chat/completions";
-        model = preset.model || model;
-        auth = { Authorization: `Bearer ${userToken}` };
+      if (isGatewayProvider(preset?.provider) && preset?.model) {
+        // The engine adds the gateway key; 503 when no gateway is configured.
+        endpoint = "/v1/chat/completions";
+        model = preset.model;
+        viaLocalEngine = true;
       } else if (
         (preset?.provider === "openai" || preset?.provider === "custom" || preset?.provider === "anthropic") &&
         preset.apiKey &&
-        preset.url
+        preset.url &&
+        preset.model
       ) {
         endpoint = `${preset.url.replace(/\/$/, "")}/chat/completions`;
         model = preset.model;
         auth = { Authorization: `Bearer ${preset.apiKey}` };
-      } else if (userToken) {
-        // Fall back to cloud even if preset is non-cloud but token exists.
-        endpoint = "https://api.screenpipe.com/v1/chat/completions";
-        auth = { Authorization: `Bearer ${userToken}` };
+      } else if (preset?.provider === "native-ollama" && preset.model) {
+        endpoint = `${(preset.url || DEFAULT_OLLAMA_URL).replace(/\/$/, "")}/chat/completions`;
+        model = preset.model;
       } else {
-        // No way to call any model. Bail and reset the gate so a later poll
-        // can retry — settings.user.token can land asynchronously after the
-        // login slide completes.
+        // No usable model yet. Bail and reset the gate so a later poll can
+        // retry once the user has picked a model.
         summaryStartedRef.current = false;
         return;
       }
@@ -527,7 +527,8 @@ instead say things like: "you spent some time in slack", "you were typing notes 
 if the input is sparse, just describe what little you have warmly. don't apologize for not having more.`;
 
       try {
-        const resp = await fetch(endpoint, {
+        const send = viaLocalEngine ? localFetch : fetch;
+        const resp = await send(endpoint, {
           method: "POST",
           headers: { "Content-Type": "application/json", ...auth },
           signal: controller.signal,
@@ -706,10 +707,9 @@ if the input is sparse, just describe what little you have warmly. don't apologi
 
   const ensureDefaultPreset = useCallback(async () => {
     if (settings.aiPresets.length === 0) {
-      const isPro = settings.user?.cloud_subscribed === true;
-      await updateSettings({ aiPresets: makeDefaultPresets(isPro) as any });
+      await updateSettings({ aiPresets: makeDefaultPresets() as any });
     }
-  }, [settings.aiPresets.length, settings.user?.cloud_subscribed, updateSettings]);
+  }, [settings.aiPresets.length, updateSettings]);
 
   const handleContinue = async () => {
     posthog.capture("onboarding_livefeed_continued", {
@@ -736,81 +736,31 @@ if the input is sparse, just describe what little you have warmly. don't apologi
     handleNextSlide();
   };
 
-  const sendLogs = async () => {
-    setIsSendingLogs(true);
+  // Freenpipe: writes a local diagnostics bundle instead of uploading logs.
+  // The first click saves it; later clicks reveal it in the file manager.
+  const saveLogs = async () => {
+    if (savedBundlePath) {
+      revealItemInDir(savedBundlePath).catch((err) =>
+        console.error("Failed to reveal diagnostics bundle:", err)
+      );
+      return;
+    }
+    setIsSavingLogs(true);
     try {
-      const BASE_URL = "https://screenpi.pe";
-      const machineId =
-        localStorage?.getItem("machineId") || crypto.randomUUID();
-      try {
-        localStorage?.setItem("machineId", machineId);
-      } catch {}
-      const identifier = settings.user?.id || machineId;
-      const type = settings.user?.id ? "user" : "machine";
-      const logFilesResult = await commands.getLogFiles();
-      if (logFilesResult.status !== "ok")
-        throw new Error("Failed to get log files");
-      const logFiles = logFilesResult.data.slice(0, 3);
-      const MAX_LOG_SIZE = 50 * 1024;
-      const logContents = await Promise.all(
-        logFiles.map(async (file) => {
-          try {
-            const content = await readTextFile(file.path);
-            const truncated =
-              content.length > MAX_LOG_SIZE
-                ? `... [truncated] ...\n` + content.slice(-MAX_LOG_SIZE)
-                : content;
-            return { name: file.name, content: truncated };
-          } catch {
-            return { name: file.name, content: "[Error reading file]" };
-          }
-        })
-      );
-      const signedRes = await fetch(`${BASE_URL}/api/logs`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ identifier, type }),
+      const outcome = await createDiagnosticsBundle({
+        feedbackText: "Startup got stuck during onboarding.",
+        source: "onboarding-stuck",
+        consoleLog: readConsoleLogTail(),
+        appSettings: maskSensitiveSettings(settings) as any,
       });
-      const {
-        data: { signedUrl, path },
-      } = await signedRes.json();
-      const consoleLog = (localStorage?.getItem("console_logs") || "").slice(
-        -50000
-      );
-      const combinedLogs =
-        logContents
-          .map((log) => `\n=== ${log.name} ===\n${log.content}`)
-          .join("\n\n") +
-        "\n\n=== Browser Console Logs ===\n" +
-        consoleLog +
-        "\n\n=== Onboarding Stuck ===\nUser experienced startup issues during onboarding.";
-      await fetch(signedUrl, {
-        method: "PUT",
-        body: combinedLogs,
-        headers: { "Content-Type": "text/plain" },
-      });
-      const os = osPlatform();
-      const os_version = osVersion();
-      const app_version = await getVersion();
-      await fetch(`${BASE_URL}/api/logs/confirm`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          path,
-          identifier,
-          type,
-          os,
-          os_version,
-          app_version,
-          feedback_text:
-            "Onboarding stuck - automatic log submission",
-        }),
-      });
-      setLogsSent(true);
+      if (outcome.error || !outcome.path) {
+        throw new Error(outcome.error ?? "no bundle was written");
+      }
+      setSavedBundlePath(outcome.path);
     } catch (err) {
-      console.error("Failed to send logs:", err);
+      console.error("Failed to save logs:", err);
     } finally {
-      setIsSendingLogs(false);
+      setIsSavingLogs(false);
     }
   };
 
@@ -1178,19 +1128,19 @@ if the input is sparse, just describe what little you have warmly. don't apologi
                 <Button
                   variant="outline"
                   size="sm"
-                  onClick={sendLogs}
-                  disabled={isSendingLogs || logsSent}
+                  onClick={saveLogs}
+                  disabled={isSavingLogs}
                   className="font-mono text-[10px] h-7 px-2"
                 >
-                  {isSendingLogs ? (
+                  {isSavingLogs ? (
                     <Loader className="w-3 h-3 animate-spin" />
-                  ) : logsSent ? (
+                  ) : savedBundlePath ? (
                     <>
-                      <Check className="w-3 h-3 mr-1" /> sent
+                      <Check className="w-3 h-3 mr-1" /> saved
                     </>
                   ) : (
                     <>
-                      <Upload className="w-3 h-3 mr-1" /> send logs
+                      <Archive className="w-3 h-3 mr-1" /> save logs
                     </>
                   )}
                 </Button>

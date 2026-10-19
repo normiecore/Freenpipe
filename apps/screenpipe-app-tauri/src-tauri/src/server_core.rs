@@ -333,23 +333,20 @@ impl ServerCore {
         server.manual_meeting = Some(manual_meeting.clone());
         server.api_auth = config.api_auth;
         server.api_auth_key = config.api_auth_key.clone();
-        // Cloud JWT for /v1/chat/completions proxy. config.user_id carries
-        // the Clerk JWT (despite the name — see line 96 where the same value
-        // is used as the cloud transcription bearer). Pi's bash deliberately
-        // can't see this token; the local proxy signs the upstream request.
+        // AI gateway key for the /v1/chat/completions proxy. config.user_id
+        // carries the `aiGatewayApiKey` setting (despite the name; the same
+        // value is the cloud transcription bearer). Pi's bash deliberately
+        // can't see this key; the local proxy signs the upstream request.
         //
         // We replace the Server's per-instance cloud_token cell with the
         // app-scoped Arc so writes from `set_cloud_token` (Tauri command,
-        // pushed on every sign-in/out from the webview) are visible to both
-        // cloud_proxy.rs AND the PiExecutor that shares this same Arc.
-        // Without this, a token captured at engine boot was permanent until
-        // restart — paying users who signed in after the sidecar started got
-        // anonymous-tier 403s on every Sonnet/Opus pipe.
+        // pushed by the settings page when the key changes) are visible to
+        // both cloud_proxy.rs AND the PiExecutor that shares this same Arc,
+        // without restarting the engine.
         server.cloud_token = cloud_token_handle.clone();
         // Seed the shared cell from persisted settings, but ONLY when empty
-        // — if `set_cloud_token` has already pushed a fresher value (e.g. the
-        // user signed in between sidecar boots), don't clobber it with the
-        // stale `config.user_id` snapshot.
+        // — if `set_cloud_token` has already pushed a fresher value, don't
+        // clobber it with the `config.user_id` snapshot.
         if let Some(ref t) = config.user_id {
             if !t.is_empty() {
                 let existing = cloud_token_handle.load();
@@ -635,9 +632,24 @@ impl ServerCore {
         // The single `pii_backend` config flag selects the inner
         // adapter for BOTH modalities:
         //   - "local"   → on-device ONNX models for both text and image
-        //   - "tinfoil" → confidential-compute enclave (H200) for both
+        //   - "tinfoil" → a confidential-compute enclave the user runs and
+        //                 configured (SCREENPIPE_PRIVACY_FILTER_*). There is
+        //                 no built-in enclave: without a complete setup the
+        //                 local backend is used.
         let backend = config.pii_backend.as_str();
-        let use_tinfoil = matches!(backend, "tinfoil" | "cloud" | "enclave");
+        let wants_tinfoil = matches!(backend, "tinfoil" | "cloud" | "enclave");
+        // The enclave host goes through the endpoint switchboard so a
+        // settings override applies here as well as the environment.
+        let enclave_host = screenpipe_core::endpoints::privacy_filter_base();
+        let use_tinfoil = wants_tinfoil
+            && screenpipe_redact::adapters::tinfoil::is_configured_for(enclave_host.clone());
+        if wants_tinfoil && !use_tinfoil {
+            warn!(
+                "piiBackend is '{}' but no enclave is configured (SCREENPIPE_PRIVACY_FILTER_ENCLAVE, \
+                 _REPO and _API_KEY); using the local redactor",
+                backend
+            );
+        }
 
         // User-selected redaction classes (the `piiRedactionLabels`
         // setting, default ["secret"]). Local adapters return spans and
@@ -647,13 +659,10 @@ impl ServerCore {
         // regardless (see screenpipe_redact::parse_allow_list).
         let pii_labels = config.pii_redaction_labels.clone();
 
-        // Cloud Clerk JWT — same token used for the cloud transcription
-        // bearer (see line 96). Tinfoil's enclave is on the screenpipe
-        // cloud auth boundary, so the user's signed-in token is what
-        // authenticates redactor requests. Without this the worker logs
-        // "no api key — requests will be un-authenticated" on every
-        // restart even when the user is signed in.
-        let tinfoil_api_key = config.user_id.clone().filter(|s| !s.is_empty());
+        // The enclave key comes from SCREENPIPE_PRIVACY_FILTER_API_KEY (read
+        // by the adapters). The AI gateway key in `config.user_id` belongs to
+        // a different service and is never sent to the enclave.
+        let tinfoil_api_key: Option<String> = None;
 
         // One shutdown signal, shared across both worker spawn paths and
         // stored on Self for `shutdown()` to fire on app quit.
@@ -684,6 +693,7 @@ impl ServerCore {
             // dead duplicate columns the old non-destructive mode used.
             if use_tinfoil {
                 let ai: Arc<dyn Redactor> = Arc::new(TinfoilRedactor::new(TinfoilConfig {
+                    enclave: enclave_host.clone(),
                     api_key: tinfoil_api_key.clone(),
                     labels: pii_labels.clone(),
                     ..Default::default()
@@ -691,7 +701,6 @@ impl ServerCore {
                 info!(
                     model = ai.name(),
                     version = ai.version(),
-                    has_api_key = tinfoil_api_key.is_some(),
                     "starting async text-PII reconciliation worker (backend=tinfoil)"
                 );
                 let pipeline = Pipeline::regex_then_ai(
@@ -740,6 +749,10 @@ impl ServerCore {
                                 "starting async text-PII reconciliation worker (backend=local)"
                             );
                             let ai: Arc<dyn Redactor> = Arc::new(adapter);
+                            // `/search?filter_pii=true` reuses the loaded
+                            // model (the slower OPF fallback below is not
+                            // offered to it).
+                            screenpipe_engine::privacy_filter::register_local_model(ai.clone());
                             Pipeline::regex_then_ai(
                                 ai,
                                 PipelineConfig {
@@ -773,9 +786,7 @@ impl ServerCore {
                                 Err(e) => {
                                     warn!(
                                         "couldn't load OPF redactor either ({e}); running \
-                                         text-PII worker in regex-only mode. Switch backend \
-                                         to 'tinfoil' in Settings → Privacy → AI PII removal \
-                                         to use the cloud enclave instead."
+                                         text-PII worker in regex-only mode."
                                     );
                                     Pipeline::regex_only_with_policy(policy.clone())
                                 }
@@ -804,6 +815,7 @@ impl ServerCore {
             let pool = db.pool.clone();
             if use_tinfoil {
                 let detector = Arc::new(TinfoilImageRedactor::new(TinfoilImageConfig {
+                    enclave: enclave_host.clone(),
                     api_key: tinfoil_api_key.clone(),
                     labels: pii_labels.clone(),
                     ..Default::default()
@@ -811,7 +823,6 @@ impl ServerCore {
                 info!(
                     model = detector.name(),
                     version = detector.version(),
-                    has_api_key = tinfoil_api_key.is_some(),
                     "starting async image-PII worker (backend=tinfoil)"
                 );
                 let _ = ImageWorker::new(

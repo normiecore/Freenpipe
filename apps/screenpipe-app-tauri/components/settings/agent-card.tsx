@@ -31,11 +31,13 @@ import { revealItemInDir } from "@tauri-apps/plugin-opener";
 import { toast } from "@/components/ui/use-toast";
 import posthog from "posthog-js";
 import { useSettings } from "@/lib/hooks/use-settings";
+import type { McpLaunch } from "@/lib/mcp-config";
+import { useMcpDisplayLaunch } from "@/lib/mcp-runtime";
 
 // ---------------------------------------------------------------------------
 // Canonical screenpipe SKILL.md content. Re-exported from a generated module so
 // the "copy / save SKILL.md" text the cards serve is always the source of truth
-// from the repo: .claude/skills/{screenpipe-api,screenpipe-cli}/SKILL.md
+// from the repo: crates/screenpipe-core/assets/skills/{screenpipe-api,screenpipe-cli}/SKILL.md
 // (the same folders the `... skills install github:...` one-liners install from).
 // Regenerated on prebuild by scripts/gen-skill-content.js. Do not hand-edit copies.
 // ---------------------------------------------------------------------------
@@ -80,7 +82,11 @@ export type AgentCardProps = {
   iconSrc: string;
   description: string;
   homepage?: string;
-  mcp: { format: "json" | "yaml"; configPath: string; snippet: string };
+  /**
+   * MCP registration. `snippet` renders the config for a launch of the MCP
+   * server bundled with the app (absolute paths), see `lib/mcp-config.ts`.
+   */
+  mcp: { format: "json" | "yaml"; configPath: string; snippet: (launch: McpLaunch) => string };
   /** One or more installable screenpipe skills (e.g. API + CLI). First is shown by default. */
   skills: SkillVariant[];
   sync: {
@@ -102,13 +108,15 @@ export type AgentCardProps = {
 
 function McpSection({ name, mcp }: { name: string; mcp: AgentCardProps["mcp"] }) {
   const [copied, setCopied] = useState(false);
+  const { launch, bundled } = useMcpDisplayLaunch();
+  const snippet = mcp.snippet(launch);
   const handleCopy = useCallback(async () => {
     try {
-      await navigator.clipboard.writeText(mcp.snippet);
+      await navigator.clipboard.writeText(snippet);
       setCopied(true);
       setTimeout(() => setCopied(false), 2000);
     } catch {}
-  }, [mcp.snippet]);
+  }, [snippet]);
 
   return (
     <div className="space-y-3">
@@ -124,7 +132,7 @@ function McpSection({ name, mcp }: { name: string; mcp: AgentCardProps["mcp"] })
       </p>
       <div className="relative group">
         <pre className="bg-muted border border-border rounded-lg p-3 pr-10 text-xs font-mono text-foreground overflow-x-auto whitespace-pre-wrap">
-          {mcp.snippet}
+          {snippet}
         </pre>
         <Button
           variant="ghost"
@@ -136,6 +144,12 @@ function McpSection({ name, mcp }: { name: string; mcp: AgentCardProps["mcp"] })
           {copied ? <Check className="h-3 w-3" /> : <Copy className="h-3 w-3 text-muted-foreground" />}
         </Button>
       </div>
+      {!bundled && (
+        <p className="text-xs text-muted-foreground">
+          This build does not include the MCP server; replace the placeholder paths with a
+          local build of packages/screenpipe-mcp.
+        </p>
+      )}
       <p className="text-xs text-muted-foreground">
         3. Restart {name}. Try: &quot;what did I do in the last 5 minutes?&quot;
       </p>

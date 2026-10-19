@@ -108,6 +108,13 @@ import {
 import { useToast } from "@/components/ui/use-toast";
 import { useHealthCheck } from "@/lib/hooks/use-health-check";
 import { localFetch } from "@/lib/api";
+import {
+  FALLBACK_TRANSCRIPTION_ENGINE,
+  isGatewaySttReady,
+  resolveAudioEngine,
+  type AudioEngineFallbackReason,
+} from "@/lib/ai-gateway";
+import { useAiGateway } from "@/lib/hooks/use-ai-gateway";
 import { Badge } from "@/components/ui/badge";
 import { Skeleton } from "@/components/ui/skeleton";
 import { HelpTooltip } from "@/components/ui/help-tooltip";
@@ -163,10 +170,8 @@ const getAppIconUrl = (appName: string): string => {
   return `http://localhost:11435/app-icon?name=${encodeURIComponent(appName)}`;
 };
 
-const FALLBACK_TRANSCRIPTION_ENGINE = "whisper-large-v3-turbo-quantized";
-
 const TRANSCRIPTION_ENGINE_LABELS: Record<string, string> = {
-  "screenpipe-cloud": "Screenpipe Cloud",
+  "screenpipe-cloud": "AI gateway",
   deepgram: "Deepgram",
   "whisper-large-v3-turbo": "Whisper Turbo",
   "whisper-large-v3-turbo-quantized": "Whisper Turbo (fast)",
@@ -178,65 +183,13 @@ const TRANSCRIPTION_ENGINE_LABELS: Record<string, string> = {
   disabled: "Disabled (capture only)",
 };
 
-type AudioEngineFallbackReason =
-  | "notLoggedIn"
-  | "notSubscribed"
-  | "missingDeepgramKey";
-
-type AudioEngineResolution = {
-  requested: string;
-  active: string;
-  fallbackReason: AudioEngineFallbackReason | null;
-};
-
 const getTranscriptionEngineLabel = (engine: string) =>
   TRANSCRIPTION_ENGINE_LABELS[engine] ?? engine;
 
-const getAudioEngineResolution = (settings: Settings): AudioEngineResolution => {
-  const requested = settings.audioTranscriptionEngine;
-  const fallback = FALLBACK_TRANSCRIPTION_ENGINE;
-  const hasCloudAuth = Boolean(settings.user?.token || settings.user?.id);
-  const hasDeepgramKey = Boolean(
-    settings.deepgramApiKey && settings.deepgramApiKey !== "default"
-  );
-
-  if (requested === "screenpipe-cloud" && !hasCloudAuth) {
-    return {
-      requested,
-      active: fallback,
-      fallbackReason: "notLoggedIn",
-    };
-  }
-
-  if (requested === "screenpipe-cloud" && !settings.user?.cloud_subscribed) {
-    return {
-      requested,
-      active: fallback,
-      fallbackReason: "notSubscribed",
-    };
-  }
-
-  if (requested === "deepgram" && !hasDeepgramKey) {
-    return {
-      requested,
-      active: fallback,
-      fallbackReason: "missingDeepgramKey",
-    };
-  }
-
-  return {
-    requested,
-    active: requested,
-    fallbackReason: null,
-  };
-};
-
 const getAudioFallbackMessage = (reason: AudioEngineFallbackReason) => {
   switch (reason) {
-    case "notLoggedIn":
-      return "You are not logged in, so audio is being transcribed locally.";
-    case "notSubscribed":
-      return "Screenpipe Cloud requires an active subscription, so audio is being transcribed locally.";
+    case "gatewayNotConfigured":
+      return "No AI gateway URL and key are set (Settings > AI), so audio is being transcribed on this device.";
     case "missingDeepgramKey":
       return "Deepgram has no API key configured, so audio is being transcribed locally.";
   }
@@ -1864,14 +1817,32 @@ export function RecordingSettings() {
     commands.getHardwareCapability().then(setHwCapability).catch(() => {});
   }, []);
 
+  const aiGateway = useAiGateway();
+  const gatewayApiKey = (settings as { aiGatewayApiKey?: string }).aiGatewayApiKey ?? "";
+  // The AI gateway transcription engine needs a gateway URL and key (saved,
+  // or SCREENPIPE_AI_GATEWAY_KEY as reported by the backend).
+  const gatewaySttReady = isGatewaySttReady(
+    aiGateway.url,
+    gatewayApiKey,
+    aiGateway.keyConfigured,
+  );
   const audioEngineResolution = useMemo(
-    () => getAudioEngineResolution(settings),
+    () =>
+      resolveAudioEngine(
+        {
+          audioTranscriptionEngine: settings.audioTranscriptionEngine,
+          deepgramApiKey: settings.deepgramApiKey,
+          aiGatewayApiKey: gatewayApiKey,
+        },
+        aiGateway.url,
+        aiGateway.keyConfigured,
+      ),
     [
       settings.audioTranscriptionEngine,
       settings.deepgramApiKey,
-      settings.user?.cloud_subscribed,
-      settings.user?.id,
-      settings.user?.token,
+      gatewayApiKey,
+      aiGateway.url,
+      aiGateway.keyConfigured,
     ]
   );
 
@@ -2495,7 +2466,7 @@ Your screen is a pipe. Everything you see, hear, and type flows through it. Scre
                 <Mic className="h-4 w-4 text-muted-foreground shrink-0" />
                 <h3 className="text-sm font-medium text-foreground flex items-center gap-1.5">
                   Transcription engine
-                  <HelpTooltip text="Cloud engines send audio to a server for fast, accurate transcription. Offline engines run on your device — fully private but use more CPU/RAM." />
+                  <HelpTooltip text="Remote engines send audio to a server you configured (your AI gateway or your Deepgram account). On-device engines keep audio on this computer at the cost of more CPU and RAM." />
                 </h3>
               </div>
               <div className="flex items-center gap-2">
@@ -2511,10 +2482,10 @@ Your screen is a pipe. Everything you see, hear, and type flows through it. Scre
                   </SelectTrigger>
                   <SelectContent>
                     <SelectGroup>
-                      <SelectLabel className="text-[10px] text-muted-foreground/70 uppercase tracking-wider">cloud</SelectLabel>
-                      <SelectItem value="screenpipe-cloud">
-                        Screenpipe Cloud{hwCapability?.recommendedEngine === "screenpipe-cloud" && " ★"}
-                      </SelectItem>
+                      <SelectLabel className="text-[10px] text-muted-foreground/70 uppercase tracking-wider">remote</SelectLabel>
+                      {(gatewaySttReady || settings.audioTranscriptionEngine === "screenpipe-cloud") && (
+                        <SelectItem value="screenpipe-cloud">AI gateway</SelectItem>
+                      )}
                       <SelectItem value="deepgram">Deepgram</SelectItem>
                     </SelectGroup>
                     <SelectGroup>
@@ -2848,7 +2819,7 @@ Your screen is a pipe. Everything you see, hear, and type flows through it. Scre
                 <div>
                   <h3 className="text-sm font-medium text-foreground flex items-center gap-1.5">
                     Live meeting notes
-                    <HelpTooltip text="Streams only the active meeting into the live note. This is separate from background 24/7 recording and can use your selected transcription engine, screenpipe cloud, or a direct provider." />
+                    <HelpTooltip text="Live captions for the meeting in progress, kept apart from the always-on background recording. They can come from your transcription engine, your AI gateway's live relay, or Deepgram with your key." />
                   </h3>
                   <p className="text-xs text-muted-foreground">Meeting-only live captions, separate from background transcription</p>
                 </div>
@@ -2885,22 +2856,24 @@ Your screen is a pipe. Everything you see, hear, and type flows through it. Scre
                     </SelectTrigger>
                     <SelectContent>
                       <SelectItem value="selected-engine">Current transcription engine</SelectItem>
-                      <SelectItem value="screenpipe-cloud">screenpipe cloud live</SelectItem>
+                      {(gatewaySttReady ||
+                        settings.meetingLiveTranscriptionProvider === "screenpipe-cloud") && (
+                        <SelectItem value="screenpipe-cloud">AI gateway live relay</SelectItem>
+                      )}
                       <SelectItem value="deepgram-live">Direct Deepgram live</SelectItem>
                     </SelectContent>
                   </Select>
                 </div>
                 {(settings.meetingLiveTranscriptionProvider ?? "selected-engine") === "screenpipe-cloud" &&
-                  !settings.user?.token &&
-                  !settings.user?.id && (
+                  !gatewaySttReady && (
                   <p className="text-xs text-muted-foreground">
-                    Log in to screenpipe cloud to use the cloud live provider.
+                    Live notes use your transcription engine until an AI gateway URL and key are set in Settings &gt; AI.
                   </p>
                 )}
                 {(settings.meetingLiveTranscriptionProvider ?? "selected-engine") === "selected-engine" &&
                   settings.audioTranscriptionEngine === "disabled" && (
                   <p className="text-xs text-muted-foreground">
-                    Pick an audio transcription engine above, or choose a cloud/direct live provider.
+                    Select a transcription engine above, or switch live notes to the gateway relay or Deepgram.
                   </p>
                 )}
               </div>

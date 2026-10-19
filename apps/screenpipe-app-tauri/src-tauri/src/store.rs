@@ -690,10 +690,20 @@ pub struct SettingsStore {
     /// Auto-update store-installed pipes that haven't been locally modified.
     #[serde(rename = "autoUpdatePipes", default = "default_true")]
     pub auto_update_pipes: bool,
-    /// Use screenpipe cloud for AI-powered features like suggestions.
-    /// Better quality but sends activity context to the cloud (zero data retention).
+    /// Use the default AI preset (instead of the on-device model) for
+    /// AI-powered features like suggestions. Sends recent activity context
+    /// to whatever provider that preset points at.
     #[serde(rename = "enhancedAI", default)]
     pub enhanced_ai: bool,
+    /// Base URL of the user's OpenAI-compatible AI gateway, used by the
+    /// `screenpipe-cloud` provider, cloud transcription, cloud media analysis
+    /// and agent web search. Empty = not configured (those features are
+    /// off). Field-level default keeps it optional in the generated TS type.
+    #[serde(rename = "aiGatewayUrl", default)]
+    pub ai_gateway_url: String,
+    /// Credential sent to that gateway as a Bearer token. Empty = none.
+    #[serde(rename = "aiGatewayApiKey", default)]
+    pub ai_gateway_api_key: String,
     /// Timeline overlay mode: "fullscreen" (floating panel above everything) or
     /// "window" (normal resizable window with title bar).
     #[serde(rename = "overlayMode", default = "default_overlay_mode")]
@@ -819,17 +829,23 @@ fn default_max_tokens() -> i32 {
     4096
 }
 
+/// URL of a local Ollama server's OpenAI-compatible API, the fresh-install
+/// default AI provider.
+pub const DEFAULT_OLLAMA_URL: &str = "http://localhost:11434/v1";
+
 impl Default for AIPreset {
     fn default() -> Self {
+        // Fills fields missing from a stored preset. Local by default: a
+        // preset without a provider never reaches a remote service.
         Self {
             id: String::new(),
             prompt: String::new(),
-            provider: AIProviderType::ScreenpipeCloud,
-            url: "https://api.screenpipe.com/v1".to_string(),
-            model: "qwen/qwen3.5-flash-02-23".to_string(),
+            provider: AIProviderType::NativeOllama,
+            url: DEFAULT_OLLAMA_URL.to_string(),
+            model: String::new(),
             default_preset: false,
             api_key: None,
-            max_context_chars: 512000,
+            max_context_chars: 200000,
             max_tokens: 4096,
         }
     }
@@ -906,26 +922,23 @@ impl Default for User {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Type)]
 #[serde(rename_all = "camelCase")]
 pub enum AudioEngineFallbackReason {
-    NotLoggedIn,
-    NotSubscribed,
+    /// The `screenpipe-cloud` engine needs an AI gateway URL and key.
+    GatewayNotConfigured,
     MissingDeepgramKey,
 }
 
 impl AudioEngineFallbackReason {
     pub fn notification_title(&self) -> &'static str {
         match self {
-            Self::NotLoggedIn | Self::NotSubscribed => "Screenpipe Cloud unavailable",
+            Self::GatewayNotConfigured => "AI gateway transcription unavailable",
             Self::MissingDeepgramKey => "Deepgram unavailable",
         }
     }
 
     pub fn notification_body(&self) -> &'static str {
         match self {
-            Self::NotLoggedIn => {
-                "You are not logged in, so audio is being transcribed locally with Whisper Turbo (fast). Log in to use Screenpipe Cloud."
-            }
-            Self::NotSubscribed => {
-                "Screenpipe Cloud requires an active subscription, so audio is being transcribed locally with Whisper Turbo (fast)."
+            Self::GatewayNotConfigured => {
+                "No AI gateway URL and key are set, so audio is being transcribed on this device with Whisper Turbo (fast). Add a gateway under Settings > AI or pick a local engine."
             }
             Self::MissingDeepgramKey => {
                 "Deepgram has no API key configured, so audio is being transcribed locally with Whisper Turbo (fast)."
@@ -1025,21 +1038,22 @@ impl Default for SettingsStore {
             "Parted".to_string(),
         ]);
 
-        // Default AI preset - works without login
+        // Default AI preset: a local Ollama server. The user picks the model
+        // (onboarding / Settings > AI); nothing remote is configured.
         let default_free_preset = AIPreset {
-            id: "screenpipe-cloud".to_string(),
+            id: "default".to_string(),
             prompt: r#"IMPORTANT: At the start of every conversation, read the files in .pi/skills/ directory (e.g. .pi/skills/screenpipe-api/SKILL.md and .pi/skills/screenpipe-cli/SKILL.md) before responding.
 Rules:
 - Media: use standard markdown with angle-bracket local paths, like ![description](</path/to/file.mp4>) for videos and ![description](</path/to/image.jpg>) for images
 - Always wrap local file paths in angle brackets because screenpipe paths often contain spaces or parentheses
 - Always answer my question/intent, do not make up things
 "#.to_string(),
-            provider: AIProviderType::ScreenpipeCloud,
-            url: "https://api.screenpipe.com/v1".to_string(),
-            model: "auto".to_string(),
+            provider: AIProviderType::NativeOllama,
+            url: DEFAULT_OLLAMA_URL.to_string(),
+            model: String::new(),
             default_preset: true,
             api_key: None,
-            max_context_chars: 128000,
+            max_context_chars: 200000,
             max_tokens: 4096,
         };
 
@@ -1107,6 +1121,8 @@ Rules:
             auto_update: false,
             auto_update_pipes: true,
             enhanced_ai: false,
+            ai_gateway_url: String::new(),
+            ai_gateway_api_key: String::new(),
             #[cfg(target_os = "macos")]
             overlay_mode: "fullscreen".to_string(),
             #[cfg(not(target_os = "macos"))]
@@ -1220,18 +1236,14 @@ impl SettingsStore {
     /// comes from the User auth object, user_name has a fallback chain).
     pub fn to_recording_settings(&self) -> screenpipe_config::RecordingSettings {
         let mut settings = self.recording.clone();
-        // Override user_id with the Clerk JWT token from the auth user object.
-        // This token is used as the Bearer credential for screenpipe cloud
-        // (transcription proxy, Pi agent, etc.), not as a database ID.
-        // Fallback to user.id if token is unavailable.
-        settings.user_id = self
-            .user
-            .token
-            .as_ref()
-            .filter(|t| !t.is_empty())
-            .or(self.user.id.as_ref().filter(|id| !id.is_empty()))
-            .cloned()
-            .unwrap_or_default();
+        // `user_id` is the Bearer credential the engine sends to the user's
+        // AI gateway (cloud transcription, the live-notes relay, the chat
+        // proxy), not a database ID. Freenpipe has no account, so it is the
+        // gateway key from settings (or SCREENPIPE_AI_GATEWAY_KEY) and never
+        // a token cached from a screenpipe sign-in.
+        settings.user_id =
+            screenpipe_core::ai_gateway::credential(Some(&self.ai_gateway_api_key))
+                .unwrap_or_default();
         // Fallback chain: userName setting → cloud name → cloud email
         settings.user_name = settings
             .user_name
@@ -1246,6 +1258,9 @@ impl SettingsStore {
         &self,
         data_dir: std::path::PathBuf,
     ) -> screenpipe_engine::RecordingConfig {
+        // The engine runs in this process: hand it the gateway URL first so
+        // transcription, the chat proxy and agents see the current setting.
+        crate::ai_gateway::apply_settings(self);
         let resolved_engine = self.audio_engine_resolution().active;
         let settings = self.to_recording_settings();
         let mut config = screenpipe_engine::RecordingConfig::from_settings(
@@ -1291,15 +1306,29 @@ impl SettingsStore {
         true
     }
 
+    /// Whether the `screenpipe-cloud` transcription engine can run: an AI
+    /// gateway URL (setting or `SCREENPIPE_AI_GATEWAY_URL`) and a gateway key
+    /// (setting or `SCREENPIPE_AI_GATEWAY_KEY`).
+    pub fn gateway_transcription_ready(&self) -> bool {
+        self.gateway_transcription_ready_with(|name| std::env::var(name).ok())
+    }
+
+    fn gateway_transcription_ready_with(&self, env: impl Fn(&str) -> Option<String>) -> bool {
+        let base = screenpipe_core::endpoints::resolve_with(
+            screenpipe_core::endpoints::Endpoint::AiGateway,
+            Some(&self.ai_gateway_url),
+            &env,
+        );
+        let key = screenpipe_core::ai_gateway::credential_with(Some(&self.ai_gateway_api_key), &env);
+        base.is_some() && key.is_some()
+    }
+
     pub fn audio_engine_resolution(&self) -> AudioEngineResolution {
+        self.audio_engine_resolution_with(self.gateway_transcription_ready())
+    }
+
+    fn audio_engine_resolution_with(&self, gateway_ready: bool) -> AudioEngineResolution {
         let engine = self.recording.audio_transcription_engine.clone();
-        let has_cloud_auth = self
-            .user
-            .token
-            .as_ref()
-            .map_or(false, |token| !token.is_empty())
-            || self.user.id.as_ref().map_or(false, |id| !id.is_empty());
-        let is_subscribed = self.user.cloud_subscribed == Some(true);
         let has_deepgram_key = !self.recording.deepgram_api_key.is_empty()
             && self.recording.deepgram_api_key != "default";
         let fallback = "whisper-large-v3-turbo-quantized".to_string();
@@ -1310,15 +1339,10 @@ impl SettingsStore {
         };
 
         match engine.as_str() {
-            "screenpipe-cloud" if !has_cloud_auth => {
-                tracing::warn!("screenpipe-cloud selected but user not logged in, falling back to whisper-large-v3-turbo-quantized");
+            "screenpipe-cloud" if !gateway_ready => {
+                tracing::warn!("screenpipe-cloud transcription selected but no AI gateway URL and key are configured, falling back to whisper-large-v3-turbo-quantized");
                 resolution.active = fallback;
-                resolution.fallback_reason = Some(AudioEngineFallbackReason::NotLoggedIn);
-            }
-            "screenpipe-cloud" if !is_subscribed => {
-                tracing::warn!("screenpipe-cloud selected but user is not a pro subscriber, falling back to whisper-large-v3-turbo-quantized");
-                resolution.active = fallback;
-                resolution.fallback_reason = Some(AudioEngineFallbackReason::NotSubscribed);
+                resolution.fallback_reason = Some(AudioEngineFallbackReason::GatewayNotConfigured);
             }
             "deepgram" if !has_deepgram_key => {
                 tracing::warn!("deepgram selected but no API key configured, falling back to whisper-large-v3-turbo-quantized");
@@ -1331,6 +1355,69 @@ impl SettingsStore {
         resolution
     }
 
+    /// Whether an AI gateway URL is configured (setting or
+    /// `SCREENPIPE_AI_GATEWAY_URL`).
+    pub fn ai_gateway_configured(&self) -> bool {
+        screenpipe_core::endpoints::resolve_with(
+            screenpipe_core::endpoints::Endpoint::AiGateway,
+            Some(&self.ai_gateway_url),
+            |name| std::env::var(name).ok(),
+        )
+        .is_some()
+    }
+
+    /// One-time Freenpipe migrations for a store written by screenpipe (the
+    /// frontend runs the same steps under the same flags, whichever loads the
+    /// store first does the work). Returns `true` when something changed.
+    ///
+    /// - Presets on the hosted provider (`screenpipe-cloud`, legacy `pi`)
+    ///   become local Ollama presets when no AI gateway is configured; ids,
+    ///   prompts and the default flag are kept so pipes still resolve them.
+    ///   With a gateway they stay on it, and legacy `pi` becomes
+    ///   `screenpipe-cloud`.
+    /// - A remote PII backend goes back to `local`, the legacy analytics flag
+    ///   goes off and cloud media analysis goes off. Remote options can be
+    ///   re-selected once the user has configured their own endpoints.
+    pub fn apply_freenpipe_ai_migrations(&mut self, gateway_configured: bool) -> bool {
+        let mut changed = false;
+        if !self.extra.contains_key(CLOUD_PRESET_MIGRATION_FLAG) {
+            for preset in &mut self.ai_presets {
+                if !matches!(
+                    preset.provider,
+                    AIProviderType::ScreenpipeCloud | AIProviderType::Pi
+                ) {
+                    continue;
+                }
+                if gateway_configured {
+                    // Kept on the gateway; the legacy id gets the current one.
+                    preset.provider = AIProviderType::ScreenpipeCloud;
+                } else {
+                    preset.provider = AIProviderType::NativeOllama;
+                    preset.url = DEFAULT_OLLAMA_URL.to_string();
+                    preset.model = String::new();
+                    preset.api_key = None;
+                }
+            }
+            self.extra
+                .insert(CLOUD_PRESET_MIGRATION_FLAG.to_string(), Value::Bool(true));
+            changed = true;
+        }
+        if !self.extra.contains_key(PRIVACY_DEFAULTS_MIGRATION_FLAG) {
+            if is_remote_pii_backend(&self.recording.pii_backend) {
+                self.recording.pii_backend = "local".to_string();
+            }
+            self.recording.analytics_enabled = false;
+            self.extra
+                .insert("cloudMediaAnalysisEnabled".to_string(), Value::Bool(false));
+            self.extra.insert(
+                PRIVACY_DEFAULTS_MIGRATION_FLAG.to_string(),
+                Value::Bool(true),
+            );
+            changed = true;
+        }
+        changed
+    }
+
     pub fn save(&self, app: &AppHandle) -> Result<(), String> {
         let Ok(store) = get_store(app, None) else {
             return Err("Failed to get store".to_string());
@@ -1341,6 +1428,19 @@ impl SettingsStore {
         reencrypt_store_file(app);
         Ok(())
     }
+}
+
+/// Store flag: hosted-provider presets were migrated (see
+/// [`SettingsStore::apply_freenpipe_ai_migrations`]). Shared with the
+/// frontend migration in `lib/ai-gateway.ts`.
+pub const CLOUD_PRESET_MIGRATION_FLAG: &str = "_freenpipeCloudPresetMigrated";
+/// Store flag: the PII backend, analytics and media-analysis defaults were
+/// applied to an existing store.
+pub const PRIVACY_DEFAULTS_MIGRATION_FLAG: &str = "_freenpipePrivacyDefaultsApplied";
+
+/// `piiBackend` values that select the remote enclave.
+fn is_remote_pii_backend(value: &str) -> bool {
+    matches!(value, "tinfoil" | "cloud" | "enclave")
 }
 
 pub fn init_store(app: &AppHandle) -> Result<SettingsStore, String> {
@@ -1357,6 +1457,7 @@ pub fn init_store(app: &AppHandle) -> Result<SettingsStore, String> {
         .unwrap_or(false);
 
     let is_new_store;
+    let mut store_readable = true;
     let (mut store, mut should_save) = match SettingsStore::get(app) {
         Ok(Some(store)) => {
             is_new_store = false;
@@ -1368,6 +1469,7 @@ pub fn init_store(app: &AppHandle) -> Result<SettingsStore, String> {
         }
         Err(e) => {
             is_new_store = false;
+            store_readable = false;
             // Fallback to defaults when deserialization fails (e.g., corrupted store)
             // DON'T save - preserve original store in case it can be manually recovered
             // This prevents crashes from invalid values like negative integers in u32 fields
@@ -1379,6 +1481,16 @@ pub fn init_store(app: &AppHandle) -> Result<SettingsStore, String> {
             (SettingsStore::default(), false)
         }
     };
+
+    // Freenpipe one-time AI/privacy migrations (no-ops after the first run).
+    // Skipped when the stored settings could not be read, so a store we
+    // refuse to overwrite stays untouched.
+    if store_readable {
+        let gateway_configured = store.ai_gateway_configured();
+        if store.apply_freenpipe_ai_migrations(gateway_configured) {
+            should_save = true;
+        }
+    }
 
     // Tier detection. Two cases:
     // - New install: detect tier AND apply tier defaults (video_quality, power_mode, etc.)
@@ -1651,51 +1763,190 @@ mod tests {
         assert!(settings.auto_update);
     }
 
+    fn no_env(_: &str) -> Option<String> {
+        None
+    }
+
     #[test]
-    fn screenpipe_cloud_falls_back_when_not_logged_in() {
+    fn gateway_transcription_needs_a_gateway_url_and_key() {
+        let mut store = SettingsStore::default();
+        // A cached screenpipe sign-in is not a gateway.
+        store.user.token = Some("vendor-jwt".to_string());
+        store.user.cloud_subscribed = Some(true);
+        assert!(!store.gateway_transcription_ready_with(no_env));
+
+        store.ai_gateway_url = "http://127.0.0.1:4000/v1".to_string();
+        assert!(
+            !store.gateway_transcription_ready_with(no_env),
+            "a key is still missing"
+        );
+        store.ai_gateway_api_key = "gw-key".to_string();
+        assert!(store.gateway_transcription_ready_with(no_env));
+
+        store.ai_gateway_url = "not a url".to_string();
+        assert!(!store.gateway_transcription_ready_with(no_env));
+
+        let env_only = SettingsStore::default();
+        let env = |name: &str| match name {
+            "SCREENPIPE_AI_GATEWAY_URL" => Some("https://gw.example.test/v1".to_string()),
+            "SCREENPIPE_AI_GATEWAY_KEY" => Some("env-key".to_string()),
+            _ => None,
+        };
+        assert!(env_only.gateway_transcription_ready_with(env));
+    }
+
+    #[test]
+    fn gateway_engine_falls_back_to_whisper_without_a_gateway() {
         let mut store = SettingsStore::default();
         store.recording.audio_transcription_engine = "screenpipe-cloud".to_string();
-        store.user.id = None;
-        store.user.token = None;
-        store.user.cloud_subscribed = Some(true);
 
-        let resolution = store.audio_engine_resolution();
+        let resolution = store.audio_engine_resolution_with(false);
 
         assert_eq!(resolution.requested, "screenpipe-cloud");
         assert_eq!(resolution.active, FALLBACK_ENGINE);
         assert_eq!(
             resolution.fallback_reason,
-            Some(AudioEngineFallbackReason::NotLoggedIn)
+            Some(AudioEngineFallbackReason::GatewayNotConfigured)
         );
+        let body = AudioEngineFallbackReason::GatewayNotConfigured.notification_body();
+        assert!(!body.to_lowercase().contains("log in"));
+        assert!(!body.to_lowercase().contains("subscription"));
     }
 
     #[test]
-    fn screenpipe_cloud_falls_back_when_not_subscribed() {
+    fn gateway_engine_stays_active_with_a_gateway() {
         let mut store = SettingsStore::default();
         store.recording.audio_transcription_engine = "screenpipe-cloud".to_string();
-        store.user.token = Some("token".to_string());
-        store.user.cloud_subscribed = Some(false);
 
-        let resolution = store.audio_engine_resolution();
-
-        assert_eq!(resolution.active, FALLBACK_ENGINE);
-        assert_eq!(
-            resolution.fallback_reason,
-            Some(AudioEngineFallbackReason::NotSubscribed)
-        );
-    }
-
-    #[test]
-    fn screenpipe_cloud_stays_active_for_subscribed_users() {
-        let mut store = SettingsStore::default();
-        store.recording.audio_transcription_engine = "screenpipe-cloud".to_string();
-        store.user.token = Some("token".to_string());
-        store.user.cloud_subscribed = Some(true);
-
-        let resolution = store.audio_engine_resolution();
+        let resolution = store.audio_engine_resolution_with(true);
 
         assert_eq!(resolution.active, "screenpipe-cloud");
         assert_eq!(resolution.fallback_reason, None);
+    }
+
+    #[test]
+    fn fresh_store_defaults_to_a_local_ollama_preset_and_local_stt() {
+        let store = SettingsStore::default();
+        assert_eq!(store.ai_presets.len(), 1);
+        let preset = &store.ai_presets[0];
+        assert!(matches!(preset.provider, AIProviderType::NativeOllama));
+        assert_eq!(preset.url, DEFAULT_OLLAMA_URL);
+        assert!(preset.default_preset);
+        assert_eq!(preset.model, "", "the user picks the model");
+        assert_eq!(
+            store.recording.audio_transcription_engine,
+            "whisper-large-v3-turbo-quantized"
+        );
+        assert!(store.ai_gateway_url.is_empty());
+        assert!(!store.recording.analytics_enabled);
+        assert_eq!(store.recording.pii_backend, "local");
+
+        let json = serde_json::to_string(&store).unwrap();
+        assert!(!json.contains("screenpipe.com"));
+        assert!(!json.contains("screenpi.pe"));
+    }
+
+    #[test]
+    fn preset_missing_fields_default_to_local() {
+        let preset: AIPreset = serde_json::from_value(json!({"id": "x"})).unwrap();
+        assert!(matches!(preset.provider, AIProviderType::NativeOllama));
+        assert_eq!(preset.url, "");
+    }
+
+    #[test]
+    fn hosted_presets_migrate_once_to_local_without_a_gateway() {
+        let mut store: SettingsStore = serde_json::from_value(json!({
+            "aiPresets": [
+                {"id": "chat", "provider": "screenpipe-cloud", "url": "", "model": "claude-opus-4-8",
+                 "defaultPreset": true, "prompt": "be brief", "maxContextChars": 200000},
+                {"id": "old", "provider": "pi", "url": "", "model": "auto",
+                 "defaultPreset": false, "prompt": "", "maxContextChars": 200000},
+                {"id": "mine", "provider": "openai", "url": "https://api.openai.com/v1",
+                 "model": "gpt-4o", "defaultPreset": false, "prompt": "", "apiKey": "sk-x",
+                 "maxContextChars": 128000}
+            ],
+            "piiBackend": "tinfoil",
+            "analyticsEnabled": true,
+            "cloudMediaAnalysisEnabled": true
+        }))
+        .unwrap();
+
+        assert!(store.apply_freenpipe_ai_migrations(false));
+        let chat = &store.ai_presets[0];
+        assert!(matches!(chat.provider, AIProviderType::NativeOllama));
+        assert_eq!(chat.id, "chat");
+        assert_eq!(chat.url, DEFAULT_OLLAMA_URL);
+        assert_eq!(chat.model, "");
+        assert!(chat.default_preset);
+        assert_eq!(chat.prompt, "be brief");
+        assert!(matches!(
+            store.ai_presets[1].provider,
+            AIProviderType::NativeOllama
+        ));
+        assert!(matches!(store.ai_presets[2].provider, AIProviderType::OpenAI));
+        assert_eq!(store.ai_presets[2].model, "gpt-4o");
+        assert_eq!(store.recording.pii_backend, "local");
+        assert!(!store.recording.analytics_enabled);
+        assert_eq!(store.extra["cloudMediaAnalysisEnabled"], json!(false));
+
+        // Second run is a no-op, even if the user re-selects things.
+        store.recording.pii_backend = "tinfoil".to_string();
+        assert!(!store.apply_freenpipe_ai_migrations(false));
+        assert_eq!(store.recording.pii_backend, "tinfoil");
+    }
+
+    #[test]
+    fn hosted_presets_are_kept_when_a_gateway_is_configured() {
+        let mut store: SettingsStore = serde_json::from_value(json!({
+            "aiPresets": [{"id": "screenpipe", "provider": "screenpipe-cloud", "url": "",
+                           "model": "auto", "defaultPreset": true, "prompt": "",
+                           "maxContextChars": 200000}]
+        }))
+        .unwrap();
+        assert!(store.apply_freenpipe_ai_migrations(true));
+        assert!(matches!(
+            store.ai_presets[0].provider,
+            AIProviderType::ScreenpipeCloud
+        ));
+        assert_eq!(store.extra[CLOUD_PRESET_MIGRATION_FLAG], json!(true));
+    }
+
+    #[test]
+    fn legacy_pi_presets_are_renamed_when_a_gateway_is_configured() {
+        let mut store: SettingsStore = serde_json::from_value(json!({
+            "aiPresets": [
+                {"id": "agent", "provider": "pi", "url": "", "model": "auto",
+                 "defaultPreset": true, "prompt": "keep me", "maxContextChars": 200000},
+                {"id": "mine", "provider": "openai", "url": "https://api.example.test/v1",
+                 "model": "m", "defaultPreset": false, "prompt": "", "maxContextChars": 1000}
+            ]
+        }))
+        .unwrap();
+        assert!(store.apply_freenpipe_ai_migrations(true));
+        assert!(matches!(
+            store.ai_presets[0].provider,
+            AIProviderType::ScreenpipeCloud
+        ));
+        assert_eq!(store.ai_presets[0].id, "agent");
+        assert_eq!(store.ai_presets[0].model, "auto");
+        assert_eq!(store.ai_presets[0].prompt, "keep me");
+        assert!(matches!(store.ai_presets[1].provider, AIProviderType::OpenAI));
+        assert_eq!(
+            serde_json::to_value(&store.ai_presets[0]).unwrap()["provider"],
+            json!("screenpipe-cloud")
+        );
+    }
+
+    #[test]
+    fn recording_credential_is_the_gateway_key_not_a_cached_sign_in() {
+        let mut store = SettingsStore::default();
+        store.user.token = Some("vendor-jwt".to_string());
+        store.user.id = Some("user_123".to_string());
+        if std::env::var(screenpipe_core::ai_gateway::KEY_ENV).is_err() {
+            assert_eq!(store.to_recording_settings().user_id, "");
+        }
+        store.ai_gateway_api_key = "gw-key".to_string();
+        assert_eq!(store.to_recording_settings().user_id, "gw-key");
     }
 
     // ---- Entitlement gate removal (Freenpipe has no plans) ----
