@@ -56,9 +56,9 @@ Git submodules inside those repositories, copied at the commit their parent tree
 | `audiopipe/crates/qwen3-asr-sys/qwen3-asr.cpp` | https://github.com/predict-woo/qwen3-asr.cpp | `f4df368778bb38bca1a0c1987c65d778cf791146` | 2026-02-11 | MIT, declared in its `README.md` (no licence file upstream) |
 | `audiopipe/crates/qwen3-asr-sys/qwen3-asr.cpp/ggml` | https://github.com/ggerganov/ggml | `a8db410a252c8c8f2d120c6f2e7133ebe032f35d` | 2026-01-30 | MIT (`LICENSE`) |
 
-Size: 1,546 files, 17.5 MB of source (about 4 MB once git compresses it). Most of it is the two
-copies of ggml (whisper.cpp's and qwen3-asr.cpp's, at different revisions), which the C++ builds
-need.
+Size: 1,543 files, 20.8 MB in a checkout. Most of it is the two copies of ggml (whisper.cpp's and
+qwen3-asr.cpp's, at different revisions), which the C++ builds need; many of their files are
+identical, so git stores 17.5 MB of distinct content, about 4 MB compressed.
 
 ### Licence notes
 

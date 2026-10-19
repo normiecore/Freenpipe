@@ -74,6 +74,12 @@ Every step after the engine build runs even when an earlier one failed
 - **Vendor-host guard:** `bun test scripts/ci/vendor-guard.test.ts`, the way
   its header says, in report mode until W0-12 switches the default to strict.
   The remaining hits go to the job summary.
+- **Third-party dependency guard:** `bun test scripts/ci/third-party.test.ts`
+  fails when a Cargo.toml or Cargo.lock points at a git repository of the
+  vendor or its contributors again (they are vendored in `third_party/`, see
+  its README), when `third_party/` stops being excluded from the workspace,
+  when a path dependency into `third_party/` is broken, or when
+  `third_party/README.md` misses a vendored tree or a remaining git source.
 - **Clean-room verbatim gate:** `scripts/ci/verbatim-diff.sh` collects the
   lines the change adds (PR: base...head; push: before...after; a new
   branch or a force push falls back to the merge base with `main`), from

@@ -590,7 +590,8 @@ taken and the reason. Later work packages may revisit a decision; say so under t
    two ggml copies the backends that no Cargo feature of whisper-rs or qwen3-asr-sys can enable.
    whisper.cpp keeps the file set of whisper-rs-sys's own `include` list. Every removal is listed
    in `third_party/README.md` and encoded in `third_party/vendor.sh`, which rebuilds the trees
-   byte for byte (`--check`). Result: 17.5 MB of source, about 4 MB compressed in git.
+   byte for byte (`--check`). Result: 1,543 files, 20.8 MB in a checkout, about 4 MB compressed in
+   git.
    Reason: the build must keep working for every feature our crates expose, on every platform;
    beyond that, smaller is better. Agent instruction files would be loaded by agents working in
    this repository, so they must not be imported.
