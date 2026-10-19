@@ -927,6 +927,40 @@ async oauthCancel(integrationId: string) : Promise<Result<null, string>> {
 }
 },
 /**
+ * Forget the user's OAuth app for `integration_id`. Connected accounts keep
+ * their tokens but can no longer refresh until an app is configured again.
+ */
+async oauthClientDelete(integrationId: string) : Promise<Result<OAuthClientInfo, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("oauth_client_delete", { integrationId }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
+ * Describe the user's OAuth app for `integration_id` (never the secret).
+ */
+async oauthClientGet(integrationId: string) : Promise<Result<OAuthClientInfo, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("oauth_client_get", { integrationId }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
+ * Validate and store the user's OAuth app for `integration_id`.
+ */
+async oauthClientSave(integrationId: string, input: OAuthClientInput) : Promise<Result<OAuthClientInfo, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("oauth_client_save", { integrationId, input }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
  * Start the OAuth flow for any integration that has `oauth_config()` set.
  * `integration_id` must match the integration's `def().id`.
  * `instance` is an optional name for multi-account support (e.g. email address).
@@ -2354,6 +2388,40 @@ export type KeychainStatus = { state: string }
 export type LogFile = { name: string; path: string; modified_at: number }
 export type MeetingExportSummary = { output_path: string; frame_count: number; audio_chunk_count: number; duration_secs: number; file_size_bytes: number }
 export type MonitorDevice = { id: number; stableId: string; name: string; isDefault: boolean; width: number; height: number }
+/**
+ * What the settings UI may know about an integration's BYO OAuth app.
+ * Deliberately carries no secret, only whether one is stored.
+ */
+export type OAuthClientInfo = { integration_id: string;
+/**
+ * A client ID is stored, so connecting is possible.
+ */
+configured: boolean; client_id: string | null; has_client_secret: boolean;
+/**
+ * The user's redirect override (an HTTPS relay or a non-default port).
+ */
+redirect_uri: string | null;
+/**
+ * Loopback callback for the engine's current port; register this with
+ * the provider unless a relay is used.
+ */
+default_redirect_uri: string;
+/**
+ * The provider refuses loopback redirects: `redirect_uri` is required.
+ */
+requires_https_redirect: boolean; uses_pkce: boolean; auth_url: string; token_url: string }
+/**
+ * Edit submitted by the OAuth app dialog.
+ */
+export type OAuthClientInput = { client_id: string;
+/**
+ * `null` keeps the stored secret, `""` removes it, anything else replaces it.
+ */
+client_secret: string | null;
+/**
+ * `null` or `""` means "use the loopback default".
+ */
+redirect_uri: string | null }
 export type OAuthInstanceInfo = { instance: string | null; display_name: string | null }
 export type OAuthStatus = { connected: boolean; display_name: string | null;
 /**

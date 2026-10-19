@@ -7,8 +7,8 @@ and layer declared in the manifest, weighted by confidence and criticality.
 - Manifest: `e2e/coverage-map.json`
 - Specs directory: `e2e/specs`
 - Mapped specs: 45
-- Declared test blocks: 154
-- Weighted coverage points: 121.1
+- Declared test blocks: 156
+- Weighted coverage points: 122.2
 
 Confidence weights: strong=1.0, partial=0.7, conditional=0.4, smoke=0.3.
 Criticality weights: high=1.0, medium=0.7, low=0.4.
@@ -19,9 +19,9 @@ can execute more runtime cases than this number shows.
 
 | Platform | Specs | Declared tests | Weighted points | Layers | Features | Critical score |
 | --- | --- | --- | --- | --- | --- | --- |
-| windows | 38 | 143 | 117.7 | 14 | 43 | 92% |
-| macos | 42 | 120 | 93.7 | 14 | 44 | 89% |
-| linux | 32 | 108 | 90.1 | 12 | 40 | 86% |
+| windows | 38 | 145 | 118.8 | 14 | 43 | 92% |
+| macos | 42 | 122 | 94.8 | 14 | 44 | 89% |
+| linux | 32 | 110 | 91.3 | 12 | 40 | 86% |
 
 ## Runtime Results
 
@@ -42,9 +42,9 @@ pass/fail/skip counts.
 | os-integration | 3 specs / 16 tests / 15.1 pts | 3 specs / 3 tests / 0.9 pts | - |
 | performance | 2 specs / 43 tests / 43.0 pts | 4 specs / 33 tests / 29.5 pts | 1 specs / 28 tests / 28.0 pts |
 | pipes | 1 specs / 8 tests / 8.0 pts | 1 specs / 8 tests / 8.0 pts | 1 specs / 8 tests / 8.0 pts |
-| real-ui-e2e | 20 specs / 74 tests / 60.9 pts | 21 specs / 61 tests / 50.4 pts | 17 specs / 55 tests / 48.5 pts |
-| settings | 7 specs / 24 tests / 22.2 pts | 7 specs / 17 tests / 14.5 pts | 6 specs / 16 tests / 14.2 pts |
-| storage-privacy | 6 specs / 20 tests / 19.1 pts | 5 specs / 12 tests / 11.1 pts | 4 specs / 12 tests / 11.1 pts |
+| real-ui-e2e | 20 specs / 76 tests / 62.0 pts | 21 specs / 63 tests / 51.6 pts | 17 specs / 57 tests / 49.6 pts |
+| settings | 7 specs / 25 tests / 23.2 pts | 7 specs / 18 tests / 15.5 pts | 6 specs / 17 tests / 15.2 pts |
+| storage-privacy | 6 specs / 21 tests / 20.1 pts | 5 specs / 13 tests / 12.1 pts | 4 specs / 13 tests / 12.1 pts |
 | tauri-command | 8 specs / 17 tests / 10.3 pts | 9 specs / 19 tests / 10.8 pts | 8 specs / 17 tests / 10.3 pts |
 | window-lifecycle | 16 specs / 60 tests / 51.2 pts | 16 specs / 41 tests / 29.6 pts | 12 specs / 36 tests / 28.1 pts |
 
@@ -105,7 +105,7 @@ pass/fail/skip counts.
 | chat-within-session-context-loss.spec.ts | macos | chat-ai | chat, chat-context | medium | conditional | synthetic | 1 | macOS-only within-chat context retention regression. |
 | focus-server.spec.ts | windows, macos, linux | local-api, window-lifecycle, tauri-command | window-lifecycle, focus-server, deeplink | medium | partial | api | 2 | Focus server opens windows and forwards deeplink args. |
 | hd-recording-pipeline.spec.ts | macos | capture-ocr, local-api, performance | capture-ocr, hd-recording, timeline | high | conditional | api | 1 | Opt-in macOS HD capture and OCR indexing. |
-| help-discord-link.spec.ts | windows, macos, linux | real-ui-e2e | help | low | smoke | real-user-flow | 1 | Help section Discord invite link. |
+| help-links.spec.ts | windows, macos, linux | real-ui-e2e | help | low | smoke | real-user-flow | 2 | Help section links to the project's GitHub pages; no vendor links. |
 | home-window.spec.ts | windows, macos, linux | real-ui-e2e, window-lifecycle | app-launch, home-navigation, timeline, settings-recording, pipes | high | strong | real-user-flow | 1 | Clicks through Home, Pipes, Timeline, Help, and Settings. |
 | macos-ui-performance.spec.ts | macos | performance, real-ui-e2e | timeline, audio-device-health | medium | conditional | performance | 2 | macOS-only timeline/audio UI performance guards. |
 | main-overlay-visibility.spec.ts | windows, macos, linux | window-lifecycle, tauri-command | window-lifecycle, main-overlay | medium | partial | command | 1 | Main overlay show/hide without duplicate handles. |
@@ -121,7 +121,7 @@ pass/fail/skip counts.
 | privacy-api-auth-enforcement.spec.ts | windows, macos, linux | settings, local-api, storage-privacy | settings-privacy-api-auth, local-api-auth, restart-flow | high | conditional | mixed | 1 | Opt-in restart smoke toggles API auth and verifies backend behavior. |
 | privacy-api-auth.spec.ts | windows, macos, linux | settings, storage-privacy, real-ui-e2e | settings-privacy-api-auth, local-api-auth | high | strong | real-user-flow | 1 | Privacy settings reveal/copy local API key flow. |
 | privacy-installed-apps.spec.ts | windows, macos, linux | settings, storage-privacy, real-ui-e2e | settings-privacy-filters, installed-apps | medium | strong | real-user-flow | 1 | Privacy content filters surface installed-but-not-captured apps as typeable options with the not-captured hint (fetch-intercepted /installed-apps for determinism). |
-| settings-sections.spec.ts | windows, macos, linux | settings, real-ui-e2e, storage-privacy | settings-recording, settings-privacy-api-auth, storage-retention, audio-device-health | high | strong | real-user-flow | 9 | Settings sections, storage, privacy, and rapid switching crash guard. |
+| settings-sections.spec.ts | windows, macos, linux | settings, real-ui-e2e, storage-privacy | settings-recording, settings-privacy-api-auth, storage-retention, audio-device-health | high | strong | real-user-flow | 10 | Settings sections, storage, privacy, and rapid switching crash guard. |
 | timeline.spec.ts | windows, macos, linux | real-ui-e2e, capture-ocr | timeline, capture-ocr | high | conditional | real-user-flow | 2 | Timeline shell always runs; seeded frame assertion skips under no-recording. |
 | tray-search.spec.ts | windows, macos, linux | window-lifecycle, tauri-command, real-ui-e2e | tray-search, home-search, window-lifecycle | high | partial | command | 2 | Invokes open_search_window and verifies focused floating Search. |
 | updater-banner.spec.ts | windows, macos, linux | real-ui-e2e | update-surfacing | high | partial | synthetic | 1 | Synthetic update-available event surfaces the restart-to-update banner (no relaunch). Real check/download/install + rollback stay manual via e2e/mock-updates; the debug e2e build disables the updater check under cfg!(debug_assertions). |

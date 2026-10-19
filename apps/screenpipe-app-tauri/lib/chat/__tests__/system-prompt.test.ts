@@ -28,6 +28,11 @@ describe("buildSystemPrompt", () => {
     expect(prompt).toContain("# Full API reference");
   });
 
+  it("points at the local OpenAPI document, not a hosted docs site", () => {
+    expect(prompt).toContain("localhost:3030/openapi.json");
+    expect(prompt).not.toMatch(/screenpi\.pe|screenpipe\.com/);
+  });
+
   it("injects the current time, timezone, and local time footer", () => {
     expect(prompt).toContain("Current time: ");
     expect(prompt).toContain("User's timezone: ");

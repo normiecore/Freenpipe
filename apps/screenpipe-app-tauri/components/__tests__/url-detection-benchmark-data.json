@@ -161849,7 +161849,7 @@
       "frame_id": 33038,
       "browser_url": "https://github.com/louis030195/screen-pipe-website/pull/124",
       "app_name": "Arc",
-      "text": "/api/cloud-sync/checkout",
+      "text": "/api/cloud-sync/status",
       "confidence": 1,
       "bounds": {
         "left": 0.31831,
@@ -161863,7 +161863,7 @@
       "frame_id": 33038,
       "browser_url": "https://github.com/louis030195/screen-pipe-website/pull/124",
       "app_name": "Arc",
-      "text": "/apt/cloud-sync/checkout",
+      "text": "/apt/cloud-sync/status",
       "confidence": 1,
       "bounds": {
         "left": 0.31831,

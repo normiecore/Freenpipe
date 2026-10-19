@@ -87,24 +87,23 @@ const tests: TestDef[] = [
         throw new Error(`unexpected error shape: ${stdout.slice(0, 200)}`);
     },
   },
-  // Regression: a6117b306 added `screenpipe team` — admin queries against
-  // the enterprise cloud API. --help must work without auth so admins can
-  // discover the subcommand without setting SCREENPIPE_TEAM_API_TOKEN first.
+  // The hosted team console was a vendor service, so the `team`
+  // subcommand is gone; clap must reject it instead of reaching a server.
   {
-    name: "team --help",
+    name: "team subcommand is not available",
     fn: async (exec, bin) => {
-      const { stdout, exitCode } = await exec(`${bin} team --help`);
+      const { exitCode } = await exec(`${bin} team devices`);
+      if (exitCode === 0) throw new Error("`team devices` should fail to parse");
+    },
+  },
+  // `survey` only prints where feedback goes; it opens and sends nothing.
+  {
+    name: "survey prints the discussions link",
+    fn: async (exec, bin) => {
+      const { stdout, exitCode } = await exec(`${bin} survey`);
       if (exitCode !== 0) throw new Error(`exit code ${exitCode}`);
-      if (!stdout.toLowerCase().includes("team"))
-        throw new Error("missing 'team' in help output");
-      // The three subcommands the skill at
-      // crates/screenpipe-core/assets/skills/screenpipe-team/SKILL.md
-      // documents — if one disappears, agents written against the skill
-      // start failing.
-      for (const sub of ["devices", "search", "records"]) {
-        if (!stdout.includes(sub))
-          throw new Error(`team --help missing subcommand '${sub}'`);
-      }
+      if (!stdout.includes("github.com/normiecore/Freenpipe/discussions"))
+        throw new Error(`missing discussions link: ${stdout.slice(0, 200)}`);
     },
   },
 ];

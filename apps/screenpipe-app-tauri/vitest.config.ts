@@ -30,8 +30,6 @@ export default defineConfig({
 			"lib/utils/redact-pii.test.ts",
 			"lib/utils/meeting-state.test.ts",
 			"lib/utils/sanitize-tool-call-xml.test.ts",
-			"lib/__tests__/team-crypto.test.ts",
-			"lib/__tests__/team-api-contract.test.ts",
 			"components/__tests__/url-detection-benchmark.test.ts",
 			"lib/hooks/__tests__/timeline-reconnection.test.ts",
 			"lib/hooks/__tests__/timeline-store-logic.test.ts",

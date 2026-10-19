@@ -2,15 +2,15 @@
 
 > Generated file: the merger routine regenerates it with `python3 tools/plan/status.py --write`. Do not edit it by hand. The plan is [PLAN.md](PLAN.md); the process is [docs/dev/cloud-runbook.md](../dev/cloud-runbook.md).
 
-Generated 2026-10-15T07:42:49Z from `origin/main` (latest code commit `b951201`). GitHub data: available (via http).
+Generated 2026-10-16T05:01:31Z from `origin/main` (latest code commit `63b3c83`). GitHub data: available (via GitHub connector snapshot).
 
 ## Progress
 
-**4 of 154 work packages merged (2.6%)**: 0 in review, 0 claimed, 7 ready, 143 blocked.
+**7 of 154 work packages merged (4.5%)**: 4 in review, 0 claimed, 0 ready, 143 blocked.
 
 | Wave | Theme | Merged | In review | Claimed | Ready | Blocked | Progress |
 |---|---|---|---|---|---|---|---|
-| 0 | Foundation: build, ee/ stubs, de-cloud, rebrand | 4/13 | 0 | 0 | 7 | 2 | `###-------` 31% |
+| 0 | Foundation: build, ee/ stubs, de-cloud, rebrand | 7/13 | 4 | 0 | 0 | 2 | `#####-----` 54% |
 | 1 | Cross-cutting foundations: schema v2.7, settings schema, integration seams | 0/4 | 0 | 0 | 0 | 4 | `----------` 0% |
 | 2 | Engine data layer and core backends | 0/27 | 0 | 0 | 0 | 27 | `----------` 0% |
 | 3 | Feature backends (search, pipes, connections, capture, audio) | 0/31 | 0 | 0 | 0 | 31 | `----------` 0% |
@@ -19,13 +19,18 @@ Generated 2026-10-15T07:42:49Z from `origin/main` (latest code commit `b951201`)
 | 6 | Agent/workflow UIs, piggyback, hybrid bulk | 0/21 | 0 | 0 | 0 | 21 | `----------` 0% |
 | 7 | Hybrid lifecycle, overlays, chat follow-ups | 0/9 | 0 | 0 | 0 | 9 | `----------` 0% |
 | 8 | Final UI pieces and surface audit | 0/3 | 0 | 0 | 0 | 3 | `----------` 0% |
-| all | | 4/154 | 0 | 0 | 7 | 143 | `----------` 2.6% |
+| all | | 7/154 | 4 | 0 | 0 | 143 | `----------` 4.5% |
 
-CI on main (merge gate on the latest non-status commit `b951201`): **failure** (Clippy & Format: failure; Dependency & Performance Checks: failure; Knip (frontend dead code): failure; Linux E2E Tests: failure; macOS E2E Tests: failure; waiting for windows, linux, gates)
+CI on main (merge gate on the latest non-status commit `63b3c83`): **pending** (linux: in_progress; test-windows: in_progress; windows: in_progress)
 
 ## In review
 
-None.
+| WP | PR | Head | CI | Review | Mergeable | Worker |
+|---|---|---|---|---|---|---|
+| W0-06 | [#5](https://github.com/normiecore/Freenpipe/pull/5) | `c433f80` | success | pending | conflict | - |
+| W0-09 | [#2](https://github.com/normiecore/Freenpipe/pull/2) | `ed4f0ac` | success | pending | conflict | - |
+| W0-10 | [#3](https://github.com/normiecore/Freenpipe/pull/3) | `4c6fc1e` | none | pending | conflict | - |
+| W0-11 | [#4](https://github.com/normiecore/Freenpipe/pull/4) | `4134aa3` | success | approved | conflict | - |
 
 ## Claimed
 
@@ -33,15 +38,7 @@ None.
 
 ## Ready, in plan order
 
-| WP | Wave | Size | Title |
-|---|---|---|---|
-| W0-05 | 0 | L | Remove commerce, team and vendor UI surfaces |
-| W0-06 | 0 | L | AI gateway, transcription, PII backend and media analysis to bring-your-own |
-| W0-07 | 0 | L | OAuth broker replaced by BYO client credentials |
-| W0-08 | 0 | M | Cloud sync, archive and pipe store off by default |
-| W0-09 | 0 | M | Bundled CLI/MCP runtime and self-hosted model sources |
-| W0-10 | 0 | M | Logs and feedback upload replaced by a local diagnostics bundle |
-| W0-11 | 0 | L | SQLite toolchain upgrade (sqlx 0.9, libsqlite3-sys 0.37, rusqlite vtab) |
+None.
 
 ## Wave integration log
 
@@ -49,7 +46,7 @@ No wave integration has been recorded by the merger yet.
 
 ## Board
 
-### Wave 0: Foundation: build, ee/ stubs, de-cloud, rebrand (4/13 merged)
+### Wave 0: Foundation: build, ee/ stubs, de-cloud, rebrand (7/13 merged)
 
 | WP | Size | Status | Title | Detail |
 |---|---|---|---|---|
@@ -57,14 +54,14 @@ No wave integration has been recorded by the merger yet.
 | W0-02 | M | merged | Remove telemetry and crash reporting (PostHog, Sentry) | merge `56b1812` |
 | W0-03 | M | merged | Updater on GitHub releases, release pipeline de-vendoring, restart_for_update | merge `6c659c4` |
 | W0-04 | L | merged | Remove entitlement, login and plan gates | merge `61d5b1a` |
-| W0-05 | L | ready | Remove commerce, team and vendor UI surfaces |  |
-| W0-06 | L | ready | AI gateway, transcription, PII backend and media analysis to bring-your-own |  |
-| W0-07 | L | ready | OAuth broker replaced by BYO client credentials |  |
-| W0-08 | M | ready | Cloud sync, archive and pipe store off by default |  |
-| W0-09 | M | ready | Bundled CLI/MCP runtime and self-hosted model sources |  |
-| W0-10 | M | ready | Logs and feedback upload replaced by a local diagnostics bundle |  |
-| W0-11 | L | ready | SQLite toolchain upgrade (sqlx 0.9, libsqlite3-sys 0.37, rusqlite vtab) |  |
-| W0-12 | M | blocked | Rebrand user-visible identity to Freenpipe | waits for W0-05, W0-06, W0-07, W0-08, W0-09, W0-10 and 1 more |
+| W0-05 | L | merged | Remove commerce, team and vendor UI surfaces | merge `63b3c83` |
+| W0-06 | L | in_review | AI gateway, transcription, PII backend and media analysis to bring-your-own | PR #5: CI success, review pending |
+| W0-07 | L | merged | OAuth broker replaced by BYO client credentials | merge `55174d9` |
+| W0-08 | M | merged | Cloud sync, archive and pipe store off by default | merge `4c31752` |
+| W0-09 | M | in_review | Bundled CLI/MCP runtime and self-hosted model sources | PR #2: CI success, review pending |
+| W0-10 | M | in_review | Logs and feedback upload replaced by a local diagnostics bundle | PR #3: CI none, review pending |
+| W0-11 | L | in_review | SQLite toolchain upgrade (sqlx 0.9, libsqlite3-sys 0.37, rusqlite vtab) | PR #4: CI success, review approved |
+| W0-12 | M | blocked | Rebrand user-visible identity to Freenpipe | waits for W0-06, W0-09, W0-10, W0-11 |
 | W0-13 | M | blocked | Vendor git dependencies into third_party/ | waits for W0-11 |
 
 ### Wave 1: Cross-cutting foundations: schema v2.7, settings schema, integration seams (0/4 merged)
@@ -198,7 +195,7 @@ No wave integration has been recorded by the merger yet.
 | W5-21 | M | blocked | Deep links v2 | waits for W4-22 |
 | W5-22 | M | blocked | Viewer, permission recovery and help refresh | waits for W2-26, W4-22 |
 | W5-23 | L | blocked | Connections UI catalogue | waits for W3-19, W3-20, W3-21, W4-18 |
-| WR-02 | L | blocked | Sync and archive to bring-your-own storage | waits for W0-08, W4-10 |
+| WR-02 | L | blocked | Sync and archive to bring-your-own storage | waits for W4-10 |
 
 ### Wave 6: Agent/workflow UIs, piggyback, hybrid bulk (0/21 merged)
 
@@ -223,8 +220,8 @@ No wave integration has been recorded by the merger yet.
 | W6-17 | L | blocked | Automations (pipes) UI v2 | waits for W5-01 |
 | W6-18 | L | blocked | Right sidebar: multi-tab owned browser, files, connections | waits for W5-15 |
 | W6-19 | L | blocked | Shortcut overlay v2 (webview) | waits for W5-14, W3-07, W3-29 |
-| WR-01 | L | blocked | Pipe store on a GitHub-hosted registry | waits for W0-08, W2-22, W5-01 |
-| WR-03 | XL | blocked | Freenpipe Hub: self-hostable team server and team client | waits for W0-05, W3-02, W4-10, W5-16 |
+| WR-01 | L | blocked | Pipe store on a GitHub-hosted registry | waits for W2-22, W5-01 |
+| WR-03 | XL | blocked | Freenpipe Hub: self-hostable team server and team client | waits for W3-02, W4-10, W5-16 |
 
 ### Wave 7: Hybrid lifecycle, overlays, chat follow-ups (0/9 merged)
 

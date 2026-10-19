@@ -1,7 +1,7 @@
 export const meta = {
   name: 'freenpipe-wp-batch',
   description: 'Freenpipe work packages: implement (or fix CI) in worktrees, verification + compliance review with up to two fix rounds, then push and record on a draft PR',
-  whenToUse: 'Coordinator sessions (docs/dev/cloud-coordinator.md). args: {base, repo?, session_url, wps: [{id, title, mode?: "impl"|"ci-fix"|"publish", ci_failure?, result?, extra?, extraReview?}]}',
+  whenToUse: 'Coordinator sessions (docs/dev/cloud-coordinator.md). args: {base, repo?, session_url, wps: [{id, title, mode?: "impl"|"ci-fix"|"publish", ci_failure?, result?, result_file?, status?, head?, extra?, extraReview?}]}',
   phases: [
     { title: 'Implement', detail: 'one worker per WP in its own git worktree (resumes a pushed branch)' },
     { title: 'Review', detail: 'verification and compliance reviewers in parallel' },
@@ -168,15 +168,15 @@ ${SESSION}
 5. The reviews still request changes, so also run \`python3 tools/cloud/fp.py block <PR> --reason "review changes still open after two fix rounds; see the review record"\`.`}
 
 Data (JSON):
-${JSON.stringify({ implementation: res.impl, ci_fix: res.ciFix, rounds: res.rounds, status: res.status }, null, 1)}
+${w.result_file ? `read it from ${w.result_file} (key wps[0].result: implementation in .impl, reviews in .rounds)` : JSON.stringify({ implementation: res.impl, ci_fix: res.ciFix, rounds: res.rounds, status: res.status }, null, 1)}
 
 Return pr_number, pr_url, head_sha (what was pushed) and notes on anything that went wrong.`
 }
 
 async function runWP(w) {
   const mode = w.mode || 'impl'
-  if (mode === 'publish') {   // w.result: a finished runWP-shaped result whose publish step never ran
-    const res = { ...w.result, wp: w.id }
+  if (mode === 'publish') {   // w.result (or w.result_file + w.status/w.head): a finished result whose publish step never ran
+    const res = w.result ? { ...w.result, wp: w.id } : { wp: w.id, status: w.status, head: w.head }
     res.pr = await agent(publishPrompt(w, res), { label: `publish:${w.id}`, phase: 'Publish', schema: PUBLISH_SCHEMA, effort: 'low' })
     return res
   }

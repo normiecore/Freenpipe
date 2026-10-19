@@ -5,7 +5,7 @@
 "use client";
 
 import React, { useState, useEffect, useRef, useCallback } from "react";
-import { Check, Archive, Loader, Calendar } from "lucide-react";
+import { Check, Archive, Loader, HelpCircle } from "lucide-react";
 import { Button } from "../ui/button";
 import posthog from "posthog-js";
 import { commands } from "@/lib/utils/tauri";
@@ -14,6 +14,7 @@ import { motion, AnimatePresence } from "framer-motion";
 import { useSettings, makeDefaultPresets } from "@/lib/hooks/use-settings";
 import { localFetch } from "@/lib/api";
 import { open as openUrl } from "@tauri-apps/plugin-shell";
+import { freenpipeLink } from "@/lib/web-url";
 import { revealItemInDir } from "@tauri-apps/plugin-opener";
 import { homeDir, join } from "@tauri-apps/api/path";
 import {
@@ -941,7 +942,7 @@ if the input is sparse, just describe what little you have warmly. don't apologi
             stays on your machine ·{" "}
             <button
               type="button"
-              onClick={() => openUrl("https://screenpipe.com/security")}
+              onClick={() => openUrl(freenpipeLink("docs"))}
               className="underline hover:text-muted-foreground transition-colors"
             >
               how it works ↗
@@ -1084,9 +1085,7 @@ if the input is sparse, just describe what little you have warmly. don't apologi
                     </Button>
                   </div>
                   <button
-                    onClick={() =>
-                      openUrl("https://docs.screenpi.pe/permissions")
-                    }
+                    onClick={() => openUrl(freenpipeLink("docs"))}
                     className="font-mono text-[10px] text-muted-foreground hover:text-foreground transition-colors underline underline-offset-4"
                   >
                     troubleshooting guide ↗
@@ -1147,12 +1146,10 @@ if the input is sparse, just describe what little you have warmly. don't apologi
                 <Button
                   variant="outline"
                   size="sm"
-                  onClick={() =>
-                    openUrl("https://cal.com/team/screenpipe/chat")
-                  }
+                  onClick={() => openUrl(freenpipeLink("discussions"))}
                   className="font-mono text-[10px] h-7 px-2"
                 >
-                  <Calendar className="w-3 h-3 mr-1" /> help
+                  <HelpCircle className="w-3 h-3 mr-1" /> help
                 </Button>
               </div>
             </motion.div>
