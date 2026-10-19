@@ -5,7 +5,7 @@
 "use client";
 
 import React, { useState, useEffect, useRef, useCallback } from "react";
-import { Check, Upload, Loader, HelpCircle } from "lucide-react";
+import { Check, Archive, Loader, HelpCircle } from "lucide-react";
 import { Button } from "../ui/button";
 import posthog from "posthog-js";
 import { commands } from "@/lib/utils/tauri";
@@ -18,12 +18,11 @@ import { open as openUrl } from "@tauri-apps/plugin-shell";
 import { freenpipeLink } from "@/lib/web-url";
 import { revealItemInDir } from "@tauri-apps/plugin-opener";
 import { homeDir, join } from "@tauri-apps/api/path";
-import { readTextFile } from "@tauri-apps/plugin-fs";
-import { getVersion } from "@tauri-apps/api/app";
 import {
-  version as osVersion,
-  platform as osPlatform,
-} from "@tauri-apps/plugin-os";
+  createDiagnosticsBundle,
+  readConsoleLogTail,
+} from "@/lib/feedback/diagnostics-bundle";
+import { maskSensitiveSettings } from "@/lib/feedback/sensitive-settings";
 import { ParticleStream, ProgressSteps } from "./particle-stream";
 
 interface EngineStartupProps {
@@ -104,8 +103,8 @@ export default function EngineStartup({
   const [audioReady, setAudioReady] = useState(false);
   const [visionReady, setVisionReady] = useState(false);
   const [isTakingLonger, setIsTakingLonger] = useState(false);
-  const [isSendingLogs, setIsSendingLogs] = useState(false);
-  const [logsSent, setLogsSent] = useState(false);
+  const [isSavingLogs, setIsSavingLogs] = useState(false);
+  const [savedBundlePath, setSavedBundlePath] = useState<string | null>(null);
   // When spawn_screenpipe rejects (e.g. TCC permission denied) we used to
   // swallow the error and let the 15s "stuck" timer fire with empty boot phase.
   // PostHog showed 90% of stuck users had serverStarted=false / boot_phase=?,
@@ -737,81 +736,31 @@ if the input is sparse, just describe what little you have warmly. don't apologi
     handleNextSlide();
   };
 
-  const sendLogs = async () => {
-    setIsSendingLogs(true);
+  // Freenpipe: writes a local diagnostics bundle instead of uploading logs.
+  // The first click saves it; later clicks reveal it in the file manager.
+  const saveLogs = async () => {
+    if (savedBundlePath) {
+      revealItemInDir(savedBundlePath).catch((err) =>
+        console.error("Failed to reveal diagnostics bundle:", err)
+      );
+      return;
+    }
+    setIsSavingLogs(true);
     try {
-      const BASE_URL = "https://screenpi.pe";
-      const machineId =
-        localStorage?.getItem("machineId") || crypto.randomUUID();
-      try {
-        localStorage?.setItem("machineId", machineId);
-      } catch {}
-      const identifier = settings.user?.id || machineId;
-      const type = settings.user?.id ? "user" : "machine";
-      const logFilesResult = await commands.getLogFiles();
-      if (logFilesResult.status !== "ok")
-        throw new Error("Failed to get log files");
-      const logFiles = logFilesResult.data.slice(0, 3);
-      const MAX_LOG_SIZE = 50 * 1024;
-      const logContents = await Promise.all(
-        logFiles.map(async (file) => {
-          try {
-            const content = await readTextFile(file.path);
-            const truncated =
-              content.length > MAX_LOG_SIZE
-                ? `... [truncated] ...\n` + content.slice(-MAX_LOG_SIZE)
-                : content;
-            return { name: file.name, content: truncated };
-          } catch {
-            return { name: file.name, content: "[Error reading file]" };
-          }
-        })
-      );
-      const signedRes = await fetch(`${BASE_URL}/api/logs`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ identifier, type }),
+      const outcome = await createDiagnosticsBundle({
+        feedbackText: "Startup got stuck during onboarding.",
+        source: "onboarding-stuck",
+        consoleLog: readConsoleLogTail(),
+        appSettings: maskSensitiveSettings(settings) as any,
       });
-      const {
-        data: { signedUrl, path },
-      } = await signedRes.json();
-      const consoleLog = (localStorage?.getItem("console_logs") || "").slice(
-        -50000
-      );
-      const combinedLogs =
-        logContents
-          .map((log) => `\n=== ${log.name} ===\n${log.content}`)
-          .join("\n\n") +
-        "\n\n=== Browser Console Logs ===\n" +
-        consoleLog +
-        "\n\n=== Onboarding Stuck ===\nUser experienced startup issues during onboarding.";
-      await fetch(signedUrl, {
-        method: "PUT",
-        body: combinedLogs,
-        headers: { "Content-Type": "text/plain" },
-      });
-      const os = osPlatform();
-      const os_version = osVersion();
-      const app_version = await getVersion();
-      await fetch(`${BASE_URL}/api/logs/confirm`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          path,
-          identifier,
-          type,
-          os,
-          os_version,
-          app_version,
-          feedback_text:
-            "Onboarding stuck - automatic log submission",
-        }),
-      });
-      setLogsSent(true);
+      if (outcome.error || !outcome.path) {
+        throw new Error(outcome.error ?? "no bundle was written");
+      }
+      setSavedBundlePath(outcome.path);
     } catch (err) {
-      console.error("Failed to send logs:", err);
+      console.error("Failed to save logs:", err);
     } finally {
-      setIsSendingLogs(false);
+      setIsSavingLogs(false);
     }
   };
 
@@ -1179,19 +1128,19 @@ if the input is sparse, just describe what little you have warmly. don't apologi
                 <Button
                   variant="outline"
                   size="sm"
-                  onClick={sendLogs}
-                  disabled={isSendingLogs || logsSent}
+                  onClick={saveLogs}
+                  disabled={isSavingLogs}
                   className="font-mono text-[10px] h-7 px-2"
                 >
-                  {isSendingLogs ? (
+                  {isSavingLogs ? (
                     <Loader className="w-3 h-3 animate-spin" />
-                  ) : logsSent ? (
+                  ) : savedBundlePath ? (
                     <>
-                      <Check className="w-3 h-3 mr-1" /> sent
+                      <Check className="w-3 h-3 mr-1" /> saved
                     </>
                   ) : (
                     <>
-                      <Upload className="w-3 h-3 mr-1" /> send logs
+                      <Archive className="w-3 h-3 mr-1" /> save logs
                     </>
                   )}
                 </Button>

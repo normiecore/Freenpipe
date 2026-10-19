@@ -10618,6 +10618,7 @@ dependencies = [
  "windows-icons",
  "winreg 0.52.0",
  "xdg 2.5.2",
+ "zip 4.6.1",
 ]
 
 [[package]]

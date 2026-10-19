@@ -1,0 +1,119 @@
+{
+  "description": "Shared expectations for the settings mask. Both lib/feedback/sensitive-settings.test.ts and the Rust tests in src-tauri/src/feedback_upload/redact.rs load this file, so the two implementations cannot drift apart.",
+  "sensitiveKeys": [
+    "apiKey",
+    "api_key",
+    "OPENAI-API-KEY",
+    "deepgramApiKey",
+    "openaiKey",
+    "licenseKey",
+    "user",
+    "userId",
+    "email",
+    "authToken",
+    "refreshToken",
+    "password",
+    "dbPassphrase",
+    "dataDir",
+    "recordingPath",
+    "baseUrl",
+    "ignoredWindows",
+    "includedWindows",
+    "urlBlocklist",
+    "customPrompt",
+    "deviceName",
+    "hostname",
+    "accountId",
+    "cookieJar",
+    "credentials",
+    "clientSecret",
+    "privateKeyPem"
+  ],
+  "plainKeys": [
+    "port",
+    "fontSize",
+    "lastSyncedAt",
+    "onboardingStep",
+    "windowSize",
+    "windowPosition",
+    "maxTokens",
+    "MAX_TOKENS",
+    "fps",
+    "model",
+    "language",
+    "audioTranscriptionEngine",
+    "enableUiEvents",
+    "monitorIds",
+    "aiPresets",
+    "disableAudio",
+    "showScreenpipeShortcut",
+    "analyticsEnabled"
+  ],
+  "cases": [
+    {
+      "name": "top level, nested objects and arrays",
+      "input": {
+        "port": 3030,
+        "fontSize": 14,
+        "apiKey": "sk-test-1234567890",
+        "emptyToken": "",
+        "user": { "id": "u1", "email": "ada@example.org", "name": "Ada" },
+        "aiPresets": [
+          {
+            "id": "p1",
+            "model": "gpt-4o",
+            "apiKey": "value-to-hide",
+            "url": "http://localhost:11434",
+            "prompt": "be brief",
+            "maxTokens": 4096
+          }
+        ],
+        "ignoredWindows": ["Bank", "Password Manager"],
+        "includedWindows": [],
+        "dataDir": "default",
+        "authEnabled": true,
+        "userId": 42,
+        "refreshToken": null,
+        "nested": { "deep": { "clientSecret": { "a": 1, "b": 2 }, "level": 3 } },
+        "language": "en",
+        "fps": 0.5
+      },
+      "expected": {
+        "port": 3030,
+        "fontSize": 14,
+        "apiKey": "[redacted]",
+        "emptyToken": "",
+        "user": "[redacted: 3 keys]",
+        "aiPresets": [
+          {
+            "id": "p1",
+            "model": "gpt-4o",
+            "apiKey": "[redacted]",
+            "url": "[redacted]",
+            "prompt": "[redacted]",
+            "maxTokens": 4096
+          }
+        ],
+        "ignoredWindows": "[redacted: 2 items]",
+        "includedWindows": [],
+        "dataDir": "[redacted]",
+        "authEnabled": true,
+        "userId": "[redacted]",
+        "refreshToken": null,
+        "nested": { "deep": { "clientSecret": "[redacted: 2 keys]", "level": 3 } },
+        "language": "en",
+        "fps": 0.5
+      }
+    },
+    {
+      "name": "empty containers under sensitive keys stay empty",
+      "input": { "user": {}, "urlBlocklist": [], "token": "" },
+      "expected": { "user": {}, "urlBlocklist": [], "token": "" }
+    },
+    {
+      "name": "scalars and arrays at the root pass through",
+      "input": [1, "two", { "secret": "x" }],
+      "expected": [1, "two", { "secret": "[redacted]" }]
+    }
+  ]
+}

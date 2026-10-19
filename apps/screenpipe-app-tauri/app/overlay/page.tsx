@@ -25,14 +25,14 @@ import { ModelDownloadTracker } from "@/components/model-download-tracker";
 import Timeline from "@/components/rewind/timeline";
 import { Button } from "@/components/ui/button";
 import { Separator } from "@/components/ui/separator";
-import { RefreshCw, AlertTriangle, WifiOff, Upload, Loader, Check, HelpCircle, X } from "lucide-react";
+import { RefreshCw, AlertTriangle, WifiOff, Archive, Loader, Check, HelpCircle, X } from "lucide-react";
 import { useFeedbackStore } from "@/lib/stores/feedback-store";
 
 import { open as openUrl } from "@tauri-apps/plugin-shell";
+import { revealItemInDir } from "@tauri-apps/plugin-opener";
 import { freenpipeLink } from "@/lib/web-url";
-import { readTextFile } from "@tauri-apps/plugin-fs";
-import { getVersion } from "@tauri-apps/api/app";
-import { version as osVersion, platform as osPlatform } from "@tauri-apps/plugin-os";
+import { createDiagnosticsBundle, readConsoleLogTail } from "@/lib/feedback/diagnostics-bundle";
+import { maskSensitiveSettings } from "@/lib/feedback/sensitive-settings";
 import { PermissionButtons } from "@/components/status/permission-buttons";
 import { PermissionBanner } from "@/components/status/permission-banner";
 import { usePlatform } from "@/lib/hooks/use-platform";
@@ -109,8 +109,8 @@ export default function OverlayPage() {
   const { isServerDown, isLoading: isHealthLoading } = useHealthCheck();
   const { isMac } = usePlatform();
   const [isRestarting, setIsRestarting] = useState(false);
-  const [isSendingLogs, setIsSendingLogs] = useState(false);
-  const [logsSent, setLogsSent] = useState(false);
+  const [isSavingLogs, setIsSavingLogs] = useState(false);
+  const [savedBundlePath, setSavedBundlePath] = useState<string | null>(null);
   const isProcessingRef = useRef(false);
   
   // Optimistic UI: track if user has any data (cached or live)
@@ -255,57 +255,41 @@ export default function OverlayPage() {
     return () => clearTimeout(timer);
   }, [isSettingsLoaded, settings.user?.token]);
 
-  const sendLogs = async () => {
-    setIsSendingLogs(true);
-    try {
-      const BASE_URL = "https://screenpi.pe";
-      const machineId = localStorage?.getItem("machineId") || crypto.randomUUID();
-      try { localStorage?.setItem("machineId", machineId); } catch {}
-      const identifier = settings.user?.id || machineId;
-      const type = settings.user?.id ? "user" : "machine";
-      const logFilesResult = await commands.getLogFiles();
-      if (logFilesResult.status !== "ok") throw new Error("Failed to get log files");
-      const logFiles = logFilesResult.data.slice(0, 3);
-      const MAX_LOG_SIZE = 50 * 1024;
-      const logContents = await Promise.all(
-        logFiles.map(async (file) => {
-          try {
-            const content = await readTextFile(file.path);
-            const truncated = content.length > MAX_LOG_SIZE
-              ? `... [truncated] ...\n` + content.slice(-MAX_LOG_SIZE)
-              : content;
-            return { name: file.name, content: truncated };
-          } catch {
-            return { name: file.name, content: "[Error reading file]" };
-          }
-        })
+  // Freenpipe: writes a local diagnostics bundle instead of uploading logs.
+  // The first click saves it; later clicks reveal it in the file manager.
+  const saveLogs = async () => {
+    if (savedBundlePath) {
+      revealItemInDir(savedBundlePath).catch((err) =>
+        console.error("failed to reveal diagnostics bundle:", err)
       );
-      const signedRes = await fetch(`${BASE_URL}/api/logs`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ identifier, type }),
+      return;
+    }
+    setIsSavingLogs(true);
+    try {
+      const outcome = await createDiagnosticsBundle({
+        feedbackText: "The engine was not running when this bundle was saved.",
+        source: "server-not-running",
+        consoleLog: readConsoleLogTail(),
+        appSettings: maskSensitiveSettings(settings) as any,
       });
-      const { data: { signedUrl, path } } = await signedRes.json();
-      const consoleLog = (localStorage?.getItem("console_logs") || "").slice(-50000);
-      const combinedLogs = logContents
-        .map((log) => `\n=== ${log.name} ===\n${log.content}`)
-        .join("\n\n") +
-        "\n\n=== Browser Console Logs ===\n" + consoleLog +
-        "\n\n=== Server Not Active ===\nServer not active - user submitted logs";
-      await fetch(signedUrl, { method: "PUT", body: combinedLogs, headers: { "Content-Type": "text/plain" } });
-      const os = osPlatform();
-      const os_version = osVersion();
-      const app_version = await getVersion();
-      await fetch(`${BASE_URL}/api/logs/confirm`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ path, identifier, type, os, os_version, app_version, feedback_text: "Server not active - user submitted logs" }),
+      if (outcome.error || !outcome.path) {
+        throw new Error(outcome.error ?? "no bundle was written");
+      }
+      setSavedBundlePath(outcome.path);
+      toast({
+        title: "logs saved",
+        description: `${outcome.fileName} is in the feedback folder of your data directory. nothing was uploaded.`,
+        duration: 6000,
       });
-      setLogsSent(true);
     } catch (err) {
-      console.error("Failed to send logs:", err);
+      console.error("Failed to save logs:", err);
+      toast({
+        title: "could not save logs",
+        description: err instanceof Error ? err.message : String(err),
+        variant: "destructive",
+      });
     } finally {
-      setIsSendingLogs(false);
+      setIsSavingLogs(false);
     }
   };
 
@@ -485,18 +469,18 @@ export default function OverlayPage() {
                   <Button
                     variant="outline"
                     size="sm"
-                    onClick={sendLogs}
-                    disabled={isSendingLogs || logsSent}
+                    onClick={saveLogs}
+                    disabled={isSavingLogs}
                     className="text-muted-foreground"
                   >
-                    {logsSent ? (
+                    {savedBundlePath ? (
                       <Check className="h-4 w-4 mr-1.5" />
-                    ) : isSendingLogs ? (
+                    ) : isSavingLogs ? (
                       <Loader className="h-4 w-4 mr-1.5 animate-spin" />
                     ) : (
-                      <Upload className="h-4 w-4 mr-1.5" />
+                      <Archive className="h-4 w-4 mr-1.5" />
                     )}
-                    {logsSent ? "logs sent" : isSendingLogs ? "sending..." : "send logs"}
+                    {savedBundlePath ? "show saved logs" : isSavingLogs ? "saving..." : "save logs"}
                   </Button>
                   <Button
                     variant="outline"
