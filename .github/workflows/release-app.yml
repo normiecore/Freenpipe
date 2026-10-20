@@ -498,6 +498,9 @@ jobs:
         working-directory: ${{ github.workspace }}/apps/screenpipe-app-tauri
         env:
           SCREENPIPE_RELEASE_TARGET: ${{ matrix.target }}
+          # Windows: ship the WER crash-dump helper DLL beside the app
+          # (crates/screenpipe-wer-helper, staged by stage_bundled_runtime.js).
+          FREENPIPE_BUILD_WER_HELPER: ${{ matrix.os_type == 'windows' && '1' || '' }}
 
       - name: Use production config for release
         shell: bash

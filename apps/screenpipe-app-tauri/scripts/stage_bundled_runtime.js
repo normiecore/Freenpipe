@@ -8,6 +8,8 @@
 //   bundled/mcp/screenpipe-mcp.js         -> <install>/mcp/screenpipe-mcp.js
 //   bundled/models/pyannote/<model>.onnx  -> <install>/models/pyannote/
 //   bundled/models/pyannote/NOTICE.md     (sources and licences of the models)
+//   bundled/native/screenpipe_wer_dump_helper.dll -> <install>/ (Windows crash
+//                                         dumps, crates/screenpipe-wer-helper)
 //
 // Nothing here resolves a package from a registry at app run time: the MCP
 // server is bundled from packages/screenpipe-mcp in this repository, the CLI
@@ -25,6 +27,8 @@
 //   FREENPIPE_CLI_BINARY=<path>        copy this prebuilt CLI binary
 //   FREENPIPE_BUILD_CLI=1              build it: cargo build --release --bin screenpipe
 //   FREENPIPE_CLI_FEATURES=<features>  extra cargo features for that build
+//   FREENPIPE_WER_HELPER_DLL=<path>    copy this prebuilt WER helper DLL (Windows)
+//   FREENPIPE_BUILD_WER_HELPER=1       build it: cargo build --release -p screenpipe-wer-helper
 //   SCREENPIPE_PYANNOTE_BASE_URL=<url> model mirror (same variable the app reads)
 //   FREENPIPE_REQUIRE_BUNDLED_RUNTIME=1  make every step mandatory
 
@@ -164,6 +168,48 @@ async function stageCli({ repoRoot, stageRoot, platform }) {
 	console.log(`[bundled-runtime] CLI staged from ${source}`)
 }
 
+/** File name of the WER helper DLL the app looks for beside its executable. */
+export const WER_HELPER_DLL = 'screenpipe_wer_dump_helper.dll'
+
+/**
+ * How the WER helper DLL is obtained: `null` when nothing is asked for (dev
+ * builds, other platforms), else a prebuilt `source` or a cargo `build`.
+ * The build links the C runtime statically: WerFault.exe loads the DLL from
+ * System32's search path, where the bundled vcruntime140.dll is not found.
+ * It uses its own target directory so those flags do not invalidate the
+ * main build cache.
+ */
+export function werHelperPlan({ repoRoot, platform, env }) {
+	if (platform !== 'windows') return null
+	if (env.FREENPIPE_WER_HELPER_DLL) return { source: env.FREENPIPE_WER_HELPER_DLL }
+	const wanted = env.FREENPIPE_BUILD_WER_HELPER === '1' || env.FREENPIPE_REQUIRE_BUNDLED_RUNTIME === '1'
+	if (!wanted) return null
+	const targetDir = path.join(env.CARGO_TARGET_DIR || path.join(repoRoot, 'target'), 'wer-helper')
+	return {
+		build: {
+			args: ['build', '--release', '-p', 'screenpipe-wer-helper', '--target-dir', targetDir],
+			env: { RUSTFLAGS: [env.RUSTFLAGS, '-C target-feature=+crt-static'].filter(Boolean).join(' ') },
+		},
+		source: path.join(targetDir, 'release', WER_HELPER_DLL),
+	}
+}
+
+async function stageWerHelper({ repoRoot, stageRoot, platform }) {
+	const dest = path.join(stageRoot, 'native', WER_HELPER_DLL)
+	const plan = werHelperPlan({ repoRoot, platform, env: process.env })
+	if (!plan) {
+		if (platform === 'windows') {
+			console.log('[bundled-runtime] WER helper not requested (FREENPIPE_BUILD_WER_HELPER); fail-fast crash dumps stay off')
+		}
+		return
+	}
+	if (plan.build) {
+		await $`cargo ${plan.build.args}`.cwd(repoRoot).env({ ...process.env, ...plan.build.env })
+	}
+	await fs.copyFile(plan.source, dest)
+	console.log(`[bundled-runtime] WER helper staged from ${plan.source}`)
+}
+
 async function stagePyannote({ repoRoot, stageRoot }) {
 	const destDir = path.join(stageRoot, 'models', 'pyannote')
 	const repoDir = path.join(repoRoot, 'crates', 'screenpipe-audio', 'models', 'pyannote')
@@ -202,7 +248,7 @@ export async function stageBundledRuntime({ srcTauriDir, platform }) {
 	const stageRoot = path.join(srcTauriDir, 'bundled')
 	// The resource mappings point at these directories, so they must exist
 	// even when a step is skipped (an empty directory bundles nothing).
-	for (const dir of ['cli', 'mcp', path.join('models', 'pyannote')]) {
+	for (const dir of ['cli', 'mcp', 'native', path.join('models', 'pyannote')]) {
 		await fs.mkdir(path.join(stageRoot, dir), { recursive: true })
 	}
 	const required = process.env.FREENPIPE_REQUIRE_BUNDLED_RUNTIME === '1'
@@ -210,6 +256,7 @@ export async function stageBundledRuntime({ srcTauriDir, platform }) {
 		['MCP server', stageMcp],
 		['CLI', stageCli],
 		['pyannote models', stagePyannote],
+		['WER helper', stageWerHelper],
 	]
 	for (const [label, step] of steps) {
 		try {

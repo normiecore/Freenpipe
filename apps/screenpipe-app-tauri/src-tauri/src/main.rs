@@ -34,6 +34,7 @@ mod icons;
 mod agent_event_emitter;
 mod ai_gateway;
 mod audio_exclusions;
+mod autostart;
 mod brand;
 mod calendar;
 mod capture_session;
@@ -76,6 +77,7 @@ mod server_core;
 #[cfg(target_os = "macos")]
 #[allow(deprecated)]
 mod space_monitor;
+mod startup;
 mod store;
 mod suggestions;
 mod sync;
@@ -401,16 +403,56 @@ macro_rules! define_specta_builder {
     }};
 }
 
+/// Helper modes of the executable (shell-024). When `argv[1]` is one of these
+/// flags the process runs that helper and exits: no async runtime, no Tauri,
+/// no single-instance handoff, no settings store, no focus port. Each entry
+/// maps a flag to its entry point; the features behind them come with the
+/// agent, MCP and workflow work and answer with a usage message until then.
+const HELPER_MODES: &[startup::HelperMode] = &[
+    startup::HelperMode {
+        flag: "--screenpipe-acp-runtime",
+        run: startup::acp_runtime_unavailable,
+    },
+    startup::HelperMode {
+        flag: "--screenpipe-acp-process-guard",
+        run: startup::acp_process_guard_unavailable,
+    },
+    startup::HelperMode {
+        flag: "--screenpipe-portable-mcp",
+        run: startup::portable_mcp_unavailable,
+    },
+    startup::HelperMode {
+        flag: "--render-workflow-video",
+        run: startup::render_workflow_video_unavailable,
+    },
+];
+
+/// The command line, without failing on arguments that are not valid UTF-8.
+fn launch_args() -> Vec<String> {
+    std::env::args_os()
+        .map(|a| a.to_string_lossy().into_owned())
+        .collect()
+}
+
 fn main() {
     // First, while this is still the only thread: it removes an environment
     // variable, which must not race with getenv on another thread.
     relaunch::capture_relaunch_flag();
+    // Helper modes next, before anything starts a thread or touches app
+    // state (see HELPER_MODES).
+    if let Some(code) = startup::dispatch_helper_mode(&launch_args(), HELPER_MODES) {
+        std::process::exit(code);
+    }
     app_main();
 }
 
 #[tokio::main]
 async fn app_main() {
     let _ = fix_path_env::fix();
+
+    // AVX2 check before any native engine code can run (shell-022); logged
+    // once logging is set up.
+    cpu_compat::init();
 
     #[cfg(target_os = "windows")]
     windows_webview_env::install_user_data_dir();
@@ -489,28 +531,25 @@ async fn app_main() {
     // Single-instance check: if sidecar server is already listening, hand off and exit.
     // This covers Linux (where tauri-plugin-single-instance is disabled due to
     // zbus/tokio conflict) and acts as a fallback on macOS/Windows.
+    // The running instance refuses a handoff from another executable (another
+    // install or channel) or with another build's deep link (shell-019); this
+    // copy then exits instead of fighting it over ports and the database.
     {
-        let args: Vec<String> = std::env::args().collect();
-        let deep_link_url = crate::brand::find_deep_link_arg(&args);
-
+        let args = launch_args();
         let focus_port: u16 = std::env::var("SCREENPIPE_FOCUS_PORT")
             .ok()
             .and_then(|v| v.parse().ok())
             .unwrap_or(11435);
-        if let Ok(resp) = reqwest::Client::new()
-            .post(format!("http://127.0.0.1:{}/focus", focus_port))
-            .timeout(std::time::Duration::from_secs(2))
-            .json(&serde_json::json!({
-                "args": args,
-                "deep_link_url": deep_link_url,
-            }))
-            .send()
-            .await
-        {
-            if resp.status().is_success() {
+        match server::hand_off(&server::handoff_payload(&args), focus_port).await {
+            server::Handoff::Delivered => {
                 eprintln!("{}: another instance is already running — focused existing window, exiting.", crate::brand::PRODUCT_NAME);
                 std::process::exit(0);
             }
+            server::Handoff::Refused(message) => {
+                startup::report_refused_handoff(&message, autostart::is_autostart_launch(&args));
+                std::process::exit(1);
+            }
+            server::Handoff::NoInstance => {}
         }
     }
 
@@ -599,6 +638,11 @@ async fn app_main() {
         // Call the default hook (prints backtrace etc.)
         default_hook(info);
     }));
+
+    // Fail-fast crashes (stack overrun, abort in native code) skip the hook
+    // above; on Windows a WER helper writes a local minidump for those
+    // (shell-017). Registered this early so start-up crashes are covered.
+    wer::register_early(&screenpipe_core::paths::default_screenpipe_data_dir());
 
     // Set permanent OLLAMA_ORIGINS env var on Windows if not present
     #[cfg(target_os = "windows")]
@@ -761,9 +805,10 @@ async fn app_main() {
         .plugin(tauri_plugin_fs::init())
         .plugin(tauri_plugin_permission_flow::init())
         .plugin(tauri_plugin_process::init())
+        // The login entry passes --autostart: start in the background.
         .plugin(tauri_plugin_autostart::init(
             MacosLauncher::LaunchAgent,
-            None,
+            Some(vec![autostart::AUTOSTART_ARG]),
         ))
         // single-instance plugin uses zbus::blocking on Linux which panics
         // inside an existing tokio runtime (nested block_on), so skip it on Linux
@@ -774,6 +819,12 @@ async fn app_main() {
         let app_for_closure = app.clone();
         let args_clone = args.clone();
         let _ = app.run_on_main_thread(move || {
+            // Another login launch while the app runs changes nothing.
+            if crate::autostart::is_autostart_launch(&args_clone) {
+                info!("ignoring a duplicate --autostart launch: the app is already running");
+                return;
+            }
+
             // Focus the existing window
             if !crate::enterprise_policy::is_app_ui_hidden() {
                 show_main_window(app_for_closure.clone());
@@ -938,6 +989,10 @@ async fn app_main() {
             #[cfg(target_os = "windows")]
             windows_webview_env::log_diagnostics();
 
+            cpu_compat::log_startup_state();
+            // Report the WER helper and collect dumps of earlier crashes.
+            wer::log_and_harvest(&base_dir);
+
             // Windows-specific setup
             if cfg!(windows) {
                 let exe_dir = env::current_exe()
@@ -961,9 +1016,6 @@ async fn app_main() {
             // triggers the "screenpipe is damaged" Gatekeeper popup and can
             // leave the app running while the embedded server (port 3030) is
             // killed by the system. See incident: feedback-bot 2026-05-07.
-
-            // Autostart setup
-            let autostart_manager = app.autolaunch();
 
             // Install Pi coding agent in background (fire-and-forget, never crashes)
             crate::pi::ensure_pi_installed_background();
@@ -1039,6 +1091,13 @@ async fn app_main() {
             // Resolve data directory from user setting (custom dir or ~/.screenpipe)
             let (data_dir, data_dir_fell_back) = config::resolve_data_dir(&store.data_dir);
             info!("Recording data directory: {}", data_dir.display());
+            // A data directory outside the static scopes (a custom folder,
+            // SCREENPIPE_DATA_DIR) must be readable by the webviews too.
+            let scope_dirs = startup::dirs_needing_scope(
+                &[base_dir.as_path(), data_dir.as_path()],
+                &startup::static_scope_roots(),
+            );
+            startup::grant_data_dir_scopes(app.handle(), &scope_dirs);
             if data_dir_fell_back {
                 let app_handle_fb = app_handle.clone();
                 tauri::async_runtime::spawn(async move {
@@ -1052,21 +1111,29 @@ async fn app_main() {
             app.manage(sync::SyncState::default());
 
             // Initialize onboarding store
-            let onboarding_store = store::init_onboarding_store(&app.handle()).unwrap_or_else(|e| {
+            let mut onboarding_store = store::init_onboarding_store(&app.handle()).unwrap_or_else(|e| {
                 error!("Failed to init onboarding store, using defaults: {}", e);
                 store::OnboardingStore::default()
             });
-            app.manage(onboarding_store.clone());
 
-            // E2E seed: when SCREENPIPE_E2E_SEED contains "onboarding", mark onboarding complete
-            let e2e_flags = get_e2e_seed_flags();
-            if e2e_flags.iter().any(|f| f == "onboarding") {
-                if let Err(e) = store::OnboardingStore::update(&app.handle(), |o| o.complete()) {
-                    error!("E2E seed: failed to complete onboarding: {}", e);
-                } else {
-                    info!("E2E seed: onboarding marked complete");
+            // SCREENPIPE_SKIP_ONBOARDING=1 (or the `onboarding` E2E seed)
+            // marks onboarding complete before the first window is chosen.
+            let skip_onboarding = startup::skip_onboarding_requested(
+                std::env::var(screenpipe_core::env::SCREENPIPE_SKIP_ONBOARDING)
+                    .ok()
+                    .as_deref(),
+                &get_e2e_seed_flags(),
+            );
+            if skip_onboarding && !onboarding_store.is_completed {
+                match store::OnboardingStore::update(&app.handle(), |o| o.complete()) {
+                    Ok(()) => {
+                        onboarding_store.complete();
+                        info!("SCREENPIPE_SKIP_ONBOARDING: onboarding marked complete");
+                    }
+                    Err(e) => error!("SCREENPIPE_SKIP_ONBOARDING: could not mark onboarding complete: {}", e),
                 }
             }
+            app.manage(onboarding_store.clone());
 
             // Pre-download AI models in background immediately.
             // These downloads don't need any permissions — they just fetch files to cache.
@@ -1102,7 +1169,15 @@ async fn app_main() {
                         }
                     };
 
-                    // Download whisper model (834MB default) — biggest download, start first
+                    // Download whisper model (834MB default) — biggest download, start first.
+                    // Not on a CPU without AVX2: Whisper cannot run there (cpu_compat).
+                    let engine = engine.filter(|_| {
+                        let allowed = crate::cpu_compat::whisper_predownload_allowed();
+                        if !allowed {
+                            info!("skipping whisper model pre-download: this CPU has no AVX2 (compatibility mode)");
+                        }
+                        allowed
+                    });
                     if let Some(engine) = engine {
                         let engine_clone = engine.clone();
                         tokio::task::spawn_blocking(move || {
@@ -1144,13 +1219,35 @@ async fn app_main() {
             let app_ui_hidden = crate::enterprise_policy::is_app_ui_hidden();
 
             // Show onboarding/home unless this device is deployed as a managed
-            // background agent. Permission recovery is handled separately below.
-            if app_ui_hidden {
-                info!("enterprise: hidden UI mode active, skipping startup app windows");
-            } else if !onboarding_store.is_completed {
-                let _ = ShowRewindWindow::Onboarding.show(&app.handle());
-            } else {
-                let _ = ShowRewindWindow::Home { page: None }.show(&app.handle());
+            // background agent, the login entry started it (--autostart), or
+            // a safe relaunch replaces an instance whose Home was closed.
+            // Permission recovery is handled separately below.
+            let autostart_launch = autostart::is_autostart_launch(&launch_args());
+            let relaunch_home_visible = relaunch::relaunch_home_visible();
+            match startup::startup_window(startup::StartupInputs {
+                ui_hidden: app_ui_hidden,
+                onboarding_completed: onboarding_store.is_completed,
+                autostart: autostart_launch,
+                relaunch_home_visible,
+            }) {
+                startup::StartupWindow::None(startup::NoWindowReason::HiddenUi) => {
+                    info!("enterprise: hidden UI mode active, skipping startup app windows");
+                }
+                startup::StartupWindow::None(reason) => {
+                    info!(
+                        "background launch: Home window not shown (reason={:?}, restart_home_visible={:?}, autostart={})",
+                        reason, relaunch_home_visible, autostart_launch
+                    );
+                }
+                startup::StartupWindow::Onboarding => {
+                    if autostart_launch {
+                        info!("--autostart launch with onboarding unfinished: showing onboarding");
+                    }
+                    let _ = ShowRewindWindow::Onboarding.show(&app.handle());
+                }
+                startup::StartupWindow::Home => {
+                    let _ = ShowRewindWindow::Home { page: None }.show(&app.handle());
+                }
             }
 
             // Pre-create chat panel (hidden) so the shortcut can show an
@@ -1457,19 +1554,10 @@ async fn app_main() {
                 });
             }
 
-            let is_autostart_enabled = store
-                .auto_start_enabled;
-
-            if is_autostart_enabled {
-                let _ = autostart_manager.enable();
-            } else {
-                let _ = autostart_manager.disable();
-            }
-
-            debug!(
-                "registered for autostart? {}",
-                autostart_manager.is_enabled().unwrap_or(false)
-            );
+            // Login entry with --autostart, in line with autoStartEnabled.
+            // Debug builds leave it alone; an entry the user turned off in
+            // Task Manager stays off.
+            autostart::sync_at_startup(&app_handle, store.auto_start_enabled);
 
             // Start health check service (macos only)
             let app_handle_clone = app_handle.clone();
