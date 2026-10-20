@@ -651,12 +651,31 @@ fn current_dependencies() -> HealthDependencies {
         .unwrap_or_default()
 }
 
-/// Locate ffmpeg/ffprobe and run each with `-version` once, in the
-/// background, so `/health` never spawns a process itself. Called at server
-/// start; the result stays until the next start.
+/// How often the probe checks whether the engine has looked up ffmpeg yet.
+const DEPENDENCY_LOOKUP_POLL: std::time::Duration = std::time::Duration::from_secs(5);
+/// Give up waiting for the engine's ffmpeg lookup after this long; the
+/// dependencies then stay `unknown`.
+const DEPENDENCY_LOOKUP_PATIENCE: std::time::Duration = std::time::Duration::from_secs(600);
+
+/// Run each of ffmpeg/ffprobe with `-version` once, in the background, so
+/// `/health` never spawns a process itself. Called at server start; the
+/// result stays until the next start. The probe waits for the engine's own
+/// ffmpeg lookup instead of starting one, because a first lookup may
+/// download ffmpeg.
 pub(crate) fn spawn_dependency_probe() {
     tokio::spawn(async {
-        let probed = tokio::task::spawn_blocking(probe_dependencies).await;
+        let waited = std::time::Instant::now();
+        let ffmpeg = loop {
+            if let Some(found) = screenpipe_core::resolved_ffmpeg_path() {
+                break found;
+            }
+            if waited.elapsed() >= DEPENDENCY_LOOKUP_PATIENCE {
+                debug!("health: ffmpeg was never looked up; dependencies stay unknown");
+                return;
+            }
+            tokio::time::sleep(DEPENDENCY_LOOKUP_POLL).await;
+        };
+        let probed = tokio::task::spawn_blocking(move || probe_dependencies(ffmpeg)).await;
         match probed {
             Ok(deps) => {
                 info!(
@@ -675,8 +694,8 @@ pub(crate) fn spawn_dependency_probe() {
     });
 }
 
-fn probe_dependencies() -> HealthDependencies {
-    let Some(ffmpeg) = screenpipe_core::find_ffmpeg_path() else {
+fn probe_dependencies(ffmpeg: Option<std::path::PathBuf>) -> HealthDependencies {
+    let Some(ffmpeg) = ffmpeg else {
         let missing = DependencyStatus {
             status: "missing".to_string(),
             ..DependencyStatus::default()
@@ -1491,7 +1510,10 @@ async fn health_check_inner(state: &Arc<AppState>) -> HealthCheckResponse {
         .filter(|(_, _, last)| *last > 0 && now_ts.saturating_sub(*last) < 5)
         .count() as u64;
     let capture_status = health_reasons::capture_status(&AudioCaptureInputs {
-        audio_disabled: state.audio_disabled || capture_mode == AudioCaptureMode::Disabled,
+        // A `disabled` mode that the audio manager does not enforce yet still
+        // shows its running devices as recording.
+        audio_disabled: state.audio_disabled
+            || (capture_mode == AudioCaptureMode::Disabled && audio_devices.is_empty()),
         capture_mode,
         screen_locked,
         uptime_secs: audio_snap.uptime_secs.max(0.0) as u64,
@@ -2049,6 +2071,31 @@ mod tests {
         let status = probe_tool(&dir.path().join("does-not-exist"));
         assert_eq!(status.status, "missing");
         assert!(status.version_probe_error.is_some());
+    }
+
+    #[test]
+    fn no_ffmpeg_means_both_tools_missing() {
+        let deps = probe_dependencies(None);
+        assert_eq!(deps.ffmpeg.status, "missing");
+        assert_eq!(deps.ffprobe.status, "missing");
+    }
+
+    #[test]
+    fn a_working_ffmpeg_reports_its_version() {
+        // Only meaningful where ffmpeg is installed (CI images and dev VMs
+        // usually have it); otherwise there is nothing to probe.
+        let name = if cfg!(windows) { "ffmpeg.exe" } else { "ffmpeg" };
+        let Some(path) = std::env::var_os("PATH").and_then(|paths| {
+            std::env::split_paths(&paths)
+                .map(|dir| dir.join(name))
+                .find(|candidate| candidate.is_file())
+        }) else {
+            return;
+        };
+        let status = probe_tool(&path);
+        assert_eq!(status.status, "ok", "{:?}", status);
+        assert!(status.version.is_some());
+        assert!(status.version_probe_error.is_none());
     }
 
     #[test]
