@@ -272,7 +272,7 @@ fn hash_thumbnail(thumb: &GrayImage) -> u64 {
 /// True for the failures that get a log line: the first, then every
 /// [`THUMBNAIL_FAILURE_LOG_EVERY`]th.
 fn should_log_thumbnail_failure(failures: u64) -> bool {
-    failures == 1 || failures % THUMBNAIL_FAILURE_LOG_EVERY == 0
+    failures == 1 || failures.is_multiple_of(THUMBNAIL_FAILURE_LOG_EVERY)
 }
 
 /// Stateful frame comparer that tracks previous frame data for optimizations.

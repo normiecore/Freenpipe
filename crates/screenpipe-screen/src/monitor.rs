@@ -1334,6 +1334,30 @@ mod tests {
         assert_eq!(prefix, prefix2);
     }
 
+    /// Native enumeration must report the ids and stable ids xcap reported,
+    /// or stored `monitorIds` stop matching. Runs on whatever displays the
+    /// machine has (CI runners have a virtual one); nothing to compare on a
+    /// headless session.
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn native_enumeration_matches_xcap_ids() {
+        let Ok(xcap_monitors) = XcapMonitor::all() else {
+            return;
+        };
+        let native = super::windows::enumerate_monitors().expect("EnumDisplayMonitors");
+        let from_xcap: Vec<(u32, String, bool)> = xcap_monitors
+            .into_iter()
+            .map(SafeMonitor::new)
+            .map(|m| (m.id(), m.stable_id(), m.is_primary()))
+            .collect();
+        let from_native: Vec<(u32, String, bool)> = native
+            .iter()
+            .map(SafeMonitor::from_native)
+            .map(|m| (m.id(), m.stable_id(), m.is_primary()))
+            .collect();
+        assert_eq!(from_native, from_xcap);
+    }
+
     #[cfg(target_os = "windows")]
     #[test]
     fn test_persistent_capture_disables_after_three_failures() {

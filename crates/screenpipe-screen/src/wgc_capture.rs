@@ -22,7 +22,8 @@
 //!   frame pool at the new size;
 //! - a removed or reset D3D11 device closes the session and drops the shared
 //!   device so the next session builds a fresh one;
-//! - hardware device creation falls back to the WARP software rasterizer;
+//! - hardware device creation falls back to the WARP software rasterizer,
+//!   and new sessions try hardware again once a minute while on WARP;
 //! - a closed capture item (monitor unplugged, session invalidated) makes the
 //!   next read fail so the caller recreates the session or falls back to
 //!   per-frame capture (policy in [`classify_init_failure`]).
@@ -75,6 +76,20 @@ pub fn min_update_interval() -> Duration {
 pub fn timespan_ticks(interval: Duration) -> i64 {
     let ticks = interval.as_nanos() / 100;
     ticks.min(i64::MAX as u128) as i64
+}
+
+/// How long new sessions stay on a WARP (software) device before hardware
+/// device creation is tried again. Hardware creation typically fails only
+/// while a GPU driver is being installed or reset.
+pub const WARP_HARDWARE_RETRY: Duration = Duration::from_secs(60);
+
+/// True when a hardware device should be tried again: never tried, or the
+/// last attempt is at least `interval` old.
+pub fn hardware_retry_due(last_attempt: Option<Instant>, now: Instant, interval: Duration) -> bool {
+    match last_attempt {
+        None => true,
+        Some(at) => now.saturating_duration_since(at) >= interval,
+    }
 }
 
 /// What to do after a persistent-session init attempt failed.
@@ -326,8 +341,9 @@ impl<T: Clone> FrameSlot<T> {
 #[cfg(target_os = "windows")]
 mod native {
     use super::{
-        bgra_to_rgba, is_device_lost, lock_recover, mapped_len, min_update_interval,
-        pool_needs_recreate, timespan_ticks, FrameSlot, SlotError, FRAME_POOL_BUFFERS,
+        bgra_to_rgba, hardware_retry_due, is_device_lost, lock_recover, mapped_len,
+        min_update_interval, pool_needs_recreate, timespan_ticks, FrameSlot, SlotError,
+        FRAME_POOL_BUFFERS, WARP_HARDWARE_RETRY,
     };
     use anyhow::{anyhow, bail, Context, Result};
     use image::{DynamicImage, RgbaImage};
@@ -507,34 +523,64 @@ mod native {
         }
     }
 
-    /// One device for all monitors; replaced when it is lost.
-    static SHARED_DEVICE: Lazy<Mutex<Option<Arc<D3DDevice>>>> = Lazy::new(|| Mutex::new(None));
+    /// One device for all new sessions; replaced when it is lost, and a WARP
+    /// device is swapped for hardware once hardware creation works again.
+    #[derive(Default)]
+    struct DeviceCache {
+        device: Option<Arc<D3DDevice>>,
+        last_hardware_attempt: Option<Instant>,
+    }
+
+    static DEVICE_CACHE: Lazy<Mutex<DeviceCache>> =
+        Lazy::new(|| Mutex::new(DeviceCache::default()));
 
     fn acquire_device() -> Result<Arc<D3DDevice>> {
-        let mut shared = lock_recover(&SHARED_DEVICE);
-        if let Some(device) = shared.as_ref() {
-            match device.lost() {
-                None => return Ok(device.clone()),
-                Some(reason) => {
-                    warn!(
-                        "D3D11 device for screen capture was lost (GPU reset or driver update: {}); creating a new one",
-                        reason
-                    );
-                    *shared = None;
+        let mut cache = lock_recover(&DEVICE_CACHE);
+        if let Some(device) = cache.device.clone() {
+            if let Some(reason) = device.lost() {
+                warn!(
+                    "D3D11 device for screen capture was lost (GPU reset or driver update: {}); creating a new one",
+                    reason
+                );
+                cache.device = None;
+            } else if device.kind == DeviceKind::Warp
+                && hardware_retry_due(
+                    cache.last_hardware_attempt,
+                    Instant::now(),
+                    WARP_HARDWARE_RETRY,
+                )
+            {
+                cache.last_hardware_attempt = Some(Instant::now());
+                match D3DDevice::create_with(D3D_DRIVER_TYPE_HARDWARE, DeviceKind::Hardware) {
+                    Ok(hardware) => {
+                        info!("hardware D3D11 device is available again; new WGC sessions leave WARP");
+                        let hardware = Arc::new(hardware);
+                        cache.device = Some(hardware.clone());
+                        return Ok(hardware);
+                    }
+                    Err(e) => {
+                        debug!("hardware D3D11 device still unavailable: {:#}", e);
+                        return Ok(device);
+                    }
                 }
+            } else {
+                return Ok(device);
             }
         }
         let device = Arc::new(D3DDevice::create()?);
+        if device.kind == DeviceKind::Warp {
+            cache.last_hardware_attempt = Some(Instant::now());
+        }
         info!("created {} D3D11 device for WGC capture", device.kind.label());
-        *shared = Some(device.clone());
+        cache.device = Some(device.clone());
         Ok(device)
     }
 
     /// Drop `device` from the cache so the next session creates a new one.
     fn forget_device(device: &Arc<D3DDevice>) {
-        let mut shared = lock_recover(&SHARED_DEVICE);
-        if shared.as_ref().is_some_and(|d| Arc::ptr_eq(d, device)) {
-            *shared = None;
+        let mut cache = lock_recover(&DEVICE_CACHE);
+        if cache.device.as_ref().is_some_and(|d| Arc::ptr_eq(d, device)) {
+            cache.device = None;
         }
     }
 
@@ -648,7 +694,7 @@ mod native {
                 return;
             }
             let count = self.callback_errors.fetch_add(1, Ordering::Relaxed) + 1;
-            if count == 1 || count % 100 == 0 {
+            if count == 1 || count.is_multiple_of(100) {
                 debug!(
                     "monitor {}: WGC frame callback error #{}: {:#}",
                     self.monitor_id, count, error
@@ -1029,6 +1075,17 @@ mod tests {
         assert!(pool_needs_recreate((1920, 1080), (1080, 1920)), "rotation");
         assert!(!pool_needs_recreate((1920, 1080), (0, 0)));
         assert!(!pool_needs_recreate((1920, 1080), (-1, 1080)));
+    }
+
+    #[test]
+    fn hardware_retry_is_rate_limited() {
+        let now = Instant::now();
+        let interval = Duration::from_secs(60);
+        assert!(hardware_retry_due(None, now, interval));
+        assert!(!hardware_retry_due(Some(now), now, interval));
+        assert!(hardware_retry_due(Some(now), now + interval, interval));
+        // A clock that looks backwards never panics and never retries early.
+        assert!(!hardware_retry_due(Some(now + interval), now, interval));
     }
 
     #[test]
