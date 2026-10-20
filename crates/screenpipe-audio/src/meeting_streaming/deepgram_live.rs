@@ -530,6 +530,149 @@ mod tests {
         url.query().unwrap_or_default().to_string()
     }
 
+    fn results_config(local_speaker_name: Option<&str>) -> MeetingStreamingConfig {
+        MeetingStreamingConfig {
+            enabled: true,
+            provider: MeetingStreamingProvider::DeepgramLive,
+            auth_token: None,
+            api_key: Some("test-key".to_string()),
+            endpoint: "wss://api.deepgram.com/v1/listen".to_string(),
+            model: Some("nova-3".to_string()),
+            language: None,
+            local_speaker_name: local_speaker_name.map(str::to_string),
+            persist_finals: true,
+        }
+    }
+
+    /// A `Results` payload shaped like the ones Deepgram streams back with
+    /// `diarize=true`: one word per speaker label in `speakers`.
+    fn results_payload(transcript: &str, is_final: bool, start: f64, speakers: &[i64]) -> Value {
+        let words: Vec<Value> = speakers
+            .iter()
+            .enumerate()
+            .map(|(i, label)| json!({ "word": format!("w{i}"), "speaker": label }))
+            .collect();
+        json!({
+            "type": "Results",
+            "channel_index": [0, 1],
+            "start": start,
+            "is_final": is_final,
+            "speech_final": is_final,
+            "channel": { "alternatives": [{ "transcript": transcript, "words": words }] }
+        })
+    }
+
+    fn to_event(
+        stream_id: &str,
+        device_type: &str,
+        local_speaker_name: Option<&str>,
+        value: &Value,
+    ) -> Option<LiveTranscriptEvent> {
+        results_to_event(
+            7,
+            &results_config(local_speaker_name),
+            stream_id,
+            "System Audio",
+            device_type,
+            Utc::now(),
+            value,
+        )
+    }
+
+    #[test]
+    fn final_carries_stream_scoped_speaker() {
+        let value = results_payload("we ship on friday", true, 1.5, &[1, 1, 0]);
+        let Some(LiveTranscriptEvent::Final(event)) = to_event("s1", "output", None, &value)
+        else {
+            panic!("expected a final event");
+        };
+        assert_eq!(event.stream_id, "s1");
+        assert_eq!(event.item_id, "deepgram:s1:turn:0:1500");
+        assert_eq!(
+            event.session_speaker_id.as_deref(),
+            Some("deepgram:s1:speaker:1")
+        );
+        assert_eq!(event.speaker_name.as_deref(), Some("speaker 2"));
+        assert_eq!(event.transcript, "we ship on friday");
+    }
+
+    #[test]
+    fn same_label_in_two_streams_is_two_identities() {
+        let value = results_payload("hello", true, 0.0, &[0]);
+        let ids: Vec<Option<String>> = ["before-reconnect", "after-reconnect"]
+            .into_iter()
+            .map(|stream| match to_event(stream, "output", None, &value) {
+                Some(LiveTranscriptEvent::Final(event)) => event.session_speaker_id,
+                other => panic!("expected a final event, got {other:?}"),
+            })
+            .collect();
+        assert!(ids.iter().all(Option::is_some));
+        assert_ne!(ids[0], ids[1]);
+    }
+
+    #[test]
+    fn interim_and_final_of_one_turn_share_the_item_id() {
+        let interim = results_payload("we ship", false, 3.25, &[0, 0]);
+        let fin = results_payload("we ship friday", true, 3.25, &[0, 0, 0]);
+        let Some(LiveTranscriptEvent::Delta(delta)) = to_event("s9", "output", None, &interim)
+        else {
+            panic!("expected a delta event");
+        };
+        let Some(LiveTranscriptEvent::Final(event)) = to_event("s9", "output", None, &fin) else {
+            panic!("expected a final event");
+        };
+        assert_eq!(delta.stream_id, "s9");
+        assert!(delta.replace);
+        assert_eq!(delta.item_id, event.item_id);
+    }
+
+    #[test]
+    fn local_speaker_name_labels_input_speaker_zero_only() {
+        let value = results_payload("can you hear me", true, 0.0, &[0]);
+        let Some(LiveTranscriptEvent::Final(mic)) =
+            to_event("mic", "input", Some("Alex"), &value)
+        else {
+            panic!("expected a final event");
+        };
+        assert_eq!(mic.speaker_name.as_deref(), Some("Alex"));
+        assert_eq!(
+            mic.session_speaker_id.as_deref(),
+            Some("deepgram:mic:speaker:0")
+        );
+
+        let Some(LiveTranscriptEvent::Final(out)) =
+            to_event("sys", "output", Some("Alex"), &value)
+        else {
+            panic!("expected a final event");
+        };
+        assert_eq!(out.speaker_name.as_deref(), Some("speaker 1"));
+    }
+
+    #[test]
+    fn results_without_words_have_no_speaker() {
+        let value = results_payload("hm", true, 0.0, &[]);
+        let Some(LiveTranscriptEvent::Final(event)) = to_event("s1", "output", None, &value)
+        else {
+            panic!("expected a final event");
+        };
+        assert_eq!(event.session_speaker_id, None);
+        assert_eq!(event.speaker_name, None);
+    }
+
+    #[test]
+    fn blank_results_produce_no_event() {
+        let value = results_payload("   ", true, 0.0, &[0]);
+        assert!(to_event("s1", "output", None, &value).is_none());
+    }
+
+    #[test]
+    fn dominant_speaker_ties_go_to_the_lower_label() {
+        let value = results_payload("x", true, 0.0, &[2, 1, 2, 1]);
+        assert_eq!(dominant_speaker(&value), Some(1));
+        let value = results_payload("x", true, 0.0, &[3, 2, 3]);
+        assert_eq!(dominant_speaker(&value), Some(3));
+    }
+
     #[test]
     fn unset_language_uses_multilingual_streaming() {
         let q = live_query(None);

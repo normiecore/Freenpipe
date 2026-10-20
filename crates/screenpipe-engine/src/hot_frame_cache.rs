@@ -55,6 +55,8 @@ pub struct HotAudio {
     pub end_time: Option<f64>,
     pub speaker_id: Option<i64>,
     pub speaker_name: Option<Arc<str>>,
+    /// Live meeting segment (negative `audio_chunk_id`) or its `live` mirror.
+    pub is_live: bool,
 }
 
 /// In-memory cache for today's frames and audio.
@@ -268,6 +270,7 @@ impl HotFrameCache {
                                 end_time: audio_entry.end_time,
                                 speaker_id: audio_entry.speaker_id,
                                 speaker_name: audio_entry.speaker_name.as_deref().map(Arc::from),
+                                is_live: audio_entry.is_live,
                             };
                             audio_map
                                 .entry(hot_audio.timestamp)
@@ -380,6 +383,7 @@ fn find_audio_for_frame(
                 audio_chunk_id: a.audio_chunk_id,
                 speaker_id: a.speaker_id,
                 speaker_name: a.speaker_name.as_deref().map(String::from),
+                is_live: a.is_live,
                 start_time: a.start_time,
                 end_time: a.end_time,
             });
@@ -487,6 +491,7 @@ mod tests {
                 end_time: None,
                 speaker_id: None,
                 speaker_name: None,
+                is_live: false,
             })
             .await;
 

@@ -6,7 +6,7 @@ use std::{collections::HashMap, sync::Arc};
 
 use chrono::Utc;
 use futures::StreamExt;
-use screenpipe_db::DatabaseManager;
+use screenpipe_db::{DatabaseManager, NewMeetingTranscriptSegment};
 use tokio::{
     sync::{broadcast, mpsc, RwLock},
     task::JoinHandle,
@@ -22,8 +22,8 @@ use crate::{
 use super::{
     deepgram_live,
     events::{
-        MeetingAudioFrame, MeetingAudioTap, MeetingLifecycleEvent, MeetingStreamingError,
-        MeetingStreamingSessionEnded, MeetingStreamingSessionStarted,
+        mint_stream_id, MeetingAudioFrame, MeetingAudioTap, MeetingLifecycleEvent,
+        MeetingStreamingError, MeetingStreamingSessionEnded, MeetingStreamingSessionStarted,
         MeetingStreamingStatusChanged, MeetingTranscriptDelta, MeetingTranscriptFinal,
     },
     selected_engine, MeetingStreamingConfig, MeetingStreamingProvider,
@@ -458,28 +458,36 @@ async fn persist_live_final_once(
     }
 
     let id = db
-        .insert_meeting_transcript_segment(
-            event.meeting_id,
-            &event.provider,
-            event.model.as_deref(),
-            &event.item_id,
-            &event.device_name,
-            &event.device_type,
-            event.speaker_name.as_deref(),
-            transcript,
-            event.captured_at,
-        )
+        .insert_live_meeting_transcript_segment(event.meeting_id, &segment_from_final(event))
         .await
         .map_err(|e| e.to_string())?;
 
     if id > 0 {
         info!(
-            "meeting streaming: persisted live final (meeting_id={}, item_id={}, segment_id={})",
-            event.meeting_id, event.item_id, id
+            "meeting streaming: persisted live final (meeting_id={}, stream_id={}, item_id={}, segment_id={})",
+            event.meeting_id, event.stream_id, event.item_id, id
         );
     }
 
     Ok(true)
+}
+
+/// The segment row a live final is stored as. The stream scope and the
+/// provider's stream-local speaker label travel with it, so a reconnect can
+/// never merge two different "speaker 1"s.
+fn segment_from_final(event: &MeetingTranscriptFinal) -> NewMeetingTranscriptSegment {
+    NewMeetingTranscriptSegment {
+        provider: event.provider.clone(),
+        model: event.model.clone(),
+        item_id: event.item_id.clone(),
+        device_name: event.device_name.clone(),
+        device_type: event.device_type.clone(),
+        stream_id: Some(event.stream_id.clone()),
+        session_speaker_id: event.session_speaker_id.clone(),
+        speaker_name: event.speaker_name.clone(),
+        transcript: event.transcript.trim().to_string(),
+        captured_at: event.captured_at,
+    }
 }
 
 fn emit_session_ended(session: ActiveMeetingStream) {
@@ -533,12 +541,17 @@ fn route_frame_to_provider(
 
     if !session.device_senders.contains_key(&key) {
         let (tx, rx) = mpsc::channel(128);
+        // Every provider connection gets its own scope, including the one
+        // opened after a closed stream's backoff, so speaker labels of two
+        // connections are never treated as the same person.
+        let stream_id = mint_stream_id();
         match config.provider {
             MeetingStreamingProvider::SelectedEngine => {
                 selected_engine::spawn_selected_engine_stream(
                     config.clone(),
                     transcription_engine.clone(),
                     session.meeting_id,
+                    stream_id,
                     frame.device_name.clone(),
                     frame.device_type.clone(),
                     rx,
@@ -549,6 +562,7 @@ fn route_frame_to_provider(
                 deepgram_live::spawn_deepgram_live_stream(
                     config.clone(),
                     session.meeting_id,
+                    stream_id,
                     frame.device_name.clone(),
                     frame.device_type.clone(),
                     rx,
@@ -1219,5 +1233,31 @@ mod tests {
             direct_deepgram_live(Some("personal-dg-key")),
         );
         assert_eq!(effective.provider, MeetingStreamingProvider::SelectedEngine);
+    }
+
+    #[test]
+    fn live_final_becomes_a_stream_scoped_segment() {
+        let event = MeetingTranscriptFinal {
+            meeting_id: 9,
+            provider: "deepgram-live".to_string(),
+            model: Some("nova-3".to_string()),
+            stream_id: "stream-a".to_string(),
+            item_id: "deepgram:stream-a:turn:0:1200".to_string(),
+            device_name: "System Audio".to_string(),
+            device_type: "output".to_string(),
+            session_speaker_id: Some("deepgram:stream-a:speaker:1".to_string()),
+            speaker_name: Some("speaker 2".to_string()),
+            transcript: "  shipping friday  ".to_string(),
+            captured_at: Utc::now(),
+        };
+        let segment = segment_from_final(&event);
+        assert_eq!(segment.stream_id.as_deref(), Some("stream-a"));
+        assert_eq!(
+            segment.session_speaker_id.as_deref(),
+            Some("deepgram:stream-a:speaker:1")
+        );
+        assert_eq!(segment.speaker_name.as_deref(), Some("speaker 2"));
+        assert_eq!(segment.item_id, event.item_id);
+        assert_eq!(segment.transcript, "shipping friday");
     }
 }

@@ -386,6 +386,10 @@ pub struct MeetingTranscriptSegment {
     pub audio_file_path: Option<String>,
     pub speaker_id: Option<i64>,
     pub speaker_name: Option<String>,
+    /// Live provider speaker label scoped to the stream that produced it
+    /// (`None` for background rows and for providers without diarization).
+    #[sqlx(default)]
+    pub session_speaker_id: Option<String>,
     pub transcript: String,
     pub captured_at: String,
     pub created_at: String,
@@ -481,9 +485,15 @@ pub struct AudioEntry {
     pub is_input: bool,
     pub audio_file_path: String,
     pub duration_secs: f64,
+    /// Real `audio_chunks.id` for background rows; the negated
+    /// `meeting_transcript_segments.id` for live meeting segments, so every
+    /// timeline audio row has a distinct id.
     pub audio_chunk_id: i64,
     pub speaker_id: Option<i64>,
     pub speaker_name: Option<String>,
+    /// True for live meeting segments and their `live` mirrors in
+    /// `audio_transcriptions`.
+    pub is_live: bool,
     /// Offset in seconds from the start of the audio chunk file where this transcription begins
     pub start_time: Option<f64>,
     /// Offset in seconds from the start of the audio chunk file where this transcription ends

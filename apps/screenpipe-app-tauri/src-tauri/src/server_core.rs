@@ -287,6 +287,7 @@ impl ServerCore {
                             end_time: info.end_time,
                             speaker_id: info.speaker_id,
                             speaker_name: None,
+                            is_live: false,
                         })
                         .await;
                 });
