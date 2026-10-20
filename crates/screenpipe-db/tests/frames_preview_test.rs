@@ -104,6 +104,52 @@ async fn exact_lookup_reports_each_media_location() {
     assert!(db.get_preview_media_chunk(9_999).await.unwrap().is_none());
 }
 
+/// Compaction must re-point exactly the frames of its batch, whatever the
+/// chunk id is (four older chunks make it differ from every frame id).
+#[tokio::test]
+async fn compaction_moves_exactly_the_batch_frames() {
+    let db = setup_db().await;
+    let untouched = snapshot(&db, "monitor_1", 0, "/d/0.jpg", "Code", None).await;
+    let first = snapshot(&db, "monitor_1", 1, "/d/1.jpg", "Code", None).await;
+    let second = snapshot(&db, "monitor_1", 2, "/d/2.jpg", "Code", None).await;
+    let last = snapshot(&db, "monitor_1", 3, "/d/3.jpg", "Code", None).await;
+    for old in 0..4 {
+        db.insert_video_chunk_with_fps(&format!("/d/old-{old}.mp4"), "monitor_1", 1.0)
+            .await
+            .unwrap();
+    }
+    let chunk = db
+        .insert_video_chunk_with_fps("/d/new.mp4", "monitor_1", 1.0)
+        .await
+        .unwrap();
+    assert!(![untouched, first, second, last].contains(&chunk));
+
+    db.compact_snapshots_queued(chunk, vec![(first, 0), (second, 1), (last, 2)])
+        .await
+        .unwrap();
+
+    for (id, pos) in [(first, 0), (second, 1), (last, 2)] {
+        let row = db.get_frame_media(id).await.unwrap().unwrap();
+        assert_eq!(
+            row.location(),
+            FrameMediaLocation::Video {
+                chunk_id: chunk,
+                path: "/d/new.mp4".into(),
+                offset_index: pos,
+                fps: Some(1.0),
+            },
+            "frame {id}"
+        );
+    }
+    let row = db.get_frame_media(untouched).await.unwrap().unwrap();
+    assert_eq!(
+        row.location(),
+        FrameMediaLocation::Snapshot {
+            path: "/d/0.jpg".into()
+        }
+    );
+}
+
 #[tokio::test]
 async fn neighbours_stay_on_the_same_device_and_close_in_time() {
     let db = setup_db().await;

@@ -427,7 +427,7 @@ async fn preview_samples_list_spread_references_and_validate_queries() {
         .collect();
     assert!(
         !ids.contains(&code[0]),
-        "a frame without its file is skipped"
+        "a frame without its file is skipped: samples {ids:?}, frames {code:?}, body {frames:?}"
     );
     assert_eq!(ids[0], code[1]);
     let mut sorted = ids.clone();

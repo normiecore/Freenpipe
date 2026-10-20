@@ -1310,7 +1310,11 @@ async fn execute_single_write(
             if batch.is_empty() {
                 return Ok(WriteResult::Unit);
             }
-            let placeholders: Vec<String> = batch.iter().map(|_| "?".to_string()).collect();
+            // Numbered placeholders: sqlx counts bare `?` from the first
+            // argument even after `?1`, so `IN (?, ?)` would bind chunk_id and
+            // drop the batch's last frame id.
+            let placeholders: Vec<String> =
+                (0..batch.len()).map(|i| format!("?{}", i + 2)).collect();
             let case_clauses: Vec<String> = batch
                 .iter()
                 .map(|(id, pos)| format!("WHEN {} THEN {}", id, pos))
