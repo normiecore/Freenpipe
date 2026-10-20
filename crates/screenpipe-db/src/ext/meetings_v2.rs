@@ -266,6 +266,12 @@ const NOT_ENOUGH_WORDS: &[&str] = &[
 /// "No audio issues..." goes on for longer.
 const SHORT_TEXT_CHARS: usize = 160;
 
+/// Words that join a second clause; a notice that has one says more than
+/// "the input is missing".
+const CLAUSE_JOINERS: &[&str] = &[
+    "so", "but", "and", "which", "while", "because", "then", "although", "though", "yet",
+];
+
 /// Length of the "first sentence" window used by the failure check.
 const FIRST_SENTENCE_CHARS: usize = 240;
 
@@ -382,10 +388,18 @@ fn is_report_that_summary_was_not_made(sentence: &str) -> bool {
 /// A short text that is one clause opening with "unfortunately" and only says
 /// the input is missing: "Unfortunately, no transcript was available."
 /// Anything after a full stop or semicolon ("...; the second half covered
-/// the roadmap") makes it a summary.
+/// the roadmap"), a further comma or a joining word ("..., so the team will
+/// redo it") makes it a summary: refusing a real summary loses it, while
+/// saving a rare failure notice only costs the user one edit.
 fn is_missing_input_notice(text: &str) -> bool {
+    let Some(rest) = text.strip_prefix(SOFT_OPENER) else {
+        return false;
+    };
+    let rest = rest.trim_start_matches([',', ' ', '-']);
     starts_with_word(text, SOFT_OPENER)
         && is_single_clause(text)
+        && !rest.contains(',')
+        && !CLAUSE_JOINERS.iter().any(|w| has_word(rest, w))
         && mentions_any(text, INPUT_WORDS)
         && MISSING_WORDS.iter().any(|w| has_word(text, w))
 }
@@ -1016,6 +1030,9 @@ mod tests {
             "Unfortunately the summary pipeline failed last week; Bo is on it.",
             "Failed to ship the audio feature, so the team cut scope.",
             "Error budget for the audio service was not met; the team adds alerts.",
+            "Unfortunately, the recording of the demo was not captured, so the team will redo it.",
+            "Unfortunately no recording exists for the kickoff but the notes cover it.",
+            "Unfortunately, no transcript was kept, and Ana will write up the decisions.",
         ] {
             assert_eq!(summary_rejection(text), None, "{text}");
         }
