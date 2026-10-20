@@ -33,8 +33,9 @@
 //! | Purpose | Method |
 //! |---|---|
 //! | cache lookup before parsing | [`DatabaseManager::find_semantic_run_by_fingerprint`] |
-//! | store a parse (run, items, run items, heuristic actors) | [`DatabaseManager::store_semantic_run`] |
-//! | point frames at runs, batched | [`DatabaseManager::attach_semantic_runs_to_frames`], [`SemanticFrameAttachmentBuffer`] |
+//! | store a captured frame's parse and attach it, unless the frame is gone | [`DatabaseManager::store_semantic_run_for_frame`] |
+//! | store a parse without a frame (run, items, run items, heuristic actors) | [`DatabaseManager::store_semantic_run`] |
+//! | point frames at existing runs (fingerprint hits), batched | [`DatabaseManager::attach_semantic_runs_to_frames`], [`SemanticFrameAttachmentBuffer`] |
 //! | read a run with its items | [`DatabaseManager::get_semantic_run_detail`], [`DatabaseManager::get_semantic_run_for_frame`] |
 //! | full-text search | [`DatabaseManager::search_semantic_items`], [`DatabaseManager::search_semantic_frames`] |
 //! | actors | `search_`, `get_`, `create_`, `rename_semantic_actor`, `merge_semantic_actors`, `reassign_semantic_item_actor`, `reassign_semantic_actor_alias`, `find_semantic_actor_alias` |
@@ -605,9 +606,12 @@ impl NewSemanticRun {
     /// `actor_source_key` when it is set and not blank, `parser_id`
     /// otherwise. Heuristic assignment only uses it when it is valid (see
     /// [`Self::actor_source_key`]).
+    ///
+    /// The parser id is used as stored: [`DatabaseManager::store_semantic_run`]
+    /// rejects one with leading or trailing whitespace, so the default key
+    /// always equals `semantic_runs.parser_id`.
     pub fn effective_actor_source_key(&self) -> &str {
-        self.explicit_actor_source_key()
-            .unwrap_or(self.parser_id.trim())
+        self.explicit_actor_source_key().unwrap_or(&self.parser_id)
     }
 
     /// `actor_source_key`, trimmed, when it is set and not blank.
@@ -712,13 +716,15 @@ pub struct SemanticAttachOutcome {
     /// either a reused run older than the GC grace that nothing pointed at,
     /// or any unattached run during a zero-grace pass after a user delete.
     /// These frames are still there without a run: the caller should store
-    /// the parse again (which creates a new run) or queue the frame for
-    /// parsing again, then attach the new run.
+    /// the parse again with [`DatabaseManager::store_semantic_run_for_frame`]
+    /// (which creates a new run and attaches it) or queue the frame for
+    /// parsing again. Every flush's list must be handled, from every buffer.
     pub skipped: Vec<SemanticFrameAttachment>,
     /// Runs deleted because the batch named them only for frames that no
-    /// longer exist and no other frame points at them, typically a parse the
-    /// worker stored after its frame was deleted (see
-    /// [`DatabaseManager::attach_semantic_runs_to_frames`]).
+    /// longer exist and no other frame points at them (see
+    /// [`DatabaseManager::attach_semantic_runs_to_frames`]), typically a
+    /// parse stored with [`DatabaseManager::store_semantic_run`] after its
+    /// frame was deleted.
     pub runs_discarded: u64,
     /// Items deleted with [`Self::runs_discarded`] because no other run
     /// contains them. Their FTS text and actor assignments go with them.
@@ -1065,6 +1071,15 @@ fn validate_new_run(run: &NewSemanticRun) -> Result<()> {
     if run.parser_id.trim().is_empty() {
         return Err(SemanticStoreError::invalid("parser_id must not be empty"));
     }
+    // The parser id is stored, compared with an existing run's and used as
+    // the default alias source key exactly as given, so padding would make
+    // the key differ from the stored id. It is a constant of the parser's
+    // code, so padding is a caller bug.
+    if run.parser_id.trim() != run.parser_id {
+        return Err(SemanticStoreError::invalid(
+            "parser_id must not start or end with whitespace",
+        ));
+    }
     if run.parser_version.trim().is_empty() {
         return Err(SemanticStoreError::invalid(
             "parser_version must not be empty",
@@ -1097,7 +1112,7 @@ fn validate_new_run(run: &NewSemanticRun) -> Result<()> {
     // `actor_source_key` may come from captured text, so a bad one only skips
     // heuristic assignment (see `store_run_tx`).
     if run.explicit_actor_source_key().is_none() {
-        if let Some(problem) = source_key_problem(run.parser_id.trim()) {
+        if let Some(problem) = source_key_problem(&run.parser_id) {
             return Err(SemanticStoreError::invalid(format!("parser_id {problem}")));
         }
     }
@@ -1480,6 +1495,33 @@ async fn store_run_tx(
     })
 }
 
+/// The body of [`DatabaseManager::store_semantic_run_for_frame`]: inside
+/// one `BEGIN IMMEDIATE` transaction, store `run` and point `frame_id` at it,
+/// or write nothing when the frame no longer exists. The transaction holds
+/// the write lock, so a frame delete lands either before the check (nothing
+/// is stored) or after the commit (the run is attached, and the delete's GC
+/// pass collects it like any other run of a deleted frame).
+async fn store_for_frame_tx(
+    conn: &mut SqliteConnection,
+    frame_id: i64,
+    run: &NewSemanticRun,
+) -> Result<Option<StoredSemanticRun>> {
+    let frame: Option<i64> = sqlx::query_scalar("SELECT 1 FROM frames WHERE id = ?1")
+        .bind(frame_id)
+        .fetch_optional(&mut *conn)
+        .await?;
+    if frame.is_none() {
+        return Ok(None);
+    }
+    let stored = store_run_tx(conn, run).await?;
+    sqlx::query("UPDATE frames SET semantic_run_id = ?1 WHERE id = ?2")
+        .bind(stored.run_id)
+        .bind(frame_id)
+        .execute(&mut *conn)
+        .await?;
+    Ok(Some(stored))
+}
+
 /// The ids in `ids` (at most [`IN_CHUNK`] of them) that still have a
 /// `frames` row, ascending.
 async fn existing_frame_ids(conn: &mut SqliteConnection, ids: &[i64]) -> Result<Vec<i64>> {
@@ -1799,6 +1841,11 @@ impl DatabaseManager {
     ///    `(source key, normalized label)`. A missing alias is created together
     ///    with a new actor named after the label. Items that already have an
     ///    assignment, heuristic or reconciled, keep it.
+    ///
+    /// The run is not attached to any frame, and its items are searchable
+    /// as soon as this returns. To store the parse of a captured frame, use
+    /// [`Self::store_semantic_run_for_frame`], which also attaches the run
+    /// and stores nothing when the frame has been deleted in the meantime.
     pub async fn store_semantic_run(&self, run: &NewSemanticRun) -> Result<StoredSemanticRun> {
         validate_new_run(run)?;
         let mut tx = self.begin_immediate_with_retry().await?;
@@ -1813,6 +1860,58 @@ impl DatabaseManager {
             assignments_created = stored.assignments_created,
             "semantic run stored"
         );
+        Ok(stored)
+    }
+
+    /// Store the parse of frame `frame_id` and point the frame at its run,
+    /// in one write transaction, or store nothing when the frame no longer
+    /// exists.
+    ///
+    /// This is how the worker stores a fresh parse (one it just produced, or
+    /// one it stores again for a frame reported in
+    /// [`SemanticAttachOutcome::skipped`]). The frame check and the writes
+    /// share the transaction, so a parse of a frame that retention or a user
+    /// delete removed after the worker read it is never written, and its
+    /// text never reaches `semantic_items_fts`. A run stored here is
+    /// attached from the moment it exists, so GC never collects it while
+    /// its frame lives, and when the frame is deleted the delete's GC pass
+    /// collects it like any other run.
+    ///
+    /// Returns `None` when the frame does not exist (nothing written, no
+    /// actors or aliases created). Otherwise the run is stored with the rules
+    /// of [`Self::store_semantic_run`], including reuse of an existing run
+    /// with the same input fingerprint (`created == false`), and the frame
+    /// points at it, replacing any run it pointed at before.
+    ///
+    /// Frames whose run already exists (a fingerprint hit) go through
+    /// [`SemanticFrameAttachmentBuffer`] instead. A buffered attachment for
+    /// the same frame that is flushed later replaces this one.
+    pub async fn store_semantic_run_for_frame(
+        &self,
+        frame_id: i64,
+        run: &NewSemanticRun,
+    ) -> Result<Option<StoredSemanticRun>> {
+        require_positive("frame_id", frame_id)?;
+        validate_new_run(run)?;
+        let mut tx = self.begin_immediate_with_retry().await?;
+        let out = store_for_frame_tx(tx.conn(), frame_id, run).await;
+        let stored = finish_tx(tx, out).await?;
+        match &stored {
+            Some(stored) => debug!(
+                frame_id,
+                run_id = stored.run_id,
+                created = stored.created,
+                items = stored.item_ids.len(),
+                items_inserted = stored.items_inserted,
+                actors_created = stored.actors_created,
+                assignments_created = stored.assignments_created,
+                "semantic run stored and attached"
+            ),
+            None => debug!(
+                frame_id,
+                "semantic: frame no longer exists; parse not stored"
+            ),
+        }
         Ok(stored)
     }
 
@@ -1833,12 +1932,20 @@ impl DatabaseManager {
     /// - A run that the batch names only for frames that no longer exist, and
     ///   that no other frame points at, is deleted together with its items
     ///   that no other run contains (so their FTS text goes too), as a
-    ///   zero-grace GC pass would. This covers a parse the worker stored after
-    ///   its frame was deleted, which would otherwise stay searchable until
-    ///   the next GC pass. A later attachment of another frame to that run
-    ///   comes back in `skipped`. Counted in
-    ///   [`SemanticAttachOutcome::runs_discarded`] and
-    ///   [`SemanticAttachOutcome::items_discarded`].
+    ///   zero-grace GC pass would, without waiting for the GC grace. This
+    ///   covers a parse stored with [`Self::store_semantic_run`] after its
+    ///   frame was deleted, which would otherwise stay searchable until the
+    ///   next GC pass. Counted in [`SemanticAttachOutcome::runs_discarded`]
+    ///   and [`SemanticAttachOutcome::items_discarded`].
+    ///
+    /// The discard ignores the GC grace, so a live frame about to use the
+    /// same run loses it: one whose fingerprint hit is not pushed yet, or is
+    /// queued in another buffer. Its attachment then comes back in `skipped`
+    /// and costs one more parse, as when GC collects a reused run. When fresh
+    /// parses go through [`Self::store_semantic_run_for_frame`], a run nothing
+    /// points at is one whose frames are all gone, which GC collects anyway.
+    /// The worker should keep one buffer and handle `skipped` from every
+    /// flush.
     pub async fn attach_semantic_runs_to_frames(
         &self,
         attachments: &[SemanticFrameAttachment],
@@ -2026,8 +2133,10 @@ impl DatabaseManager {
     /// Delete runs no frame points at, then items no run contains, in batches
     /// of a few thousand rows per transaction.
     ///
-    /// Runs younger than `grace` survive even when unreferenced, so a run the
-    /// worker stored but has not attached yet is not lost. Deleting a run
+    /// Runs younger than `grace` survive even when unreferenced, so a run
+    /// stored with [`Self::store_semantic_run`] and not attached yet is not
+    /// lost (a run stored with [`Self::store_semantic_run_for_frame`] is
+    /// attached from the start). Deleting a run
     /// removes its run items (cascade); deleting an item removes its actor
     /// assignment (cascade) and its FTS row (trigger). Actors and aliases are
     /// kept on purpose.
@@ -2044,20 +2153,25 @@ impl DatabaseManager {
     /// Which grace to pass depends on why frames went away:
     ///
     /// - Periodic retention passes (old frames aged out on a schedule) pass
-    ///   [`SEMANTIC_GC_DEFAULT_GRACE`]. That is what the grace is for: the
-    ///   worker may be holding a fresh run in its attachment buffer.
+    ///   [`SEMANTIC_GC_DEFAULT_GRACE`]. That is what the grace is for: a
+    ///   caller may be holding a fresh, unattached run in its attachment
+    ///   buffer.
     /// - User-initiated deletes (W3-09: delete-range, `delete_by_machine_id`)
     ///   must pass `Duration::ZERO`, so the deleted frames' runs and items,
     ///   and their text in the FTS index, are gone when the call returns
-    ///   instead of lingering until a later pass. The cost: a run the worker
-    ///   stored moments ago for a frame outside the deleted range, and has
-    ///   not attached yet, is collected too. Its pending attachment is then
+    ///   instead of lingering until a later pass. The cost: a run stored
+    ///   moments ago with [`Self::store_semantic_run`] for a frame outside
+    ///   the deleted range, and not attached yet, is collected too, as is a
+    ///   run whose frames were all deleted while a live frame's fingerprint
+    ///   hit on it waits in the buffer. Such a pending attachment is then
     ///   skipped and reported (see [`Self::attach_semantic_runs_to_frames`]),
     ///   so the worker can store or parse that frame again. Pending
     ///   attachments of the deleted frames themselves are dropped without
-    ///   being reported, so the worker never stores their text again, and a
-    ///   parse it stored for one of them after this pass is deleted by the
-    ///   flush that tries to attach it.
+    ///   being reported, so the worker never stores their text again. A parse
+    ///   of a deleted frame that arrives after this pass is not written by
+    ///   [`Self::store_semantic_run_for_frame`]; one stored with
+    ///   [`Self::store_semantic_run`] is deleted by the flush that tries to
+    ///   attach it.
     pub async fn gc_semantic_projection(&self, grace: Duration) -> Result<SemanticGcStats> {
         let grace =
             chrono::Duration::from_std(grace).unwrap_or_else(|_| chrono::Duration::days(365 * 100));
@@ -2306,6 +2420,12 @@ impl DatabaseManager {
 /// Collects frame-to-run attachments so the worker writes them in batches
 /// instead of one UPDATE per frame.
 ///
+/// It is meant for frames whose run already exists (a fingerprint hit). A
+/// fresh parse goes through [`DatabaseManager::store_semantic_run_for_frame`],
+/// which attaches its run in the same transaction. Keep one buffer per worker
+/// and handle [`SemanticAttachOutcome::skipped`] from every flush (see
+/// [`DatabaseManager::attach_semantic_runs_to_frames`]).
+///
 /// A later push for the same frame replaces the earlier one. The buffer is
 /// due once it holds `max_len` frames or its oldest entry is `max_age` old.
 #[derive(Debug)]
@@ -2385,8 +2505,9 @@ impl SemanticFrameAttachmentBuffer {
     /// [`DatabaseManager::attach_semantic_runs_to_frames`]: entries whose run
     /// GC removed in the meantime are not written, and those whose frame
     /// still exists come back in [`SemanticAttachOutcome::skipped`] for the
-    /// caller to store or parse again. Entries whose frame was deleted are
-    /// dropped without being reported.
+    /// caller to store (with
+    /// [`DatabaseManager::store_semantic_run_for_frame`]) or parse again.
+    /// Entries whose frame was deleted are dropped without being reported.
     ///
     /// The entries leave the buffer only after the transaction commits:
     ///
@@ -2679,6 +2800,21 @@ mod tests {
         // With a valid explicit key the parser id is not an alias key.
         long_parser.actor_source_key = Some("slack:T123".into());
         assert!(validate_new_run(&long_parser).is_ok());
+
+        // Padding would make the default alias key differ from the stored
+        // parser id, so it fails the run whatever the key.
+        for padded in [" p", "p ", "\tp", "p\n", "\u{a0}p"] {
+            let mut r = run(vec![]);
+            r.parser_id = padded.into();
+            let err = validate_new_run(&r).unwrap_err();
+            assert!(err.is_invalid_input(), "{padded:?}");
+            assert!(err.to_string().contains("whitespace"), "{padded:?}: {err}");
+            r.actor_source_key = Some("slack:T123".into());
+            assert!(validate_new_run(&r).is_err(), "{padded:?}");
+        }
+        let mut inner = run(vec![]);
+        inner.parser_id = "chat test".into();
+        assert!(validate_new_run(&inner).is_ok());
     }
 
     #[test]

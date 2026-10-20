@@ -1143,6 +1143,179 @@ async fn a_parse_stored_after_its_frame_was_deleted_is_discarded_by_the_flush() 
 }
 
 #[tokio::test]
+async fn storing_a_parse_for_a_frame_attaches_it_or_writes_nothing() {
+    let (_dir, db) = open_db().await;
+    let first = insert_frame(&db, 1).await;
+    let second = insert_frame(&db, 2).await;
+    let parse = new_run(
+        "for-frame",
+        vec![message("m", "for-frame", "attachedkiwi", Some("Ada"))],
+    );
+
+    // A live frame: the run is stored and attached in one call.
+    let stored = db
+        .store_semantic_run_for_frame(first, &parse)
+        .await
+        .unwrap()
+        .expect("the frame exists");
+    assert!(stored.created);
+    assert_eq!(stored.assignments_created, 1);
+    let on_frame = db.get_semantic_run_for_frame(first).await.unwrap().unwrap();
+    assert_eq!(on_frame.run.id, stored.run_id);
+    // Attached from the start, so even a zero-grace pass keeps it.
+    let stats = db.gc_semantic_projection(Duration::ZERO).await.unwrap();
+    assert_eq!((stats.runs_deleted, stats.items_deleted), (0, 0));
+
+    // The same input on another frame reuses the run and attaches it.
+    let again = db
+        .store_semantic_run_for_frame(second, &parse)
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(!again.created);
+    assert_eq!(again.run_id, stored.run_id);
+    let on_second = db
+        .get_semantic_run_for_frame(second)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(on_second.run.id, stored.run_id);
+    assert_eq!(fts_hits(&db, "attachedkiwi").await, 1);
+
+    // A frame deleted before its parse is stored: nothing is written, not
+    // even an actor or an alias.
+    let late = insert_frame(&db, 3).await;
+    delete_frames(&db, &[late]).await;
+    let runs = count(&db, "SELECT COUNT(*) FROM semantic_runs").await;
+    let items = count(&db, "SELECT COUNT(*) FROM semantic_items").await;
+    let actors = count(&db, "SELECT COUNT(*) FROM semantic_actors").await;
+    let aliases = count(&db, "SELECT COUNT(*) FROM semantic_actor_aliases").await;
+    let late_parse = new_run(
+        "late-for-frame",
+        vec![message(
+            "m",
+            "late-for-frame",
+            "deletedmango",
+            Some("Grace"),
+        )],
+    );
+    assert_eq!(
+        db.store_semantic_run_for_frame(late, &late_parse)
+            .await
+            .unwrap(),
+        None
+    );
+    assert!(db
+        .find_semantic_run_by_fingerprint(&late_parse.input_fingerprint)
+        .await
+        .unwrap()
+        .is_none());
+    assert_eq!(count(&db, "SELECT COUNT(*) FROM semantic_runs").await, runs);
+    assert_eq!(
+        count(&db, "SELECT COUNT(*) FROM semantic_items").await,
+        items
+    );
+    assert_eq!(
+        count(&db, "SELECT COUNT(*) FROM semantic_actors").await,
+        actors
+    );
+    assert_eq!(
+        count(&db, "SELECT COUNT(*) FROM semantic_actor_aliases").await,
+        aliases
+    );
+    assert_eq!(fts_hits(&db, "deletedmango").await, 0);
+    assert!(db
+        .search_semantic_items(&query("deletedmango"))
+        .await
+        .unwrap()
+        .is_empty());
+    // A deleted frame whose input already has a run gets nothing either.
+    assert_eq!(
+        db.store_semantic_run_for_frame(late, &parse).await.unwrap(),
+        None
+    );
+    assert!(db.get_semantic_run_for_frame(late).await.unwrap().is_none());
+
+    // Bad input fails before any write.
+    let err = db
+        .store_semantic_run_for_frame(0, &late_parse)
+        .await
+        .unwrap_err();
+    assert!(err.is_invalid_input(), "{err}");
+    let mut padded = late_parse.clone();
+    padded.parser_id = " chat.test".into();
+    let err = db
+        .store_semantic_run_for_frame(first, &padded)
+        .await
+        .unwrap_err();
+    assert!(err.is_invalid_input(), "{err}");
+    assert!(err.to_string().contains("parser_id"), "{err}");
+    assert_eq!(count(&db, "SELECT COUNT(*) FROM semantic_runs").await, runs);
+    let on_frame = db.get_semantic_run_for_frame(first).await.unwrap().unwrap();
+    assert_eq!(on_frame.run.id, stored.run_id);
+
+    // When the user deletes both frames, the delete's zero-grace pass takes
+    // the run and its text with it.
+    delete_frames(&db, &[first, second]).await;
+    let stats = db.gc_semantic_projection(Duration::ZERO).await.unwrap();
+    assert_eq!((stats.runs_deleted, stats.items_deleted), (1, 1));
+    assert_eq!(fts_hits(&db, "attachedkiwi").await, 0);
+    assert!(db
+        .search_semantic_items(&query("attachedkiwi"))
+        .await
+        .unwrap()
+        .is_empty());
+}
+
+#[tokio::test]
+async fn a_reported_frame_recovers_by_storing_its_parse_for_the_frame() {
+    let (_dir, db) = open_db().await;
+    let gone = insert_frame(&db, 1).await;
+    let live = insert_frame(&db, 2).await;
+    let parse = new_run(
+        "recover",
+        vec![message("m", "recover", "recoveredplum", None)],
+    );
+    let stored = db
+        .store_semantic_run_for_frame(gone, &parse)
+        .await
+        .unwrap()
+        .unwrap();
+    // A later frame with the same input hits the fingerprint and waits in
+    // the buffer.
+    let mut buffer = SemanticFrameAttachmentBuffer::new(100, Duration::from_secs(3600));
+    buffer.push(live, stored.run_id).unwrap();
+
+    // The user deletes the first frame; the zero-grace pass collects the run
+    // because the live frame is not attached yet.
+    delete_frames(&db, &[gone]).await;
+    let stats = db.gc_semantic_projection(Duration::ZERO).await.unwrap();
+    assert_eq!((stats.runs_deleted, stats.items_deleted), (1, 1));
+    let outcome = buffer.flush(&db).await.unwrap();
+    assert_eq!(
+        outcome.skipped,
+        vec![SemanticFrameAttachment {
+            frame_id: live,
+            run_id: stored.run_id,
+        }]
+    );
+
+    // Storing the parse for the reported frame creates a new run and
+    // attaches it in the same call.
+    let again = db
+        .store_semantic_run_for_frame(live, &parse)
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(again.created);
+    assert_ne!(again.run_id, stored.run_id);
+    let on_frame = db.get_semantic_run_for_frame(live).await.unwrap().unwrap();
+    assert_eq!(on_frame.run.id, again.run_id);
+    assert_eq!(fts_hits(&db, "recoveredplum").await, 1);
+    assert!(db.get_semantic_run_for_frame(gone).await.unwrap().is_none());
+}
+
+#[tokio::test]
 async fn dropping_a_flush_keeps_the_batch_queued() {
     let (_dir, db) = open_db().await;
     let stored = db
