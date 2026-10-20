@@ -755,9 +755,11 @@ function f() {
             .join("assets")
             .join("pi-patches")
             .join("freenpipe-compaction.test.ts");
+        // A relative path from the file's own directory: bun matches test
+        // arguments as path filters, which is the portable form on Windows.
         let output = std::process::Command::new(bun)
             .arg("test")
-            .arg(&test)
+            .arg("./freenpipe-compaction.test.ts")
             .current_dir(test.parent().unwrap())
             .output()
             .expect("run bun test");
