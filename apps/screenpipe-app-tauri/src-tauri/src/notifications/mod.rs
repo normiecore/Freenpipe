@@ -8,3 +8,7 @@ pub mod client;
 pub mod rewrite;
 pub mod routes;
 pub mod store;
+
+// Planned notification kinds; empty files until their features land.
+pub mod db_recovery;
+pub mod workflow;

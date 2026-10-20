@@ -1655,6 +1655,10 @@ async fn main() -> anyhow::Result<()> {
     // Periodic WAL checkpoint to prevent unbounded WAL growth
     db.start_wal_maintenance();
 
+    // Workers registered in screenpipe_engine::core (empty unless a feature adds one).
+    let background_workers =
+        screenpipe_engine::core::start_background_workers(db.clone(), local_data_dir.clone());
+
     let server_future = server.start();
     pin_mut!(server_future);
 
@@ -1950,6 +1954,10 @@ async fn main() -> anyhow::Result<()> {
     if let Some(handle) = ui_recorder_handle {
         handle.join().await;
     }
+
+    background_workers
+        .shutdown(std::time::Duration::from_secs(5))
+        .await;
 
     tokio::task::block_in_place(|| {
         drop(audio_manager);

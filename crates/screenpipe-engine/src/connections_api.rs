@@ -2694,6 +2694,8 @@ where
                 .delete(disconnect_integration),
         )
         .route("/:id/test", post(test_connection))
+        // Per-integration route groups (connections_routes/); the one merge point.
+        .merge(crate::connections_routes::router())
         .with_state(state)
 }
 

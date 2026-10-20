@@ -7,6 +7,7 @@
 //! Implements [`AgentExecutor`] for the pi CLI (`@earendil-works/pi-coding-agent`).
 //! Pi is installed via bun and executed as a subprocess in "print" mode (`pi -p`).
 
+use super::extensions_manifest::{self, ExtensionConditions};
 use super::{AgentExecutor, AgentOutput, ExecutionHandle};
 use anyhow::{anyhow, Result};
 use arc_swap::ArcSwap;
@@ -536,24 +537,46 @@ impl PiExecutor {
         config: &crate::pipes::PipeConfig,
     ) -> Result<()> {
         use crate::pipes::permissions::PipePermissions;
-        let perms = PipePermissions::from_config(config);
-        let ext_dir = project_dir.join(".pi").join("extensions");
-        let ext_path = ext_dir.join("screenpipe-permissions.ts");
+        let restricted = PipePermissions::from_config(config).has_any_restrictions();
+        Self::apply_bundled_extension(
+            project_dir,
+            "screenpipe-permissions",
+            &ExtensionConditions {
+                pipe_permissions: Some(restricted),
+                ..Default::default()
+            },
+        )
+    }
 
-        if perms.has_any_restrictions() {
-            std::fs::create_dir_all(&ext_dir)?;
-            let ext_content = include_str!("../../assets/extensions/screenpipe-permissions.ts");
-            std::fs::write(&ext_path, ext_content)?;
-            debug!(
-                "screenpipe-permissions extension installed at {:?}",
-                ext_path
-            );
-        } else if ext_path.exists() {
-            std::fs::remove_file(&ext_path)?;
-            info!("screenpipe-permissions extension removed (no restrictions configured)");
-        }
+    /// Install or remove one manifest extension (see
+    /// [`extensions_manifest`](super::extensions_manifest)) for the given
+    /// conditions.
+    fn apply_bundled_extension(
+        project_dir: &Path,
+        id: &str,
+        conditions: &ExtensionConditions,
+    ) -> Result<()> {
+        let ext = extensions_manifest::find(id)
+            .ok_or_else(|| anyhow!("{id} is not a bundled extension"))?;
+        ext.apply(project_dir, conditions)
+    }
 
-        Ok(())
+    /// Install the extensions every executor run needs: the always-on
+    /// manifest entries plus web-search when the run qualifies for it.
+    /// Permission and sub-agent extensions are pipe setup's business and are
+    /// left as they are.
+    pub fn ensure_run_extensions(project_dir: &Path, provider: Option<&str>) -> Result<()> {
+        let conditions = ExtensionConditions {
+            web_search: Some(extensions_manifest::web_search_wanted(
+                provider,
+                crate::ai_gateway::is_configured(),
+            )),
+            ..Default::default()
+        };
+        extensions_manifest::first_error(extensions_manifest::sync_bundled_extensions(
+            project_dir,
+            &conditions,
+        ))
     }
 
     /// Conditionally install skills based on pipe permissions.
@@ -623,28 +646,16 @@ impl PiExecutor {
         }
     }
 
-    /// Install the context-pruning extension that truncates large tool results
-    /// to prevent unbounded context growth in --continue sessions.
     /// Install orphan guard extension — kills bun if the parent (screenpipe) dies.
     /// Always installed for every pipe and chat session.
     pub fn ensure_orphan_guard_extension(project_dir: &Path) -> Result<()> {
-        let ext_dir = project_dir.join(".pi").join("extensions");
-        std::fs::create_dir_all(&ext_dir)?;
-        let ext_content = include_str!("../../assets/extensions/orphan-guard.ts");
-        let ext_path = ext_dir.join("orphan-guard.ts");
-        std::fs::write(&ext_path, ext_content)?;
-        debug!("orphan-guard extension installed at {:?}", ext_path);
-        Ok(())
+        Self::apply_bundled_extension(project_dir, "orphan-guard", &Default::default())
     }
 
+    /// Install the context-pruning extension that truncates large tool results
+    /// to prevent unbounded context growth in --continue sessions.
     pub fn ensure_context_pruning_extension(project_dir: &Path) -> Result<()> {
-        let ext_dir = project_dir.join(".pi").join("extensions");
-        std::fs::create_dir_all(&ext_dir)?;
-        let ext_content = include_str!("../../assets/extensions/context-pruning.ts");
-        let ext_path = ext_dir.join("context-pruning.ts");
-        std::fs::write(&ext_path, ext_content)?;
-        debug!("context-pruning extension installed at {:?}", ext_path);
-        Ok(())
+        Self::apply_bundled_extension(project_dir, "context-pruning", &Default::default())
     }
 
     /// Install the MCP bridge extension. Registers two proxy tools
@@ -653,31 +664,21 @@ impl PiExecutor {
     /// Always installed — does nothing harmful when zero servers are
     /// registered (the tools return a helpful "none registered" message).
     pub fn ensure_mcp_bridge_extension(project_dir: &Path) -> Result<()> {
-        let ext_dir = project_dir.join(".pi").join("extensions");
-        std::fs::create_dir_all(&ext_dir)?;
-        let ext_content = include_str!("../../assets/extensions/mcp-bridge.ts");
-        let ext_path = ext_dir.join("mcp-bridge.ts");
-        std::fs::write(&ext_path, ext_content)?;
-        debug!("mcp-bridge extension installed at {:?}", ext_path);
-        Ok(())
+        Self::apply_bundled_extension(project_dir, "mcp-bridge", &Default::default())
     }
 
     /// Install or remove the sub-agent extension based on the `subagent` frontmatter flag.
     /// When enabled, the agent can spawn parallel child pi processes via
     /// `sub-agent run "prompt"` bash commands.
     pub fn ensure_subagent_extension(project_dir: &Path, enabled: bool) -> Result<()> {
-        let ext_dir = project_dir.join(".pi").join("extensions");
-        let ext_path = ext_dir.join("sub-agent.ts");
-        if enabled {
-            std::fs::create_dir_all(&ext_dir)?;
-            let ext_content = include_str!("../../assets/extensions/sub-agent.ts");
-            std::fs::write(&ext_path, ext_content)?;
-            info!("sub-agent extension installed at {:?}", ext_path);
-        } else if ext_path.exists() {
-            std::fs::remove_file(&ext_path)?;
-            info!("sub-agent extension removed");
-        }
-        Ok(())
+        Self::apply_bundled_extension(
+            project_dir,
+            "sub-agent",
+            &ExtensionConditions {
+                sub_agent: Some(enabled),
+                ..Default::default()
+            },
+        )
     }
 
     /// Install or remove the web-search extension. The extension sends
@@ -698,28 +699,17 @@ impl PiExecutor {
         provider: Option<&str>,
         gateway_configured: bool,
     ) -> Result<()> {
-        let ext_dir = project_dir.join(".pi").join("extensions");
-        let ext_path = ext_dir.join("web-search.ts");
-
-        let is_gateway_provider = matches!(
-            provider,
-            None | Some("screenpipe") | Some("screenpipe-cloud") | Some("pi")
-        );
-
-        if is_gateway_provider && gateway_configured {
-            std::fs::create_dir_all(&ext_dir)?;
-            let ext_content = include_str!("../../assets/extensions/web-search.ts");
-            std::fs::write(&ext_path, ext_content)?;
-            debug!("web-search extension installed at {:?}", ext_path);
-        } else if ext_path.exists() {
-            std::fs::remove_file(&ext_path)?;
-            info!(
-                "web-search extension removed (provider {:?}, gateway configured: {})",
-                provider, gateway_configured
-            );
-        }
-
-        Ok(())
+        Self::apply_bundled_extension(
+            project_dir,
+            "web-search",
+            &ExtensionConditions {
+                web_search: Some(extensions_manifest::web_search_wanted(
+                    provider,
+                    gateway_configured,
+                )),
+                ..Default::default()
+            },
+        )
     }
 
     /// Merge screenpipe provider (and optionally the pipe's own provider) into
@@ -1420,10 +1410,7 @@ impl AgentExecutor for PiExecutor {
         // Use filtered skills if permissions are configured, unfiltered otherwise
         Self::ensure_screenpipe_skill_auto(working_dir)?;
 
-        Self::ensure_web_search_extension(working_dir, Some(&resolved_provider))?;
-        Self::ensure_context_pruning_extension(working_dir)?;
-        Self::ensure_orphan_guard_extension(working_dir)?;
-        Self::ensure_mcp_bridge_extension(working_dir)?;
+        Self::ensure_run_extensions(working_dir, Some(&resolved_provider))?;
 
         let pi_path = find_pi_executable().ok_or_else(|| {
             anyhow!(
@@ -1533,10 +1520,7 @@ impl AgentExecutor for PiExecutor {
         .await?;
         // Use filtered skills if permissions are configured, unfiltered otherwise
         Self::ensure_screenpipe_skill_auto(working_dir)?;
-        Self::ensure_web_search_extension(working_dir, Some(&resolved_provider))?;
-        Self::ensure_context_pruning_extension(working_dir)?;
-        Self::ensure_orphan_guard_extension(working_dir)?;
-        Self::ensure_mcp_bridge_extension(working_dir)?;
+        Self::ensure_run_extensions(working_dir, Some(&resolved_provider))?;
 
         let pi_path = find_pi_executable().ok_or_else(|| {
             anyhow!(
