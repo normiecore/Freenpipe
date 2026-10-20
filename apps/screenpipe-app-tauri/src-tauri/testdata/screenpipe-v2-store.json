@@ -12,6 +12,25 @@
         "maxContextChars": 200000,
         "maxTokens": 4096,
         "enterpriseManaged": false
+      },
+      {
+        "id": "coding-agent",
+        "provider": "acp",
+        "url": "",
+        "model": "",
+        "defaultPreset": false,
+        "prompt": "",
+        "apiKey": null,
+        "maxContextChars": 200000,
+        "maxTokens": 4096,
+        "acpAgent": {
+          "id": "custom",
+          "command": "example-agent",
+          "args": ["--acp"],
+          "envNames": ["EXAMPLE_AGENT_API_KEY"],
+          "modeId": "default",
+          "useScreenpipeCloud": false
+        }
       }
     ],
     "isLoading": false,

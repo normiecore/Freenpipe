@@ -588,7 +588,8 @@ impl OnboardingStore {
 
     /// Load a stored `onboarding` value. `null` means none; entries of an
     /// unexpected type keep their default in memory and are written back
-    /// unchanged (they are moved to `extra`).
+    /// unchanged until code assigns the field (they are moved to `extra`,
+    /// see [`Self::to_stored_value`]).
     pub fn from_stored_value(value: Value) -> Result<Option<Self>, String> {
         if value.is_null() {
             return Ok(None);
@@ -641,7 +642,7 @@ impl OnboardingStore {
         let mut onboarding = Self::get(app)?.unwrap_or_default();
         update(&mut onboarding);
         onboarding.retire_trial_step();
-        store.set("onboarding", json!(onboarding));
+        store.set("onboarding", onboarding.to_stored_value());
         store.save().map_err(|e| e.to_string())?;
         reencrypt_store_file(app);
         Ok(())
@@ -652,10 +653,18 @@ impl OnboardingStore {
             return Err("Failed to get onboarding store".to_string());
         };
 
-        store.set("onboarding", json!(self));
+        store.set("onboarding", self.to_stored_value());
         store.save().map_err(|e| e.to_string())?;
         reencrypt_store_file(app);
         Ok(())
+    }
+
+    /// The `onboarding` value written to `store.bin`; set-aside entries
+    /// follow the rule of [`SettingsStore::to_stored_value`].
+    pub fn to_stored_value(&self) -> Value {
+        let mut typed = self.clone();
+        let catch_all = std::mem::take(&mut typed.extra);
+        screenpipe_config::lenient::merge_catch_all::<Self>(json!(typed), catch_all)
     }
 
     pub fn complete(&mut self) {
@@ -743,7 +752,10 @@ pub struct SettingsStore {
     #[serde(rename = "lockVaultShortcut", default)]
     pub lock_vault_shortcut: String,
     /// Global shortcut that stars the current session.
-    #[serde(rename = "starSessionShortcut", default = "default_star_session_shortcut")]
+    #[serde(
+        rename = "starSessionShortcut",
+        default = "default_star_session_shortcut"
+    )]
     pub star_session_shortcut: String,
     /// Overlay size: "small" (default), "medium" (1.5x), "large" (2x)
     #[serde(rename = "shortcutOverlaySize", default = "default_overlay_size")]
@@ -877,8 +889,9 @@ pub struct SettingsStore {
     /// that the Rust struct doesn't know about. Without this, `save()` would
     /// serialize only known fields and silently wipe frontend-only data.
     /// It also holds, unchanged, any stored value whose type did not fit its
-    /// field (see [`SettingsStore::from_stored_value`]); being last, those
-    /// entries win over the field's default when the store is written back.
+    /// field (see [`SettingsStore::from_stored_value`]); such an entry is
+    /// written back in place of the field's default until code assigns the
+    /// field (see [`SettingsStore::to_stored_value`]).
     #[serde(flatten)]
     pub extra: std::collections::HashMap<String, serde_json::Value>,
 }
@@ -957,11 +970,53 @@ pub enum AIProviderType {
     Anthropic,
 }
 
+/// Provider ids this version reads as an [`AIProviderType`] (`opencode` is the
+/// older name of `pi`). A preset stored with any other id, for example
+/// `acp` (a coding-agent preset), is handled as `custom` and keeps its id in
+/// `store.bin` (see [`AIPreset::stored_provider`]).
+const KNOWN_PROVIDER_IDS: [&str; 8] = [
+    "openai",
+    "openai-chatgpt",
+    "native-ollama",
+    "custom",
+    "screenpipe-cloud",
+    "opencode",
+    "pi",
+    "anthropic",
+];
+
+impl AIProviderType {
+    /// The provider a stored id names, or `None` when this version does not
+    /// know the id.
+    fn from_stored_id(id: &str) -> Option<Self> {
+        if !KNOWN_PROVIDER_IDS.contains(&id) {
+            return None;
+        }
+        serde_json::from_value(Value::String(id.to_string())).ok()
+    }
+}
+
+/// Read a preset's `provider`; an unknown id reads as `custom`.
+fn deserialize_provider<'de, D>(deserializer: D) -> Result<AIProviderType, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let id = String::deserialize(deserializer)?;
+    Ok(AIProviderType::from_stored_id(&id).unwrap_or_else(|| {
+        tracing::warn!(
+            "unknown AI provider '{}' in a preset; handled as 'custom' and kept as stored",
+            id
+        );
+        AIProviderType::Custom
+    }))
+}
+
 #[derive(Serialize, Deserialize, Type, Clone)]
 #[serde(default)]
 pub struct AIPreset {
     pub id: String,
     pub prompt: String,
+    #[serde(deserialize_with = "deserialize_provider")]
     pub provider: AIProviderType,
     #[serde(default)]
     pub url: String,
@@ -984,6 +1039,34 @@ pub struct AIPreset {
         skip_serializing_if = "Option::is_none"
     )]
     pub enterprise_managed: Option<bool>,
+    /// Keys this version does not model, kept as stored: for example the
+    /// `acpAgent` object of a coding-agent preset, and the stored `provider`
+    /// id when this version does not know it. Left out of the generated
+    /// TypeScript type: the frontend reads presets from `store.bin` itself
+    /// and keeps every key.
+    #[serde(flatten)]
+    #[specta(skip)]
+    pub extra: std::collections::HashMap<String, serde_json::Value>,
+}
+
+impl AIPreset {
+    /// The provider id as stored, when this version does not know it (the
+    /// preset then runs as `custom`).
+    pub fn stored_provider(&self) -> Option<&str> {
+        self.extra.get("provider").and_then(Value::as_str)
+    }
+
+    /// Note the stored provider id of a preset read from `stored` when this
+    /// version does not know it, so the id is written back instead of
+    /// `custom`. Kept in `extra`, which serialises after the typed fields.
+    fn keep_unknown_provider_id(&mut self, stored: &Value) {
+        if let Some(id) = stored.get("provider").and_then(Value::as_str) {
+            if AIProviderType::from_stored_id(id).is_none() {
+                self.extra
+                    .insert("provider".to_string(), Value::String(id.to_string()));
+            }
+        }
+    }
 }
 
 fn default_max_tokens() -> i32 {
@@ -1009,6 +1092,7 @@ impl Default for AIPreset {
             max_context_chars: 200000,
             max_tokens: 4096,
             enterprise_managed: None,
+            extra: std::collections::HashMap::new(),
         }
     }
 }
@@ -1218,6 +1302,7 @@ Rules:
             max_context_chars: 200000,
             max_tokens: 4096,
             enterprise_managed: None,
+            extra: std::collections::HashMap::new(),
         };
 
         // App-specific defaults override RecordingSettings::default() where needed
@@ -1330,8 +1415,6 @@ impl SettingsStore {
     /// Remove legacy field aliases that conflict with their renamed counterparts.
     /// e.g. `enableUiEvents` was renamed to `enableAccessibility` — if both exist
     /// in the stored JSON, serde rejects it as a duplicate field.
-    /// Also sanitize unknown AI provider types to prevent deserialization failures
-    /// (e.g. synced settings from a newer version with a provider this version doesn't know).
     fn sanitize_legacy_fields(mut val: Value) -> Value {
         if let Some(obj) = val.as_object_mut() {
             if obj.contains_key("enableAccessibility") {
@@ -1352,37 +1435,9 @@ impl SettingsStore {
                 );
             }
 
-            // Sanitize unknown provider types in aiPresets to prevent deserialization failures
-            let known_providers = [
-                "openai",
-                "openai-chatgpt",
-                "native-ollama",
-                "custom",
-                "screenpipe-cloud",
-                "opencode",
-                "pi",
-                "anthropic",
-            ];
-            if let Some(presets) = obj.get_mut("aiPresets") {
-                if let Some(arr) = presets.as_array_mut() {
-                    for preset in arr.iter_mut() {
-                        if let Some(provider) = preset.get("provider").and_then(|p| p.as_str()) {
-                            if !known_providers.contains(&provider) {
-                                tracing::warn!(
-                                    "unknown AI provider '{}' in preset, falling back to 'custom'",
-                                    provider
-                                );
-                                if let Some(obj) = preset.as_object_mut() {
-                                    obj.insert(
-                                        "provider".to_string(),
-                                        Value::String("custom".to_string()),
-                                    );
-                                }
-                            }
-                        }
-                    }
-                }
-            }
+            // Unknown AI provider ids in `aiPresets` are no longer rewritten
+            // here: presets read them as `custom` and write the stored id
+            // back (see `AIPreset::stored_provider`).
         }
         val
     }
@@ -1414,12 +1469,24 @@ impl SettingsStore {
 
     /// Load a stored `settings` object, tolerating values of an unexpected
     /// type. Such entries are set aside in `extra`, so the field keeps its
-    /// default in memory while the stored value is written back unchanged.
+    /// default in memory while the stored value is written back unchanged
+    /// (until code assigns the field, see [`Self::to_stored_value`]). A
+    /// preset whose provider id this version does not know keeps that id.
     /// Fails only when the value is not an object at all.
     pub fn from_stored_value(value: Value) -> Result<Self, String> {
+        let stored_presets = value.get("aiPresets").cloned();
         let loaded = screenpipe_config::lenient::from_value_lenient::<Self>(value)
             .map_err(|e| format!("settings is not a readable object: {}", e))?;
         let mut settings = loaded.value;
+        // When `aiPresets` itself was set aside, the stored array is written
+        // back whole and the in-memory presets are defaults.
+        if !loaded.rejected.contains_key("aiPresets") {
+            if let Some(Value::Array(stored)) = &stored_presets {
+                for (preset, stored) in settings.ai_presets.iter_mut().zip(stored) {
+                    preset.keep_unknown_provider_id(stored);
+                }
+            }
+        }
         for (key, original) in loaded.rejected {
             warn!(
                 "settings key '{}' has an unexpected type; using its default and keeping the stored value",
@@ -1428,6 +1495,24 @@ impl SettingsStore {
             settings.extra.insert(key, original);
         }
         Ok(settings)
+    }
+
+    /// The `settings` value written to `store.bin`: the typed fields, then
+    /// every `extra` entry. An entry set aside at load (a value of an
+    /// unexpected type) is written back only while its field still holds
+    /// the value it loaded with; once code has assigned the field, the
+    /// assigned value is written (`screenpipe_config::lenient::merge_catch_all`).
+    /// Likewise a preset's unknown stored provider id is written back only
+    /// while the preset still runs as `custom`.
+    pub fn to_stored_value(&self) -> Value {
+        let mut typed = self.clone();
+        let catch_all = std::mem::take(&mut typed.extra);
+        for preset in &mut typed.ai_presets {
+            if !matches!(preset.provider, AIProviderType::Custom) {
+                preset.extra.remove("provider");
+            }
+        }
+        screenpipe_config::lenient::merge_catch_all::<Self>(json!(typed), catch_all)
     }
 
     /// Settings-schema v2 load rules shared with the frontend loader
@@ -1692,7 +1777,7 @@ impl SettingsStore {
             return Err("Failed to get store".to_string());
         };
 
-        store.set("settings", json!(self));
+        store.set("settings", self.to_stored_value());
         store.save().map_err(|e| e.to_string())?;
         reencrypt_store_file(app);
         Ok(())
@@ -1807,12 +1892,43 @@ pub fn remove_stored_token(store_json: &mut Value) -> bool {
         .unwrap_or(false)
 }
 
-/// Strip the token from the `.last-good` snapshot too, so no plain copy of
-/// it survives next to `store.bin`. Encrypted or unreadable snapshots are
-/// left alone.
-fn strip_token_from_snapshot(store_path: &Path) {
-    let snapshot = store_path.with_extension(LAST_GOOD_SUFFIX);
-    let Ok(data) = std::fs::read(&snapshot) else {
+/// Strip the token from the copies kept next to `store.bin` too: the
+/// `.last-good` snapshot and any `.pre-restore-<ts>` copy an earlier
+/// automatic restore set aside. No plain copy of the token survives in the
+/// settings directory. Encrypted or unreadable copies are left alone.
+fn strip_token_from_copies(store_path: &Path) {
+    for copy in store_copies(store_path) {
+        strip_token_from_file(&copy);
+    }
+}
+
+/// The `.last-good` snapshot and the `.pre-restore-<ts>` copies of
+/// `store_path` (see [`auto_restore_if_wiped`]).
+fn store_copies(store_path: &Path) -> Vec<std::path::PathBuf> {
+    let mut copies = vec![store_path.with_extension(LAST_GOOD_SUFFIX)];
+    let (Some(dir), Some(name)) = (
+        store_path.parent(),
+        store_path.file_name().and_then(|n| n.to_str()),
+    ) else {
+        return copies;
+    };
+    let prefix = format!("{name}.pre-restore-");
+    if let Ok(entries) = std::fs::read_dir(dir) {
+        for entry in entries.flatten() {
+            if entry
+                .file_name()
+                .to_str()
+                .is_some_and(|n| n.starts_with(&prefix))
+            {
+                copies.push(entry.path());
+            }
+        }
+    }
+    copies
+}
+
+fn strip_token_from_file(path: &Path) {
+    let Ok(data) = std::fs::read(path) else {
         return;
     };
     let Ok(mut value) = serde_json::from_slice::<Value>(&data) else {
@@ -1823,11 +1939,11 @@ fn strip_token_from_snapshot(store_path: &Path) {
     }
     match serde_json::to_vec(&value) {
         Ok(bytes) => {
-            if let Err(e) = std::fs::write(&snapshot, bytes) {
-                warn!("could not rewrite {}: {}", snapshot.display(), e);
+            if let Err(e) = std::fs::write(path, bytes) {
+                warn!("could not rewrite {}: {}", path.display(), e);
             }
         }
-        Err(e) => warn!("could not serialise {}: {}", snapshot.display(), e),
+        Err(e) => warn!("could not serialise {}: {}", path.display(), e),
     }
 }
 
@@ -1986,7 +2102,7 @@ pub fn init_store(app: &AppHandle) -> Result<SettingsStore, String> {
             Ok(()) => {
                 if token_moved {
                     if let Ok(dir) = get_base_dir(app, None) {
-                        strip_token_from_snapshot(&dir.join("store.bin"));
+                        strip_token_from_copies(&dir.join("store.bin"));
                     }
                 }
             }
@@ -2774,10 +2890,21 @@ mod tests {
         });
         let sanitized2 = SettingsStore::sanitize_legacy_fields(valid);
 
+        // The stored id is left alone; the preset loads as `custom` and
+        // keeps the id for the next save.
         let presets = sanitized2.get("aiPresets").unwrap().as_array().unwrap();
         assert_eq!(
             presets[0].get("provider").unwrap().as_str().unwrap(),
-            "custom"
+            "unknown_provider"
+        );
+        let settings = SettingsStore::from_stored_value(sanitized2).unwrap();
+        assert!(matches!(
+            settings.ai_presets[0].provider,
+            AIProviderType::Custom
+        ));
+        assert_eq!(
+            settings.to_stored_value()["aiPresets"][0]["provider"],
+            json!("unknown_provider")
         );
     }
 
@@ -2822,15 +2949,18 @@ mod tests {
             if skip.contains(&key.as_str()) {
                 continue;
             }
-            assert_eq!(written.get(key), Some(value), "key {key} changed or was lost");
+            assert_eq!(
+                written.get(key),
+                Some(value),
+                "key {key} changed or was lost"
+            );
         }
     }
 
     #[test]
     fn screenpipe_v2_store_bin_loads_with_every_key() {
         let store = screenpipe_v2_store();
-        let settings =
-            SettingsStore::from_stored_value(store["settings"].clone()).unwrap();
+        let settings = SettingsStore::from_stored_value(store["settings"].clone()).unwrap();
 
         assert_eq!(settings.ui_locale, "ja");
         assert!(settings.ui_localization_enabled);
@@ -2840,11 +2970,20 @@ mod tests {
             Some("2026-10-01T10:00:00.000Z")
         );
         assert!(settings.allow_hiding_shortcut_overlay);
-        assert_eq!(settings.shortcut_overlay_anchor.as_deref(), Some("right-center"));
-        assert_eq!(settings.shortcut_overlay_display.as_deref(), Some("display-2"));
+        assert_eq!(
+            settings.shortcut_overlay_anchor.as_deref(),
+            Some("right-center")
+        );
+        assert_eq!(
+            settings.shortcut_overlay_display.as_deref(),
+            Some("display-2")
+        );
         assert_eq!(settings.update_channel, "pre-release");
         assert!(settings.remote_log_collection_enabled, "loaded as stored");
-        assert_eq!(settings.remote_log_collection_user_id.as_deref(), Some("user_123"));
+        assert_eq!(
+            settings.remote_log_collection_user_id.as_deref(),
+            Some("user_123")
+        );
         assert!(settings.hide_overlay_in_screen_recording);
         assert!(!settings.hide_app_in_screen_share);
         assert!(!settings.stop_recording_on_low_disk);
@@ -2853,12 +2992,19 @@ mod tests {
         assert_eq!(settings.ai_presets[0].enterprise_managed, Some(false));
         // Entitlement fields stay readable.
         assert_eq!(settings.user.subscription_plan.as_deref(), Some("pro"));
-        assert_eq!(settings.user.entitlement_source.as_deref(), Some("subscription"));
+        assert_eq!(
+            settings.user.entitlement_source.as_deref(),
+            Some("subscription")
+        );
         // Recording keys of the v2 schema.
         assert_eq!(settings.recording.aec_mode, "screenpipe");
         assert_eq!(settings.recording.ignored_urls.len(), 2);
         assert_eq!(
-            settings.recording.pii_redaction_columns.as_deref().map(<[String]>::len),
+            settings
+                .recording
+                .pii_redaction_columns
+                .as_deref()
+                .map(<[String]>::len),
             Some(2)
         );
         // Frontend-only keys stay in `extra`.
@@ -2870,15 +3016,81 @@ mod tests {
     #[test]
     fn screenpipe_v2_store_bin_writes_back_unchanged_without_migrations() {
         let store = screenpipe_v2_store();
-        let settings =
-            SettingsStore::from_stored_value(store["settings"].clone()).unwrap();
-        let written = json!(settings);
+        let settings = SettingsStore::from_stored_value(store["settings"].clone()).unwrap();
+        let written = settings.to_stored_value();
         assert_keys_kept(&store["settings"], &written, &[]);
 
         let onboarding = OnboardingStore::from_stored_value(store["onboarding"].clone())
             .unwrap()
             .unwrap();
-        assert_keys_kept(&store["onboarding"], &json!(onboarding), &[]);
+        assert_keys_kept(&store["onboarding"], &onboarding.to_stored_value(), &[]);
+    }
+
+    /// The load path of `init_store` without an app handle: the legacy
+    /// sanitising `SettingsStore::get` persists, the lenient load and the
+    /// one-time migrations (no AI gateway configured).
+    fn load_like_init_store(stored: Value) -> SettingsStore {
+        let sanitized = SettingsStore::sanitize_legacy_fields(stored);
+        let mut settings = SettingsStore::from_stored_value(sanitized).unwrap();
+        settings.apply_freenpipe_ai_migrations(false);
+        settings.apply_schema_v2_migrations();
+        settings
+    }
+
+    #[test]
+    fn coding_agent_preset_survives_load_migrations_and_save() {
+        let store = screenpipe_v2_store();
+        let stored_presets = store["settings"]["aiPresets"].clone();
+        assert_eq!(stored_presets[1]["provider"], json!("acp"));
+
+        // The sanitising step no longer rewrites the provider.
+        let sanitized = SettingsStore::sanitize_legacy_fields(store["settings"].clone());
+        assert_eq!(sanitized["aiPresets"], stored_presets);
+
+        let settings = load_like_init_store(store["settings"].clone());
+        let agent = &settings.ai_presets[1];
+        assert!(
+            matches!(agent.provider, AIProviderType::Custom),
+            "runs as custom"
+        );
+        assert_eq!(agent.stored_provider(), Some("acp"));
+        assert_eq!(agent.extra["acpAgent"]["command"], json!("example-agent"));
+
+        let written = settings.to_stored_value();
+        assert_eq!(
+            written["aiPresets"], stored_presets,
+            "every preset is written back as stored"
+        );
+        // So is a second round trip.
+        let again = load_like_init_store(written.clone()).to_stored_value();
+        assert_eq!(again["aiPresets"], stored_presets);
+    }
+
+    #[test]
+    fn a_preset_moved_to_a_known_provider_drops_the_stored_id() {
+        let mut settings = SettingsStore::from_stored_value(json!({
+            "aiPresets": [{ "id": "a", "provider": "acp", "acpAgent": { "id": "custom" } }]
+        }))
+        .unwrap();
+        settings.ai_presets[0].provider = AIProviderType::OpenAI;
+        let written = settings.to_stored_value();
+        assert_eq!(written["aiPresets"][0]["provider"], json!("openai"));
+        assert_eq!(
+            written["aiPresets"][0]["acpAgent"],
+            json!({ "id": "custom" })
+        );
+    }
+
+    #[test]
+    fn set_aside_presets_are_written_back_whole() {
+        // One mistyped preset sets the whole array aside.
+        let stored = json!([
+            { "id": "a", "provider": "acp", "maxContextChars": "lots" }
+        ]);
+        let settings =
+            SettingsStore::from_stored_value(json!({ "aiPresets": stored.clone() })).unwrap();
+        assert_eq!(settings.extra["aiPresets"], stored);
+        assert_eq!(settings.to_stored_value()["aiPresets"], stored);
     }
 
     #[test]
@@ -2893,7 +3105,10 @@ mod tests {
             onboarding.first_run_summary_started_at.as_deref(),
             Some("2026-09-01T09:05:00Z")
         );
-        assert_eq!(onboarding.first_run_summary_chat_id.as_deref(), Some("chat-first-run"));
+        assert_eq!(
+            onboarding.first_run_summary_chat_id.as_deref(),
+            Some("chat-first-run")
+        );
         assert_eq!(
             onboarding.first_run_summary_notification_sent_at.as_deref(),
             Some("2026-09-01T09:20:00Z")
@@ -2920,7 +3135,9 @@ mod tests {
         assert_eq!(onboarding.current_step.as_deref(), Some("permissions"));
         assert_eq!(onboarding.first_run_summary_phase, None);
         assert_eq!(onboarding.trial_activation_fresh_install, None);
-        assert!(OnboardingStore::from_stored_value(Value::Null).unwrap().is_none());
+        assert!(OnboardingStore::from_stored_value(Value::Null)
+            .unwrap()
+            .is_none());
     }
 
     #[test]
@@ -2935,9 +3152,47 @@ mod tests {
         assert_eq!(settings.recording.port, 3030, "the field takes its default");
         assert!(!settings.headless);
         assert_eq!(settings.ui_locale, "en");
-        let written = json!(settings);
-        assert_eq!(written["port"], json!("not a port"), "the stored value is written back");
+        let written = settings.to_stored_value();
+        assert_eq!(
+            written["port"],
+            json!("not a port"),
+            "the stored value is written back"
+        );
         assert_eq!(written["headless"], json!("yes"));
+    }
+
+    #[test]
+    fn a_field_assigned_by_code_replaces_its_set_aside_value() {
+        let mut settings = SettingsStore::from_stored_value(json!({
+            "aiPresets": [],
+            "port": "not a port",
+            "headless": "yes"
+        }))
+        .unwrap();
+        // A tray toggle or a set_* command changes one of them.
+        settings.headless = true;
+        let written = settings.to_stored_value();
+        assert_eq!(
+            written["headless"],
+            json!(true),
+            "the assigned value is written"
+        );
+        assert_eq!(
+            written["port"],
+            json!("not a port"),
+            "the untouched entry stays"
+        );
+
+        let mut onboarding = OnboardingStore::from_stored_value(json!({
+            "isCompleted": "yes",
+            "currentStep": 3
+        }))
+        .unwrap()
+        .unwrap();
+        onboarding.complete();
+        let written = onboarding.to_stored_value();
+        assert_eq!(written["isCompleted"], json!(true));
+        assert_eq!(written["currentStep"], json!(3));
     }
 
     #[test]
@@ -2994,7 +3249,10 @@ mod tests {
         assert!(s.apply_schema_v2_migrations());
         assert!(!s.remote_log_collection_enabled);
         assert!(!s.extra.contains_key("workflowSharing"));
-        assert_eq!(s.recording.pii_backend, "local", "restored from priorBackend");
+        assert_eq!(
+            s.recording.pii_backend, "local",
+            "restored from priorBackend"
+        );
         // Ignored, not deleted.
         assert!(s.extra.contains_key("workflowSharingPromptSeen"));
         assert!(s.extra.contains_key("remoteControlPolicy"));
@@ -3031,7 +3289,10 @@ mod tests {
         }))
         .unwrap();
         assert!(s.apply_schema_v2_migrations());
-        assert!(s.recording.filter_music, "music filtering is switched on once");
+        assert!(
+            s.recording.filter_music,
+            "music filtering is switched on once"
+        );
         assert_eq!(s.extra[FILTER_MUSIC_SENTINEL], json!(true));
         assert_eq!(s.update_channel, "pre-release");
         assert!(!s.device_id.is_empty());
@@ -3081,26 +3342,33 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let (_pool, secrets) = temp_secret_store(tmp.path()).await;
         let store = screenpipe_v2_store();
-        let mut settings =
-            SettingsStore::from_stored_value(store["settings"].clone()).unwrap();
+        let mut settings = SettingsStore::from_stored_value(store["settings"].clone()).unwrap();
 
-        assert!(move_cloud_token_to_secrets(&mut settings, &secrets).await.unwrap());
+        assert!(move_cloud_token_to_secrets(&mut settings, &secrets)
+            .await
+            .unwrap());
         assert_eq!(settings.user.token, None);
         assert_eq!(
             read_cloud_token(&secrets).await.unwrap().as_deref(),
             Some("opaque-account-token")
         );
         assert_eq!(
-            secrets.get(CLOUD_TOKEN_SECRET_KEY).await.unwrap().as_deref(),
+            secrets
+                .get(CLOUD_TOKEN_SECRET_KEY)
+                .await
+                .unwrap()
+                .as_deref(),
             Some(&b"opaque-account-token"[..])
         );
         // What gets written back holds no token; the rest of the user stays.
-        let written = json!(settings);
+        let written = settings.to_stored_value();
         assert_eq!(written["user"]["token"], Value::Null);
         assert_eq!(written["user"]["subscription_plan"], json!("pro"));
 
         // Nothing left to move.
-        assert!(!move_cloud_token_to_secrets(&mut settings, &secrets).await.unwrap());
+        assert!(!move_cloud_token_to_secrets(&mut settings, &secrets)
+            .await
+            .unwrap());
     }
 
     #[tokio::test]
@@ -3113,25 +3381,46 @@ mod tests {
             "user": { "token": "keep-me" }
         }))
         .unwrap();
-        assert!(move_cloud_token_to_secrets(&mut settings, &secrets).await.is_err());
+        assert!(move_cloud_token_to_secrets(&mut settings, &secrets)
+            .await
+            .is_err());
         assert_eq!(settings.user.token.as_deref(), Some("keep-me"));
     }
 
     #[test]
-    fn token_is_stripped_from_the_last_good_snapshot() {
+    fn token_is_stripped_from_the_copies_next_to_store_bin() {
         let tmp = tempfile::tempdir().unwrap();
         let store_path = write_store(tmp.path(), &screenpipe_v2_store());
         let snapshot = write_last_good(tmp.path(), &screenpipe_v2_store());
+        let pre_restore = tmp.path().join("store.bin.pre-restore-20260901-090000");
+        std::fs::write(
+            &pre_restore,
+            serde_json::to_vec(&screenpipe_v2_store()).unwrap(),
+        )
+        .unwrap();
+        let unrelated = tmp.path().join("other.bin.pre-restore-20260901-090000");
+        std::fs::write(
+            &unrelated,
+            serde_json::to_vec(&screenpipe_v2_store()).unwrap(),
+        )
+        .unwrap();
 
-        strip_token_from_snapshot(&store_path);
+        strip_token_from_copies(&store_path);
 
-        let after: Value = serde_json::from_slice(&std::fs::read(&snapshot).unwrap()).unwrap();
-        assert_eq!(after.pointer("/settings/user/token"), Some(&Value::Null));
+        for copy in [&snapshot, &pre_restore] {
+            let after: Value = serde_json::from_slice(&std::fs::read(copy).unwrap()).unwrap();
+            assert_eq!(after.pointer("/settings/user/token"), Some(&Value::Null));
+            assert_eq!(
+                after.pointer("/settings/user/email"),
+                Some(&json!("someone@example.com"))
+            );
+            assert_eq!(after["onboarding"], screenpipe_v2_store()["onboarding"]);
+        }
+        let untouched: Value = serde_json::from_slice(&std::fs::read(&unrelated).unwrap()).unwrap();
         assert_eq!(
-            after.pointer("/settings/user/email"),
-            Some(&json!("someone@example.com"))
+            untouched.pointer("/settings/user/token"),
+            Some(&json!("opaque-account-token"))
         );
-        assert_eq!(after["onboarding"], screenpipe_v2_store()["onboarding"]);
 
         let mut no_token = json!({ "settings": { "user": { "token": null } } });
         assert!(!remove_stored_token(&mut no_token));

@@ -3236,8 +3236,9 @@ listenOnLan?: boolean }) &
  * that the Rust struct doesn't know about. Without this, `save()` would
  * serialize only known fields and silently wipe frontend-only data.
  * It also holds, unchanged, any stored value whose type did not fit its
- * field (see [`SettingsStore::from_stored_value`]); being last, those
- * entries win over the field's default when the store is written back.
+ * field (see [`SettingsStore::from_stored_value`]); such an entry is
+ * written back in place of the field's default until code assigns the
+ * field (see [`SettingsStore::to_stored_value`]).
  */
 ({ [key in string]: null | boolean | number | string | JsonValue[] | { [key in string]: JsonValue } }) & { aiPresets: AIPreset[]; isLoading: boolean;
 /**

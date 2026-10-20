@@ -127,6 +127,15 @@ describe("loading a store written by screenpipe v2.7.104", () => {
     expect(s.enhancedAI).toBe(false);
   });
 
+  test("a coding-agent preset with an unknown provider is kept as stored", async () => {
+    const stored = screenpipeStore().settings;
+    const agent = stored.aiPresets.find((p: any) => p.provider === "acp");
+    expect(agent?.acpAgent).toBeDefined();
+    const s = (await load(stored)).settings as Record<string, any>;
+    expect(s.aiPresets).toEqual(stored.aiPresets);
+    expect(settingsForSave(s as Settings, true).aiPresets).toEqual(stored.aiPresets);
+  });
+
   test("a second load changes nothing", async () => {
     const first = await load(screenpipeStore().settings);
     const second = await load(first.settings as Record<string, any>);
