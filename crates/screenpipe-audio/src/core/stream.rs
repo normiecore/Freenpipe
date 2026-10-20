@@ -26,6 +26,17 @@ use crate::utils::audio::audio_to_mono;
 use super::device::get_cpal_device_and_config;
 use super::device::AudioDevice;
 
+/// Name of the platform's own system-audio backend, for fallback logs.
+#[cfg(target_os = "macos")]
+const NATIVE_BACKEND_NAME: &str = "CoreAudio Process Tap";
+#[cfg(target_os = "windows")]
+const NATIVE_BACKEND_NAME: &str = "WASAPI loopback engine";
+#[cfg(all(
+    not(any(target_os = "macos", target_os = "windows")),
+    not(all(target_os = "linux", feature = "pulseaudio"))
+))]
+const NATIVE_BACKEND_NAME: &str = "native audio backend";
+
 /// Backend-agnostic audio stream configuration.
 /// Replaces direct use of `cpal::SupportedStreamConfig` so that alternative
 /// backends (e.g. PulseAudio) can provide the same information.
@@ -129,13 +140,21 @@ impl AudioStream {
     /// `use_coreaudio_tap` is a user-level experimental flag. When true AND
     /// the target is System Audio on macOS 14.4+, the stream is backed by a
     /// CoreAudio Process Tap (no ScreenCaptureKit session). In every other
-    /// case (flag off, non-macOS, macOS <14.4, mic input, specific output)
-    /// the existing cpal/SCK path runs unchanged — existing users see no
-    /// behavior change.
+    /// macOS case (flag off, macOS <14.4, mic input, specific output) the
+    /// existing cpal/SCK path runs unchanged.
+    ///
+    /// On Windows every output device goes through the WASAPI loopback
+    /// engine (`wasapi_loopback`), which follows the default output and
+    /// applies `audio-exclusions.json`; if it cannot start, the cpal
+    /// loopback runs instead. Inputs always use cpal.
     pub async fn from_device(
         device: Arc<AudioDevice>,
         is_running: Arc<AtomicBool>,
-        #[cfg_attr(not(target_os = "macos"), allow(unused_variables))] use_coreaudio_tap: bool,
+        #[cfg_attr(
+            all(target_os = "linux", feature = "pulseaudio"),
+            allow(unused_variables)
+        )]
+        use_coreaudio_tap: bool,
         #[cfg_attr(not(target_os = "windows"), allow(unused_variables))] windows_input_aec: bool,
         #[cfg_attr(not(target_os = "macos"), allow(unused_variables))] macos_input_vpio: bool,
     ) -> Result<Self> {
@@ -161,65 +180,51 @@ impl AudioStream {
 
         #[cfg(not(all(target_os = "linux", feature = "pulseaudio")))]
         let (audio_config, stream_thread) = {
-            // macOS 14.4+: try CoreAudio Process Tap for System Audio.
-            // Bypasses SCK display enumeration which fails after sleep/wake.
-            // Gated behind `use_coreaudio_tap` so the SCK path stays the
-            // default until the experimental flag is explicitly turned on.
-            #[cfg(target_os = "macos")]
-            let use_process_tap = {
-                use super::device::{DeviceType, MACOS_OUTPUT_AUDIO_DEVICE_NAME};
-                use_coreaudio_tap
-                    && device.device_type == DeviceType::Output
-                    && device.name == MACOS_OUTPUT_AUDIO_DEVICE_NAME
-                    && super::process_tap::is_process_tap_available()
-            };
-            #[cfg(not(target_os = "macos"))]
-            let use_process_tap = false;
-
-            if use_process_tap {
-                #[cfg(target_os = "macos")]
-                {
-                    match super::process_tap::spawn_process_tap_capture(
-                        tx.clone(),
-                        is_running.clone(),
-                        is_disconnected.clone(),
-                    ) {
-                        Ok((config, thread)) => {
-                            drop(stream_control_rx);
-                            (config, thread)
-                        }
-                        Err(e) => {
-                            tracing::warn!("Process Tap failed, falling back to SCK: {}", e);
-                            Self::start_cpal_stream(
-                                &device,
-                                tx,
-                                stream_control_rx,
-                                &is_running,
-                                &is_disconnected,
-                                &stream_control_tx,
-                                windows_input_aec,
-                                macos_input_vpio,
-                            )
-                            .await?
-                        }
-                    }
+            match Self::start_native_backend(
+                &device,
+                &tx,
+                &is_running,
+                &is_disconnected,
+                use_coreaudio_tap,
+            )
+            .await
+            {
+                Some(Ok((config, thread))) => {
+                    // The native backends stop on `is_disconnected`; they
+                    // have no cpal control channel.
+                    drop(stream_control_rx);
+                    (config, thread)
                 }
-                #[cfg(not(target_os = "macos"))]
-                {
-                    unreachable!()
+                Some(Err(e)) => {
+                    warn!(
+                        "{} failed for {}, falling back to the cpal stream: {:#}",
+                        NATIVE_BACKEND_NAME, device, e
+                    );
+                    Self::start_cpal_stream(
+                        &device,
+                        tx,
+                        stream_control_rx,
+                        &is_running,
+                        &is_disconnected,
+                        &stream_control_tx,
+                        windows_input_aec,
+                        macos_input_vpio,
+                    )
+                    .await?
                 }
-            } else {
-                Self::start_cpal_stream(
-                    &device,
-                    tx,
-                    stream_control_rx,
-                    &is_running,
-                    &is_disconnected,
-                    &stream_control_tx,
-                    windows_input_aec,
-                    macos_input_vpio,
-                )
-                .await?
+                None => {
+                    Self::start_cpal_stream(
+                        &device,
+                        tx,
+                        stream_control_rx,
+                        &is_running,
+                        &is_disconnected,
+                        &stream_control_tx,
+                        windows_input_aec,
+                        macos_input_vpio,
+                    )
+                    .await?
+                }
             }
         };
 
@@ -229,6 +234,103 @@ impl AudioStream {
             transmitter: Arc::new(tx_clone),
             stream_control: stream_control_tx,
             stream_thread: Some(Arc::new(tokio::sync::Mutex::new(Some(stream_thread)))),
+            is_disconnected,
+        })
+    }
+
+    /// Starts the platform's own system-audio backend when it applies:
+    ///
+    /// * macOS: the CoreAudio Process Tap for "System Audio" when the
+    ///   experimental flag is on and the OS is 14.4+.
+    /// * Windows: the WASAPI loopback engine for every output device, unless
+    ///   it already failed repeatedly for that device this session.
+    ///
+    /// `None` means the cpal stream should be used. `Some(Err)` means the
+    /// backend was tried and failed (including a start timeout); the caller
+    /// then falls back to the cpal stream, so capture keeps working.
+    #[cfg(not(all(target_os = "linux", feature = "pulseaudio")))]
+    #[allow(unused_variables)]
+    async fn start_native_backend(
+        device: &Arc<AudioDevice>,
+        tx: &broadcast::Sender<Vec<f32>>,
+        is_running: &Arc<AtomicBool>,
+        is_disconnected: &Arc<AtomicBool>,
+        use_coreaudio_tap: bool,
+    ) -> Option<Result<(AudioStreamConfig, tokio::task::JoinHandle<()>)>> {
+        #[cfg(target_os = "macos")]
+        {
+            use super::device::{DeviceType, MACOS_OUTPUT_AUDIO_DEVICE_NAME};
+            // Bypasses SCK display enumeration, which fails after sleep/wake.
+            // Gated behind `use_coreaudio_tap` so SCK stays the default until
+            // the experimental flag is turned on.
+            if use_coreaudio_tap
+                && device.device_type == DeviceType::Output
+                && device.name == MACOS_OUTPUT_AUDIO_DEVICE_NAME
+                && super::process_tap::is_process_tap_available()
+            {
+                return Some(super::process_tap::spawn_process_tap_capture(
+                    tx.clone(),
+                    is_running.clone(),
+                    is_disconnected.clone(),
+                ));
+            }
+            None
+        }
+        #[cfg(target_os = "windows")]
+        {
+            use super::device::DeviceType;
+            if device.device_type != DeviceType::Output
+                || !super::wasapi_loopback::engine_allowed_for(&device.name)
+            {
+                return None;
+            }
+            Some(
+                super::wasapi_loopback::spawn_loopback_capture(
+                    super::wasapi_loopback::CaptureRequest::OutputDevice {
+                        name: device.name.clone(),
+                    },
+                    device.to_string(),
+                    tx.clone(),
+                    is_disconnected.clone(),
+                )
+                .await,
+            )
+        }
+        #[cfg(not(any(target_os = "macos", target_os = "windows")))]
+        {
+            None
+        }
+    }
+
+    /// Builds a stream that records only the audio of `pids`' process tree
+    /// (Windows build 20348+), named `"<label> (output)"`. When the pids
+    /// span several independent trees, or the build is older, it records
+    /// the whole default output instead. The stream ends by itself when the
+    /// tapped tree exits.
+    #[cfg(target_os = "windows")]
+    pub async fn from_process_tree(label: &str, pids: &[u32]) -> Result<Self> {
+        let device = Arc::new(AudioDevice::new(
+            label.to_string(),
+            super::device::DeviceType::Output,
+        ));
+        let (tx, _) = broadcast::channel::<Vec<f32>>(1000);
+        let is_disconnected = Arc::new(AtomicBool::new(false));
+        let (stream_control_tx, _stream_control_rx) = mpsc::channel();
+        let (device_config, thread) = super::wasapi_loopback::spawn_loopback_capture(
+            super::wasapi_loopback::CaptureRequest::ProcessTree {
+                pids: pids.to_vec(),
+            },
+            device.to_string(),
+            tx.clone(),
+            is_disconnected.clone(),
+        )
+        .await?;
+        Ok(AudioStream {
+            device,
+            device_config,
+            transmitter: Arc::new(tx),
+            stream_control: stream_control_tx,
+            stream_thread: Some(Arc::new(tokio::sync::Mutex::new(Some(thread)))),
             is_disconnected,
         })
     }

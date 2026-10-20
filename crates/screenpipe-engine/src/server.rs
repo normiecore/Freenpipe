@@ -755,6 +755,10 @@ impl SCServer {
                     "/favorites",
                     axum::routing::get(crate::pipes_api::list_favorites),
                 )
+                .route(
+                    "/schedule/preview",
+                    axum::routing::post(crate::pipes_api::preview_schedule),
+                )
                 .route("/:id", axum::routing::get(crate::pipes_api::get_pipe))
                 .route("/:id", axum::routing::delete(crate::pipes_api::delete_pipe))
                 .route(

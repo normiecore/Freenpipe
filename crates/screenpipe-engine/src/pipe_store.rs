@@ -218,6 +218,14 @@ impl PipeStore for SqlitePipeStore {
             .collect())
     }
 
+    async fn count_executions_by_pipe(&self) -> Result<std::collections::HashMap<String, i64>> {
+        let rows: Vec<(String, i64)> =
+            sqlx::query_as("SELECT pipe_name, COUNT(*) FROM pipe_executions GROUP BY pipe_name")
+                .fetch_all(&self.db.pool)
+                .await?;
+        Ok(rows.into_iter().collect())
+    }
+
     async fn get_all_executions(
         &self,
         limit_per_pipe: i32,
@@ -617,6 +625,11 @@ mod tests {
         let execs_b = store.get_executions("pipe-b", 10).await.unwrap();
         assert_eq!(execs_a.len(), 2);
         assert_eq!(execs_b.len(), 1);
+
+        let counts = store.count_executions_by_pipe().await.unwrap();
+        assert_eq!(counts.get("pipe-a"), Some(&2));
+        assert_eq!(counts.get("pipe-b"), Some(&1));
+        assert_eq!(counts.get("pipe-c"), None);
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

@@ -293,6 +293,18 @@ pub fn apply_manifest_to_disk(
     let mut errors = Vec::new();
 
     for action in actions {
+        let name = match action {
+            PipeSyncAction::Imported(name)
+            | PipeSyncAction::Updated(name)
+            | PipeSyncAction::Deleted(name) => name,
+            _ => continue,
+        };
+        // A manifest from another device names folders here; never follow
+        // one that is not a single portable folder name.
+        if let Err(e) = super::validate_pipe_id(name) {
+            errors.push(format!("skipped synced pipe: {}", e));
+            continue;
+        }
         match action {
             PipeSyncAction::Imported(name) | PipeSyncAction::Updated(name) => {
                 if let Some(synced) = manifest.pipes.get(name) {
@@ -537,5 +549,31 @@ mod tests {
         let errors = apply_manifest_to_disk(&manifest, &actions, tmp.path());
         assert!(errors.is_empty());
         assert!(!tmp.path().join("doomed").exists());
+    }
+
+    #[test]
+    fn test_apply_skips_names_that_leave_the_pipes_dir() {
+        let tmp = TempDir::new().unwrap();
+        let pipes = tmp.path().join("pipes");
+        fs::create_dir_all(&pipes).unwrap();
+        make_pipe(tmp.path(), "victim", PIPE_A);
+
+        let mut manifest = PipeSyncManifest::empty("m1");
+        manifest.pipes.insert(
+            "../escaped".into(),
+            SyncedPipe {
+                raw_content: PIPE_A.into(),
+                last_modified: Utc::now().to_rfc3339(),
+                last_modified_by: "m2".into(),
+            },
+        );
+        let actions = vec![
+            PipeSyncAction::Imported("../escaped".into()),
+            PipeSyncAction::Deleted("../victim".into()),
+        ];
+        let errors = apply_manifest_to_disk(&manifest, &actions, &pipes);
+        assert_eq!(errors.len(), 2, "{errors:?}");
+        assert!(!tmp.path().join("escaped").exists());
+        assert!(tmp.path().join("victim/pipe.md").exists());
     }
 }

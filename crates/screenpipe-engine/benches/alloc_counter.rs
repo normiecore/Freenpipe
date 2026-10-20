@@ -159,6 +159,7 @@ fn bench_hotaudio_clone_allocs(c: &mut Criterion) {
         end_time: Some(30.0),
         speaker_id: Some(1),
         speaker_name: Some("Speaker 1".into()),
+        is_live: false,
     };
 
     c.bench_function("alloc_count/HotAudio::clone", |b| {

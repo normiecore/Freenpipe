@@ -183,10 +183,11 @@ async checkBrowsersAutomationPermission() : Promise<boolean> {
     return await TAURI_INVOKE("check_browsers_automation_permission");
 },
 /**
- * Returns true on macOS 14.4+ where the CoreAudio Process Tap API is
- * available. Used to gate the "experimental System Audio via CoreAudio"
- * toggle — we don't show it on platforms where flipping it would be a
- * no-op. False on Windows, Linux, and older macOS.
+ * Returns true where a per-app system-audio tap exists: macOS 14.4+
+ * (CoreAudio Process Tap) and Windows build 20348+ (per-process WASAPI
+ * loopback). Gates the audio exclusions panel, and on macOS the
+ * "experimental System Audio via CoreAudio" toggle. False on Linux, older
+ * macOS and older Windows builds.
  */
 async checkCoreaudioProcessTapAvailable() : Promise<boolean> {
     return await TAURI_INVOKE("check_coreaudio_process_tap_available");
@@ -279,6 +280,32 @@ async copyFrameToClipboard(frameId: number) : Promise<Result<null, string>> {
 async copyTextToClipboard(text: string) : Promise<Result<null, string>> {
     try {
     return { status: "ok", data: await TAURI_INVOKE("copy_text_to_clipboard", { text }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
+ * Developer command: make the engine look crashed. Its runtime is stopped
+ * (taking the HTTP server and every engine task with it) while the dead
+ * `ServerCore` is put back in state, which is what a crashed engine thread
+ * leaves behind. The watchdog should respawn it within its configured
+ * checks. Needs a debug build or developer mode.
+ */
+async debugKillEngine() : Promise<Result<string, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("debug_kill_engine") };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
+ * Developer command: safe-relaunch the app now, keeping Home as it is.
+ */
+async debugRelaunchApp() : Promise<Result<null, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("debug_relaunch_app") };
 } catch (e) {
     if(e instanceof Error) throw e;
     else return { status: "error", error: e  as any };
@@ -1476,7 +1503,8 @@ async pipeSuggestionsUpdateSettings(enabled: boolean, frequencyHours: number) : 
 }
 },
 /**
- * Read bundle ID, display name, and icon from a `.app` bundle selected in Finder.
+ * Read the id, display name and icon of an app picked in the file dialog:
+ * a `.app` bundle on macOS, an `.exe` on Windows.
  */
 async readAppBundleMetadata(path: string) : Promise<Result<ExcludedApp, string>> {
     try {
@@ -1746,6 +1774,19 @@ async resetPermission(permission: OSPermission) : Promise<Result<null, string>> 
 async resizeSearchWindow(width: number, height: number) : Promise<Result<null, string>> {
     try {
     return { status: "ok", data: await TAURI_INVOKE("resize_search_window", { width, height }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
+ * Relaunch after the user granted screen-recording permission. macOS only
+ * reads that permission at process start, so a new process is needed there;
+ * on Windows and Linux nothing needs to restart and this returns at once.
+ */
+async restartAfterScreenRecordingPermission() : Promise<Result<null, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("restart_after_screen_recording_permission") };
 } catch (e) {
     if(e instanceof Error) throw e;
     else return { status: "error", error: e  as any };

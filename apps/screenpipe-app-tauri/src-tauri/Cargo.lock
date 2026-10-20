@@ -10699,6 +10699,7 @@ dependencies = [
  "which 7.0.3",
  "whisper-rs",
  "windows 0.58.0",
+ "windows-core 0.58.0",
 ]
 
 [[package]]
@@ -10783,6 +10784,7 @@ dependencies = [
  "base64 0.22.1",
  "chacha20poly1305",
  "chrono",
+ "chrono-tz",
  "clap",
  "core-foundation 0.10.1",
  "core-graphics 0.24.0",
