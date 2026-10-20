@@ -145,7 +145,17 @@ mod tests {
 
     #[test]
     fn traversal_is_refused() {
-        for id in ["../x", "..", ".", "a/b", "a\\b", "..\\..\\windows", "/etc", "C:\\x", "C:x"] {
+        for id in [
+            "../x",
+            "..",
+            ".",
+            "a/b",
+            "a\\b",
+            "..\\..\\windows",
+            "/etc",
+            "C:\\x",
+            "C:x",
+        ] {
             assert!(validate_pipe_id(id).is_err(), "{id:?} should be refused");
         }
         let err = validate_pipe_id("../x").unwrap_err();
@@ -156,13 +166,35 @@ mod tests {
     #[test]
     fn windows_unsafe_names_are_refused() {
         for id in [
-            "CON", "con", "Nul", "aux.md", "com1", "COM9.txt", "lpt3", "con .txt", "CONOUT$",
-            "com¹", "trailing.", "trailing ", "what?", "a*b", "pipe|x", "<x>", "quote\"d",
+            "CON",
+            "con",
+            "Nul",
+            "aux.md",
+            "com1",
+            "COM9.txt",
+            "lpt3",
+            "con .txt",
+            "CONOUT$",
+            "com¹",
+            "trailing.",
+            "trailing ",
+            "what?",
+            "a*b",
+            "pipe|x",
+            "<x>",
+            "quote\"d",
         ] {
             assert!(validate_pipe_id(id).is_err(), "{id:?} should be refused");
         }
         // Names that only start like a device name are fine.
-        for id in ["console", "com10", "lpt", "auxiliary", "null-pipe", "prn-report"] {
+        for id in [
+            "console",
+            "com10",
+            "lpt",
+            "auxiliary",
+            "null-pipe",
+            "prn-report",
+        ] {
             assert!(validate_pipe_id(id).is_ok(), "{id:?} should be valid");
         }
     }

@@ -3083,10 +3083,11 @@ impl PipeManager {
         };
         let (mut config, mut body) = match raw {
             Some(raw) => {
-                let parsed = parse_frontmatter(raw).map_err(|e| PipeConfigUpdateError::Invalid {
-                    field: "raw_content".into(),
-                    message: e.to_string(),
-                })?;
+                let parsed =
+                    parse_frontmatter(raw).map_err(|e| PipeConfigUpdateError::Invalid {
+                        field: "raw_content".into(),
+                        message: e.to_string(),
+                    })?;
                 config_update::validate_config(&parsed.0)?;
                 parsed
             }
@@ -5032,9 +5033,7 @@ pub fn next_run_for(
             if cron_should_fire(&cron, last, local_now) {
                 return Some(now);
             }
-            cron.after(&local_now)
-                .next()
-                .map(|t| t.with_timezone(&Utc))
+            cron.after(&local_now).next().map(|t| t.with_timezone(&Utc))
         }
         ParsedSchedule::Once(run_at) => {
             if last >= run_at || now.signed_duration_since(run_at) > ONE_OFF_STALE_THRESHOLD {
@@ -5063,7 +5062,10 @@ async fn finish_structured_schedule(
     if let Some(entry) = pipes.lock().await.get_mut(name) {
         entry.0.enabled = false;
     }
-    info!("scheduler: schedule of pipe '{}' has ended, disabled it", name);
+    info!(
+        "scheduler: schedule of pipe '{}' has ended, disabled it",
+        name
+    );
 }
 
 /// Parse strings like `"30m"`, `"2h"`, `"every 2h"`, `"15 min"` into Duration.
@@ -5955,7 +5957,8 @@ mod tests {
         assert!(prompt.contains("Time range:"));
         assert!(prompt.contains("Do the work described above now."));
         // Port / body go into system prompt, not user prompt
-        let sys = render_pipe_system_prompt(&PipeConfig::default(), "body text", 3031, None, None, None);
+        let sys =
+            render_pipe_system_prompt(&PipeConfig::default(), "body text", 3031, None, None, None);
         assert!(sys.contains("http://localhost:3031"));
         assert!(!sys.contains("http://localhost:3030"));
         assert!(sys.contains("body text"));
@@ -5983,7 +5986,8 @@ mod tests {
             trigger: None,
             ..Default::default()
         };
-        let sys = render_pipe_system_prompt(&PipeConfig::default(), "hello", 3030, None, None, None);
+        let sys =
+            render_pipe_system_prompt(&PipeConfig::default(), "hello", 3030, None, None, None);
         assert!(sys.contains("http://localhost:3030"));
     }
 
@@ -6044,14 +6048,16 @@ mod tests {
             trigger: None,
             ..Default::default()
         };
-        let sys = render_pipe_system_prompt(&PipeConfig::default(), "body text", 3030, None, None, None);
+        let sys =
+            render_pipe_system_prompt(&PipeConfig::default(), "body text", 3030, None, None, None);
         assert!(!sys.contains("System prompt:"));
         assert!(sys.contains("body text"));
     }
 
     #[test]
     fn test_system_prompt_contains_anti_recursion_warning() {
-        let sys = render_pipe_system_prompt(&PipeConfig::default(), "task body", 3030, None, None, None);
+        let sys =
+            render_pipe_system_prompt(&PipeConfig::default(), "task body", 3030, None, None, None);
         assert!(sys.contains("NEVER run `screenpipe pipe run`"));
         assert!(sys.contains("You ARE this pipe"));
     }
@@ -6061,7 +6067,14 @@ mod tests {
         // Pass the key explicitly — the renderer must not depend on parent
         // process env (which is empty in tests and was the root cause of the
         // 403 reported by the security-requests-grc pipe in prod).
-        let sys = render_pipe_system_prompt(&PipeConfig::default(), "task body", 3030, None, None, Some("sp-test-key"));
+        let sys = render_pipe_system_prompt(
+            &PipeConfig::default(),
+            "task body",
+            3030,
+            None,
+            None,
+            Some("sp-test-key"),
+        );
         assert!(
             sys.contains("API Authentication: REQUIRED"),
             "auth note must be emitted when local_api_key is Some"
@@ -6071,7 +6084,8 @@ mod tests {
 
     #[test]
     fn test_system_prompt_omits_auth_note_when_no_key() {
-        let sys = render_pipe_system_prompt(&PipeConfig::default(), "task body", 3030, None, None, None);
+        let sys =
+            render_pipe_system_prompt(&PipeConfig::default(), "task body", 3030, None, None, None);
         assert!(
             !sys.contains("API Authentication: REQUIRED"),
             "auth note must not be emitted when local_api_key is None"

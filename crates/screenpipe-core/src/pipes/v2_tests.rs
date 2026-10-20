@@ -93,7 +93,10 @@ fn frontmatter_with_every_new_field_round_trips() {
     assert_eq!(config.effort, Some(PipeEffort::High));
     assert!(config.history);
     assert!(config.event_read_only);
-    assert_eq!(config.run_in, Some(PipeRunIn::existing_chat("0b9f3c4e-chat")));
+    assert_eq!(
+        config.run_in,
+        Some(PipeRunIn::existing_chat("0b9f3c4e-chat"))
+    );
     assert_eq!(config.artifacts.len(), 2);
     assert_eq!(
         config.artifacts[0].title.as_deref(),
@@ -172,8 +175,18 @@ fn v1_frontmatter_still_loads_with_defaults() {
     assert!(config.artifacts.is_empty() && config.schedule_config.is_none());
     assert!(!config.history && !config.event_read_only);
     let serialized = serialize_pipe(&config, "Body").unwrap();
-    for absent in ["effort", "history", "run_in", "artifacts", "schedule_config", "event_read_only"] {
-        assert!(!serialized.contains(absent), "{absent} written:\n{serialized}");
+    for absent in [
+        "effort",
+        "history",
+        "run_in",
+        "artifacts",
+        "schedule_config",
+        "event_read_only",
+    ] {
+        assert!(
+            !serialized.contains(absent),
+            "{absent} written:\n{serialized}"
+        );
     }
 }
 
@@ -210,7 +223,11 @@ async fn traversal_ids_are_rejected_by_every_operation() {
     // A pipe-shaped folder next to the pipes directory that "../x" would hit.
     let outside = tmp.path().join("x");
     std::fs::create_dir_all(&outside).unwrap();
-    std::fs::write(outside.join("pipe.md"), "---\nschedule: manual\n---\n\nOutside").unwrap();
+    std::fs::write(
+        outside.join("pipe.md"),
+        "---\nschedule: manual\n---\n\nOutside",
+    )
+    .unwrap();
 
     let is_invalid_id = |e: &anyhow::Error| {
         e.downcast_ref::<InvalidPipeId>().is_some()
@@ -221,19 +238,34 @@ async fn traversal_ids_are_rejected_by_every_operation() {
     };
 
     let err = pm
-        .update_config("../x", updates(json!({"raw_content": "---\nschedule: manual\n---\n\nPwned"})))
+        .update_config(
+            "../x",
+            updates(json!({"raw_content": "---\nschedule: manual\n---\n\nPwned"})),
+        )
         .await
         .unwrap_err();
     assert!(is_invalid_id(&err), "{err}");
     assert!(err.to_string().contains("invalid pipe identifier"), "{err}");
 
     for id in ["../x", "..\\x", "..", "CON", "a/b"] {
-        assert!(is_invalid_id(&pm.enable_pipe(id, false).await.unwrap_err()), "{id}");
-        assert!(is_invalid_id(&pm.delete_pipe(id).await.unwrap_err()), "{id}");
-        assert!(is_invalid_id(&pm.clear_pipe_history(id).await.unwrap_err()), "{id}");
+        assert!(
+            is_invalid_id(&pm.enable_pipe(id, false).await.unwrap_err()),
+            "{id}"
+        );
+        assert!(
+            is_invalid_id(&pm.delete_pipe(id).await.unwrap_err()),
+            "{id}"
+        );
+        assert!(
+            is_invalid_id(&pm.clear_pipe_history(id).await.unwrap_err()),
+            "{id}"
+        );
         assert!(is_invalid_id(&pm.stop_pipe(id).await.unwrap_err()), "{id}");
         assert!(is_invalid_id(&pm.run_pipe(id).await.unwrap_err()), "{id}");
-        assert!(is_invalid_id(&pm.start_pipe_background(id).await.unwrap_err()), "{id}");
+        assert!(
+            is_invalid_id(&pm.start_pipe_background(id).await.unwrap_err()),
+            "{id}"
+        );
         assert!(
             is_invalid_id(
                 &pm.install_pipe_from_store("---\nschedule: manual\n---\n\nB", id, 1)
@@ -254,7 +286,10 @@ async fn install_from_url_rejects_unsafe_derived_names() {
     let tmp = tempfile::tempdir().unwrap();
     let pm = manager(&tmp);
     // A URL whose last segment is empty would have written pipes/pipe.md.
-    let err = pm.install_pipe("https://example.invalid/").await.unwrap_err();
+    let err = pm
+        .install_pipe("https://example.invalid/")
+        .await
+        .unwrap_err();
     assert!(err.downcast_ref::<InvalidPipeId>().is_some(), "{err}");
     assert!(!pm.pipes_dir().join("pipe.md").exists());
     assert_eq!(url_to_pipe_name("https://h/p/daily.md?raw=1#top"), "daily");
@@ -266,12 +301,19 @@ async fn install_from_url_rejects_unsafe_derived_names() {
 async fn config_update_rejects_unknown_fields_and_envelopes() {
     let tmp = tempfile::tempdir().unwrap();
     let pm = manager(&tmp);
-    write_pipe(&pm, "demo", "---\nschedule: every 1h\nenabled: true\n---\n\nBody");
+    write_pipe(
+        &pm,
+        "demo",
+        "---\nschedule: every 1h\nenabled: true\n---\n\nBody",
+    );
     pm.load_pipes().await.unwrap();
     let before = std::fs::read_to_string(pm.pipes_dir().join("demo/pipe.md")).unwrap();
 
     let err = pm
-        .update_config("demo", updates(json!({"schedule": "every 2h", "colour": "red"})))
+        .update_config(
+            "demo",
+            updates(json!({"schedule": "every 2h", "colour": "red"})),
+        )
         .await
         .unwrap_err();
     assert_eq!(
@@ -303,7 +345,11 @@ async fn config_update_rejects_unknown_fields_and_envelopes() {
 async fn config_update_writes_typed_fields() {
     let tmp = tempfile::tempdir().unwrap();
     let pm = manager(&tmp);
-    write_pipe(&pm, "demo", "---\nschedule: every 1h\nenabled: true\n---\n\nBody");
+    write_pipe(
+        &pm,
+        "demo",
+        "---\nschedule: every 1h\nenabled: true\n---\n\nBody",
+    );
     pm.load_pipes().await.unwrap();
 
     pm.update_config(
@@ -331,7 +377,10 @@ async fn config_update_writes_typed_fields() {
         Some(ScheduleFrequency::Days)
     );
     // The enabled choice is also this device's override.
-    assert_eq!(load_local_overrides(pm.pipes_dir()).get("demo"), Some(&false));
+    assert_eq!(
+        load_local_overrides(pm.pipes_dir()).get("demo"),
+        Some(&false)
+    );
     // In-memory state follows the file.
     let status = pm.get_pipe("demo").await.unwrap();
     assert_eq!(status.config.effort, Some(PipeEffort::Low));
@@ -354,7 +403,8 @@ async fn raw_content_is_written_verbatim_and_validated() {
         raw
     );
 
-    let bad = "---\nschedule: every 2h\nrun_in:\n  mode: existing_chat\n  chat_id: ../../x\n---\n\nB";
+    let bad =
+        "---\nschedule: every 2h\nrun_in:\n  mode: existing_chat\n  chat_id: ../../x\n---\n\nB";
     let err = pm
         .update_config("demo", updates(json!({"raw_content": bad})))
         .await
@@ -394,22 +444,38 @@ async fn enabling_a_finished_structured_schedule_is_refused() {
 async fn status_reports_builtin_saved_context_and_next_run() {
     let tmp = tempfile::tempdir().unwrap();
     let pm = manager(&tmp);
-    write_pipe(&pm, "day-recap", "---\nschedule: manual\n---\n\nBuilt-in copy");
-    write_pipe(&pm, "hourly", "---\nschedule: every 1h\nenabled: true\nhistory: true\n---\n\nB");
+    write_pipe(
+        &pm,
+        "day-recap",
+        "---\nschedule: manual\n---\n\nBuilt-in copy",
+    );
+    write_pipe(
+        &pm,
+        "hourly",
+        "---\nschedule: every 1h\nenabled: true\nhistory: true\n---\n\nB",
+    );
     std::fs::write(
-        pm.pipes_dir().join("hourly").join(".screenpipe-acp-sessions.json"),
+        pm.pipes_dir()
+            .join("hourly")
+            .join(".screenpipe-acp-sessions.json"),
         r#"{"claude": "session-1"}"#,
     )
     .unwrap();
     pm.load_pipes().await.unwrap();
 
     let statuses = pm.list_pipes().await;
-    let recap = statuses.iter().find(|s| s.config.name == "day-recap").unwrap();
+    let recap = statuses
+        .iter()
+        .find(|s| s.config.name == "day-recap")
+        .unwrap();
     let hourly = statuses.iter().find(|s| s.config.name == "hourly").unwrap();
     assert!(recap.is_bundled_builtin && !hourly.is_bundled_builtin);
     assert!(hourly.has_saved_context && !recap.has_saved_context);
     assert!(recap.next_run.is_none(), "manual pipes have no next run");
-    assert!(hourly.next_run.is_some(), "a never-run interval pipe is due");
+    assert!(
+        hourly.next_run.is_some(),
+        "a never-run interval pipe is due"
+    );
     assert!(hourly.execution_count.is_none());
 
     let one = pm.get_pipe("hourly").await.unwrap();
@@ -445,7 +511,10 @@ fn next_run_per_schedule_kind() {
         None
     );
     let once = cfg("schedule: at 2026-10-20T12:00:00Z");
-    assert_eq!(next_run_for(&once, None, now), Some(utc("2026-10-20T12:00:00Z")));
+    assert_eq!(
+        next_run_for(&once, None, now),
+        Some(utc("2026-10-20T12:00:00Z"))
+    );
     assert_eq!(
         next_run_for(&once, Some(utc("2026-10-20T12:00:01Z")), now),
         None
@@ -458,9 +527,8 @@ fn next_run_per_schedule_kind() {
         Some(utc("2026-10-21T09:00:00Z")),
         "schedule_config wins over the schedule string"
     );
-    let ended = cfg(
-        "schedule_config:\n  frequency: days\n  timezone: UTC\n  ending: 2026-10-01T00:00:00Z",
-    );
+    let ended =
+        cfg("schedule_config:\n  frequency: days\n  timezone: UTC\n  ending: 2026-10-01T00:00:00Z");
     assert_eq!(next_run_for(&ended, None, now), None);
 }
 
@@ -476,18 +544,42 @@ fn structured_schedule_drives_should_run() {
     let at = |s: &str| utc(s);
     // Ran yesterday at 09:00; at 08:59 nothing is due even though the
     // schedule string alone would fire every minute.
-    assert!(!pipe_should_run(&config, at("2026-10-19T09:00:00Z"), at("2026-10-20T08:59:00Z")));
-    assert!(pipe_should_run(&config, at("2026-10-19T09:00:00Z"), at("2026-10-20T09:00:30Z")));
+    assert!(!pipe_should_run(
+        &config,
+        at("2026-10-19T09:00:00Z"),
+        at("2026-10-20T08:59:00Z")
+    ));
+    assert!(pipe_should_run(
+        &config,
+        at("2026-10-19T09:00:00Z"),
+        at("2026-10-20T09:00:30Z")
+    ));
     // Fresh install after the slot: wait for tomorrow.
-    assert!(!pipe_should_run(&config, DateTime::<Utc>::UNIX_EPOCH, at("2026-10-20T09:30:00Z")));
+    assert!(!pipe_should_run(
+        &config,
+        DateTime::<Utc>::UNIX_EPOCH,
+        at("2026-10-20T09:30:00Z")
+    ));
     // Fresh install inside the grace window: run.
-    assert!(pipe_should_run(&config, DateTime::<Utc>::UNIX_EPOCH, at("2026-10-20T09:03:00Z")));
+    assert!(pipe_should_run(
+        &config,
+        DateTime::<Utc>::UNIX_EPOCH,
+        at("2026-10-20T09:03:00Z")
+    ));
     // App was asleep at 09:00 and wakes at 15:00: catch up.
-    assert!(pipe_should_run(&config, at("2026-10-19T09:00:00Z"), at("2026-10-20T15:00:00Z")));
+    assert!(pipe_should_run(
+        &config,
+        at("2026-10-19T09:00:00Z"),
+        at("2026-10-20T15:00:00Z")
+    ));
 
     // An invalid structured schedule never fires.
     config.schedule_config.as_mut().unwrap().at_hour = Some(99);
-    assert!(!pipe_should_run(&config, DateTime::<Utc>::UNIX_EPOCH, at("2026-10-20T09:00:00Z")));
+    assert!(!pipe_should_run(
+        &config,
+        DateTime::<Utc>::UNIX_EPOCH,
+        at("2026-10-20T09:00:00Z")
+    ));
 }
 
 #[test]
@@ -567,7 +659,10 @@ fn preamble_carries_the_four_directives() {
     );
     assert!(sys.contains("\"actions\""), "{sys}");
     assert!(sys.contains("user_profile"), "{sys}");
-    assert!(!sys.contains("Sub-agents"), "sub-agent guidance only when enabled");
+    assert!(
+        !sys.contains("Sub-agents"),
+        "sub-agent guidance only when enabled"
+    );
     // The guidance comes before the pipe's own instructions.
     assert!(sys.find("How to work with the user").unwrap() < sys.find("BODY").unwrap());
 

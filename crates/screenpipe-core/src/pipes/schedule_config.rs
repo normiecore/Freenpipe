@@ -406,11 +406,14 @@ impl ScheduleTz {
     fn from_name(name: Option<&str>) -> Result<Self, ScheduleConfigError> {
         match name.map(str::trim).filter(|s| !s.is_empty()) {
             None => Ok(ScheduleTz::Local),
-            Some(n) => n.parse::<chrono_tz::Tz>().map(ScheduleTz::Named).map_err(|_| {
-                ScheduleConfigError::new(format!(
-                    "unknown timezone '{n}': use an IANA name such as Europe/Berlin"
-                ))
-            }),
+            Some(n) => n
+                .parse::<chrono_tz::Tz>()
+                .map(ScheduleTz::Named)
+                .map_err(|_| {
+                    ScheduleConfigError::new(format!(
+                        "unknown timezone '{n}': use an IANA name such as Europe/Berlin"
+                    ))
+                }),
         }
     }
 
@@ -660,11 +663,11 @@ impl CompiledSchedule {
                 Some(vec![base.checked_add_signed(Duration::try_minutes(steps)?)?])
             }
             ScheduleFrequency::Hours => {
-                let base = self.tz.resolve(
-                    self.anchor
-                        .date()
-                        .and_hms_opt(self.anchor.hour(), self.time.minute(), 0)?,
-                )?;
+                let base = self.tz.resolve(self.anchor.date().and_hms_opt(
+                    self.anchor.hour(),
+                    self.time.minute(),
+                    0,
+                )?)?;
                 Some(vec![base.checked_add_signed(Duration::try_hours(steps)?)?])
             }
             ScheduleFrequency::Days => {
@@ -840,9 +843,10 @@ mod tests {
     fn preview_matches_the_acceptance_request() {
         // The exact body the plan's harness check posts (no timezone, so the
         // machine's zone is used).
-        let preview = config(json!({"frequency": "days", "interval": 1, "at_hour": 9, "at_minute": 0}))
-            .preview(Utc::now(), PREVIEW_COUNT)
-            .unwrap();
+        let preview =
+            config(json!({"frequency": "days", "interval": 1, "at_hour": 9, "at_minute": 0}))
+                .preview(Utc::now(), PREVIEW_COUNT)
+                .unwrap();
         assert_eq!(preview.summary, "Every day at 09:00");
         assert_eq!(preview.next.len(), PREVIEW_COUNT);
         let times: Vec<DateTime<Utc>> = preview
@@ -950,9 +954,10 @@ mod tests {
 
     #[test]
     fn seven_means_sunday() {
-        let compiled = config(json!({"frequency": "weeks", "days_of_week": [7, 0], "timezone": "UTC"}))
-            .compile()
-            .unwrap();
+        let compiled =
+            config(json!({"frequency": "weeks", "days_of_week": [7, 0], "timezone": "UTC"}))
+                .compile()
+                .unwrap();
         assert_eq!(compiled.days_of_week, vec![0]);
         let next = compiled.next_after(utc("2026-10-20T00:00:00Z")).unwrap();
         assert_eq!(compiled.format_time(next), "2026-10-25T00:00:00Z");
@@ -1066,8 +1071,10 @@ mod tests {
     #[test]
     fn max_occurrences_on_weekly_counts_each_day() {
         // Starts Wednesday 2026-10-21; Monday of that week does not count.
-        let compiled = config(json!({"frequency": "weeks", "days_of_week": [1, 5], "timezone": "UTC",
-                                     "starting": "2026-10-21T00:00:00Z", "max_occurrences": 3}))
+        let compiled = config(
+            json!({"frequency": "weeks", "days_of_week": [1, 5], "timezone": "UTC",
+                                     "starting": "2026-10-21T00:00:00Z", "max_occurrences": 3}),
+        )
         .compile()
         .unwrap();
         let runs: Vec<String> = compiled
@@ -1098,18 +1105,33 @@ mod tests {
     fn rejects_bad_values_with_the_field_name() {
         let cases = [
             (json!({"frequency": "weeks"}), "days_of_week"),
-            (json!({"frequency": "weeks", "days_of_week": [8]}), "days_of_week"),
+            (
+                json!({"frequency": "weeks", "days_of_week": [8]}),
+                "days_of_week",
+            ),
             (json!({"frequency": "days", "interval": 0}), "interval"),
             (json!({"frequency": "days", "at_hour": 24}), "at_hour"),
             (json!({"frequency": "days", "at_minute": 60}), "at_minute"),
-            (json!({"frequency": "months", "day_of_month": 32}), "day_of_month"),
-            (json!({"frequency": "days", "timezone": "Mars/Olympus"}), "timezone"),
-            (json!({"frequency": "days", "starting": "tomorrow"}), "starting"),
+            (
+                json!({"frequency": "months", "day_of_month": 32}),
+                "day_of_month",
+            ),
+            (
+                json!({"frequency": "days", "timezone": "Mars/Olympus"}),
+                "timezone",
+            ),
+            (
+                json!({"frequency": "days", "starting": "tomorrow"}),
+                "starting",
+            ),
             (
                 json!({"frequency": "days", "starting": "2026-10-20T00:00:00Z", "ending": "2026-10-19T00:00:00Z"}),
                 "ending",
             ),
-            (json!({"frequency": "days", "max_occurrences": 2}), "max_occurrences"),
+            (
+                json!({"frequency": "days", "max_occurrences": 2}),
+                "max_occurrences",
+            ),
             (
                 json!({"frequency": "days", "starting": "2026-10-20T00:00:00Z", "max_occurrences": 0}),
                 "max_occurrences",
@@ -1134,7 +1156,10 @@ mod tests {
             ScheduleFrequency::parse(" Week "),
             Some(ScheduleFrequency::Weeks)
         );
-        assert_eq!(ScheduleFrequency::parse("MONTHS"), Some(ScheduleFrequency::Months));
+        assert_eq!(
+            ScheduleFrequency::parse("MONTHS"),
+            Some(ScheduleFrequency::Months)
+        );
     }
 
     #[test]
@@ -1166,10 +1191,9 @@ mod tests {
         let back: ScheduleConfig = serde_yaml::from_str(&yaml).unwrap();
         assert_eq!(back, original);
         // An unquoted YAML timestamp still reads as text.
-        let unquoted: ScheduleConfig = serde_yaml::from_str(
-            "frequency: days\nstarting: 2026-10-20T00:00:00Z\nending: null\n",
-        )
-        .unwrap();
+        let unquoted: ScheduleConfig =
+            serde_yaml::from_str("frequency: days\nstarting: 2026-10-20T00:00:00Z\nending: null\n")
+                .unwrap();
         assert_eq!(unquoted.starting.as_deref(), Some("2026-10-20T00:00:00Z"));
     }
 
@@ -1195,11 +1219,15 @@ mod tests {
             "Every week on weekdays at 08:00"
         );
         assert_eq!(
-            summary(json!({"frequency": "weeks", "interval": 2, "days_of_week": [4, 1], "at_hour": 8})),
+            summary(
+                json!({"frequency": "weeks", "interval": 2, "days_of_week": [4, 1], "at_hour": 8})
+            ),
             "Every 2 weeks on Monday and Thursday at 08:00"
         );
         assert_eq!(
-            summary(json!({"frequency": "weeks", "days_of_week": [0, 1, 2, 3, 4, 5, 6], "at_hour": 7})),
+            summary(
+                json!({"frequency": "weeks", "days_of_week": [0, 1, 2, 3, 4, 5, 6], "at_hour": 7})
+            ),
             "Every day at 07:00"
         );
         assert_eq!(
@@ -1218,8 +1246,10 @@ mod tests {
         );
         // A start already in the past is not mentioned.
         assert_eq!(
-            summary(json!({"frequency": "days", "at_hour": 9, "starting": "2026-01-01T00:00:00Z",
-                           "max_occurrences": 400})),
+            summary(
+                json!({"frequency": "days", "at_hour": 9, "starting": "2026-01-01T00:00:00Z",
+                           "max_occurrences": 400})
+            ),
             "Every day at 09:00, 400 times in total"
         );
     }
@@ -1251,7 +1281,8 @@ mod tests {
 
     #[test]
     fn approximate_period_per_frequency() {
-        let period = |value: serde_json::Value| config(value).compile().unwrap().approximate_period();
+        let period =
+            |value: serde_json::Value| config(value).compile().unwrap().approximate_period();
         assert_eq!(
             period(json!({"frequency": "minutes", "interval": 30})).as_secs(),
             1_800

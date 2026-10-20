@@ -205,7 +205,12 @@ impl ArtifactDeclaration {
     /// The kind to register the file under: the declared one, or a guess
     /// from the extension (`.html`/`.htm`, `.json`, `.md`/`.markdown`).
     pub fn effective_kind(&self) -> Option<String> {
-        if let Some(kind) = self.kind.as_deref().map(str::trim).filter(|k| !k.is_empty()) {
+        if let Some(kind) = self
+            .kind
+            .as_deref()
+            .map(str::trim)
+            .filter(|k| !k.is_empty())
+        {
             return Some(kind.to_ascii_lowercase());
         }
         let ext = Path::new(&self.path)
@@ -360,7 +365,11 @@ impl SourceTrigger {
                 ));
             }
         }
-        if self.instance.as_deref().is_some_and(|i| i.trim().is_empty()) {
+        if self
+            .instance
+            .as_deref()
+            .is_some_and(|i| i.trim().is_empty())
+        {
             return Err(format!("source trigger for '{app}' has an empty instance"));
         }
         if self.path.as_deref().is_some_and(|p| p.trim().is_empty()) {
@@ -520,14 +529,19 @@ mod tests {
             .unwrap_err()
             .to_string();
         assert!(err.contains("low, medium or high"), "{err}");
-        assert_eq!(serde_json::to_value(PipeEffort::Medium).unwrap(), json!("medium"));
+        assert_eq!(
+            serde_json::to_value(PipeEffort::Medium).unwrap(),
+            json!("medium")
+        );
     }
 
     #[test]
     fn run_in_requires_existing_chat_and_a_safe_chat_id() {
-        assert!(PipeRunIn::existing_chat("4f1c2d9e-0b7a-4b44-9d8e-5f0c1a2b3c4d")
-            .validate()
-            .is_ok());
+        assert!(
+            PipeRunIn::existing_chat("4f1c2d9e-0b7a-4b44-9d8e-5f0c1a2b3c4d")
+                .validate()
+                .is_ok()
+        );
         let wrong_mode = PipeRunIn {
             mode: "new_chat".into(),
             chat_id: Some("abc".into()),
@@ -538,7 +552,16 @@ mod tests {
             chat_id: None,
         };
         assert!(missing.validate().unwrap_err().contains("chat_id"));
-        for bad in ["", "  ", "../chats/x", "a/b", "a\\b", " pad", "nl\n", &"c".repeat(201)] {
+        for bad in [
+            "",
+            "  ",
+            "../chats/x",
+            "a/b",
+            "a\\b",
+            " pad",
+            "nl\n",
+            &"c".repeat(201),
+        ] {
             assert!(
                 PipeRunIn::existing_chat(bad).validate().is_err(),
                 "{bad:?} should be refused"
@@ -579,12 +602,22 @@ mod tests {
             "\\\\server\\share\\x",
             ".",
         ] {
-            assert!(decl(bad).resolve_in(dir).is_none(), "{bad:?} should be refused");
-            assert!(decl(bad).validate().is_err(), "{bad:?} should fail validation");
+            assert!(
+                decl(bad).resolve_in(dir).is_none(),
+                "{bad:?} should be refused"
+            );
+            assert!(
+                decl(bad).validate().is_err(),
+                "{bad:?} should fail validation"
+            );
         }
         let kept = declared_artifacts(
             "demo",
-            &[decl("output/a.md"), decl("../escape.md"), decl("output/b.html")],
+            &[
+                decl("output/a.md"),
+                decl("../escape.md"),
+                decl("output/b.html"),
+            ],
             dir,
         );
         let paths: Vec<_> = kept.iter().map(|(d, _)| d.path.as_str()).collect();
@@ -598,7 +631,10 @@ mod tests {
             title: Some("X".into()),
             kind: Some("pdf".into()),
         };
-        assert!(decl.validate().unwrap_err().contains("html, json, markdown"));
+        assert!(decl
+            .validate()
+            .unwrap_err()
+            .contains("html, json, markdown"));
     }
 
     #[test]

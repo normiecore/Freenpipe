@@ -465,7 +465,10 @@ fn optional_text(field: &str, value: &Value) -> Result<Option<String>, PipeConfi
         Value::Null => Ok(None),
         Value::String(s) if s.trim().is_empty() => Ok(None),
         Value::String(s) => Ok(Some(s.clone())),
-        _ => Err(PipeConfigUpdateError::invalid(field, "must be text or null")),
+        _ => Err(PipeConfigUpdateError::invalid(
+            field,
+            "must be text or null",
+        )),
     }
 }
 
@@ -497,7 +500,10 @@ fn string_list(field: &str, value: &Value) -> Result<Vec<String>, PipeConfigUpda
                     })
             })
             .collect(),
-        _ => Err(PipeConfigUpdateError::invalid(field, "must be a list of text")),
+        _ => Err(PipeConfigUpdateError::invalid(
+            field,
+            "must be a list of text",
+        )),
     }
 }
 
@@ -512,7 +518,9 @@ mod tests {
             .unwrap()
     }
 
-    fn apply(updates: Value) -> Result<(PipeConfig, String, AppliedConfigUpdate), PipeConfigUpdateError> {
+    fn apply(
+        updates: Value,
+    ) -> Result<(PipeConfig, String, AppliedConfigUpdate), PipeConfigUpdateError> {
         let (mut config, mut body) = base();
         let map: HashMap<String, Value> = serde_json::from_value(updates).unwrap();
         let applied = apply_config_updates("demo", &mut config, &mut body, &map)?;
@@ -536,9 +544,10 @@ mod tests {
     fn nothing_changes_when_one_field_is_bad() {
         let (mut config, mut body) = base();
         let before = (config.clone(), body.clone());
-        let map: HashMap<String, Value> =
-            serde_json::from_value(json!({"enabled": false, "effort": "extreme", "prompt_body": "new"}))
-                .unwrap();
+        let map: HashMap<String, Value> = serde_json::from_value(
+            json!({"enabled": false, "effort": "extreme", "prompt_body": "new"}),
+        )
+        .unwrap();
         let err = apply_config_updates("demo", &mut config, &mut body, &map).unwrap_err();
         assert!(err.to_string().contains("low, medium or high"), "{err}");
         assert_eq!(config.enabled, before.0.enabled);
@@ -605,12 +614,27 @@ mod tests {
             (json!({"timeout": 0}), "timeout"),
             (json!({"timeout": "10"}), "timeout"),
             (json!({"effort": 3}), "effort"),
-            (json!({"run_in": {"mode": "existing_chat", "chat_id": "../x"}}), "run_in"),
+            (
+                json!({"run_in": {"mode": "existing_chat", "chat_id": "../x"}}),
+                "run_in",
+            ),
             (json!({"run_in": {"chat_id": "abc"}}), "run_in"),
-            (json!({"cloud_agent": {"provider": "skynet"}}), "cloud_agent"),
-            (json!({"artifacts": [{"path": "../../etc/passwd"}]}), "artifacts"),
-            (json!({"schedule_config": {"frequency": "weeks"}}), "schedule_config"),
-            (json!({"schedule_config": {"frequency": "days", "at_hour": 30}}), "schedule_config"),
+            (
+                json!({"cloud_agent": {"provider": "skynet"}}),
+                "cloud_agent",
+            ),
+            (
+                json!({"artifacts": [{"path": "../../etc/passwd"}]}),
+                "artifacts",
+            ),
+            (
+                json!({"schedule_config": {"frequency": "weeks"}}),
+                "schedule_config",
+            ),
+            (
+                json!({"schedule_config": {"frequency": "days", "at_hour": 30}}),
+                "schedule_config",
+            ),
             (json!({"trigger": {"sources": [{"app": "fax"}]}}), "trigger"),
             (json!({"trigger": {"events": [""]}}), "trigger"),
             (json!({"connections": "slack"}), "connections"),

@@ -85,8 +85,7 @@ pub async fn list_pipes(
     };
     let with_count = |mut status: PipeStatus| {
         if let Some(ref counts) = counts {
-            status.execution_count =
-                Some(counts.get(&status.config.name).copied().unwrap_or(0));
+            status.execution_count = Some(counts.get(&status.config.name).copied().unwrap_or(0));
         }
         status
     };
@@ -605,8 +604,7 @@ mod tests {
             post_json(&router, "/pipes/demo/config", json!({"effort": "maximum"})).await;
         assert_eq!(status, StatusCode::BAD_REQUEST);
 
-        let (status, _) =
-            post_json(&router, "/pipes/nope/config", json!({"enabled": false})).await;
+        let (status, _) = post_json(&router, "/pipes/nope/config", json!({"enabled": false})).await;
         assert_eq!(status, StatusCode::NOT_FOUND);
 
         // A percent-encoded traversal reaches the handler decoded as "../x".
@@ -626,7 +624,10 @@ mod tests {
         .await;
         assert_eq!(status, StatusCode::OK, "{body}");
         let (_, pipe) = get_json(&router, "/pipes/demo").await;
-        assert_eq!(pipe["data"]["config"]["schedule_config"]["frequency"], "hours");
+        assert_eq!(
+            pipe["data"]["config"]["schedule_config"]["frequency"],
+            "hours"
+        );
         assert!(pipe["data"]["next_run"].is_string(), "{pipe}");
         assert_eq!(pipe["data"]["has_saved_context"], false);
         assert_eq!(pipe["data"]["is_bundled_builtin"], false);

@@ -219,11 +219,10 @@ impl PipeStore for SqlitePipeStore {
     }
 
     async fn count_executions_by_pipe(&self) -> Result<std::collections::HashMap<String, i64>> {
-        let rows: Vec<(String, i64)> = sqlx::query_as(
-            "SELECT pipe_name, COUNT(*) FROM pipe_executions GROUP BY pipe_name",
-        )
-        .fetch_all(&self.db.pool)
-        .await?;
+        let rows: Vec<(String, i64)> =
+            sqlx::query_as("SELECT pipe_name, COUNT(*) FROM pipe_executions GROUP BY pipe_name")
+                .fetch_all(&self.db.pool)
+                .await?;
         Ok(rows.into_iter().collect())
     }
 
