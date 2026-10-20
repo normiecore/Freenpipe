@@ -852,7 +852,6 @@ impl SafeMonitor {
     }
 }
 
-/// Update the cached monitor descriptions from a successful monitor list.
 /// How the most recent monitor enumeration ended. `/health` uses it to tell
 /// "no display connected" and "permission denied" apart from a capture stall,
 /// without making a system call of its own.
@@ -923,6 +922,7 @@ fn record_monitor_list_result(result: &std::result::Result<Vec<SafeMonitor>, Mon
     );
 }
 
+/// Update the cached monitor descriptions from a successful monitor list.
 fn update_monitor_cache(monitors: &[SafeMonitor]) {
     let descriptions: Vec<String> = monitors
         .iter()
