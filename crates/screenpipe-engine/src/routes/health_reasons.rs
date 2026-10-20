@@ -291,8 +291,7 @@ pub fn startup_phase(
     audio_enabled: bool,
     audio_has_output: bool,
 ) -> &'static str {
-    let produced =
-        (!vision_enabled || vision_has_output) && (!audio_enabled || audio_has_output);
+    let produced = (!vision_enabled || vision_has_output) && (!audio_enabled || audio_has_output);
     if produced || uptime_secs >= STARTUP_GRACE_SECS {
         "running"
     } else {
@@ -392,7 +391,8 @@ pub struct ReasonInputs<'a> {
 
 const REMEDY_SCREEN_PERMISSION: &str =
     "allow screen recording for the app in the operating system's privacy settings";
-const REMEDY_RESTART: &str = "restart recording; if it keeps happening, export a diagnostics bundle";
+const REMEDY_RESTART: &str =
+    "restart recording; if it keeps happening, export a diagnostics bundle";
 const REMEDY_DISK: &str =
     "check free disk space and that the data folder is reachable, then restart recording";
 
@@ -525,7 +525,10 @@ pub fn unhealthy_reasons(i: &ReasonInputs<'_>) -> Vec<UnhealthyReason> {
             "audio_transcript_pending",
             "audio",
             SEVERITY_WARNING,
-            format!("{} audio segment(s) are waiting for background transcription", count),
+            format!(
+                "{} audio segment(s) are waiting for background transcription",
+                count
+            ),
             None,
         ));
     }
@@ -595,7 +598,10 @@ mod tests {
     fn frame_status_treats_pauses_as_ok() {
         assert_eq!(frame_status(true, false, 0, 100, 60), FrameStatus::Disabled);
         assert_eq!(frame_status(false, true, 1, 10_000, 60), FrameStatus::Ok);
-        assert_eq!(frame_status(false, false, 0, 100, 60), FrameStatus::NotStarted);
+        assert_eq!(
+            frame_status(false, false, 0, 100, 60),
+            FrameStatus::NotStarted
+        );
         assert_eq!(frame_status(false, false, 100, 159, 60), FrameStatus::Ok);
         assert_eq!(frame_status(false, false, 100, 160, 60), FrameStatus::Stale);
         // A timestamp ahead of the clock is fresh, not a panic.
@@ -723,7 +729,10 @@ mod tests {
         assert_eq!(inferred_component_state(true, true), "ok");
         assert_eq!(inferred_component_state(false, true), "degraded");
         assert_eq!(inferred_component_state(false, false), "unknown");
-        assert_eq!(degraded_feature("speaker_embedding"), "speaker_identification");
+        assert_eq!(
+            degraded_feature("speaker_embedding"),
+            "speaker_identification"
+        );
         assert_eq!(degraded_feature("vad"), "voice_activity_detection");
     }
 

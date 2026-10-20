@@ -117,7 +117,11 @@ pub fn classify(inputs: &CoverageInputs) -> CoverageBucket {
         return CoverageBucket::ActivePaused;
     }
     if inputs.last_vision_write_unix > 0 {
-        if inputs.now_unix.saturating_sub(inputs.last_vision_write_unix) <= FRESH_WRITE_SECS {
+        if inputs
+            .now_unix
+            .saturating_sub(inputs.last_vision_write_unix)
+            <= FRESH_WRITE_SECS
+        {
             CoverageBucket::Recording
         } else {
             CoverageBucket::ActiveStalled

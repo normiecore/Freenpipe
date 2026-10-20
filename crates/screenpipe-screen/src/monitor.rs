@@ -871,8 +871,7 @@ pub enum MonitorListOutcome {
     Failed,
 }
 
-static LAST_MONITOR_LIST_OUTCOME: std::sync::atomic::AtomicU8 =
-    std::sync::atomic::AtomicU8::new(0);
+static LAST_MONITOR_LIST_OUTCOME: std::sync::atomic::AtomicU8 = std::sync::atomic::AtomicU8::new(0);
 
 impl MonitorListOutcome {
     fn code(self) -> u8 {

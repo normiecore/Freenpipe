@@ -496,7 +496,10 @@ pub async fn health_check(State(state): State<Arc<AppState>>) -> JsonResponse<He
                 warn!(
                     "health_check: {} — serving the last cached snapshot",
                     if outcome.is_err() {
-                        format!("computation exceeded the {:?} budget", HEALTH_RESPONSE_BUDGET)
+                        format!(
+                            "computation exceeded the {:?} budget",
+                            HEALTH_RESPONSE_BUDGET
+                        )
                     } else {
                         "computation failed".to_string()
                     }
@@ -1490,7 +1493,9 @@ async fn health_check_inner(state: &Arc<AppState>) -> HealthCheckResponse {
     let capture_mode = if state.audio_disabled {
         AudioCaptureMode::Disabled
     } else {
-        settings.audio_capture_mode.unwrap_or(AudioCaptureMode::UNSET)
+        settings
+            .audio_capture_mode
+            .unwrap_or(AudioCaptureMode::UNSET)
     };
     let paused_audio_devices = if state.audio_disabled {
         0
@@ -2038,7 +2043,9 @@ mod tests {
     #[test]
     fn version_banner_parsing() {
         assert_eq!(
-            parse_tool_version("ffmpeg version 7.1-full_build-www.gyan.dev Copyright (c)\nbuilt with"),
+            parse_tool_version(
+                "ffmpeg version 7.1-full_build-www.gyan.dev Copyright (c)\nbuilt with"
+            ),
             Some("7.1-full_build-www.gyan.dev".to_string())
         );
         assert_eq!(
@@ -2084,7 +2091,11 @@ mod tests {
     fn a_working_ffmpeg_reports_its_version() {
         // Only meaningful where ffmpeg is installed (CI images and dev VMs
         // usually have it); otherwise there is nothing to probe.
-        let name = if cfg!(windows) { "ffmpeg.exe" } else { "ffmpeg" };
+        let name = if cfg!(windows) {
+            "ffmpeg.exe"
+        } else {
+            "ffmpeg"
+        };
         let Some(path) = std::env::var_os("PATH").and_then(|paths| {
             std::env::split_paths(&paths)
                 .map(|dir| dir.join(name))

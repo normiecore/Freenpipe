@@ -373,7 +373,9 @@ impl PipelineMetrics {
             ocr_gate_crop_ocr: self.ocr_gate_crop_ocr.load(Ordering::Relaxed),
             ocr_gate_detects,
             avg_ocr_gate_detect_latency_ms: if ocr_gate_detects > 0 {
-                (self.ocr_gate_detect_total_latency_us.load(Ordering::Relaxed) as f64
+                (self
+                    .ocr_gate_detect_total_latency_us
+                    .load(Ordering::Relaxed) as f64
                     / ocr_gate_detects as f64)
                     / 1000.0
             } else {
@@ -706,7 +708,8 @@ impl PipelineMetrics {
     /// starts in `heartbeat`; dropping the guard (when the loop returns, by
     /// any path) removes the monitor from the tracker.
     pub fn track_capture_loop(self: &std::sync::Arc<Self>, monitor_id: u32) -> LoopStageGuard {
-        self.loop_stages.enter(monitor_id, CaptureLoopStage::Heartbeat);
+        self.loop_stages
+            .enter(monitor_id, CaptureLoopStage::Heartbeat);
         LoopStageGuard {
             metrics: self.clone(),
             monitor_id,

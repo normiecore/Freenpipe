@@ -452,8 +452,9 @@ impl ComponentState {
     }
 }
 
-static MODEL_COMPONENT_STATES: std::sync::LazyLock<RwLock<HashMap<ModelComponent, ComponentState>>> =
-    std::sync::LazyLock::new(|| RwLock::new(HashMap::new()));
+static MODEL_COMPONENT_STATES: std::sync::LazyLock<
+    RwLock<HashMap<ModelComponent, ComponentState>>,
+> = std::sync::LazyLock::new(|| RwLock::new(HashMap::new()));
 
 /// Publish the state of an audio model component. Model loaders (and their
 /// init watchdogs) call this after each load attempt; the last report wins.
@@ -503,9 +504,17 @@ mod tests {
     fn model_component_reports_round_trip() {
         assert_eq!(
             ModelComponent::ALL.map(|c| c.as_str()),
-            ["transcription", "vad", "speaker_segmentation", "speaker_embedding"]
+            [
+                "transcription",
+                "vad",
+                "speaker_segmentation",
+                "speaker_embedding"
+            ]
         );
-        report_model_component(ModelComponent::SpeakerEmbedding, ComponentState::InitTimedOut);
+        report_model_component(
+            ModelComponent::SpeakerEmbedding,
+            ComponentState::InitTimedOut,
+        );
         assert_eq!(
             model_component_state(ModelComponent::SpeakerEmbedding),
             Some(ComponentState::InitTimedOut)
