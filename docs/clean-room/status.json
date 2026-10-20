@@ -1,15 +1,15 @@
 {
- "generated_at": "2026-10-20T09:56:40Z",
+ "generated_at": "2026-10-20T10:47:55Z",
  "generator": "python3 tools/plan/status.py --write",
  "main": {
   "ref": "origin/main",
-  "sha": "b3d3c3149083c2bfe741e92f44a54177dfed46a8",
-  "code_sha": "b3d3c3149083c2bfe741e92f44a54177dfed46a8",
+  "sha": "bc50aaf785db7edcede29377f40ccba666a0571a",
+  "code_sha": "bc50aaf785db7edcede29377f40ccba666a0571a",
   "ci": {
    "state": "pending",
    "checks": {
     "test-windows": "in_progress",
-    "trufflehog": "success"
+    "trufflehog": "in_progress"
    },
    "missing": [
     "windows",
@@ -19,31 +19,31 @@
    "max_attempt": 1,
    "runs": [
     {
-     "id": 39404095872,
+     "id": 39410440415,
      "name": "Windows CLI Integration Test",
      "event": "push",
      "status": "in_progress",
      "conclusion": null,
      "attempt": 1,
-     "url": "https://github.com/normiecore/Freenpipe/actions/runs/39404095872"
+     "url": "https://github.com/normiecore/Freenpipe/actions/runs/39410440415"
     },
     {
-     "id": 39404095973,
+     "id": 39410440458,
      "name": "Secret Scan (trufflehog)",
      "event": "push",
-     "status": "completed",
-     "conclusion": "success",
+     "status": "in_progress",
+     "conclusion": null,
      "attempt": 1,
-     "url": "https://github.com/normiecore/Freenpipe/actions/runs/39404095973"
+     "url": "https://github.com/normiecore/Freenpipe/actions/runs/39410440458"
     },
     {
-     "id": 39404095980,
+     "id": 39410440479,
      "name": "Freenpipe CI",
      "event": "push",
      "status": "pending",
      "conclusion": null,
      "attempt": 1,
-     "url": "https://github.com/normiecore/Freenpipe/actions/runs/39404095980"
+     "url": "https://github.com/normiecore/Freenpipe/actions/runs/39410440479"
     }
    ]
   }
@@ -63,13 +63,13 @@
   ]
  },
  "summary": {
-  "merged": 17,
-  "in_review": 1,
-  "claimed": 2,
-  "ready": 31,
+  "merged": 18,
+  "in_review": 2,
+  "claimed": 1,
+  "ready": 30,
   "blocked": 104,
   "total": 155,
-  "percent_merged": 11.0
+  "percent_merged": 11.6
  },
  "waves": [
   {
@@ -87,21 +87,21 @@
    "wave": 1,
    "name": "Cross-cutting foundations: schema v2.7, settings schema, integration seams",
    "total": 5,
-   "merged": 4,
-   "in_review": 1,
+   "merged": 5,
+   "in_review": 0,
    "claimed": 0,
    "ready": 0,
    "blocked": 0,
-   "complete": false
+   "complete": true
   },
   {
    "wave": 2,
    "name": "Engine data layer and core backends",
    "total": 27,
    "merged": 0,
-   "in_review": 0,
-   "claimed": 2,
-   "ready": 25,
+   "in_review": 2,
+   "claimed": 1,
+   "ready": 24,
    "blocked": 0,
    "complete": false
   },
@@ -391,74 +391,9 @@
    "depends_on": [
     "W0-12"
    ],
-   "branch": {
-    "name": "wp/W1-04",
-    "sha": "0e6d7ff2953a0a8d137e1fc59a824c46e226cf0d",
-    "claimed_by": null,
-    "claimed_at": null,
-    "last_commit_at": "2026-10-20T09:54:40Z",
-    "head_subject": "Merge origin/main into wp/W1-04",
-    "commits_ahead": 5,
-    "work_commits": 5
-   },
-   "status": "in_review",
-   "pr": {
-    "number": 16,
-    "url": "https://github.com/normiecore/Freenpipe/pull/16",
-    "head_sha": "0e6d7ff2953a0a8d137e1fc59a824c46e226cf0d",
-    "title": "W1-04: Enterprise and plan-gate no-op surface",
-    "created_at": "2026-10-20T09:28:37Z",
-    "updated_at": "2026-10-20T09:56:33Z",
-    "ci": {
-     "state": "pending",
-     "checks": {
-      "test-windows": "queued",
-      "trufflehog": "queued"
-     },
-     "missing": [
-      "windows",
-      "linux",
-      "gates"
-     ],
-     "max_attempt": 1,
-     "runs": [
-      {
-       "id": 39404354375,
-       "name": "Freenpipe CI",
-       "event": "pull_request",
-       "status": "pending",
-       "conclusion": null,
-       "attempt": 1,
-       "url": "https://github.com/normiecore/Freenpipe/actions/runs/39404354375"
-      },
-      {
-       "id": 39404354404,
-       "name": "Secret Scan (trufflehog)",
-       "event": "pull_request",
-       "status": "in_progress",
-       "conclusion": null,
-       "attempt": 1,
-       "url": "https://github.com/normiecore/Freenpipe/actions/runs/39404354404"
-      },
-      {
-       "id": 39404354462,
-       "name": "Windows CLI Integration Test",
-       "event": "pull_request",
-       "status": "queued",
-       "conclusion": null,
-       "attempt": 1,
-       "url": "https://github.com/normiecore/Freenpipe/actions/runs/39404354462"
-      }
-     ]
-    },
-    "review": {
-     "state": "pending",
-     "comment": null,
-     "reason": null
-    },
-    "mergeable": true,
-    "mergeable_state": "unstable"
-   }
+   "status": "merged",
+   "merge_commit": "1bdc39035c2ff711c4fc8112638d8a8a76d6ae73",
+   "merged_at": "2026-10-20T10:44:43Z"
   },
   {
    "id": "W1-05",
@@ -602,16 +537,71 @@
    ],
    "branch": {
     "name": "wp/W2-12",
-    "sha": "eaceda5ae7a336bfc88a08a85c18860fd44d11c8",
+    "sha": "aa519e008cbf9407d22db2cea55590d84201804d",
     "claimed_by": null,
     "claimed_at": null,
-    "last_commit_at": "2026-10-20T09:54:18Z",
-    "head_subject": "wip(W2-12): grayscale thumbnails with fallible allocation in FrameComparer",
-    "commits_ahead": 1,
-    "work_commits": 1
+    "last_commit_at": "2026-10-20T10:43:12Z",
+    "head_subject": "docs(W2-12): list the wgc_smoke banner line in SMK-W2-12-4 part B",
+    "commits_ahead": 7,
+    "work_commits": 7
    },
-   "status": "claimed",
-   "stale": false
+   "status": "in_review",
+   "pr": {
+    "number": 18,
+    "url": "https://github.com/normiecore/Freenpipe/pull/18",
+    "head_sha": "aa519e008cbf9407d22db2cea55590d84201804d",
+    "title": "W2-12: Native WinRT/D3D11 Windows Graphics Capture and frame-diff hardening",
+    "created_at": "2026-10-20T10:26:06Z",
+    "updated_at": "2026-10-20T10:43:18Z",
+    "ci": {
+     "state": "pending",
+     "checks": {
+      "gates": "success",
+      "linux": "in_progress",
+      "test-windows": "in_progress",
+      "trufflehog": "success",
+      "windows": "in_progress"
+     },
+     "missing": [],
+     "max_attempt": 1,
+     "runs": [
+      {
+       "id": 39409935201,
+       "name": "Freenpipe CI",
+       "event": "pull_request",
+       "status": "in_progress",
+       "conclusion": null,
+       "attempt": 1,
+       "url": "https://github.com/normiecore/Freenpipe/actions/runs/39409935201"
+      },
+      {
+       "id": 39409935209,
+       "name": "Windows CLI Integration Test",
+       "event": "pull_request",
+       "status": "in_progress",
+       "conclusion": null,
+       "attempt": 1,
+       "url": "https://github.com/normiecore/Freenpipe/actions/runs/39409935209"
+      },
+      {
+       "id": 39409935250,
+       "name": "Secret Scan (trufflehog)",
+       "event": "pull_request",
+       "status": "completed",
+       "conclusion": "success",
+       "attempt": 1,
+       "url": "https://github.com/normiecore/Freenpipe/actions/runs/39409935250"
+      }
+     ]
+    },
+    "review": {
+     "state": "pending",
+     "comment": null,
+     "reason": null
+    },
+    "mergeable": null,
+    "mergeable_state": "unknown"
+   }
   },
   {
    "id": "W2-13",
@@ -654,16 +644,71 @@
    ],
    "branch": {
     "name": "wp/W2-16",
-    "sha": "2811e7d6cfe30cad1e44085ec69223e4f2028198",
+    "sha": "282066409647898038aad7950d48e98b84c725d0",
     "claimed_by": null,
     "claimed_at": null,
-    "last_commit_at": "2026-10-20T09:55:28Z",
-    "head_subject": "wip(W2-16): merge 404, open questions and smoke checks",
-    "commits_ahead": 4,
-    "work_commits": 4
+    "last_commit_at": "2026-10-20T10:46:00Z",
+    "head_subject": "docs(W2-16): smoke checks for windowed sample decode and speaker paging",
+    "commits_ahead": 8,
+    "work_commits": 8
    },
-   "status": "claimed",
-   "stale": false
+   "status": "in_review",
+   "pr": {
+    "number": 17,
+    "url": "https://github.com/normiecore/Freenpipe/pull/17",
+    "head_sha": "282066409647898038aad7950d48e98b84c725d0",
+    "title": "W2-16: Speakers v2: samples, search paging, merge integrity, reassign v2",
+    "created_at": "2026-10-20T10:22:35Z",
+    "updated_at": "2026-10-20T10:46:06Z",
+    "ci": {
+     "state": "pending",
+     "checks": {
+      "gates": "in_progress",
+      "linux": "in_progress",
+      "test-windows": "in_progress",
+      "trufflehog": "success",
+      "windows": "in_progress"
+     },
+     "missing": [],
+     "max_attempt": 1,
+     "runs": [
+      {
+       "id": 39410264225,
+       "name": "Secret Scan (trufflehog)",
+       "event": "pull_request",
+       "status": "completed",
+       "conclusion": "success",
+       "attempt": 1,
+       "url": "https://github.com/normiecore/Freenpipe/actions/runs/39410264225"
+      },
+      {
+       "id": 39410264226,
+       "name": "Windows CLI Integration Test",
+       "event": "pull_request",
+       "status": "in_progress",
+       "conclusion": null,
+       "attempt": 1,
+       "url": "https://github.com/normiecore/Freenpipe/actions/runs/39410264226"
+      },
+      {
+       "id": 39410264232,
+       "name": "Freenpipe CI",
+       "event": "pull_request",
+       "status": "in_progress",
+       "conclusion": null,
+       "attempt": 1,
+       "url": "https://github.com/normiecore/Freenpipe/actions/runs/39410264232"
+      }
+     ]
+    },
+    "review": {
+     "state": "pending",
+     "comment": null,
+     "reason": null
+    },
+    "mergeable": null,
+    "mergeable_state": "unknown"
+   }
   },
   {
    "id": "W2-17",
@@ -763,7 +808,18 @@
    "depends_on": [
     "W1-02"
    ],
-   "status": "ready"
+   "branch": {
+    "name": "wp/W2-26",
+    "sha": "0571b330c142bf80fa871569121d9f5f09fa539a",
+    "claimed_by": null,
+    "claimed_at": null,
+    "last_commit_at": "2026-10-20T10:37:51Z",
+    "head_subject": "wip(W2-26): watchdog tests, bindings, notification port, smoke and decisions",
+    "commits_ahead": 2,
+    "work_commits": 2
+   },
+   "status": "claimed",
+   "stale": false
   },
   {
    "id": "W2-27",
