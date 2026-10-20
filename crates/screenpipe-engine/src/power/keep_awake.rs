@@ -268,7 +268,6 @@ fn run_thread(mut backend: Box<dyn AwakeBackend>, rx: mpsc::Receiver<Request>) {
             Request::Stop { reply } => {
                 if held {
                     release_on_exit(backend.as_mut());
-                    held = false;
                 }
                 let _ = reply.send(());
                 return;
