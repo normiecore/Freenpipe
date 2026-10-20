@@ -974,16 +974,17 @@ export function SearchModal({ isOpen, onClose, onNavigateToTimestamp, embedded =
     (async () => {
       setIsSearchingSpeakers(true);
       try {
-        // For @ with no text, fetch all speakers; otherwise search by name
-        const url = searchTerm.length > 0
-          ? `/speakers/search?name=${encodeURIComponent(searchTerm)}`
-          : `/speakers/search?name=`;
+        // For @ with no text, list speakers; otherwise search by name. Only
+        // names are shown, so ask for the light result and no more rows than
+        // the list displays.
+        const shown = isAtQuery ? 20 : 5;
+        const url = `/speakers/search?name=${encodeURIComponent(searchTerm)}&limit=${shown}&include_samples=false`;
         const resp = await localFetch(url, {
           signal: AbortSignal.any([controller.signal, AbortSignal.timeout(3000)]),
         });
         if (resp.ok && !cancelled) {
           const speakers: SpeakerResult[] = await resp.json();
-          setSpeakerResults(speakers.filter(s => s.name).slice(0, isAtQuery ? 20 : 5));
+          setSpeakerResults(speakers.filter(s => s.name).slice(0, shown));
         }
       } catch {
         // ignore

@@ -48,7 +48,8 @@ pub struct ReassignSpeakerRequest {
     #[serde(default = "default_propagate_similar")]
     pub propagate_similar: bool,
     /// `auto` (default) names the whole voice when the chunk's speaker is
-    /// unnamed and the name is new; `chunk` moves only this chunk.
+    /// unnamed, not flagged as a hallucination, and the name is new; `chunk`
+    /// moves only this chunk.
     #[serde(default)]
     pub scope: SpeakerReassignScope,
 }
@@ -531,9 +532,38 @@ pub(crate) fn check_sample_path(file_path: &str) -> Result<(), SampleError> {
     Ok(())
 }
 
-/// Cut `[start, end)` out of decoded mono samples, clamping an `end` that
-/// overshoots the audio by at most [`SPEAKER_SAMPLE_END_TOLERANCE_SECS`].
-pub(crate) fn slice_sample_window(
+/// Seconds decoded past `end`, so decoder rounding never leaves the clip a
+/// few samples short. The clip is trimmed back to `end` afterwards.
+pub(crate) const SPEAKER_SAMPLE_DECODE_PAD_SECS: f64 = 0.05;
+
+/// The part of a chunk file the decoder is asked to produce.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(crate) struct SampleDecodeWindow {
+    /// Seconds into the chunk file where decoding starts.
+    pub start: f64,
+    /// Seconds of audio to decode from `start`: the clip plus
+    /// [`SPEAKER_SAMPLE_DECODE_PAD_SECS`].
+    pub duration: f64,
+}
+
+impl SampleDecodeWindow {
+    pub(crate) fn for_clip(start: f64, end: f64) -> Self {
+        Self {
+            start,
+            duration: (end - start) + SPEAKER_SAMPLE_DECODE_PAD_SECS,
+        }
+    }
+}
+
+/// Trim decoded window audio to the requested clip.
+///
+/// `samples` start at `start` (the decoder was asked for
+/// [`SampleDecodeWindow::for_clip`]). An empty buffer means the window lies
+/// past the end of the chunk. A buffer that ends more than
+/// [`SPEAKER_SAMPLE_END_TOLERANCE_SECS`] before `end` means the request runs
+/// too far past the chunk; a smaller shortfall is accepted and the clip is cut
+/// at the end of the audio.
+pub(crate) fn cut_decoded_window(
     samples: &[f32],
     sample_rate: u32,
     start: f64,
@@ -545,20 +575,17 @@ pub(crate) fn slice_sample_window(
             "the requested time range is outside this audio chunk",
         )
     };
-    if sample_rate == 0 {
+    if sample_rate == 0 || samples.is_empty() {
         return Err(out_of_range());
     }
     let rate = f64::from(sample_rate);
-    let duration = samples.len() as f64 / rate;
-    if start >= duration || end > duration + SPEAKER_SAMPLE_END_TOLERANCE_SECS {
+    let wanted_secs = end - start;
+    let decoded_secs = samples.len() as f64 / rate;
+    if wanted_secs - decoded_secs > SPEAKER_SAMPLE_END_TOLERANCE_SECS {
         return Err(out_of_range());
     }
-    let first = ((start * rate).floor() as usize).min(samples.len());
-    let last = ((end * rate).ceil() as usize).min(samples.len());
-    if last <= first {
-        return Err(out_of_range());
-    }
-    Ok(&samples[first..last])
+    let wanted = ((wanted_secs * rate).ceil() as usize).max(1);
+    Ok(&samples[..wanted.min(samples.len())])
 }
 
 /// Encode mono f32 samples as a 16-bit PCM WAV file.
@@ -595,10 +622,20 @@ pub(crate) fn encode_wav_pcm16(samples: &[f32], sample_rate: u32) -> Vec<u8> {
     wav
 }
 
-/// Decode a chunk file to mono f32 PCM. ffmpeg (16 kHz mono) first, the
-/// built-in symphonia decoder as a fallback when ffmpeg is unavailable.
-fn decode_chunk_audio(path: &std::path::Path) -> anyhow::Result<(Vec<f32>, u32)> {
-    match screenpipe_audio::utils::ffmpeg::read_audio_from_file(path) {
+/// Decode one window of a chunk file to mono f32 PCM: ffmpeg (16 kHz mono,
+/// seeking before the input) first, the built-in symphonia decoder (seeking
+/// when the container allows it) when ffmpeg is unavailable or fails. Both
+/// return an empty buffer for a window past the end of the file and an error
+/// for a file they cannot decode.
+fn decode_chunk_window(
+    path: &std::path::Path,
+    window: SampleDecodeWindow,
+) -> anyhow::Result<(Vec<f32>, u32)> {
+    match screenpipe_audio::utils::ffmpeg::read_audio_window_from_file(
+        path,
+        window.start,
+        window.duration,
+    ) {
         Ok(decoded) => Ok(decoded),
         Err(ffmpeg_error) => {
             tracing::debug!(
@@ -606,14 +643,14 @@ fn decode_chunk_audio(path: &std::path::Path) -> anyhow::Result<(Vec<f32>, u32)>
                 path.display(),
                 ffmpeg_error
             );
-            screenpipe_audio::pcm_decode(path)
+            screenpipe_audio::pcm_decode_window(path, window.start, window.duration)
         }
     }
 }
 
 /// Everything the sample route does short of HTTP: validate the window, look
-/// up the chunk, decode its file with `decode` (off the async runtime), cut
-/// the clip and encode it as WAV.
+/// up the chunk, decode the requested window of its file with `decode` (off
+/// the async runtime), trim the clip and encode it as WAV.
 async fn build_speaker_sample<D>(
     db: &DatabaseManager,
     audio_chunk_id: i64,
@@ -621,7 +658,9 @@ async fn build_speaker_sample<D>(
     decode: D,
 ) -> Result<Vec<u8>, SampleError>
 where
-    D: FnOnce(&std::path::Path) -> anyhow::Result<(Vec<f32>, u32)> + Send + 'static,
+    D: FnOnce(&std::path::Path, SampleDecodeWindow) -> anyhow::Result<(Vec<f32>, u32)>
+        + Send
+        + 'static,
 {
     let (start, end) = validate_sample_window(query.start, query.end)?;
 
@@ -645,7 +684,8 @@ where
         ));
     }
 
-    let (samples, sample_rate) = tokio::task::spawn_blocking(move || decode(&path))
+    let window = SampleDecodeWindow::for_clip(start, end);
+    let (samples, sample_rate) = tokio::task::spawn_blocking(move || decode(&path, window))
         .await
         .map_err(|e| {
             SampleError::new(
@@ -660,7 +700,7 @@ where
             )
         })?;
 
-    let clip = slice_sample_window(&samples, sample_rate, start, end)?;
+    let clip = cut_decoded_window(&samples, sample_rate, start, end)?;
     Ok(encode_wav_pcm16(clip, sample_rate))
 }
 
@@ -672,7 +712,7 @@ pub(crate) async fn get_speaker_sample_handler(
     Query(query): Query<SpeakerSampleQuery>,
 ) -> Response {
     sample_response(
-        build_speaker_sample(&state.db, audio_chunk_id, query, decode_chunk_audio).await,
+        build_speaker_sample(&state.db, audio_chunk_id, query, decode_chunk_window).await,
     )
 }
 
@@ -763,27 +803,128 @@ mod sample_tests {
     }
 
     #[test]
-    fn slicing_cuts_the_requested_range() {
-        let samples: Vec<f32> = (0..100).map(|i| i as f32).collect();
-        // 10 Hz: 10 seconds of audio.
-        let clip = slice_sample_window(&samples, 10, 2.0, 4.0).unwrap();
-        assert_eq!(clip.len(), 20);
-        assert_eq!(clip[0], 20.0);
-        assert_eq!(clip[19], 39.0);
+    fn decode_window_covers_the_clip_plus_a_pad() {
+        let window = SampleDecodeWindow::for_clip(2.0, 4.5);
+        assert_eq!(window.start, 2.0);
+        assert!((window.duration - (2.5 + SPEAKER_SAMPLE_DECODE_PAD_SECS)).abs() < 1e-9);
     }
 
     #[test]
-    fn slicing_clamps_a_small_overshoot_and_rejects_far_ranges() {
-        let samples = vec![0.0f32; 100]; // 10 s at 10 Hz
-        let clip = slice_sample_window(&samples, 10, 9.0, 10.5).unwrap();
+    fn cutting_trims_the_decoded_window_to_the_clip() {
+        // 10 Hz: the decoder returned 2.05 s starting at the clip start.
+        let samples: Vec<f32> = (0..21).map(|i| i as f32).collect();
+        let clip = cut_decoded_window(&samples, 10, 2.0, 4.0).unwrap();
+        assert_eq!(clip.len(), 20);
+        assert_eq!(clip[0], 0.0);
+        assert_eq!(clip[19], 19.0);
+    }
+
+    #[test]
+    fn cutting_accepts_a_small_shortfall_and_rejects_far_or_empty_windows() {
+        // The chunk ended 0.5 s into a 1.5 s request: clamp to what exists.
+        let samples = vec![0.0f32; 10];
+        let clip = cut_decoded_window(&samples, 10, 9.0, 10.5).unwrap();
         assert_eq!(clip.len(), 10);
 
-        let after_end = slice_sample_window(&samples, 10, 10.0, 11.0).unwrap_err();
-        assert_eq!(after_end.status, StatusCode::UNPROCESSABLE_ENTITY);
-        let too_far = slice_sample_window(&samples, 10, 8.0, 12.0).unwrap_err();
+        // Nothing decoded: the window starts at or past the end of the chunk.
+        let past_end = cut_decoded_window(&[], 10, 10.0, 11.0).unwrap_err();
+        assert_eq!(past_end.status, StatusCode::UNPROCESSABLE_ENTITY);
+        // Two of four requested seconds exist: too far past the end.
+        let too_far = cut_decoded_window(&vec![0.0f32; 20], 10, 8.0, 12.0).unwrap_err();
         assert_eq!(too_far.status, StatusCode::UNPROCESSABLE_ENTITY);
-        let no_audio = slice_sample_window(&[], 16_000, 0.0, 1.0).unwrap_err();
-        assert_eq!(no_audio.status, StatusCode::UNPROCESSABLE_ENTITY);
+        let no_rate = cut_decoded_window(&samples, 0, 0.0, 1.0).unwrap_err();
+        assert_eq!(no_rate.status, StatusCode::UNPROCESSABLE_ENTITY);
+    }
+
+    /// A WAV file whose samples count up, so a decoded window shows where it
+    /// starts: sample `i` holds `i / len`.
+    fn write_ramp_wav(dir: &std::path::Path, seconds: usize) -> (std::path::PathBuf, Vec<f32>) {
+        let len = seconds * 16_000;
+        let ramp: Vec<f32> = (0..len).map(|i| i as f32 / len as f32).collect();
+        let path = dir.join("ramp.wav");
+        std::fs::write(&path, encode_wav_pcm16(&ramp, 16_000)).unwrap();
+        (path, ramp)
+    }
+
+    #[test]
+    fn symphonia_window_decode_starts_at_the_requested_offset() {
+        let dir = tempfile::tempdir().unwrap();
+        let (path, ramp) = write_ramp_wav(dir.path(), 3);
+
+        let (samples, rate) = screenpipe_audio::pcm_decode_window(&path, 1.25, 0.5).unwrap();
+        assert_eq!(rate, 16_000);
+        assert_eq!(samples.len(), 8_000);
+        let expected_first = ramp[20_000];
+        assert!(
+            (samples[0] - expected_first).abs() < 1e-3,
+            "window starts at 1.25 s: got {}, expected {}",
+            samples[0],
+            expected_first
+        );
+
+        // A window that runs past the end is cut short; one past it is empty.
+        let (tail, _) = screenpipe_audio::pcm_decode_window(&path, 2.5, 2.0).unwrap();
+        assert_eq!(tail.len(), 8_000);
+        let (beyond, _) = screenpipe_audio::pcm_decode_window(&path, 10.0, 1.0).unwrap();
+        assert!(beyond.is_empty());
+
+        // A file that is not audio is a decode error, not an empty window.
+        let junk = dir.path().join("junk.mp4");
+        std::fs::write(&junk, b"not audio at all").unwrap();
+        assert!(screenpipe_audio::pcm_decode_window(&junk, 0.0, 1.0).is_err());
+    }
+
+    /// `ffmpeg` from PATH, so the test never triggers the bundled-binary
+    /// download. Returns `None` on machines without it.
+    fn ffmpeg_on_path() -> Option<std::path::PathBuf> {
+        let name = if cfg!(windows) {
+            "ffmpeg.exe"
+        } else {
+            "ffmpeg"
+        };
+        std::env::split_paths(&std::env::var_os("PATH")?)
+            .map(|dir| dir.join(name))
+            .find(|candidate| candidate.is_file())
+    }
+
+    #[test]
+    fn ffmpeg_window_decode_seeks_and_reports_past_end_as_empty() {
+        let Some(ffmpeg) = ffmpeg_on_path() else {
+            eprintln!("ffmpeg not on PATH; skipping the ffmpeg window decode check");
+            return;
+        };
+        let dir = tempfile::tempdir().unwrap();
+        let (path, ramp) = write_ramp_wav(dir.path(), 3);
+        let decode = |start: f64, duration: f64| {
+            screenpipe_audio::utils::ffmpeg::decode_audio_window_with_ffmpeg(
+                &ffmpeg, &path, start, duration,
+            )
+        };
+
+        let (samples, rate) = decode(1.25, 0.5).unwrap();
+        assert_eq!(rate, 16_000);
+        assert!(
+            (7_990..=8_010).contains(&samples.len()),
+            "about 0.5 s decoded, got {} samples",
+            samples.len()
+        );
+        assert!((samples[0] - ramp[20_000]).abs() < 1e-2);
+
+        let (beyond, _) = decode(10.0, 1.0).unwrap();
+        assert!(
+            beyond.is_empty(),
+            "a window past the end decodes to nothing"
+        );
+
+        let junk = dir.path().join("junk.mp4");
+        std::fs::write(&junk, b"not audio at all").unwrap();
+        assert!(
+            screenpipe_audio::utils::ffmpeg::decode_audio_window_with_ffmpeg(
+                &ffmpeg, &junk, 0.0, 1.0
+            )
+            .is_err(),
+            "a corrupt file is a decode failure"
+        );
     }
 
     #[test]
@@ -851,6 +992,9 @@ mod sample_tests {
         let (db, chunk) = db_with_chunk(path.to_str().unwrap()).await;
 
         // Decode with the built-in decoder so the test needs no ffmpeg.
+        let decode = |p: &std::path::Path, w: SampleDecodeWindow| {
+            screenpipe_audio::pcm_decode_window(p, w.start, w.duration)
+        };
         let wav = build_speaker_sample(
             &db,
             chunk,
@@ -858,13 +1002,44 @@ mod sample_tests {
                 start: Some(0.5),
                 end: Some(2.0),
             },
-            |p: &std::path::Path| screenpipe_audio::pcm_decode(p),
+            decode,
         )
         .await
         .unwrap();
         assert_eq!(&wav[0..4], b"RIFF");
         assert_eq!(header_u32(&wav, 24), 16_000);
         assert_eq!(header_u32(&wav, 40), 24_000 * 2, "1.5 s of 16-bit mono");
+
+        // The end of the chunk: a short overshoot is clamped, a window past
+        // the end is a client error rather than a decode failure.
+        let tail = build_speaker_sample(
+            &db,
+            chunk,
+            SpeakerSampleQuery {
+                start: Some(2.5),
+                end: Some(3.4),
+            },
+            decode,
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            header_u32(&tail, 40),
+            8_000 * 2,
+            "clamped to the 0.5 s left"
+        );
+        let beyond = build_speaker_sample(
+            &db,
+            chunk,
+            SpeakerSampleQuery {
+                start: Some(5.0),
+                end: Some(6.0),
+            },
+            decode,
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(beyond.status, StatusCode::UNPROCESSABLE_ENTITY);
 
         let response = sample_response(Ok(wav));
         assert_eq!(response.status(), StatusCode::OK);
@@ -877,9 +1052,10 @@ mod sample_tests {
 
     #[tokio::test]
     async fn sample_route_maps_failures_to_client_errors() {
-        let never_decode = |_: &std::path::Path| -> anyhow::Result<(Vec<f32>, u32)> {
-            panic!("decoder must not run for a rejected request")
-        };
+        let never_decode =
+            |_: &std::path::Path, _: SampleDecodeWindow| -> anyhow::Result<(Vec<f32>, u32)> {
+                panic!("decoder must not run for a rejected request")
+            };
         let window = |start: f64, end: f64| SpeakerSampleQuery {
             start: Some(start),
             end: Some(end),
@@ -910,19 +1086,27 @@ mod sample_tests {
         let path = dir.path().join("broken.mp4");
         std::fs::write(&path, b"not audio").unwrap();
         let (db, broken) = db_with_chunk(path.to_str().unwrap()).await;
-        let decode_failed =
-            build_speaker_sample(&db, broken, window(0.0, 2.0), |_: &std::path::Path| {
-                Err(anyhow::anyhow!("corrupt file"))
-            })
-            .await
-            .unwrap_err();
+        let decode_failed = build_speaker_sample(
+            &db,
+            broken,
+            window(0.0, 2.0),
+            |_: &std::path::Path, _: SampleDecodeWindow| Err(anyhow::anyhow!("corrupt file")),
+        )
+        .await
+        .unwrap_err();
         assert_eq!(decode_failed.status, StatusCode::INTERNAL_SERVER_ERROR);
-        let past_end =
-            build_speaker_sample(&db, broken, window(5.0, 6.0), |_: &std::path::Path| {
-                Ok((vec![0.0; 16_000], 16_000))
-            })
-            .await
-            .unwrap_err();
+        // The decoder is asked for the requested window only.
+        let past_end = build_speaker_sample(
+            &db,
+            broken,
+            window(5.0, 6.0),
+            |_: &std::path::Path, w: SampleDecodeWindow| {
+                assert_eq!(w, SampleDecodeWindow::for_clip(5.0, 6.0));
+                Ok((Vec::new(), 16_000))
+            },
+        )
+        .await
+        .unwrap_err();
         assert_eq!(past_end.status, StatusCode::UNPROCESSABLE_ENTITY);
 
         let response = sample_response(Err(past_end));

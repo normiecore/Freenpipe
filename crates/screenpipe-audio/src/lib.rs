@@ -17,6 +17,7 @@ pub use transcription::stt::{
 };
 pub use utils::audio::filter_music_frames;
 pub use utils::audio::pcm_decode;
+pub use utils::audio::pcm_decode_window;
 pub use utils::audio::resample;
 pub mod audio_manager;
 mod device;

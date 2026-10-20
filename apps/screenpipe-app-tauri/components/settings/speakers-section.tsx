@@ -46,6 +46,7 @@ import {
 } from "@/lib/api";
 import { showChatWithPrefill } from "@/lib/chat-utils";
 import { buildSpeakerSampleUrl } from "@/lib/speaker-sample";
+import { fetchAllSpeakers } from "@/lib/speaker-search";
 
 interface AudioSample {
   path: string;
@@ -890,14 +891,13 @@ export function SpeakersSection() {
 
   const fetchSpeakers = useCallback(async () => {
     try {
-      const [namedRes, unnamedRes] = await Promise.all([
-        localFetch("/speakers/search"),
+      // The search route returns one page (100 names by default), so page
+      // through it; a failed page keeps the list already shown.
+      const [named, unnamedRes] = await Promise.all([
+        fetchAllSpeakers<Speaker>(localFetch).catch(() => null),
         localFetch("/speakers/unnamed?limit=50&offset=0"),
       ]);
-      if (namedRes.ok)
-        setSpeakers(
-          await namedRes.json().then((d: any) => (Array.isArray(d) ? d : []))
-        );
+      if (named) setSpeakers(named);
       if (unnamedRes.ok)
         setUnnamed(
           await unnamedRes

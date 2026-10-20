@@ -8523,9 +8523,12 @@ LIMIT ? OFFSET ?
     ///    name matches without regard to case, preferring the one with the
     ///    most stored embeddings.
     /// 3. [`crate::SpeakerReassignScope::Auto`]: when the chunk's current
-    ///    speaker is unnamed and no target exists, that speaker is renamed in
-    ///    place, which labels the whole voice cluster. Nothing else moves, so
-    ///    renaming it back (`previous_speaker_name`) undoes it.
+    ///    speaker is unnamed, not flagged as a hallucination, and no target
+    ///    exists, that speaker is renamed in place, which labels the whole
+    ///    voice cluster. Only the name changes, so renaming it back
+    ///    (`previous_speaker_name`) undoes it. A voice flagged as a
+    ///    hallucination keeps its flag and takes the chunk path instead, so
+    ///    one relabel never turns a whole junk cluster into a named person.
     /// 4. Otherwise the chunk's transcriptions and one embedding move to the
     ///    target, which is created when missing. With `propagate_similar`,
     ///    speakers whose embeddings mostly match the target are absorbed into
@@ -8586,11 +8589,15 @@ LIMIT ? OFFSET ?
         .fetch_optional(&mut **tx.conn())
         .await?;
 
+        // Only an unnamed voice that is not flagged as a hallucination can be
+        // renamed in place; the rename would otherwise drop the flag, and
+        // renaming back could not restore it.
         let unnamed_current = match current_speaker_id {
             Some(speaker_id) => {
                 let unnamed: i64 = sqlx::query_scalar(
                     "SELECT COUNT(*) FROM speakers \
-                     WHERE id = ?1 AND (name IS NULL OR TRIM(name) = '')",
+                     WHERE id = ?1 AND (name IS NULL OR TRIM(name) = '') \
+                       AND COALESCE(hallucination, 0) = 0",
                 )
                 .bind(speaker_id)
                 .fetch_one(&mut **tx.conn())
@@ -8611,7 +8618,7 @@ LIMIT ? OFFSET ?
                     .bind(speaker_id)
                     .fetch_one(&mut **tx.conn())
                     .await?;
-            sqlx::query("UPDATE speakers SET name = ?1, hallucination = 0 WHERE id = ?2")
+            sqlx::query("UPDATE speakers SET name = ?1 WHERE id = ?2")
                 .bind(name)
                 .bind(speaker_id)
                 .execute(&mut **tx.conn())

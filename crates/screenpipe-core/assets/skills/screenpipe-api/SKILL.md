@@ -366,8 +366,11 @@ Also available via raw SQL: `SELECT * FROM meetings WHERE meeting_start > dateti
 ## 10. Speakers — Management & Reassignment
 
 ```bash
-# Search speakers by name
+# Search speakers by name prefix (case-insensitive; empty name lists everyone).
+# One page per call: limit defaults to 100, offset to 0. include_samples=false
+# returns only {id, name} (metadata "{}"), which is much cheaper than the default.
 curl -H "Authorization: Bearer $SCREENPIPE_LOCAL_API_KEY" "http://localhost:3030/speakers/search?name=John"
+curl -H "Authorization: Bearer $SCREENPIPE_LOCAL_API_KEY" "http://localhost:3030/speakers/search?name=&limit=50&offset=50&include_samples=false"
 
 # Get unnamed speakers (for labeling)
 curl -H "Authorization: Bearer $SCREENPIPE_LOCAL_API_KEY" "http://localhost:3030/speakers/unnamed?limit=20&offset=0"
@@ -380,16 +383,23 @@ curl -X POST http://localhost:3030/speakers/update \
   -H "Content-Type: application/json" \
   -d '{"id": 29, "name": "Jordan"}'
 
-# Reassign speaker for an audio chunk (propagates to similar chunks by default)
+# Play a voice sample: a WAV clip of one audio chunk, start/end in seconds into
+# the chunk file (end > start, at most 120 s). 400 = bad start/end, 404 = unknown
+# chunk, 422 = no playable local file or the range is outside the chunk.
+curl -H "Authorization: Bearer $SCREENPIPE_LOCAL_API_KEY" -o sample.wav \
+  "http://localhost:3030/speakers/sample/456?start=0&end=3"
+
+# Reassign the speaker of an audio chunk
 curl -X POST http://localhost:3030/speakers/reassign \
   -H "Content-Type: application/json" \
-  -d '{"audio_chunk_id": 456, "new_speaker_name": "Jordan", "propagate_similar": true}'
-# Returns: new_speaker_id, transcriptions_updated, old_assignments (for undo)
+  -d '{"audio_chunk_id": 456, "new_speaker_name": "Jordan", "propagate_similar": true, "scope": "auto"}'
+# Returns: new_speaker_id, new_speaker_name, transcriptions_updated, embeddings_moved,
+#   renamed_whole_speaker, previous_speaker_name, old_assignments, old_segment_assignments
 
-# Undo a speaker reassignment
+# Undo a speaker reassignment (send back the lists from the reassign response)
 curl -X POST http://localhost:3030/speakers/undo-reassign \
   -H "Content-Type: application/json" \
-  -d '{"old_assignments": [{"transcription_id": 1, "old_speaker_id": 29}]}'
+  -d '{"old_assignments": [{"transcription_id": 1, "old_speaker_id": 29}], "old_segment_assignments": []}'
 
 # Merge two speakers (keeps one, merges the other into it)
 curl -X POST http://localhost:3030/speakers/merge \
@@ -412,7 +422,13 @@ curl -X POST http://localhost:3030/speakers/delete \
 When the user says "that was actually Jordan, not Karishma":
 1. Search audio results to find the `chunk_id` for the misidentified audio
 2. Call `POST /speakers/reassign` with `audio_chunk_id` and `new_speaker_name`
-3. With `propagate_similar: true` (default), it also fixes similar-sounding chunks
+3. Pick a `scope`:
+   - `auto` (default): if the chunk's voice has no name yet (and is not marked as a hallucination) and no speaker is called that name, the whole voice is renamed at once. The response then has `renamed_whole_speaker: true` and `previous_speaker_name` (`""` if it had none).
+   - `chunk`: only this chunk's transcriptions (and one voice embedding) move to the named speaker. With `propagate_similar: true` (default), speakers whose voices mostly match are merged in as well.
+4. The name is matched case-insensitively, ignoring surrounding spaces; `new_speaker_name` in the response is the stored spelling.
+5. Live meeting transcript lines with the same text as the chunk move too; they come back in `old_segment_assignments`.
+
+To undo: if `previous_speaker_name` is not null, rename speaker `new_speaker_id` back with `POST /speakers/update`. Then post `old_assignments` and `old_segment_assignments` (whichever are non-empty) to `POST /speakers/undo-reassign`.
 
 ---
 

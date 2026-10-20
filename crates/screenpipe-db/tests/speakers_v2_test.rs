@@ -418,11 +418,6 @@ async fn delete_speaker_leaves_no_orphans_in_the_other_tables() {
 async fn scope_auto_renames_an_unnamed_voice_in_place_and_undo_restores_it() {
     let db = setup_db().await;
     let voice_u = new_speaker(&db, 0, None).await;
-    sqlx::query("UPDATE speakers SET hallucination = 1 WHERE id = ?1")
-        .bind(voice_u)
-        .execute(&db.pool)
-        .await
-        .unwrap();
     // A look-alike voice that propagation would absorb on the chunk path.
     let look_alike = db.insert_speaker(&voice(0, 0.01)).await.unwrap().id;
 
@@ -488,13 +483,6 @@ async fn scope_auto_renames_an_unnamed_voice_in_place_and_undo_restores_it() {
     assert_eq!(outcome.old_segment_assignments, vec![(mirrored, 0)]);
 
     assert_eq!(speaker_name(&db, voice_u).await.as_deref(), Some("Grace"));
-    let hallucination: bool =
-        sqlx::query_scalar("SELECT hallucination FROM speakers WHERE id = ?1")
-            .bind(voice_u)
-            .fetch_one(&db.pool)
-            .await
-            .unwrap();
-    assert!(!hallucination, "rename clears the hallucination flag");
     assert_eq!(
         row_speaker(&db, "meeting_transcript_segments", mirrored).await,
         Some(voice_u)
@@ -524,6 +512,88 @@ async fn scope_auto_renames_an_unnamed_voice_in_place_and_undo_restores_it() {
         row_speaker(&db, "meeting_transcript_segments", mirrored).await,
         None
     );
+}
+
+async fn is_hallucination(db: &DatabaseManager, speaker_id: i64) -> bool {
+    sqlx::query_scalar("SELECT hallucination FROM speakers WHERE id = ?1")
+        .bind(speaker_id)
+        .fetch_one(&db.pool)
+        .await
+        .unwrap()
+}
+
+#[tokio::test]
+async fn scope_auto_moves_only_the_chunk_of_a_hallucination_voice() {
+    let db = setup_db().await;
+    let ghost = new_speaker(&db, 0, None).await;
+    // A second embedding, so the voice still has one after the chunk path
+    // moves an embedding to the new speaker.
+    db.add_embedding_to_speaker(ghost, &voice(0, 0.02), 10)
+        .await
+        .unwrap();
+    db.mark_speaker_as_hallucination(ghost).await.unwrap();
+
+    let (chunk, row) = add_chunk(
+        &db,
+        "/data/g1.mp4",
+        Some(ghost),
+        "is this a real person talking",
+        hours_ago(1),
+        true,
+        "whisper",
+        (0.0, 3.0),
+    )
+    .await;
+    let (_, other_row) = add_chunk(
+        &db,
+        "/data/g2.mp4",
+        Some(ghost),
+        "thank you for watching",
+        hours_ago(2),
+        true,
+        "whisper",
+        (0.0, 3.0),
+    )
+    .await;
+
+    let outcome = db
+        .reassign_speaker_scoped(chunk, "Heidi", false, SpeakerReassignScope::Auto)
+        .await
+        .unwrap();
+
+    // No whole-voice rename: only this chunk moves, to a new speaker.
+    assert!(!outcome.renamed_whole_speaker);
+    assert_eq!(outcome.previous_speaker_name, None);
+    assert_ne!(outcome.new_speaker_id, ghost);
+    assert_eq!(outcome.new_speaker_name, "Heidi");
+    assert_eq!(outcome.transcriptions_updated, 1);
+    assert_eq!(outcome.old_assignments, vec![(row, ghost)]);
+    assert_eq!(
+        row_speaker(&db, "audio_transcriptions", row).await,
+        Some(outcome.new_speaker_id)
+    );
+    assert_eq!(
+        row_speaker(&db, "audio_transcriptions", other_row).await,
+        Some(ghost)
+    );
+    // The flagged voice keeps its flag and stays unnamed.
+    assert!(is_hallucination(&db, ghost).await);
+    assert_eq!(speaker_name(&db, ghost).await.unwrap_or_default(), "");
+
+    // Undo puts the chunk back on the flagged voice, flag intact.
+    let restored = db
+        .undo_speaker_reassign_with_segments(
+            &outcome.old_assignments,
+            &outcome.old_segment_assignments,
+        )
+        .await
+        .unwrap();
+    assert_eq!(restored, 1);
+    assert_eq!(
+        row_speaker(&db, "audio_transcriptions", row).await,
+        Some(ghost)
+    );
+    assert!(is_hallucination(&db, ghost).await);
 }
 
 #[tokio::test]
