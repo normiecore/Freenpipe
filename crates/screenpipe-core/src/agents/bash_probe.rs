@@ -8,11 +8,15 @@
 //! when none is set up), the Store's app-execution aliases are stubs, and a
 //! broken Git install can hang. Every candidate is therefore started once
 //! with a tiny script that prints a token, under a timeout; the first one that
-//! answers wins. WSL launchers are never tried. When nothing answers, the
-//! runtime falls back to its own PortableGit download (see `agents::pi`).
+//! answers wins. WSL launchers are never tried. A candidate that does not
+//! answer in time gets one more, longer try (Git for Windows can be slow on
+//! its first start after boot while a virus scanner checks it) before it is
+//! rejected. When nothing answers, the runtime falls back to its own
+//! PortableGit download (see `agents::pi`).
 //!
-//! Candidate ordering, WSL detection and the probe-output check are pure and
-//! tested on every platform; only the probe itself is Windows-only.
+//! Candidate ordering, WSL detection, the probe-output check and the retry
+//! policy are pure and tested on every platform; only the probe itself is
+//! Windows-only.
 
 use std::path::{Path, PathBuf};
 use std::time::Duration;
@@ -21,6 +25,34 @@ use std::time::Duration;
 pub const PROBE_TOKEN: &str = "freenpipe-bash-probe-ok";
 /// How long a candidate may take to answer the probe.
 pub const PROBE_TIMEOUT: Duration = Duration::from_secs(5);
+/// The limit for the one retry of a candidate that timed out: a cold first
+/// start of Git bash under on-access scanning can take well over 5 s.
+pub const SLOW_START_TIMEOUT: Duration = Duration::from_secs(20);
+
+/// How one probe of a candidate went.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ProbeResult {
+    /// It printed the token: a working bash.
+    Works,
+    /// It ran but did not print the token (a WSL stub, a broken install).
+    NoToken,
+    /// It could not be started at all.
+    CannotStart,
+    /// It did not finish within the limit and was stopped.
+    TimedOut,
+}
+
+/// The time limit for the next probe of a candidate, given the results of
+/// the earlier probes of the same candidate, or `None` when it should be
+/// rejected: the first probe gets [`PROBE_TIMEOUT`], a timeout earns one
+/// retry with [`SLOW_START_TIMEOUT`], and anything else is final.
+pub fn next_probe_timeout(earlier: &[ProbeResult]) -> Option<Duration> {
+    match earlier {
+        [] => Some(PROBE_TIMEOUT),
+        [ProbeResult::TimedOut] => Some(SLOW_START_TIMEOUT),
+        _ => None,
+    }
+}
 
 /// Whether `path` is the WSL launcher or an app-execution alias rather than
 /// a real bash.
@@ -93,9 +125,11 @@ pub fn probe_output_ok(stdout: &[u8]) -> bool {
     String::from_utf8_lossy(stdout).contains(PROBE_TOKEN)
 }
 
-/// Run the probe script with `bash` and wait at most `timeout`.
+/// Run the probe script with `bash` and wait at most `timeout`. On a
+/// timeout the whole process tree is stopped: Git for Windows'
+/// `bin\bash.exe` is a launcher that starts the real bash as a child.
 #[cfg(windows)]
-pub fn probe(bash: &Path, timeout: Duration) -> bool {
+pub fn probe(bash: &Path, timeout: Duration) -> ProbeResult {
     use std::io::Read;
     use std::os::windows::process::CommandExt;
     use std::process::{Command, Stdio};
@@ -113,7 +147,7 @@ pub fn probe(bash: &Path, timeout: Duration) -> bool {
         Ok(c) => c,
         Err(e) => {
             tracing::debug!("bash probe: cannot start {}: {}", bash.display(), e);
-            return false;
+            return ProbeResult::CannotStart;
         }
     };
     let started = std::time::Instant::now();
@@ -124,6 +158,14 @@ pub fn probe(bash: &Path, timeout: Duration) -> bool {
                 std::thread::sleep(Duration::from_millis(25));
             }
             _ => {
+                // taskkill /T also stops the bash the launcher started.
+                let _ = Command::new("taskkill")
+                    .args(["/F", "/T", "/PID", &child.id().to_string()])
+                    .stdin(Stdio::null())
+                    .stdout(Stdio::null())
+                    .stderr(Stdio::null())
+                    .creation_flags(CREATE_NO_WINDOW)
+                    .status();
                 let _ = child.kill();
                 let _ = child.wait();
                 tracing::warn!(
@@ -131,7 +173,7 @@ pub fn probe(bash: &Path, timeout: Duration) -> bool {
                     bash.display(),
                     timeout
                 );
-                return false;
+                return ProbeResult::TimedOut;
             }
         }
     }
@@ -139,11 +181,12 @@ pub fn probe(bash: &Path, timeout: Duration) -> bool {
     if let Some(mut stdout) = child.stdout.take() {
         let _ = stdout.read_to_end(&mut out);
     }
-    let ok = probe_output_ok(&out);
-    if !ok {
+    if probe_output_ok(&out) {
+        ProbeResult::Works
+    } else {
         tracing::debug!("bash probe: {} gave no probe output", bash.display());
+        ProbeResult::NoToken
     }
-    ok
 }
 
 #[cfg(test)]
@@ -192,6 +235,19 @@ mod tests {
                 r"D:\msys64\usr\bin\bash.exe",
             ]
         );
+    }
+
+    #[test]
+    fn a_slow_first_start_gets_one_longer_retry() {
+        use ProbeResult::*;
+        assert_eq!(next_probe_timeout(&[]), Some(PROBE_TIMEOUT));
+        assert_eq!(next_probe_timeout(&[TimedOut]), Some(SLOW_START_TIMEOUT));
+        assert!(SLOW_START_TIMEOUT > PROBE_TIMEOUT);
+        // Two timeouts, or an answer without the token, are final.
+        assert_eq!(next_probe_timeout(&[TimedOut, TimedOut]), None);
+        assert_eq!(next_probe_timeout(&[NoToken]), None);
+        assert_eq!(next_probe_timeout(&[CannotStart]), None);
+        assert_eq!(next_probe_timeout(&[TimedOut, NoToken]), None);
     }
 
     #[test]

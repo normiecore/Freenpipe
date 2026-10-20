@@ -20,12 +20,17 @@
 //!   before any is written, so a mismatch changes nothing;
 //! * it is idempotent: markers in the edited files show what is applied. A
 //!   file that carries every marker but not the current hook text was patched
-//!   by an older build; it is reported as stale so the installer can restore
-//!   the stock files (a reinstall) and patch again. A hunk whose replacement
-//!   changes therefore keeps working without a new id, although a new id is
-//!   still the clearer way to change one;
-//! * when anything does not match, Pi keeps running unpatched and the reason
-//!   is logged once per process;
+//!   by an older build; it is reported as stale. A file of the target release
+//!   that is neither stock nor carries every marker (another vendor's patch,
+//!   an older build with other hunks, a local edit) is reported as foreign.
+//!   Either way nothing is written, and the installer rebuilds the install
+//!   beside the live one with stock files, patches that and swaps it in (see
+//!   `pi_install`), so a running Pi never sees a half-replaced tree. A hunk
+//!   whose replacement changes therefore keeps working without a new id,
+//!   although a new id is still the clearer way to change one;
+//! * when anything else does not match (another release, a missing package),
+//!   Pi keeps running without Freenpipe's patch and the reason is logged once
+//!   per process;
 //! * `SCREENPIPE_DISABLE_PI_PATCHES=1` turns it off and restores the stock
 //!   files by reversing the hunks.
 
@@ -211,6 +216,16 @@ pub fn parse(text: &str) -> Result<Patch> {
     })
 }
 
+/// Identifies the patch and module this build ships (a SHA-256 over both),
+/// so the installer rebuilds a stale or foreign install at most once per
+/// build.
+pub fn fingerprint() -> String {
+    let mut bytes = normalize_newlines(PATCH_SOURCE).into_bytes();
+    bytes.push(0);
+    bytes.extend_from_slice(normalize_newlines(MODULE_SOURCE).as_bytes());
+    sha256_hex(&bytes)
+}
+
 /// The patch shipped with this build.
 pub fn bundled() -> Result<&'static Patch> {
     static PATCH: OnceLock<std::result::Result<Patch, String>> = OnceLock::new();
@@ -346,7 +361,13 @@ pub enum Outcome {
     /// An older build's patch is in place; the stock files must be
     /// reinstalled before the current patch can be applied.
     Stale(String),
-    /// The install does not match the patch; Pi runs unpatched.
+    /// The install is the target release, but some of its files are neither
+    /// stock nor patched by Freenpipe (for example another vendor's patch).
+    /// They are left as they are; the stock files must be reinstalled before
+    /// the patch can be applied.
+    Foreign(String),
+    /// The install does not match the patch (another release, a missing
+    /// package); Pi runs without Freenpipe's patch.
     Skipped(String),
 }
 
@@ -358,11 +379,13 @@ struct Planned {
 enum Plan {
     Files(Vec<Planned>),
     Stale(String),
+    Foreign(String),
 }
 
 fn plan_files(install_dir: &Path, patch: &Patch, apply: bool) -> Result<Plan> {
     let mut planned = Vec::new();
     let mut stale = Vec::new();
+    let mut foreign = Vec::new();
     for file in &patch.files {
         let dir = package_dir(install_dir, &file.package)
             .ok_or_else(|| anyhow!("{} is not installed", file.package))?;
@@ -377,9 +400,17 @@ fn plan_files(install_dir: &Path, patch: &Patch, apply: bool) -> Result<Plan> {
                 stale.push(why);
                 None
             }
-            (FileState::Mismatch(why), _) => bail!(why),
+            (FileState::Mismatch(why), _) => {
+                foreign.push(why);
+                None
+            }
         };
         planned.push(Planned { path, new_content });
+    }
+    // Both mean "reinstall the stock files"; foreign files say more about
+    // what is running now.
+    if !foreign.is_empty() {
+        return Ok(Plan::Foreign(foreign.join("; ")));
     }
     if !stale.is_empty() {
         return Ok(Plan::Stale(stale.join("; ")));
@@ -409,6 +440,7 @@ pub fn apply_in(install_dir: &Path, patch: &Patch, module_source: &str) -> Resul
     let planned = match plan_files(install_dir, patch, true)? {
         Plan::Files(files) => files,
         Plan::Stale(why) => return Ok(Outcome::Stale(why)),
+        Plan::Foreign(why) => return Ok(Outcome::Foreign(why)),
     };
 
     let (module_pkg, module_rel) = &patch.module;
@@ -442,6 +474,7 @@ pub fn remove_in(install_dir: &Path, patch: &Patch) -> Result<Outcome> {
     let planned = match plan_files(install_dir, patch, false)? {
         Plan::Files(files) => files,
         Plan::Stale(why) => return Ok(Outcome::Stale(why)),
+        Plan::Foreign(why) => return Ok(Outcome::Foreign(why)),
     };
     if planned.iter().all(|p| p.new_content.is_none()) {
         return Ok(Outcome::Disabled);
@@ -464,7 +497,8 @@ static LOGGED_SKIP: AtomicBool = AtomicBool::new(false);
 /// Bring the install at `install_dir` in line with the patch setting:
 /// apply the bundled patch, or remove it when
 /// `SCREENPIPE_DISABLE_PI_PATCHES=1`. Never fails: problems are logged
-/// (once per process) and Pi keeps running unpatched.
+/// (once per process) and Pi keeps running the files it has. A stale or
+/// foreign install is left for `pi_install::ensure_current` to rebuild.
 pub fn sync(install_dir: &Path) -> Outcome {
     let disabled = env_flag_on(env::non_empty(env::SCREENPIPE_DISABLE_PI_PATCHES).as_deref());
     let result = bundled().and_then(|patch| {
@@ -485,6 +519,11 @@ pub fn sync(install_dir: &Path) -> Outcome {
                 Outcome::Stale(ref why) => {
                     warn!("pi runtime patch is from an older build: {}", why)
                 }
+                Outcome::Foreign(ref why) => warn!(
+                    "pi runtime: the installed Pi files are not the stock release ({}); \
+                     Freenpipe's patch is not applied to them",
+                    why
+                ),
                 _ => {}
             }
             outcome
@@ -493,7 +532,7 @@ pub fn sync(install_dir: &Path) -> Outcome {
             let reason = format!("{e:#}");
             if !LOGGED_SKIP.swap(true, Ordering::Relaxed) {
                 warn!(
-                    "pi runtime patch not {}; Pi runs unpatched: {}",
+                    "pi runtime patch not {}; Pi runs without Freenpipe's patch: {}",
                     if disabled { "removed" } else { "applied" },
                     reason
                 );
@@ -636,14 +675,45 @@ function f() {
         let err = apply_in(dir.path(), &patch, "x").unwrap_err();
         assert!(format!("{err:#}").contains("0.84.4"));
 
+        // The target release with a file someone else changed (another
+        // vendor's patch, say): reported as foreign so the installer can
+        // restore stock files, and nothing is written.
         let dir = tempfile::tempdir().unwrap();
         let edited = STOCK.replace("return a;", "return a * 3;");
         install(dir.path(), "0.84.1", &edited);
-        assert!(apply_in(dir.path(), &patch, "x").is_err());
+        let outcome = apply_in(dir.path(), &patch, "x").unwrap();
+        assert!(
+            matches!(outcome, Outcome::Foreign(ref why) if why.contains("dist/a.js")),
+            "{outcome:?}"
+        );
+        assert!(matches!(
+            remove_in(dir.path(), &patch).unwrap(),
+            Outcome::Foreign(_)
+        ));
         let file = pi_runtime::package_dir(dir.path()).join("dist/a.js");
         assert_eq!(std::fs::read_to_string(file).unwrap(), edited);
         let module = pi_runtime::package_dir(dir.path()).join("dist/core/compaction/fp.js");
         assert!(!module.exists(), "nothing may be written on a mismatch");
+    }
+
+    #[test]
+    fn an_older_build_with_other_hunks_is_foreign() {
+        // An older build patched the file with hunk one only; this build has
+        // two hunks for it, so one marker is missing.
+        let dir = tempfile::tempdir().unwrap();
+        let half = STOCK.replace("const a = 1;", "const a = 2; // freenpipe-patch:one-v1");
+        install(dir.path(), "0.84.1", &half);
+        let patch = parse(&fixture_patch(STOCK)).unwrap();
+        assert!(matches!(
+            apply_in(dir.path(), &patch, "x").unwrap(),
+            Outcome::Foreign(_)
+        ));
+    }
+
+    #[test]
+    fn the_fingerprint_names_this_builds_patch() {
+        assert_eq!(fingerprint(), fingerprint());
+        assert_eq!(fingerprint().len(), 64);
     }
 
     #[test]

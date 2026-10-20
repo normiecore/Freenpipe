@@ -16,7 +16,15 @@
 //!    When bun's cache fails with a Windows permission error the install is
 //!    retried with npm;
 //! 4. apply the runtime patch ([`super::pi_compaction::sync`]); a patch that
-//!    does not apply leaves Pi working unpatched.
+//!    does not apply leaves Pi working without it.
+//!
+//! An install of the pinned release whose files do not take the patch (an
+//! older build's patch, another vendor's patch, a package Freenpipe does not
+//! ship) is rebuilt **beside** the live one, in `<install>/.rebuild`, and
+//! swapped in only once it is complete and patched. A Pi started meanwhile
+//! keeps running the live tree, and when the live tree cannot be moved (on
+//! Windows, a running Pi can hold files in it) nothing changes and the next
+//! start tries again. Such a rebuild runs at most once per build.
 //!
 //! Every package comes from the public npm registry; lifecycle scripts never
 //! run.
@@ -25,7 +33,8 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 use std::sync::Mutex;
 
-use tracing::{info, warn};
+use serde_json::json;
+use tracing::{debug, info, warn};
 
 use super::bun_runtime::{self, BunBuild};
 use super::pi_compaction;
@@ -34,6 +43,16 @@ use super::pi_runtime;
 /// bun's package cache, inside the install directory so a broken global
 /// cache (a known Windows failure) cannot break the install.
 pub const BUN_CACHE_DIR: &str = ".bun-cache";
+/// Where a rebuild is installed before it replaces the live tree.
+pub const STAGING_DIR: &str = ".rebuild";
+/// Where the live `node_modules` is moved while the rebuilt one takes its
+/// place; removed right after (or at the next start).
+pub const OLD_TREE_DIR: &str = ".node_modules.old";
+/// Records the build (Pi release and patch fingerprint) the install was last
+/// rebuilt for, so a rebuild that does not help is not repeated every start.
+pub const REBUILD_MARKER: &str = ".rebuilt-for-patch";
+/// Lockfiles that describe a `node_modules` tree.
+const LOCKFILES: &[&str] = &["bun.lock", "bun.lockb", "package-lock.json"];
 
 /// Longest piece of installer output kept in an error message.
 const MAX_ERROR_CHARS: usize = 800;
@@ -95,11 +114,15 @@ fn run(mut cmd: Command, what: &str) -> Result<Output, String> {
 
 /// The `bun add` command for `install_dir`.
 pub fn bun_add_command(install_dir: &Path, bun: &str) -> Command {
-    let cache = install_dir.join(BUN_CACHE_DIR);
-    let _ = std::fs::create_dir_all(&cache);
+    bun_add_command_in(install_dir, &install_dir.join(BUN_CACHE_DIR), bun)
+}
+
+/// The `bun add` command for `dir`, with bun's package cache at `cache`.
+fn bun_add_command_in(dir: &Path, cache: &Path, bun: &str) -> Command {
+    let _ = std::fs::create_dir_all(cache);
     let mut cmd = Command::new(bun);
-    cmd.current_dir(install_dir)
-        .env("BUN_INSTALL_CACHE_DIR", &cache)
+    cmd.current_dir(dir)
+        .env("BUN_INSTALL_CACHE_DIR", cache)
         .args(pi_runtime::bun_install_args());
     cmd
 }
@@ -145,27 +168,38 @@ pub fn prepare_bun(install_dir: &Path, stock: Option<String>) -> Option<String> 
 /// Install the pinned Pi release into `install_dir` with `bun`, then apply
 /// the runtime patch. See the module documentation for the steps.
 pub fn install(install_dir: &Path, bun: &str) -> Result<(), String> {
-    std::fs::create_dir_all(install_dir)
-        .map_err(|e| format!("could not create {}: {e}", install_dir.display()))?;
-    pi_runtime::seed_package_json(install_dir)
+    install_into(install_dir, install_dir, bun)
+}
+
+/// [`install`] into `target`, using the bun cache, the baseline bun and the
+/// crash marker of the runtime at `runtime_dir` (the live install directory;
+/// `target` is a staging directory during a rebuild).
+fn install_into(target: &Path, runtime_dir: &Path, bun: &str) -> Result<(), String> {
+    std::fs::create_dir_all(target)
+        .map_err(|e| format!("could not create {}: {e}", target.display()))?;
+    pi_runtime::seed_package_json(target)
         .map_err(|e| format!("could not seed package.json: {e:#}"))?;
 
     info!(
         "pi runtime: installing pi {} into {} with {}",
         pi_runtime::PI_VERSION,
-        install_dir.display(),
+        target.display(),
         bun
     );
-    let mut output = run(bun_add_command(install_dir, bun), "bun")?;
+    let cache = runtime_dir.join(BUN_CACHE_DIR);
+    let mut output = run(bun_add_command_in(target, &cache, bun), "bun")?;
 
     if !output.status.success() && bun_runtime::is_illegal_instruction_exit(output.status.code()) {
-        bun_runtime::record_stock_bun_crash(install_dir);
-        match bun_runtime::ensure_baseline_bun(install_dir) {
+        bun_runtime::record_stock_bun_crash(runtime_dir);
+        match bun_runtime::ensure_baseline_bun(runtime_dir) {
             Ok(baseline) => {
                 let baseline = baseline.to_string_lossy().into_owned();
                 if baseline != bun {
                     info!("pi runtime: retrying the install with the baseline bun build");
-                    output = run(bun_add_command(install_dir, &baseline), "baseline bun")?;
+                    output = run(
+                        bun_add_command_in(target, &cache, &baseline),
+                        "baseline bun",
+                    )?;
                 }
             }
             Err(e) => warn!("bun: baseline build unavailable: {:#}", e),
@@ -186,7 +220,7 @@ pub fn install(install_dir: &Path, bun: &str) -> Result<(), String> {
             "pi runtime: bun's cache failed with a permission error; retrying with npm: {}",
             bun_failure
         );
-        let npm = run(npm_install_command(install_dir), "npm")
+        let npm = run(npm_install_command(target), "npm")
             .map_err(|e| format!("{bun_failure}; npm fallback: {e}"))?;
         if !npm.status.success() {
             return Err(format!(
@@ -196,7 +230,7 @@ pub fn install(install_dir: &Path, bun: &str) -> Result<(), String> {
         }
     }
 
-    let installed = pi_runtime::installed_version(install_dir);
+    let installed = pi_runtime::installed_version(target);
     if installed.as_deref() != Some(pi_runtime::PI_VERSION) {
         return Err(format!(
             "the install finished but pi-coding-agent is {:?}, not {}",
@@ -207,9 +241,9 @@ pub fn install(install_dir: &Path, bun: &str) -> Result<(), String> {
     info!(
         "pi runtime: pi {} installed in {}",
         pi_runtime::PI_VERSION,
-        install_dir.display()
+        target.display()
     );
-    let _ = pi_compaction::sync(install_dir);
+    let _ = pi_compaction::sync(target);
     Ok(())
 }
 
@@ -300,11 +334,18 @@ pub enum EnsureOutcome {
     Installed,
     /// A damaged install was cleared and installed again.
     Repaired,
+    /// A healthy install that did not take the patch was rebuilt beside the
+    /// live one from stock files and swapped in.
+    Rebuilt,
 }
 
 /// The app and the embedded engine both bring the runtime up at start;
 /// this keeps their installs from running in the same directory at once.
 static INSTALL_LOCK: Mutex<()> = Mutex::new(());
+
+/// Install directories a rebuild was already tried for in this process, so
+/// the app's and the engine's start-up calls do not both try.
+static REBUILD_TRIED: Mutex<Vec<PathBuf>> = Mutex::new(Vec::new());
 
 /// Make the install at `install_dir` the pinned, patched release: set up the
 /// baseline bun where needed, install, upgrade or repair Pi, and apply the
@@ -314,17 +355,14 @@ pub fn ensure_current(
     stock_bun: Option<String>,
 ) -> Result<EnsureOutcome, String> {
     let _guard = INSTALL_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+    recover_interrupted_rebuild(install_dir);
     let bun = prepare_bun(install_dir, stock_bun);
-    let mut state = install_state(install_dir);
+    let state = install_state(install_dir);
     if state == InstallState::Healthy {
-        match pi_compaction::sync(install_dir) {
-            // An older build's patch: only fresh stock files can take the
-            // current one, so reinstall (bun's local cache makes it quick).
-            pi_compaction::Outcome::Stale(why) if bun.is_some() => {
-                state = InstallState::Broken(format!("the runtime patch is outdated ({why})"));
-            }
-            _ => return Ok(EnsureOutcome::Current),
-        }
+        return Ok(match rebuild_reason(install_dir) {
+            None => EnsureOutcome::Current,
+            Some(reason) => rebuild_once(install_dir, bun.as_deref(), &reason),
+        });
     }
     let bun = bun.ok_or_else(|| {
         format!(
@@ -363,8 +401,183 @@ pub fn ensure_current(
 /// and the crash marker are kept.
 pub fn clear_install_artifacts(install_dir: &Path) {
     let _ = std::fs::remove_dir_all(install_dir.join("node_modules"));
-    for name in ["bun.lock", "bun.lockb", "package-lock.json"] {
+    for name in LOCKFILES {
         let _ = std::fs::remove_file(install_dir.join(name));
+    }
+}
+
+/// Why a healthy install of the pinned release must be rebuilt from stock
+/// files, if it must. Applies the patch on the way when it can be applied.
+fn rebuild_reason(install_dir: &Path) -> Option<String> {
+    match pi_compaction::sync(install_dir) {
+        pi_compaction::Outcome::Stale(why) => {
+            return Some(format!("the runtime patch is from an older build ({why})"));
+        }
+        pi_compaction::Outcome::Foreign(why) => {
+            return Some(format!("Pi's files were changed outside Freenpipe ({why})"));
+        }
+        _ => {}
+    }
+    let excluded = pi_runtime::excluded_packages_present(install_dir);
+    (!excluded.is_empty()).then(|| {
+        format!(
+            "it carries {}, which Freenpipe does not install",
+            excluded.join(", ")
+        )
+    })
+}
+
+/// Whether the install was already rebuilt for this build's Pi release and
+/// patch.
+fn rebuilt_for_this_build(install_dir: &Path) -> bool {
+    let marker = pi_runtime::read_json_object(&install_dir.join(REBUILD_MARKER));
+    marker["piVersion"] == pi_runtime::PI_VERSION
+        && marker["patch"] == pi_compaction::fingerprint().as_str()
+}
+
+/// Rebuild the install for `reason`, at most once per process and once per
+/// build. Never fails: when the rebuild cannot run or does not finish, Pi
+/// keeps running the installed files and the reason is logged.
+fn rebuild_once(install_dir: &Path, bun: Option<&str>, reason: &str) -> EnsureOutcome {
+    if rebuilt_for_this_build(install_dir) {
+        debug!(
+            "pi runtime: {}; it was already rebuilt once for this build, so the installed files stay",
+            reason
+        );
+        return EnsureOutcome::Current;
+    }
+    let Some(bun) = bun else {
+        warn!(
+            "pi runtime: {}, but bun was not found to rebuild it; Pi keeps running the installed files",
+            reason
+        );
+        return EnsureOutcome::Current;
+    };
+    {
+        let mut tried = REBUILD_TRIED.lock().unwrap_or_else(|p| p.into_inner());
+        if tried.iter().any(|d| d == install_dir) {
+            return EnsureOutcome::Current;
+        }
+        tried.push(install_dir.to_path_buf());
+    }
+    info!(
+        "pi runtime: rebuilding the install in {} beside the live one: {}",
+        install_dir.display(),
+        reason
+    );
+    match rebuild_beside(install_dir, bun) {
+        Ok(()) => {
+            let record = json!({
+                "piVersion": pi_runtime::PI_VERSION,
+                "patch": pi_compaction::fingerprint(),
+                "rebuiltAt": chrono::Utc::now().to_rfc3339(),
+                "reason": reason,
+            });
+            if let Err(e) =
+                pi_runtime::write_json_atomic(&install_dir.join(REBUILD_MARKER), &record)
+            {
+                warn!("pi runtime: could not record the rebuild: {:#}", e);
+            }
+            info!("pi runtime: the rebuilt install is in place");
+            EnsureOutcome::Rebuilt
+        }
+        Err(e) => {
+            warn!(
+                "pi runtime: the rebuild did not finish ({}); Pi keeps running the installed files and the next start tries again",
+                e
+            );
+            EnsureOutcome::Current
+        }
+    }
+}
+
+/// Install the pinned release with stock files into `<install>/.rebuild`
+/// (bun's cache makes that quick), patch it there, and swap it in for the
+/// live tree. The live tree is untouched until the swap; on any failure the
+/// staging directory is removed and the live tree stays as it was.
+fn rebuild_beside(install_dir: &Path, bun: &str) -> Result<(), String> {
+    let staging = install_dir.join(STAGING_DIR);
+    if staging.exists() {
+        let _ = std::fs::remove_dir_all(&staging);
+    }
+    std::fs::create_dir_all(&staging)
+        .map_err(|e| format!("could not create {}: {e}", staging.display()))?;
+    // Keep what the live manifest lists beyond the pins; seeding applies the
+    // pins and drops packages Freenpipe does not install. No lockfile: it
+    // would pin the tree being replaced.
+    let manifest = install_dir.join("package.json");
+    if manifest.is_file() {
+        std::fs::copy(&manifest, staging.join("package.json"))
+            .map_err(|e| format!("could not copy package.json: {e}"))?;
+    }
+    let result = install_into(&staging, install_dir, bun)
+        .and_then(|()| match install_state(&staging).problem() {
+            Some(problem) => Err(format!("the rebuilt install is incomplete: {problem}")),
+            None => Ok(()),
+        })
+        .and_then(|()| swap_in_rebuilt_tree(install_dir, &staging));
+    let _ = std::fs::remove_dir_all(&staging);
+    result
+}
+
+/// Put the tree built in `staging` in place of the live one. The live
+/// `node_modules` is moved aside first; when that fails (on Windows, a
+/// running Pi can hold files in it) nothing has changed.
+fn swap_in_rebuilt_tree(install_dir: &Path, staging: &Path) -> Result<(), String> {
+    let live = install_dir.join("node_modules");
+    let old = install_dir.join(OLD_TREE_DIR);
+    if old.exists() {
+        let _ = std::fs::remove_dir_all(&old);
+    }
+    if live.exists() {
+        std::fs::rename(&live, &old).map_err(|e| {
+            format!("could not move the live tree aside (a running Pi may hold files in it): {e}")
+        })?;
+    }
+    if let Err(e) = std::fs::rename(staging.join("node_modules"), &live) {
+        if old.exists() {
+            let _ = std::fs::rename(&old, &live);
+        }
+        return Err(format!("could not move the rebuilt tree into place: {e}"));
+    }
+    // The manifest and lockfile now describe the tree in place.
+    for name in LOCKFILES {
+        let _ = std::fs::remove_file(install_dir.join(name));
+    }
+    for name in std::iter::once(&"package.json").chain(LOCKFILES.iter()) {
+        let from = staging.join(name);
+        if from.is_file() {
+            if let Err(e) = std::fs::rename(&from, install_dir.join(name)) {
+                warn!("pi runtime: could not move the rebuilt {}: {}", name, e);
+            }
+        }
+    }
+    if let Err(e) = std::fs::remove_dir_all(&old) {
+        debug!(
+            "pi runtime: the replaced tree in {} is removed at the next start: {}",
+            old.display(),
+            e
+        );
+    }
+    Ok(())
+}
+
+/// Clean up after a rebuild that was cut short: put the live tree back when
+/// the process died between the two moves of the swap, and remove the staging
+/// directory and the replaced tree.
+fn recover_interrupted_rebuild(install_dir: &Path) {
+    let live = install_dir.join("node_modules");
+    let old = install_dir.join(OLD_TREE_DIR);
+    if !live.exists() && old.is_dir() {
+        match std::fs::rename(&old, &live) {
+            Ok(()) => warn!("pi runtime: restored the install tree after an interrupted rebuild"),
+            Err(e) => warn!("pi runtime: could not restore {}: {}", old.display(), e),
+        }
+    }
+    for dir in [old, install_dir.join(STAGING_DIR)] {
+        if dir.exists() {
+            let _ = std::fs::remove_dir_all(&dir);
+        }
     }
 }
 
@@ -582,6 +795,186 @@ mod tests {
         pi_runtime::seed_from_global(&config, global_dir.as_deref()).unwrap();
         assert!(config.join(pi_runtime::MIGRATED_MARKER).is_file());
         assert!(config.join("auth.json").is_file());
+    }
+
+    #[test]
+    fn a_rebuilt_tree_is_swapped_in_with_its_manifest() {
+        let dir = tempfile::tempdir().unwrap();
+        let d = dir.path();
+        std::fs::create_dir_all(d.join("node_modules").join("old-only")).unwrap();
+        std::fs::write(d.join("package.json"), r#"{"old":true}"#).unwrap();
+        std::fs::write(d.join("bun.lockb"), "old").unwrap();
+        std::fs::create_dir_all(d.join(pi_runtime::CONFIG_DIR_NAME)).unwrap();
+        let staging = d.join(STAGING_DIR);
+        std::fs::create_dir_all(staging.join("node_modules").join("new-only")).unwrap();
+        std::fs::write(staging.join("package.json"), r#"{"new":true}"#).unwrap();
+        std::fs::write(staging.join("bun.lock"), "new").unwrap();
+
+        swap_in_rebuilt_tree(d, &staging).unwrap();
+        assert!(d.join("node_modules").join("new-only").exists());
+        assert!(!d.join("node_modules").join("old-only").exists());
+        assert_eq!(
+            pi_runtime::read_json_object(&d.join("package.json")),
+            json!({"new": true})
+        );
+        assert!(!d.join("bun.lockb").exists());
+        assert_eq!(std::fs::read_to_string(d.join("bun.lock")).unwrap(), "new");
+        assert!(!d.join(OLD_TREE_DIR).exists());
+        assert!(d.join(pi_runtime::CONFIG_DIR_NAME).exists());
+    }
+
+    #[test]
+    fn a_swap_cut_short_puts_the_live_tree_back() {
+        let dir = tempfile::tempdir().unwrap();
+        let d = dir.path();
+        // The process died after moving the live tree aside.
+        std::fs::create_dir_all(d.join(OLD_TREE_DIR).join("live")).unwrap();
+        std::fs::create_dir_all(d.join(STAGING_DIR).join("node_modules")).unwrap();
+        recover_interrupted_rebuild(d);
+        assert!(d.join("node_modules").join("live").exists());
+        assert!(!d.join(OLD_TREE_DIR).exists());
+        assert!(!d.join(STAGING_DIR).exists());
+
+        // With the live tree in place the leftovers are simply removed.
+        std::fs::create_dir_all(d.join(OLD_TREE_DIR).join("replaced")).unwrap();
+        recover_interrupted_rebuild(d);
+        assert!(d.join("node_modules").join("live").exists());
+        assert!(!d.join(OLD_TREE_DIR).exists());
+    }
+
+    /// Write an executable stand-in for bun.
+    #[cfg(unix)]
+    fn fake_bun(dir: &Path, name: &str, body: &str) -> String {
+        use std::os::unix::fs::PermissionsExt;
+        let path = dir.join(name);
+        std::fs::write(&path, format!("#!/bin/sh\n{body}\n")).unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+        path.to_string_lossy().into_owned()
+    }
+
+    /// A healthy 0.84.1 install written by another build: it still lists
+    /// and carries `tinfoil`.
+    fn foreign_install(dir: &Path) {
+        fake_install(dir, pi_runtime::PI_VERSION, REQUIRED_DEPENDENCIES);
+        let tinfoil = pi_runtime::node_module_dir(dir, "tinfoil");
+        std::fs::create_dir_all(&tinfoil).unwrap();
+        std::fs::write(tinfoil.join("package.json"), "{}").unwrap();
+        std::fs::write(
+            dir.join("package.json"),
+            r#"{"dependencies":{"@earendil-works/pi-coding-agent":"0.84.1","tinfoil":"1.0.0"}}"#,
+        )
+        .unwrap();
+        std::fs::create_dir_all(dir.join(pi_runtime::CONFIG_DIR_NAME)).unwrap();
+        std::fs::write(
+            dir.join(pi_runtime::CONFIG_DIR_NAME).join("auth.json"),
+            "{}",
+        )
+        .unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_foreign_install_is_rebuilt_beside_the_live_one_once() {
+        let dir = tempfile::tempdir().unwrap();
+        let tools = tempfile::tempdir().unwrap();
+        let d = dir.path().join("pi-agent");
+        foreign_install(&d);
+        assert_eq!(install_state(&d), InstallState::Healthy);
+        assert_eq!(pi_runtime::excluded_packages_present(&d), vec!["tinfoil"]);
+
+        // Lays out a minimal 0.84.1 tree in the current directory, the way
+        // `bun add` would, and records the cache it was given.
+        let bun = fake_bun(
+            tools.path(),
+            "bun",
+            r#"[ "$1" = add ] || exit 2
+m=node_modules
+mkdir -p "$m/@earendil-works/pi-coding-agent/dist" "$m/@earendil-works/pi-ai" "$m/@anthropic-ai/sdk" "$m/cross-spawn"
+echo '{"version":"0.84.1"}' > "$m/@earendil-works/pi-coding-agent/package.json"
+: > "$m/@earendil-works/pi-coding-agent/dist/cli.js"
+echo '{"version":"0.84.1"}' > "$m/@earendil-works/pi-ai/package.json"
+echo '{}' > "$m/@anthropic-ai/sdk/package.json"
+echo '{}' > "$m/cross-spawn/package.json"
+printf '%s' "$BUN_INSTALL_CACHE_DIR" > "$m/.cache-dir"
+echo '{}' > bun.lock"#,
+        );
+        assert_eq!(
+            ensure_current(&d, Some(bun.clone())),
+            Ok(EnsureOutcome::Rebuilt)
+        );
+        let nm = d.join("node_modules");
+        assert!(!nm.join("tinfoil").exists());
+        assert_eq!(
+            std::fs::read_to_string(nm.join(".cache-dir")).unwrap(),
+            d.join(BUN_CACHE_DIR).to_string_lossy()
+        );
+        let pkg = pi_runtime::read_json_object(&d.join("package.json"));
+        assert!(pkg["dependencies"].get("tinfoil").is_none());
+        assert_eq!(pkg["overrides"][pi_runtime::PI_AI], pi_runtime::PI_VERSION);
+        assert!(d.join("bun.lock").is_file());
+        assert!(!d.join(STAGING_DIR).exists());
+        assert!(!d.join(OLD_TREE_DIR).exists());
+        assert!(d
+            .join(pi_runtime::CONFIG_DIR_NAME)
+            .join("auth.json")
+            .is_file());
+        assert!(rebuilt_for_this_build(&d));
+        assert_eq!(install_state(&d), InstallState::Healthy);
+        // Nothing is left to rebuild.
+        assert_eq!(ensure_current(&d, Some(bun)), Ok(EnsureOutcome::Current));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_rebuild_that_fails_leaves_the_live_tree_running() {
+        let dir = tempfile::tempdir().unwrap();
+        let tools = tempfile::tempdir().unwrap();
+        let d = dir.path().join("pi-agent");
+        foreign_install(&d);
+        let calls = tools.path().join("calls");
+        let bun = fake_bun(
+            tools.path(),
+            "bun",
+            &format!(
+                "echo x >> '{}'\necho 'error: registry unreachable (503)' >&2\nexit 1",
+                calls.display()
+            ),
+        );
+        assert_eq!(
+            ensure_current(&d, Some(bun.clone())),
+            Ok(EnsureOutcome::Current)
+        );
+        // The live tree is exactly as it was.
+        assert!(pi_runtime::node_module_dir(&d, "tinfoil").exists());
+        assert_eq!(install_state(&d), InstallState::Healthy);
+        assert!(!d.join(STAGING_DIR).exists());
+        assert!(!rebuilt_for_this_build(&d));
+        // One try per process: the second start-up call does not run bun.
+        assert_eq!(ensure_current(&d, Some(bun)), Ok(EnsureOutcome::Current));
+        assert_eq!(std::fs::read_to_string(&calls).unwrap().lines().count(), 1);
+    }
+
+    #[test]
+    fn a_rebuild_already_done_for_this_build_is_not_repeated() {
+        let dir = tempfile::tempdir().unwrap();
+        let d = dir.path();
+        foreign_install(d);
+        assert!(!rebuilt_for_this_build(d));
+        pi_runtime::write_json_atomic(
+            &d.join(REBUILD_MARKER),
+            &json!({"piVersion": pi_runtime::PI_VERSION, "patch": "an older build"}),
+        )
+        .unwrap();
+        assert!(!rebuilt_for_this_build(d));
+        pi_runtime::write_json_atomic(
+            &d.join(REBUILD_MARKER),
+            &json!({"piVersion": pi_runtime::PI_VERSION, "patch": pi_compaction::fingerprint()}),
+        )
+        .unwrap();
+        assert!(rebuilt_for_this_build(d));
+        // No bun is needed: the installed files stay.
+        assert_eq!(ensure_current(d, None), Ok(EnsureOutcome::Current));
+        assert!(pi_runtime::node_module_dir(d, "tinfoil").exists());
     }
 
     #[test]

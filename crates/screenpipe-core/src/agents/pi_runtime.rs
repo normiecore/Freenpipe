@@ -17,8 +17,9 @@
 //!   `~/.pi/agent`, so provider entries written for chats and pipes never
 //!   rewrite the user's own Pi setup. The first time that directory is used
 //!   it is seeded from the global one (sign-ins, trusted folders, installed
-//!   Pi packages and saved sessions), once, under a lock, and a
-//!   `.migrated-from-global` marker records that it happened;
+//!   Pi packages, the user's own model providers and saved sessions), once,
+//!   under a lock, and a `.migrated-from-global` marker records that it
+//!   happened;
 //! * the environment every Pi process gets ([`child_env`]).
 //!
 //! Functions that take explicit paths do the work; the argument-free wrappers
@@ -89,10 +90,50 @@ pub const MIGRATED_MARKER: &str = ".migrated-from-global";
 /// Lock held while the config directory is being seeded.
 pub const MIGRATION_LOCK: &str = ".migration.lock";
 
-/// A lock older than this is left over from a process that died mid-seed.
+/// A lock older than this is left over from a process that died mid-seed
+/// (used when the PID in the lock cannot be checked, or was reused).
 const STALE_LOCK_AGE: Duration = Duration::from_secs(10 * 60);
-/// How long a second process waits for another one's seeding to finish.
+/// How long a start-up thread waits for another one's seeding to finish.
+/// Code about to start Pi never waits (see [`ensure_config_dir`]).
 const LOCK_WAIT: Duration = Duration::from_secs(10);
+
+/// Provider names the runtime writes itself for the AI gateway. They are
+/// never carried over from the global config: an entry written there by an
+/// older screenpipe points at the vendor's hosted gateway.
+fn is_gateway_provider(name: &str) -> bool {
+    name == "screenpipe" || name.starts_with("screenpipe-")
+}
+
+/// Hosts of the vendor's hosted services. A global provider entry pointing at
+/// one of them (or a subdomain) is not carried over: Freenpipe never sends
+/// data there.
+const VENDOR_HOSTS: &[&str] = &["screenpi.pe", "screenpipe.com", "mediar.ai"];
+
+/// The host part of a URL such as `https://user@api.example.com:8443/v1`,
+/// lowercased.
+fn url_host(url: &str) -> String {
+    let rest = url.trim();
+    let rest = rest.split_once("://").map(|(_, r)| r).unwrap_or(rest);
+    let authority = rest.split(['/', '?', '#']).next().unwrap_or("");
+    let host_port = authority.rsplit('@').next().unwrap_or("");
+    let host = if let Some(bracketed) = host_port.strip_prefix('[') {
+        bracketed.split(']').next().unwrap_or("")
+    } else {
+        host_port.split(':').next().unwrap_or("")
+    };
+    host.trim_end_matches('.').to_ascii_lowercase()
+}
+
+/// Whether a models.json provider entry sends requests to a vendor host.
+fn points_at_vendor(entry: &Value) -> bool {
+    let Some(base) = entry.get("baseUrl").and_then(Value::as_str) else {
+        return false;
+    };
+    let host = url_host(base);
+    VENDOR_HOSTS
+        .iter()
+        .any(|v| host == *v || host.ends_with(&format!(".{v}")))
+}
 
 /// `<data dir>/pi-agent`.
 pub fn install_dir_in(data_dir: &Path) -> PathBuf {
@@ -385,9 +426,27 @@ fn same_path(a: &Path, b: &Path) -> bool {
 }
 
 /// Create the config directory if needed, seed it from the global Pi config
-/// once, and return it. Seeding problems are logged, never fatal: Pi then
-/// simply starts without the user's global sign-ins.
+/// once, and return it. For code about to start Pi, which may run on an
+/// async worker: it never waits for a seed that another thread or process
+/// is running (Pi then starts while the seed finishes; sign-ins are copied
+/// first). Seeding problems are logged, never fatal: Pi then simply starts
+/// without the user's global sign-ins.
+///
+/// After start-up this is a single file test, because the app and the engine
+/// seed from a background thread with [`ensure_config_dir_at_start`] before
+/// anything starts Pi.
 pub fn ensure_config_dir() -> Result<PathBuf> {
+    ensure_config_dir_waiting(Duration::ZERO)
+}
+
+/// [`ensure_config_dir`] for start-up threads: waits up to 10 s for a seed
+/// another process is running. Blocking (it copies the global sessions);
+/// call it from a background thread.
+pub fn ensure_config_dir_at_start() -> Result<PathBuf> {
+    ensure_config_dir_waiting(LOCK_WAIT)
+}
+
+fn ensure_config_dir_waiting(lock_wait: Duration) -> Result<PathBuf> {
     let dir = config_dir();
     std::fs::create_dir_all(&dir)
         .with_context(|| format!("create pi config dir {}", dir.display()))?;
@@ -397,7 +456,7 @@ pub fn ensure_config_dir() -> Result<PathBuf> {
             dirs::home_dir().as_deref(),
             &dir,
         );
-        match seed_from_global(&dir, global.as_deref()) {
+        match seed_from_global_waiting(&dir, global.as_deref(), lock_wait) {
             Ok(report) => debug!("pi config seeding: {:?}", report),
             Err(e) => warn!("pi config seeding failed: {:#}", e),
         }
@@ -444,7 +503,25 @@ fn try_take_lock(lock: &Path) -> std::io::Result<Option<LockGuard>> {
     }
 }
 
+/// The PID a seeder wrote into its lock, when there is a usable one. A lock
+/// read between its creation and the write is empty and yields `None`.
+fn lock_owner(lock: &Path) -> Option<u32> {
+    std::fs::read_to_string(lock)
+        .ok()?
+        .trim()
+        .parse::<u32>()
+        .ok()
+        .filter(|pid| *pid > 0 && *pid <= i32::MAX as u32)
+}
+
+/// A lock nobody will remove: its seeder has exited (a crash mid-seed), or,
+/// when that cannot be told, it is older than [`STALE_LOCK_AGE`].
 fn lock_is_stale(lock: &Path) -> bool {
+    if let Some(pid) = lock_owner(lock) {
+        if !crate::pipes::is_process_alive(pid) {
+            return true;
+        }
+    }
     std::fs::metadata(lock)
         .and_then(|m| m.modified())
         .ok()
@@ -457,16 +534,19 @@ fn lock_is_stale(lock: &Path) -> bool {
 ///
 /// Copied, never overwriting what the isolated directory already has:
 /// `auth.json` (provider sign-ins), `trust.json` (trusted project folders),
-/// the `packages` list of `settings.json` (Pi packages the user installed)
-/// and the `sessions/` tree. Everything else the user configured globally is
-/// left out on purpose; provider entries for Freenpipe are written by the
-/// runtime itself. The `.migrated-from-global` marker is written even when
-/// there was no global config, so the check is a single file test afterwards.
+/// the `packages` list of `settings.json` (Pi packages the user installed),
+/// the user's own `models.json` providers (each one the isolated file lacks,
+/// except the gateway entries the runtime writes itself and any entry that
+/// points at a vendor host) and the `sessions/` tree, last because it can be
+/// large. The rest of the global `settings.json` is left out on purpose. The
+/// `.migrated-from-global` marker is written even when there was no global
+/// config, so the check is a single file test afterwards.
 pub fn seed_from_global(config_dir: &Path, global_dir: Option<&Path>) -> Result<SeedReport> {
     seed_from_global_waiting(config_dir, global_dir, LOCK_WAIT)
 }
 
-/// [`seed_from_global`] with an explicit wait for another seeder's lock.
+/// [`seed_from_global`] with an explicit wait for another seeder's lock
+/// (`Duration::ZERO` returns [`SeedReport::Busy`] at once).
 pub fn seed_from_global_waiting(
     config_dir: &Path,
     global_dir: Option<&Path>,
@@ -495,7 +575,7 @@ pub fn seed_from_global_waiting(
             let _ = std::fs::remove_file(&lock_path);
             continue;
         }
-        if started.elapsed() > lock_wait {
+        if started.elapsed() >= lock_wait {
             return Ok(SeedReport::Busy);
         }
         std::thread::sleep(Duration::from_millis(200));
@@ -523,6 +603,11 @@ pub fn seed_from_global_waiting(
             Ok(true) => copied.push("settings.json#packages".to_string()),
             Ok(false) => {}
             Err(e) => failed.push(format!("settings.json: {e}")),
+        }
+        match seed_models_providers(&global.join("models.json"), &config_dir.join("models.json")) {
+            Ok(0) => {}
+            Ok(n) => copied.push(format!("models.json ({n} providers)")),
+            Err(e) => failed.push(format!("models.json: {e}")),
         }
         let sessions = global.join("sessions");
         if sessions.is_dir() {
@@ -590,6 +675,72 @@ fn seed_settings_packages(global: &Path, local: &Path) -> Result<bool> {
     obj.insert("packages".to_string(), packages);
     write_json_atomic(local, &settings)?;
     Ok(true)
+}
+
+/// Carry the user's own provider entries from the global `models.json` into
+/// the isolated one: custom providers (a groq or bedrock entry, say) and the
+/// user's settings for a provider the runtime also writes (an `ollama` entry
+/// whose `baseUrl` points at another machine, an API key kept in the file).
+/// The runtime's own merge keeps such `baseUrl` and `apiKey` values. An entry
+/// the isolated file already has is never touched; gateway entries and
+/// entries pointing at a vendor host are skipped. Returns how many providers
+/// were added.
+fn seed_models_providers(global: &Path, local: &Path) -> Result<usize> {
+    let text = match std::fs::read_to_string(global) {
+        Ok(t) => t,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(0),
+        Err(e) => return Err(e.into()),
+    };
+    let parsed: Value = serde_json::from_str(&text).context("global models.json is not JSON")?;
+    let Some(global_providers) = parsed.get("providers").and_then(Value::as_object) else {
+        return Ok(0);
+    };
+    let wanted: Vec<(&String, &Value)> = global_providers
+        .iter()
+        .filter(|(name, entry)| {
+            entry.is_object() && !is_gateway_provider(name) && !points_at_vendor(entry)
+        })
+        .collect();
+    if wanted.is_empty() {
+        return Ok(0);
+    }
+
+    let mut models = read_json_object(local);
+    let obj = models.as_object_mut().expect("object");
+    let providers = obj.entry("providers").or_insert_with(|| json!({}));
+    if !providers.is_object() {
+        *providers = json!({});
+    }
+    let providers = providers.as_object_mut().expect("object");
+    let mut added = 0;
+    for (name, entry) in wanted {
+        if !providers.contains_key(name) {
+            providers.insert(name.clone(), entry.clone());
+            added += 1;
+        }
+    }
+    if added > 0 {
+        write_json_atomic(local, &models)?;
+        restrict_permissions(local);
+    }
+    Ok(added)
+}
+
+/// Packages of [`EXCLUDED_PACKAGES`] that the install at `install_dir` still
+/// carries: listed in its `package.json` (written by another build) or
+/// present in `node_modules`.
+pub fn excluded_packages_present(install_dir: &Path) -> Vec<&'static str> {
+    let manifest = read_json_object(&install_dir.join("package.json"));
+    EXCLUDED_PACKAGES
+        .iter()
+        .copied()
+        .filter(|name| {
+            ["dependencies", "overrides"]
+                .iter()
+                .any(|section| manifest[*section].get(*name).is_some())
+                || node_module_dir(install_dir, name).exists()
+        })
+        .collect()
 }
 
 /// Copy every regular file under `from` into `to` that `to` lacks. Returns
@@ -918,7 +1069,18 @@ mod tests {
             r#"{"packages":["npm:pi-foo"],"defaultModel":"x","shellPath":"/bin/zsh"}"#,
         )
         .unwrap();
-        std::fs::write(global.join("models.json"), r#"{"providers":{}}"#).unwrap();
+        std::fs::write(
+            global.join("models.json"),
+            r#"{"providers":{
+                "groq":{"baseUrl":"https://api.groq.com/openai/v1","apiKey":"gsk","models":[{"id":"llama"}]},
+                "ollama":{"baseUrl":"http://nas.local:11434/v1","models":[]},
+                "screenpipe":{"baseUrl":"https://gateway.example/v1","apiKey":"t"},
+                "screenpipe-tinfoil":{"baseUrl":"https://example.org/v1"},
+                "hosted":{"baseUrl":"https://API.screenpi.pe:443/v1"},
+                "broken":"not an object"
+            }}"#,
+        )
+        .unwrap();
         std::fs::write(
             global.join("sessions").join("--proj--").join("a.jsonl"),
             "{}\n",
@@ -937,11 +1099,21 @@ mod tests {
                 "auth.json".to_string(),
                 "trust.json".to_string(),
                 "settings.json#packages".to_string(),
+                "models.json (2 providers)".to_string(),
                 "sessions (1 files)".to_string()
             ]
         );
         assert!(config.join("sessions/--proj--/a.jsonl").exists());
-        assert!(!config.join("models.json").exists());
+        // Only the user's own providers come over: no gateway entry, nothing
+        // pointing at a vendor host.
+        let models = read_json_object(&config.join("models.json"));
+        let names: Vec<&String> = models["providers"].as_object().unwrap().keys().collect();
+        assert_eq!(names, vec!["groq", "ollama"]);
+        assert_eq!(
+            models["providers"]["ollama"]["baseUrl"],
+            "http://nas.local:11434/v1"
+        );
+        assert_eq!(models["providers"]["groq"]["apiKey"], "gsk");
         let settings = read_json_object(&config.join("settings.json"));
         assert_eq!(settings, json!({"packages": ["npm:pi-foo"]}));
         let marker = read_json_object(&config.join(MIGRATED_MARKER));
@@ -956,9 +1128,19 @@ mod tests {
         std::fs::write(global.join("auth.json"), r#"{"g":1}"#).unwrap();
         std::fs::write(global.join("settings.json"), r#"{"packages":["npm:g"]}"#).unwrap();
         std::fs::write(global.join("sessions").join("s.jsonl"), "global").unwrap();
+        std::fs::write(
+            global.join("models.json"),
+            r#"{"providers":{"ollama":{"baseUrl":"http://global:11434/v1"},"groq":{"baseUrl":"https://g/v1"}}}"#,
+        )
+        .unwrap();
 
         let config = dir.path().join("pi-config");
         std::fs::create_dir_all(config.join("sessions")).unwrap();
+        std::fs::write(
+            config.join("models.json"),
+            r#"{"providers":{"ollama":{"baseUrl":"http://localhost:11434/v1"}},"extra":true}"#,
+        )
+        .unwrap();
         std::fs::write(config.join("auth.json"), r#"{"local":1}"#).unwrap();
         std::fs::write(
             config.join("settings.json"),
@@ -980,6 +1162,41 @@ mod tests {
             std::fs::read_to_string(config.join("sessions/s.jsonl")).unwrap(),
             "local"
         );
+        // The isolated ollama entry stays; only the missing groq is added.
+        let models = read_json_object(&config.join("models.json"));
+        assert_eq!(
+            models["providers"]["ollama"]["baseUrl"],
+            "http://localhost:11434/v1"
+        );
+        assert_eq!(models["providers"]["groq"]["baseUrl"], "https://g/v1");
+        assert_eq!(models["extra"], true);
+    }
+
+    #[test]
+    fn vendor_hosts_are_recognised_in_provider_urls() {
+        for url in [
+            "https://screenpi.pe/v1",
+            "https://api.screenpi.pe/v1",
+            "HTTPS://Gateway.ScreenPipe.com:8443/v1/",
+            "https://user@x.mediar.ai/v1",
+            "https://screenpi.pe./v1",
+        ] {
+            assert!(points_at_vendor(&json!({ "baseUrl": url })), "{url}");
+        }
+        for url in [
+            "http://localhost:11434/v1",
+            "https://api.groq.com/openai/v1",
+            "https://notscreenpi.pe/v1",
+            "https://screenpi.pe.example.org/v1",
+            "http://[::1]:8080/v1",
+        ] {
+            assert!(!points_at_vendor(&json!({ "baseUrl": url })), "{url}");
+        }
+        assert!(!points_at_vendor(&json!({ "apiKey": "x" })));
+        assert_eq!(url_host("http://[::1]:8080/v1"), "::1");
+        assert!(is_gateway_provider("screenpipe"));
+        assert!(is_gateway_provider("screenpipe-cloud"));
+        assert!(!is_gateway_provider("ollama"));
     }
 
     #[test]
@@ -987,8 +1204,9 @@ mod tests {
         let dir = tmp();
         let config = dir.path().join("pi-config");
         std::fs::create_dir_all(&config).unwrap();
-        std::fs::write(config.join(MIGRATION_LOCK), "123").unwrap();
-        // Fresh lock, no marker: the second process gives up after the wait.
+        // A fresh lock held by a live process (this one stands in for it).
+        std::fs::write(config.join(MIGRATION_LOCK), std::process::id().to_string()).unwrap();
+        // No marker: a start-up seeder gives up after the wait.
         let wait = Duration::from_millis(300);
         let started = std::time::Instant::now();
         assert_eq!(
@@ -1002,12 +1220,50 @@ mod tests {
     }
 
     #[test]
+    fn code_about_to_start_pi_never_waits_for_another_seeder() {
+        let dir = tmp();
+        let config = dir.path().join("pi-config");
+        std::fs::create_dir_all(&config).unwrap();
+        std::fs::write(config.join(MIGRATION_LOCK), std::process::id().to_string()).unwrap();
+        let started = std::time::Instant::now();
+        assert_eq!(
+            seed_from_global_waiting(&config, None, Duration::ZERO).unwrap(),
+            SeedReport::Busy
+        );
+        assert!(started.elapsed() < Duration::from_millis(150));
+        assert!(config.join(MIGRATION_LOCK).exists());
+    }
+
+    #[test]
+    fn a_lock_left_by_an_exited_seeder_is_taken_over_at_once() {
+        let dir = tmp();
+        let config = dir.path().join("pi-config");
+        std::fs::create_dir_all(&config).unwrap();
+        let lock = config.join(MIGRATION_LOCK);
+        // A fresh lock whose PID is not running: no need to wait 10 minutes.
+        std::fs::write(&lock, "2000000000").unwrap();
+        assert!(lock_is_stale(&lock));
+        assert!(matches!(
+            seed_from_global_waiting(&config, None, Duration::ZERO).unwrap(),
+            SeedReport::Seeded { .. }
+        ));
+        assert!(config.join(MIGRATED_MARKER).exists());
+        assert!(!lock.exists());
+        // An empty or unreadable PID falls back to the lock's age.
+        std::fs::write(&lock, "").unwrap();
+        assert!(!lock_is_stale(&lock));
+        std::fs::write(&lock, "-5").unwrap();
+        assert_eq!(lock_owner(&lock), None);
+    }
+
+    #[test]
     fn a_stale_lock_is_taken_over() {
         let dir = tmp();
         let config = dir.path().join("pi-config");
         std::fs::create_dir_all(&config).unwrap();
         let lock = config.join(MIGRATION_LOCK);
-        std::fs::write(&lock, "123").unwrap();
+        // A live PID (ours), but older than the stale age.
+        std::fs::write(&lock, std::process::id().to_string()).unwrap();
         let old = SystemTime::now() - Duration::from_secs(3600);
         std::fs::File::options()
             .write(true)

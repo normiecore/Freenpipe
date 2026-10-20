@@ -476,7 +476,8 @@ impl PiManager {
 }
 
 /// Freenpipe's own Pi config directory (`<data dir>/pi-agent/pi-config`),
-/// seeded once from the user's global Pi config. See `pi_runtime`.
+/// seeded once from the user's global Pi config (by the start-up thread; this
+/// never waits for a seed in progress). See `pi_runtime`.
 fn get_pi_config_dir() -> Result<PathBuf, String> {
     pi_runtime::ensure_config_dir().map_err(|e| format!("Pi config directory: {e:#}"))
 }
@@ -2412,6 +2413,12 @@ pub fn ensure_pi_installed_background() {
         .name("pi-install".to_string())
         .spawn(move || {
             let result = std::panic::catch_unwind(|| {
+                // Seed the isolated Pi config first, on this thread, so the
+                // first chat never has to (starting Pi does not wait for a
+                // seed in progress).
+                if let Err(e) = pi_runtime::ensure_config_dir_at_start() {
+                    warn!("Pi config directory: {:#}", e);
+                }
                 let Some(install_dir) = pi_local_install_dir() else {
                     warn!("Cannot determine the Pi install directory");
                     return;
@@ -2419,10 +2426,6 @@ pub fn ensure_pi_installed_background() {
                 if let Err(e) = ensure_pi_runtime(&install_dir, find_stock_bun_executable()) {
                     error!("Pi background install failed: {}", e);
                     set_pi_install_error(e);
-                }
-                // Seed the isolated Pi config now rather than on the first chat.
-                if let Err(e) = get_pi_config_dir() {
-                    warn!("{}", e);
                 }
             });
             if let Err(e) = result {

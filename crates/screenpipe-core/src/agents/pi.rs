@@ -1482,7 +1482,8 @@ impl AgentExecutor for PiExecutor {
         // Retry once on "model not found": re-merge our managed providers so
         // any stale entry gets refreshed. Do NOT delete the file — that would
         // also wipe user-managed providers (e.g. jeffutter's custom groq /
-        // bedrock entries in ~/.pi/agent/models.json).
+        // bedrock entries in the isolated pi-config/models.json, which the
+        // one-time seed carries over from ~/.pi/agent/models.json).
         if !output.success && output.stderr.to_lowercase().contains("not found") {
             warn!(
                 "pi model not found, re-merging managed providers (stderr: {})",
@@ -1696,12 +1697,12 @@ impl AgentExecutor for PiExecutor {
         // app, which calls the same procedure at start.
         let install_dir = pi_runtime::install_dir();
         let result = tokio::task::spawn_blocking(move || {
-            let result = pi_install::ensure_current(&install_dir, find_stock_bun_executable());
-            // Seed the isolated config now rather than on the first run.
-            if let Err(e) = pi_runtime::ensure_config_dir() {
+            // Seed the isolated config first, on this blocking thread, so a
+            // run started later never has to (it does not wait for a seed).
+            if let Err(e) = pi_runtime::ensure_config_dir_at_start() {
                 warn!("pi config dir: {:#}", e);
             }
-            result
+            pi_install::ensure_current(&install_dir, find_stock_bun_executable())
         })
         .await
         .map_err(|e| anyhow!("pi install task failed: {e}"))?;
@@ -2055,8 +2056,9 @@ pub fn kill_process_group(pid: u32) -> Result<()> {
 /// `%LOCALAPPDATA%\screenpipe\git-portable`, the usual Git for Windows
 /// locations, then whatever `where bash` lists. WSL launchers and Store app
 /// aliases are skipped, and each candidate must answer a short startup probe
-/// before it is used (see [`super::bash_probe`]). The answer is cached for
-/// the process; a candidate that failed its probe is not tried again.
+/// before it is used (see [`super::bash_probe`]); one that times out gets a
+/// single longer retry, for a slow first start. The answer is cached for the
+/// process; a candidate rejected after that is not tried again.
 #[cfg(windows)]
 pub fn find_bash_executable() -> Option<String> {
     use super::bash_probe;
@@ -2107,16 +2109,29 @@ pub fn find_bash_executable() -> Option<String> {
         if already_rejected {
             continue;
         }
-        if bash_probe::probe(&candidate, bash_probe::PROBE_TIMEOUT) {
-            info!("Using bash at: {}", candidate.display());
-            if let Ok(mut chosen) = CHOSEN.lock() {
-                *chosen = Some(candidate.clone());
+        let mut results: Vec<bash_probe::ProbeResult> = Vec::new();
+        while let Some(timeout) = bash_probe::next_probe_timeout(&results) {
+            if !results.is_empty() {
+                info!(
+                    "bash at {} was slow to start; probing it once more (up to {:?})",
+                    candidate.display(),
+                    timeout
+                );
             }
-            return Some(candidate.to_string_lossy().to_string());
+            let result = bash_probe::probe(&candidate, timeout);
+            if result == bash_probe::ProbeResult::Works {
+                info!("Using bash at: {}", candidate.display());
+                if let Ok(mut chosen) = CHOSEN.lock() {
+                    *chosen = Some(candidate.clone());
+                }
+                return Some(candidate.to_string_lossy().to_string());
+            }
+            results.push(result);
         }
         warn!(
-            "Skipping bash at {}: it did not answer the startup probe",
-            candidate.display()
+            "Skipping bash at {}: it did not answer the startup probe ({:?})",
+            candidate.display(),
+            results
         );
         if let Ok(mut rejected) = REJECTED.lock() {
             rejected.get_or_insert_with(HashSet::new).insert(candidate);

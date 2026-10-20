@@ -642,7 +642,7 @@ fn remove_pid_file(pipes_dir: &Path, pipe_name: &str) {
 }
 
 /// Check if a process with the given PID is still alive.
-fn is_process_alive(pid: u32) -> bool {
+pub(crate) fn is_process_alive(pid: u32) -> bool {
     // 0 is reserved as the "claimed-but-no-child-yet" placeholder. Treating it as
     // alive on unix would be catastrophic — kill(0, 0) targets the whole process
     // group, which means the existence check would return true and any kill that
