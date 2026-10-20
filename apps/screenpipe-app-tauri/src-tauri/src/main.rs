@@ -401,8 +401,15 @@ macro_rules! define_specta_builder {
     }};
 }
 
+fn main() {
+    // First, while this is still the only thread: it removes an environment
+    // variable, which must not race with getenv on another thread.
+    relaunch::capture_relaunch_flag();
+    app_main();
+}
+
 #[tokio::main]
-async fn main() {
+async fn app_main() {
     let _ = fix_path_env::fix();
 
     #[cfg(target_os = "windows")]
@@ -1286,6 +1293,10 @@ async fn main() {
                 std::thread::Builder::new()
                     .name("screenpipe-server".to_string())
                     .spawn(move || {
+                        // A panic before the start is over must not leave
+                        // `is_starting` set, or the watchdog waits on it forever.
+                        let mut start_guard =
+                            crate::recording::StartPanicGuard::new(is_starting_clone.clone());
                         let server_runtime = tokio::runtime::Builder::new_multi_thread()
                             .worker_threads(16)
                             .thread_name("screenpipe-worker")
@@ -1394,57 +1405,31 @@ async fn main() {
                                 owned_browser.clone(),
                             );
 
-                            // Phase 1: Start server core
-                            let server = match server_core::ServerCore::start(
+                            // Phase 1 (server core) and phase 2 (capture),
+                            // shared with spawn_screenpipe: a pause or quit made
+                            // meanwhile wins, and a capture failure keeps the
+                            // server so pipes/search work.
+                            let outcome = crate::recording::start_generation(
                                 &config,
                                 on_pipe_output,
                                 Some(owned_browser),
                                 cloud_token_arc.clone(),
+                                &server_arc,
+                                &capture_arc,
                             )
-                            .await
-                            {
-                                Ok(s) => s,
-                                Err(e) => {
-                                    error!("Failed to start server core: {}", e);
-                                    is_starting_clone.store(false, std::sync::atomic::Ordering::SeqCst);
-                                    return;
-                                }
-                            };
-
-                            // Phase 2: Start capture session
-                            let capture = match capture_session::CaptureSession::start(&server, &config, true).await {
-                                Ok(c) => c,
-                                Err(e) => {
-                                    error!("Failed to start capture: {}", e);
-                                    // Store server anyway so pipes/search work
-                                    let mut guard = server_arc.lock().await;
-                                    *guard = Some(server);
-                                    drop(guard);
-                                    is_starting_clone.store(false, std::sync::atomic::Ordering::SeqCst);
-                                    return;
-                                }
-                            };
-
-                            info!("Server + capture started successfully on dedicated runtime");
-                            {
-                                let mut guard = server_arc.lock().await;
-                                *guard = Some(server);
-                            }
-                            {
-                                let mut guard = capture_arc.lock().await;
-                                *guard = Some(capture);
+                            .await;
+                            start_guard.disarm();
+                            if !outcome.is_running() {
+                                is_starting_clone.store(false, std::sync::atomic::Ordering::SeqCst);
                             }
 
-                            // Keep runtime alive as long as server exists
-                            loop {
-                                tokio::time::sleep(std::time::Duration::from_secs(5)).await;
-                                let guard = server_arc.lock().await;
-                                if guard.is_none() {
-                                    info!("Server removed from state, shutting down server thread");
-                                    break;
-                                }
+                            // Keep runtime alive as long as server exists;
+                            // a retired generation wakes it at once.
+                            if outcome.keeps_engine() {
+                                crate::recording::hold_engine_generation(server_arc).await;
                             }
                         });
+                        crate::recording::stop_engine_runtime(server_runtime);
                     })
                     .expect("Failed to spawn server thread");
             }
@@ -1666,13 +1651,20 @@ async fn main() {
             match event {
                 tauri::RunEvent::Ready { .. } => {
                     debug!("Ready event");
+                    // After a safe relaunch, keep Home closed if it was closed.
+                    relaunch::on_ready(app_handle.app_handle());
                 }
-                tauri::RunEvent::ExitRequested { api, .. } => {
+                tauri::RunEvent::ExitRequested { api, code, .. } => {
                     // When the user clicks "quit screenpipe" in the tray menu,
                     // QUIT_REQUESTED is set to true — let the exit proceed.
                     // Otherwise, prevent auto-exit so the app stays alive in the
                     // tray when all windows are closed / destroyed.
-                    if tray::QUIT_REQUESTED.load(std::sync::atomic::Ordering::SeqCst) {
+                    // An app.restart() (update, rollback) always goes through;
+                    // the exit teardown then keeps its replacement alive.
+                    if relaunch::on_exit_requested(app_handle.app_handle(), code) {
+                        // Logged by on_exit_requested; prevent_exit is
+                        // ignored for restarts anyway.
+                    } else if tray::QUIT_REQUESTED.load(std::sync::atomic::Ordering::SeqCst) {
                         info!("ExitRequested event — quit was requested, allowing exit");
                     } else {
                         info!("ExitRequested event — preventing (app stays in tray)");
@@ -1681,39 +1673,14 @@ async fn main() {
                 }
 
                 tauri::RunEvent::Exit => {
-                    info!("App exiting — running cleanup");
-
-                    // Shut down embedded server (incl. audio manager / ggml Metal cleanup)
-                    // MUST happen synchronously before exit() runs C++ static destructors,
-                    // otherwise the ggml Metal device destructor hits a freed resource → SIGABRT.
-                    //
-                    // Run on a dedicated thread to avoid "Cannot start a runtime from within
-                    // a runtime" panic when the Exit event fires from a tokio async context.
-                    let app_handle_shutdown = app_handle.app_handle().clone();
-                    let _ = std::thread::spawn(move || {
-                        tauri::async_runtime::block_on(async move {
-                            if let Some(recording_state) =
-                                app_handle_shutdown.try_state::<recording::RecordingState>()
-                            {
-                                // Stop capture first (self-contained), then server
-                                if let Some(session) = recording_state.capture.lock().await.take() {
-                                    session.stop().await;
-                                }
-                                if let Some(server) = recording_state.server.lock().await.take() {
-                                    server.shutdown().await;
-                                }
-                            }
-                        })
-                    })
-                    .join();
-
-                    // Cleanup Pi sidecar
-                    let app_handle_pi = app_handle.app_handle().clone();
-                    tauri::async_runtime::spawn(async move {
-                        if let Some(pi_state) = app_handle_pi.try_state::<pi::PiState>() {
-                            pi::cleanup_pi(&pi_state).await;
-                        }
-                    });
+                    // One bounded teardown shared with tray quit and safe
+                    // relaunch: capture, engine (scheduler + audio), HTTP
+                    // drain, SQLite pools, Pi. It must finish before exit()
+                    // runs C++ static destructors (the ggml Metal device
+                    // destructor aborts on freed resources), and it ends the
+                    // process itself if it overruns its budget. Skipped when
+                    // a quit or relaunch already ran it.
+                    relaunch::on_run_exit(app_handle.app_handle());
                 }
 
                 tauri::RunEvent::WindowEvent {

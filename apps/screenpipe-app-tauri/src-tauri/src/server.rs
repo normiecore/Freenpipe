@@ -124,236 +124,10 @@ async fn handle_focus(
     }))
 }
 
-/// Who is listening on our local ports, reported but never killed.
-///
-/// The base app force-killed every other process it found on its API and
-/// control-server ports before binding. On a machine that also runs another
-/// screenpipe-family app (or any unrelated service on the same port) that
-/// terminated someone else's process. Freenpipe only identifies the
-/// listeners, logs them, and leaves them alone; the subsequent bind then
-/// retries or fails loudly, which surfaces the conflict instead of hiding it.
-pub(crate) mod port_holders {
-    use tracing::{debug, warn};
-
-    /// A process listening on a TCP port.
-    #[derive(Debug, Clone, PartialEq, Eq)]
-    pub struct PortHolder {
-        pub pid: u32,
-        /// Executable name when the OS could tell us.
-        pub name: Option<String>,
-    }
-
-    /// Log every process other than ours that listens on `port` and return
-    /// them. Never signals or kills anything. `purpose` names the port in the
-    /// log line ("engine API", "control server").
-    pub async fn report(port: u16, purpose: &str) -> Vec<PortHolder> {
-        let holders = listeners(port).await;
-        if holders.is_empty() {
-            debug!("{purpose} port {port}: no other listener");
-            return holders;
-        }
-        let described: Vec<String> = holders
-            .iter()
-            .map(|h| match &h.name {
-                Some(name) => format!("{name} (pid {})", h.pid),
-                None => format!("pid {}", h.pid),
-            })
-            .collect();
-        warn!(
-            "{purpose} port {port} is already in use by {}; not terminating it. \
-             Stop that process or configure a different port \
-             (SCREENPIPE_PORT / SCREENPIPE_FOCUS_PORT in development).",
-            described.join(", ")
-        );
-        holders
-    }
-
-    #[cfg(windows)]
-    async fn listeners(port: u16) -> Vec<PortHolder> {
-        const CREATE_NO_WINDOW: u32 = 0x08000000;
-        let my_pid = std::process::id();
-
-        let mut netstat = tokio::process::Command::new("netstat");
-        netstat
-            .args(["-a", "-n", "-o"])
-            .creation_flags(CREATE_NO_WINDOW);
-        let output = match run_with_timeout(netstat).await {
-            Some(o) => o,
-            None => return Vec::new(),
-        };
-        let text = String::from_utf8_lossy(&output.stdout);
-        let mut holders = Vec::new();
-        for pid in parse_netstat_listeners(&text, port) {
-            if pid == my_pid {
-                continue;
-            }
-            let mut tasklist = tokio::process::Command::new("tasklist");
-            tasklist
-                .args(["/FI", &format!("PID eq {pid}"), "/FO", "CSV", "/NH"])
-                .creation_flags(CREATE_NO_WINDOW);
-            let name = run_with_timeout(tasklist)
-                .await
-                .and_then(|o| parse_tasklist_name(&String::from_utf8_lossy(&o.stdout)));
-            holders.push(PortHolder { pid, name });
-        }
-        holders
-    }
-
-    #[cfg(unix)]
-    async fn listeners(port: u16) -> Vec<PortHolder> {
-        let my_pid = std::process::id();
-        let mut lsof = tokio::process::Command::new("lsof");
-        lsof.args(["-nP", &format!("-iTCP:{port}"), "-sTCP:LISTEN", "-Fpc"]);
-        match run_with_timeout(lsof).await {
-            Some(o) => parse_lsof_fields(&String::from_utf8_lossy(&o.stdout))
-                .into_iter()
-                .filter(|h| h.pid != my_pid)
-                .collect(),
-            None => Vec::new(),
-        }
-    }
-
-    #[cfg(not(any(windows, unix)))]
-    async fn listeners(_port: u16) -> Vec<PortHolder> {
-        Vec::new()
-    }
-
-    /// Run a short diagnostic command with a 5 s ceiling (lsof can hang on
-    /// macOS). `kill_on_drop` reaps the child if the timeout fires.
-    #[cfg(any(windows, unix))]
-    async fn run_with_timeout(mut cmd: tokio::process::Command) -> Option<std::process::Output> {
-        cmd.stdin(std::process::Stdio::null())
-            .stdout(std::process::Stdio::piped())
-            .stderr(std::process::Stdio::null())
-            .kill_on_drop(true);
-        let child = cmd.spawn().ok()?;
-        match tokio::time::timeout(std::time::Duration::from_secs(5), child.wait_with_output())
-            .await
-        {
-            Ok(Ok(output)) => Some(output),
-            _ => {
-                debug!("port listener probe timed out or failed");
-                None
-            }
-        }
-    }
-
-    /// PIDs of TCP sockets listening on `port`, from `netstat -ano` output.
-    /// A listener is recognised by its foreign port being 0, which (unlike
-    /// the state column) is not localised.
-    #[cfg_attr(not(windows), allow(dead_code))]
-    pub(crate) fn parse_netstat_listeners(text: &str, port: u16) -> Vec<u32> {
-        let mut pids = Vec::new();
-        for line in text.lines() {
-            let cols: Vec<&str> = line.split_whitespace().collect();
-            if cols.len() < 5 || !cols[0].eq_ignore_ascii_case("TCP") {
-                continue;
-            }
-            let local_port = cols[1].rsplit_once(':').map(|(_, p)| p);
-            let foreign_port = cols[2].rsplit_once(':').map(|(_, p)| p);
-            if local_port != Some(port.to_string().as_str()) || foreign_port != Some("0") {
-                continue;
-            }
-            if let Ok(pid) = cols[cols.len() - 1].parse::<u32>() {
-                if pid != 0 && !pids.contains(&pid) {
-                    pids.push(pid);
-                }
-            }
-        }
-        pids
-    }
-
-    /// Image name from `tasklist /FO CSV /NH` output (first CSV field).
-    #[cfg_attr(not(windows), allow(dead_code))]
-    pub(crate) fn parse_tasklist_name(text: &str) -> Option<String> {
-        let line = text.lines().map(str::trim).find(|l| l.starts_with('"'))?;
-        let name = line.trim_start_matches('"').split('"').next()?.trim();
-        (!name.is_empty()).then(|| name.to_string())
-    }
-
-    /// Listeners from `lsof -Fpc` output (`p<pid>` then `c<command>` lines).
-    #[cfg_attr(not(unix), allow(dead_code))]
-    pub(crate) fn parse_lsof_fields(text: &str) -> Vec<PortHolder> {
-        let mut holders: Vec<PortHolder> = Vec::new();
-        for line in text.lines() {
-            if let Some(pid) = line.strip_prefix('p') {
-                if let Ok(pid) = pid.trim().parse::<u32>() {
-                    if !holders.iter().any(|h| h.pid == pid) {
-                        holders.push(PortHolder { pid, name: None });
-                    }
-                }
-            } else if let Some(cmd) = line.strip_prefix('c') {
-                if let Some(last) = holders.last_mut() {
-                    if last.name.is_none() && !cmd.trim().is_empty() {
-                        last.name = Some(cmd.trim().to_string());
-                    }
-                }
-            }
-        }
-        holders
-    }
-
-    #[cfg(test)]
-    mod tests {
-        use super::*;
-
-        const NETSTAT: &str = "
-Active Connections
-
-  Proto  Local Address          Foreign Address        State           PID
-  TCP    0.0.0.0:135            0.0.0.0:0              LISTENING       1100
-  TCP    127.0.0.1:3030         0.0.0.0:0              LISTENING       4242
-  TCP    127.0.0.1:30301        0.0.0.0:0              LISTENING       5555
-  TCP    127.0.0.1:52000        127.0.0.1:3030         ESTABLISHED     7777
-  TCP    127.0.0.1:3030         127.0.0.1:52000        ESTABLISHED     4242
-  TCP    [::]:3030              [::]:0                 ABH\u{d6}REN         4242
-  TCP    [::1]:3030             [::]:0                 LISTENING       6060
-  UDP    0.0.0.0:3030           *:*                                    8080
-";
-
-        #[test]
-        fn netstat_only_matches_listeners_on_the_exact_port() {
-            // Clients connected *to* 3030 (pid 7777), other ports that merely
-            // contain "3030" (pid 5555) and UDP sockets are not listeners.
-            assert_eq!(parse_netstat_listeners(NETSTAT, 3030), vec![4242, 6060]);
-            assert_eq!(parse_netstat_listeners(NETSTAT, 135), vec![1100]);
-            assert!(parse_netstat_listeners(NETSTAT, 11435).is_empty());
-        }
-
-        #[test]
-        fn tasklist_csv_yields_the_image_name() {
-            let out = "\"screenpipe.exe\",\"4242\",\"Console\",\"1\",\"812,004 K\"\r\n";
-            assert_eq!(parse_tasklist_name(out).as_deref(), Some("screenpipe.exe"));
-            assert_eq!(
-                parse_tasklist_name(
-                    "INFO: No tasks are running which match the specified criteria.\r\n"
-                ),
-                None
-            );
-        }
-
-        #[test]
-        fn lsof_fields_pair_pids_with_commands() {
-            let out = "p4242\ncscreenpipe\np6060\ncnode\np4242\ncscreenpipe\n";
-            assert_eq!(
-                parse_lsof_fields(out),
-                vec![
-                    PortHolder {
-                        pid: 4242,
-                        name: Some("screenpipe".into())
-                    },
-                    PortHolder {
-                        pid: 6060,
-                        name: Some("node".into())
-                    },
-                ]
-            );
-        }
-    }
-}
-
 pub async fn run_server(app_handle: tauri::AppHandle, port: u16) {
-    let state = ServerState { app_handle };
+    let state = ServerState {
+        app_handle: app_handle.clone(),
+    };
 
     let cors = CorsLayer::new()
         .allow_origin("*".parse::<HeaderValue>().unwrap())
@@ -397,8 +171,16 @@ pub async fn run_server(app_handle: tauri::AppHandle, port: u16) {
 
     let addr = SocketAddr::from(([127, 0, 0, 1], port));
 
-    // Report (never kill) anything else listening on this port.
-    port_holders::report(port, "control server").await;
+    // Classify anything else listening on this port. Only an unresponsive
+    // copy of this executable is terminated; any other holder is reported
+    // (as a system notification, never through this busy port) and left
+    // alone (see `port_conflict`).
+    crate::port_conflict::resolve_before_bind(
+        &app_handle,
+        port,
+        crate::port_conflict::PortPurpose::ControlServer,
+    )
+    .await;
 
     // Retry binding with backoff — avoids panic when a previous instance hasn't
     // released the port yet (e.g. fast restart, TIME_WAIT on Linux).
@@ -411,6 +193,9 @@ pub async fn run_server(app_handle: tauri::AppHandle, port: u16) {
         match axum::Server::try_bind(&addr) {
             Ok(builder) => {
                 info!("Server listening on {}", addr);
+                // In-app notification panels reach this process only while
+                // it holds the port; cleared when the server stops.
+                let _bound = crate::port_conflict::ControlServerBound::mark();
                 if let Err(e) = builder.serve(app.into_make_service()).await {
                     error!("server error on {}: {}", addr, e);
                 }

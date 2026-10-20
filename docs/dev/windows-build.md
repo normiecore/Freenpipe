@@ -278,9 +278,17 @@ question 19.
 
 - **No blind port kills.** The base app force-killed every process it found
   on its API and control-server ports before binding, which would terminate
-  an installed screenpipe. `server::port_holders::report` now only lists the
-  listeners (PID and image name, via `netstat`/`tasklist` or `lsof`), logs a
-  warning, and leaves them running; the bind then retries or fails loudly.
+  an installed screenpipe. `port_conflict::resolve_before_bind` now classifies
+  each listener first (PID from `netstat -ano -p tcp` or `lsof`, image path
+  from the OS) and terminates only one kind: another copy of Freenpipe's own
+  executable that is the port's only listener and fails two `/health` probes
+  2 s apart, re-checked right before `taskkill /F` (or `kill`) so a reused
+  PID is never hit. A healthy instance, the installed screenpipe, any other
+  program, an unreadable image, and a copy of ours that shares the port with
+  other listeners are left running, and the user is told who holds the port
+  (in the app's panel, or as a system notification when the busy port is the
+  control port itself). While this process still listens (an engine
+  generation closing), nothing is decided until it lets go.
 - **No auth.json outside the data dir.** The engine's API-key resolver used
   to read, and on key changes delete, `~/.screenpipe/auth.json` whatever
   `--data-dir` said. It now uses `<data_dir>/auth.json`, which is the same

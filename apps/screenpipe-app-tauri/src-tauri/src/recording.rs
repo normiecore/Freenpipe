@@ -13,10 +13,11 @@ use crate::config;
 use crate::permissions::do_permissions_check;
 use crate::server_core::ServerCore;
 use crate::store::SettingsStore;
+use once_cell::sync::Lazy;
 use screenpipe_engine::RecordingConfig;
 use serde::{Deserialize, Serialize};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, Weak};
 use std::time::{Duration, Instant};
 use tauri::{Emitter, Manager, State};
 use tokio::sync::Mutex;
@@ -282,6 +283,8 @@ pub async fn stop_capture(
     _app: tauri::AppHandle,
 ) -> Result<(), String> {
     info!("Stopping capture session (server stays alive)");
+    // A paused recording must not be brought back by the engine watchdog.
+    crate::health::set_recording_intended(false);
 
     remember_active_meeting_for_capture_restart(&state).await;
 
@@ -396,6 +399,7 @@ pub async fn start_capture(
     info!("Starting capture session");
     let store = SettingsStore::get(&app).ok().flatten().unwrap_or_default();
     require_app_entitlement(&store)?;
+    crate::health::set_recording_intended(true);
 
     // Race guard: short-circuit duplicate invocations.
     //
@@ -426,6 +430,12 @@ pub async fn start_capture(
     if capture_guard.is_some() {
         info!("Capture session already running");
         return Ok(());
+    }
+    // A resume that wins the capture lock after the teardown's capture step
+    // would leave a live session behind; refuse it like the other start paths.
+    if crate::relaunch::is_shutting_down() {
+        info!("start_capture: the app is quitting; not starting capture");
+        return Err("the app is quitting; capture is not started".to_string());
     }
 
     // `state.server.is_some()` only means ServerCore was constructed once; it
@@ -490,7 +500,18 @@ pub async fn stop_screenpipe(
     _app: tauri::AppHandle,
 ) -> Result<(), String> {
     info!("stop_screenpipe: stopping capture and server");
+    // An explicit stop: the watchdog leaves the engine down until the next
+    // spawn_screenpipe (which "Apply & Restart" and updates call right after).
+    crate::health::set_recording_intended(false);
+    stop_engine(&state).await;
+    Ok(())
+}
 
+/// Stop capture and the server so the next `spawn_screenpipe` does a full
+/// restart with fresh settings (auth key, port, etc.); without this,
+/// `spawn_screenpipe` sees the server as healthy and skips the restart.
+/// Leaves the recording intent alone.
+async fn stop_engine(state: &RecordingState) {
     // Stop capture first
     {
         *state.interrupted_meeting.lock().await = None;
@@ -503,13 +524,10 @@ pub async fn stop_screenpipe(
         }
     }
 
-    // Shut down the server so the next spawn_screenpipe does a full restart
-    // with fresh settings (auth key, port, etc.). Without this, spawn_screenpipe
-    // sees the server as healthy and skips the restart entirely.
     {
-        let mut server_guard = state.server.lock().await;
-        if let Some(server) = server_guard.take() {
-            server.shutdown().await;
+        let server = state.server.lock().await.take();
+        if let Some(server) = server {
+            shutdown_server_core(server).await;
             info!("Server stopped");
         }
     }
@@ -518,8 +536,6 @@ pub async fn stop_screenpipe(
     // rather than the "server already in progress" wait loop.
     state.is_starting.store(false, Ordering::SeqCst);
     state.last_spawn_epoch.store(0, Ordering::SeqCst);
-
-    Ok(())
 }
 
 /// Start the server (if not running) and capture.
@@ -531,7 +547,57 @@ pub async fn spawn_screenpipe(
     app: tauri::AppHandle,
     _override_args: Option<Vec<String>>,
 ) -> Result<(), String> {
+    // The user (or the frontend on their behalf) asked for recording. Only
+    // the user-facing entry points set the intent; the watchdog's respawn
+    // shares `start_engine` and must never turn a pause back on.
+    crate::health::set_recording_intended(true);
+    start_engine(state, app)
+        .await
+        .map_err(StartError::into_message)
+}
+
+/// Why [`start_engine`] did not bring the engine up.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum StartError {
+    /// This start's own port check found the API port held by another
+    /// process (see `port_conflict`).
+    PortHeld(String),
+    /// Any other failure.
+    Other(String),
+}
+
+impl StartError {
+    pub(crate) fn into_message(self) -> String {
+        match self {
+            StartError::PortHeld(msg) | StartError::Other(msg) => msg,
+        }
+    }
+}
+
+impl From<String> for StartError {
+    fn from(msg: String) -> Self {
+        StartError::Other(msg)
+    }
+}
+
+/// The body of `spawn_screenpipe`. The error says whether this start was
+/// blocked by a held API port, so a caller (the watchdog's respawn) never
+/// has to read shared state that an earlier or concurrent start wrote.
+///
+/// Leaves the recording intent alone: capture is started (and kept) only
+/// while the intent is on, checked again when the new session is stored, so
+/// a pause made while this runs always wins.
+pub(crate) async fn start_engine(
+    state: State<'_, RecordingState>,
+    app: tauri::AppHandle,
+) -> Result<(), StartError> {
     info!("spawn_screenpipe: starting server + capture");
+    if crate::relaunch::is_shutting_down() {
+        info!("spawn_screenpipe: the app is quitting; not starting the engine");
+        return Err(StartError::Other(
+            "the app is quitting; the engine is not started".to_string(),
+        ));
+    }
 
     // --- Cooldown enforcement ---
     let now_epoch = std::time::SystemTime::now()
@@ -586,7 +652,7 @@ pub async fn spawn_screenpipe(
     if let Err(err) = require_app_entitlement(&store) {
         state.is_starting.store(false, Ordering::SeqCst);
         state.is_starting_capture.store(false, Ordering::SeqCst);
-        return Err(err);
+        return Err(err.into());
     }
     let port = store.recording.port;
     let health_url = format!("http://localhost:{}/health", port);
@@ -672,11 +738,15 @@ pub async fn spawn_screenpipe(
                     MAX_WAIT_SECS, phase.phase
                 );
                 state.is_starting.store(false, Ordering::SeqCst);
-                return Err(format!(
+                let msg = format!(
                     "Server start timed out after {} minutes. Current phase: {}",
                     MAX_WAIT_SECS / 60,
                     phase.phase
-                ));
+                );
+                // The wedged start never reported; end its phase so the
+                // engine watchdog does not wait on it forever.
+                crate::health::fail_boot_if_pending(&msg);
+                return Err(msg.into());
             }
             tokio::time::sleep(std::time::Duration::from_millis(POLL_MS)).await;
         }
@@ -703,7 +773,9 @@ pub async fn spawn_screenpipe(
                     }
                     drop(capture_guard);
                     // Start capture on existing server
-                    return start_capture_internal(&state, &app).await;
+                    return start_capture_internal(&state, &app)
+                        .await
+                        .map_err(StartError::from);
                 }
                 _ => {
                     warn!("Server exists but not responding, will do full restart");
@@ -719,15 +791,41 @@ pub async fn spawn_screenpipe(
     }
     // Shutdown existing server if any
     {
-        let mut server_guard = state.server.lock().await;
-        if let Some(server) = server_guard.take() {
-            server.shutdown().await;
+        let server = state.server.lock().await.take();
+        if let Some(server) = server {
+            shutdown_server_core(server).await;
         }
     }
 
-    // Report (never kill) anything else listening on the API port. The
-    // installed screenpipe may legitimately own it; see server::port_holders.
-    crate::server::port_holders::report(port, "engine API").await;
+    // Generation rule: the previous engine must have drained (its tasks gone,
+    // its SQLite pools closed) before this one opens the database.
+    if !wait_for_retired_generations(GENERATION_DRAIN_TIMEOUT).await {
+        warn!(
+            "previous engine generation still holds the database after {}s; starting anyway",
+            GENERATION_DRAIN_TIMEOUT.as_secs()
+        );
+    }
+
+    // Classify anything else on the API port. Only an unresponsive copy of
+    // this executable is ever terminated; a healthy or foreign holder (the
+    // installed screenpipe, a dev server) is left alone and reported.
+    let conflict = crate::port_conflict::resolve_before_bind(
+        &app,
+        port,
+        crate::port_conflict::PortPurpose::EngineApi,
+    )
+    .await;
+    if !conflict.port_available() {
+        let msg = format!(
+            "Cannot start the engine: {}",
+            crate::port_conflict::describe_block(port, &conflict)
+        );
+        crate::health::set_boot_error(&msg);
+        crate::health::set_recording_status(crate::health::RecordingStatus::Error);
+        state.is_starting.store(false, Ordering::SeqCst);
+        state.is_starting_capture.store(false, Ordering::SeqCst);
+        return Err(StartError::PortHeld(msg));
+    }
 
     // Wait for port release
     let max_poll_iters = if cfg!(windows) { 40 } else { 20 };
@@ -766,10 +864,10 @@ pub async fn spawn_screenpipe(
         // recording status indicator stops showing "Starting…" forever
         // when the user has clicked "click to record" with TCC denied.
         crate::health::set_recording_status(crate::health::RecordingStatus::Error);
-        return Err(
+        return Err(StartError::Other(
             "Screen recording permission required. Please grant permission and restart the app."
                 .to_string(),
-        );
+        ));
     }
 
     if !disable_audio && !permissions_check.microphone.permitted() {
@@ -852,7 +950,7 @@ pub async fn spawn_screenpipe(
     let (result_tx, result_rx) = tokio::sync::oneshot::channel::<Result<(), String>>();
 
     // Spawn dedicated thread with its own runtime
-    std::thread::Builder::new()
+    if let Err(e) = std::thread::Builder::new()
         .name("screenpipe-server".to_string())
         .spawn(move || {
             let server_runtime = match tokio::runtime::Builder::new_multi_thread()
@@ -871,62 +969,34 @@ pub async fn spawn_screenpipe(
             };
 
             server_runtime.block_on(async move {
-                // Phase 1: Start server
-                let server = match ServerCore::start(
+                // Phase 1 (server core) and phase 2 (capture), shared with
+                // the boot-time engine thread in main.rs.
+                let outcome = start_generation(
                     &recording_config,
                     on_pipe_output,
                     Some(owned_browser),
                     cloud_token_arc.clone(),
+                    &server_arc,
+                    &capture_arc,
                 )
-                .await
-                {
-                    Ok(s) => s,
-                    Err(e) => {
-                        error!("Failed to start server core: {}", e);
-                        let _ = result_tx.send(Err(e));
-                        return;
-                    }
-                };
-
-                // Phase 2: Start capture
-                let capture = match CaptureSession::start(&server, &recording_config, true).await {
-                    Ok(c) => c,
-                    Err(e) => {
-                        error!("Failed to start capture session: {}", e);
-                        // Server started but capture failed — store server anyway
-                        // so pipes/search still work
-                        {
-                            let mut guard = server_arc.lock().await;
-                            *guard = Some(server);
-                        }
-                        let _ = result_tx.send(Err(e));
-                        return;
-                    }
-                };
-
-                info!("Server + capture started successfully on dedicated runtime");
-                {
-                    let mut guard = server_arc.lock().await;
-                    *guard = Some(server);
-                }
-                {
-                    let mut guard = capture_arc.lock().await;
-                    *guard = Some(capture);
-                }
-                let _ = result_tx.send(Ok(()));
-
-                // Keep runtime alive as long as server exists
-                loop {
-                    tokio::time::sleep(std::time::Duration::from_secs(5)).await;
-                    let guard = server_arc.lock().await;
-                    if guard.is_none() {
-                        info!("Server removed from state, shutting down server thread");
-                        break;
-                    }
+                .await;
+                let keeps_engine = outcome.keeps_engine();
+                let _ = result_tx.send(outcome.into_result());
+                if keeps_engine {
+                    hold_engine_generation(server_arc).await;
                 }
             });
+            stop_engine_runtime(server_runtime);
         })
-        .map_err(|e| format!("Failed to spawn server thread: {}", e))?;
+    {
+        let msg = format!("Failed to spawn server thread: {}", e);
+        // Nothing is starting any more: leave a terminal phase and clear the
+        // start flags, or the watchdog reads this as a start in progress.
+        crate::health::set_boot_error(&msg);
+        state.is_starting.store(false, Ordering::SeqCst);
+        state.is_starting_capture.store(false, Ordering::SeqCst);
+        return Err(msg.into());
+    }
 
     match result_rx.await {
         Ok(Ok(())) => {
@@ -941,14 +1011,22 @@ pub async fn spawn_screenpipe(
         Ok(Err(e)) => {
             state.is_starting.store(false, Ordering::SeqCst);
             state.is_starting_capture.store(false, Ordering::SeqCst);
+            // ServerCore::start sets its own error for most failures; this
+            // covers the rest. A capture failure after the server came up
+            // keeps "ready".
+            crate::health::fail_boot_if_pending(&e);
             if e.contains("no monitors matched") {
                 crate::health::set_recording_status(crate::health::RecordingStatus::Error);
             }
-            Err(e)
+            Err(e.into())
         }
         Err(_) => {
             state.is_starting.store(false, Ordering::SeqCst);
-            Err("Server startup channel dropped unexpectedly".to_string())
+            state.is_starting_capture.store(false, Ordering::SeqCst);
+            let msg = "Server startup channel dropped unexpectedly".to_string();
+            // The engine thread ended (panicked) without reporting.
+            crate::health::fail_boot_if_pending(&msg);
+            Err(msg.into())
         }
     }
 }
@@ -971,6 +1049,13 @@ async fn start_capture_internal(
         info!("Capture already started by concurrent caller");
         return Ok(());
     }
+    // A pause (or a quit) since this start began wins. Checked under the
+    // capture lock, which `stop_capture` takes only after clearing the intent.
+    if !capture_wanted() {
+        state.is_starting.store(false, Ordering::SeqCst);
+        info!("recording was paused while the start was under way; not starting capture");
+        return Ok(());
+    }
 
     restore_interrupted_meeting_for_capture_restart(state).await?;
 
@@ -988,4 +1073,743 @@ async fn start_capture_internal(
 
     info!("Capture started on existing server");
     Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// Engine generations, the watchdog's respawn, and a debug crash switch
+// ---------------------------------------------------------------------------
+
+/// How long a new engine generation waits for the previous one to let go of
+/// the database before opening it anyway.
+const GENERATION_DRAIN_TIMEOUT: Duration = Duration::from_secs(8);
+/// Ceiling for stopping a generation's runtime once its keep-alive loop ends.
+const ENGINE_RUNTIME_SHUTDOWN: Duration = Duration::from_secs(10);
+
+/// Database handles of engine generations that were shut down, held weakly.
+/// A generation has drained once nothing holds its `DatabaseManager` any
+/// more: its HTTP server, workers and write queue are gone and its SQLite
+/// pools are closed with it.
+static RETIRED_GENERATIONS: Lazy<std::sync::Mutex<Vec<Weak<screenpipe_db::DatabaseManager>>>> =
+    Lazy::new(|| std::sync::Mutex::new(Vec::new()));
+
+/// Wakes the engine threads' keep-alive loops so a retired generation's
+/// runtime stops right away instead of on its next poll.
+static ENGINE_RETIRED: Lazy<tokio::sync::Notify> = Lazy::new(tokio::sync::Notify::new);
+
+/// Keep an engine generation's runtime running while its `ServerCore` is in
+/// state, for every engine thread (the boot-time one in `main.rs` and the
+/// ones `spawn_screenpipe` starts). Returns once something took the core out
+/// (a shutdown, a respawn, the exit teardown): at once when that retires the
+/// generation, otherwise on the next 5 s check.
+pub(crate) async fn hold_engine_generation(server: Arc<Mutex<Option<ServerCore>>>) {
+    loop {
+        tokio::select! {
+            _ = tokio::time::sleep(Duration::from_secs(5)) => {}
+            _ = ENGINE_RETIRED.notified() => {}
+        }
+        if server.lock().await.is_none() {
+            info!("Server removed from state, shutting down server thread");
+            return;
+        }
+    }
+}
+
+/// Stop an engine generation's runtime once [`hold_engine_generation`]
+/// returned. Bounded: a stuck blocking task must not keep the runtime (and
+/// the database handles its tasks hold) alive forever.
+pub(crate) fn stop_engine_runtime(runtime: tokio::runtime::Runtime) {
+    runtime.shutdown_timeout(ENGINE_RUNTIME_SHUTDOWN);
+    info!("engine generation runtime stopped");
+}
+
+/// Engine generations in flight: started but not yet in state (from the
+/// moment `ServerCore::start` returns until the core is stored or stopped
+/// again), or being shut down by [`shutdown_server_core`]. The exit teardown
+/// waits for this to reach zero, so the app never leaves while another task
+/// (a watchdog respawn, a start that was under way when the quit began) still
+/// has an engine's capture or audio running.
+static ENGINE_TRANSITIONS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
+/// One engine generation in flight (see [`ENGINE_TRANSITIONS`]) for as long
+/// as it lives; a panic that unwinds through it ends it too.
+pub(crate) struct EngineTransition(());
+
+impl EngineTransition {
+    pub(crate) fn begin() -> Self {
+        ENGINE_TRANSITIONS.fetch_add(1, Ordering::SeqCst);
+        EngineTransition(())
+    }
+}
+
+impl Drop for EngineTransition {
+    fn drop(&mut self) {
+        ENGINE_TRANSITIONS.fetch_sub(1, Ordering::SeqCst);
+    }
+}
+
+fn engine_transitions() -> usize {
+    ENGINE_TRANSITIONS.load(Ordering::SeqCst)
+}
+
+/// Wait until no engine generation is being brought up or taken down. True
+/// when there was one to wait for. The caller bounds the wait.
+pub(crate) async fn wait_for_engine_transitions() -> bool {
+    let pending = engine_transitions();
+    if pending == 0 {
+        return false;
+    }
+    info!("waiting for {pending} engine generation(s) that are starting or stopping");
+    while engine_transitions() > 0 {
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    info!("no engine generation is starting or stopping any more");
+    true
+}
+
+/// Capture may be started (or kept): the user has not paused recording and
+/// no quit or relaunch is under way.
+fn capture_wanted() -> bool {
+    crate::health::recording_intended() && !crate::relaunch::is_shutting_down()
+}
+
+/// What an engine thread does with the generation it just started.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum InstallDecision {
+    /// A quit or relaunch began: stop the capture (if any) and the core again.
+    Retire,
+    /// Store the core; stop the capture, if one was started, because the
+    /// user paused recording meanwhile.
+    EngineOnly,
+    /// Store both.
+    EngineAndCapture,
+}
+
+/// Pure rule behind [`install_generation`]: a pause or a quit made while the
+/// engine was starting always wins over the start.
+fn install_decision(shutting_down: bool, intended: bool, has_capture: bool) -> InstallDecision {
+    if shutting_down {
+        InstallDecision::Retire
+    } else if has_capture && intended {
+        InstallDecision::EngineAndCapture
+    } else {
+        InstallDecision::EngineOnly
+    }
+}
+
+/// Where a just-started generation ended up.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Installed {
+    /// The core is in state, and so is its capture session when `capture`.
+    Running { capture: bool },
+    /// A quit or relaunch began meanwhile; everything was stopped again.
+    Retired,
+}
+
+/// Put a just-started core (and its capture session, if one was started)
+/// in state. Both slots are locked while deciding (capture first, the state's
+/// lock order), and `stop_capture` and the teardown change the intent or the
+/// quit flag before they take those locks. So a pause or quit either finds
+/// what is stored here and stops it, or happened first and is seen here.
+async fn install_generation(
+    server_arc: &Arc<Mutex<Option<ServerCore>>>,
+    capture_arc: &Arc<Mutex<Option<CaptureSession>>>,
+    server: ServerCore,
+    capture: Option<CaptureSession>,
+) -> Installed {
+    let mut capture_guard = capture_arc.lock().await;
+    let mut server_guard = server_arc.lock().await;
+    match install_decision(
+        crate::relaunch::is_shutting_down(),
+        crate::health::recording_intended(),
+        capture.is_some(),
+    ) {
+        InstallDecision::Retire => {
+            drop(server_guard);
+            drop(capture_guard);
+            warn!("a quit or relaunch began while the engine was starting; stopping the new engine again");
+            // The caller's EngineTransition (and the one inside
+            // shutdown_server_core) keeps the exit teardown waiting for this.
+            if let Some(capture) = capture {
+                capture.stop().await;
+            }
+            shutdown_server_core(server).await;
+            Installed::Retired
+        }
+        InstallDecision::EngineOnly => {
+            *server_guard = Some(server);
+            drop(server_guard);
+            if let Some(capture) = capture {
+                info!("recording was paused while the engine was starting; stopping the new capture session");
+                // Still under the capture lock, as in stop_capture, so a
+                // resume cannot start a second session while this one stops.
+                capture.stop().await;
+            }
+            Installed::Running { capture: false }
+        }
+        InstallDecision::EngineAndCapture => {
+            *server_guard = Some(server);
+            drop(server_guard);
+            *capture_guard = capture;
+            Installed::Running { capture: true }
+        }
+    }
+}
+
+/// How an engine thread's start ended.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum GenerationStart {
+    /// The core is in state, with its capture session when `capture` (none
+    /// when recording was paused while the engine started).
+    Running { capture: bool },
+    /// The core is in state but capture could not start. Pipes, search and
+    /// the HTTP API stay up: the thread keeps the runtime running.
+    CaptureFailed(String),
+    /// `ServerCore::start` failed; nothing is in state.
+    Failed(String),
+    /// A quit or relaunch began; whatever was started has been stopped again.
+    Retired,
+}
+
+impl GenerationStart {
+    /// The core is in state, so the thread must keep its runtime running
+    /// ([`hold_engine_generation`]).
+    pub(crate) fn keeps_engine(&self) -> bool {
+        matches!(
+            self,
+            GenerationStart::Running { .. } | GenerationStart::CaptureFailed(_)
+        )
+    }
+
+    pub(crate) fn is_running(&self) -> bool {
+        matches!(self, GenerationStart::Running { .. })
+    }
+
+    /// The result `spawn_screenpipe` reports.
+    fn into_result(self) -> Result<(), String> {
+        match self {
+            GenerationStart::Running { .. } => Ok(()),
+            GenerationStart::CaptureFailed(e) | GenerationStart::Failed(e) => Err(e),
+            GenerationStart::Retired => {
+                Err("the app is quitting; the engine that was starting was stopped again".into())
+            }
+        }
+    }
+}
+
+/// Phase 1 (`ServerCore::start`) and phase 2 (capture) of an engine thread,
+/// for the boot-time thread in `main.rs` and the ones `spawn_screenpipe`
+/// starts. Runs on the generation's own runtime. Capture is started only
+/// while recording is wanted, and the result is stored through
+/// [`install_generation`], so neither a pause nor a quit made meanwhile is
+/// ever overridden.
+pub(crate) async fn start_generation(
+    config: &RecordingConfig,
+    on_pipe_output: Option<screenpipe_core::pipes::OnPipeOutputLine>,
+    owned_browser: Option<Arc<screenpipe_connect::connections::browser::OwnedBrowser>>,
+    cloud_token: Arc<arc_swap::ArcSwap<Option<String>>>,
+    server_arc: &Arc<Mutex<Option<ServerCore>>>,
+    capture_arc: &Arc<Mutex<Option<CaptureSession>>>,
+) -> GenerationStart {
+    if crate::relaunch::is_shutting_down() {
+        info!("the app is quitting; not starting the engine");
+        return GenerationStart::Retired;
+    }
+    let server = match ServerCore::start(config, on_pipe_output, owned_browser, cloud_token).await {
+        Ok(s) => s,
+        Err(e) => {
+            error!("Failed to start server core: {}", e);
+            return GenerationStart::Failed(e);
+        }
+    };
+    let _in_flight = EngineTransition::begin();
+
+    let mut capture_error = None;
+    let capture = if capture_wanted() {
+        match CaptureSession::start(&server, config, true).await {
+            Ok(c) => Some(c),
+            Err(e) => {
+                error!("Failed to start capture session: {}", e);
+                capture_error = Some(e);
+                None
+            }
+        }
+    } else {
+        info!(
+            "recording was paused (or a quit began) while the engine started; not starting capture"
+        );
+        None
+    };
+
+    match install_generation(server_arc, capture_arc, server, capture).await {
+        Installed::Retired => GenerationStart::Retired,
+        Installed::Running { capture } => match capture_error {
+            Some(e) => {
+                // Keep the server (and, in the caller, its runtime) so pipes,
+                // search and the API keep working while capture is down.
+                warn!("server kept running without capture so pipes and search keep working");
+                GenerationStart::CaptureFailed(e)
+            }
+            None => {
+                if capture {
+                    info!("Server + capture started successfully on dedicated runtime");
+                } else {
+                    info!("Server started on dedicated runtime; capture stays off while recording is paused");
+                }
+                GenerationStart::Running { capture }
+            }
+        },
+    }
+}
+
+/// Armed while a boot-time engine thread starts. If that thread panics
+/// before [`StartPanicGuard::disarm`], the start flag it set is cleared and
+/// the boot recorded as failed: otherwise the watchdog would take the dead
+/// start for one still in progress and never respawn the engine.
+pub(crate) struct StartPanicGuard {
+    flag: Option<Arc<AtomicBool>>,
+    report: fn(&str) -> bool,
+}
+
+impl StartPanicGuard {
+    pub(crate) fn new(flag: Arc<AtomicBool>) -> Self {
+        StartPanicGuard {
+            flag: Some(flag),
+            report: crate::health::fail_boot_if_pending,
+        }
+    }
+
+    /// The start is over (either way). A later panic leaves the flag alone:
+    /// a newer start may own it by then.
+    pub(crate) fn disarm(&mut self) {
+        self.flag = None;
+    }
+}
+
+impl Drop for StartPanicGuard {
+    fn drop(&mut self) {
+        let Some(flag) = self.flag.take() else {
+            return;
+        };
+        if std::thread::panicking() {
+            const MSG: &str = "the engine start thread panicked";
+            error!("{MSG}; clearing its start flag");
+            flag.store(false, Ordering::SeqCst);
+            (self.report)(MSG);
+        }
+    }
+}
+
+/// Shut a `ServerCore` down and record it as retired, so the next generation
+/// waits for it to drain before opening the database again.
+pub(crate) async fn shutdown_server_core(server: ServerCore) {
+    let _in_flight = EngineTransition::begin();
+    {
+        let mut retired = RETIRED_GENERATIONS
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        retired.retain(|w| w.strong_count() > 0);
+        retired.push(Arc::downgrade(&server.db));
+    }
+    server.shutdown().await;
+    ENGINE_RETIRED.notify_waiters();
+}
+
+/// Number of retired generations whose database is still held somewhere.
+fn retired_generations_pending() -> usize {
+    let mut retired = RETIRED_GENERATIONS
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
+    retired.retain(|w| w.strong_count() > 0);
+    retired.len()
+}
+
+/// Wait until every retired generation has drained. False on timeout.
+pub(crate) async fn wait_for_retired_generations(timeout: Duration) -> bool {
+    let deadline = Instant::now() + timeout;
+    let mut logged = false;
+    loop {
+        let pending = retired_generations_pending();
+        if pending == 0 {
+            if logged {
+                info!("previous engine generation drained; the database can be reopened");
+            }
+            return true;
+        }
+        if Instant::now() >= deadline {
+            return false;
+        }
+        if !logged {
+            info!("waiting for {pending} previous engine generation(s) to drain before reopening the database");
+            logged = true;
+        }
+        ENGINE_RETIRED.notify_waiters();
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+}
+
+/// Why a watchdog respawn did not bring the engine back.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum RespawnError {
+    /// Another process holds the API port (see `port_conflict`).
+    PortHeld(String),
+    /// Any other start failure.
+    Failed(String),
+}
+
+impl From<StartError> for RespawnError {
+    /// Only this start's own port check can make it `PortHeld`.
+    fn from(e: StartError) -> Self {
+        match e {
+            StartError::PortHeld(msg) => RespawnError::PortHeld(msg),
+            StartError::Other(msg) => RespawnError::Failed(msg),
+        }
+    }
+}
+
+/// Time limits for one watchdog respawn, so a wedged step can never leave
+/// the watchdog waiting on its respawn forever.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct RespawnLimits {
+    /// Stopping what is left of the old engine. Its own steps are bounded
+    /// (audio 15 s, runtime 10 s); this catches a stop that hangs anyway.
+    pub stop: Duration,
+    /// Starting the new generation. Long, because a database migration on
+    /// a large install legitimately takes minutes; the same 30-minute
+    /// ceiling as a caller waiting on an in-flight start.
+    pub start: Duration,
+}
+
+impl Default for RespawnLimits {
+    fn default() -> Self {
+        Self {
+            stop: Duration::from_secs(45),
+            start: Duration::from_secs(30 * 60),
+        }
+    }
+}
+
+/// Start of the message of a respawn that ran out of time.
+const RESPAWN_TIMEOUT: &str = "respawn timed out: ";
+
+fn is_respawn_timeout(e: &RespawnError) -> bool {
+    matches!(e, RespawnError::Failed(msg) if msg.starts_with(RESPAWN_TIMEOUT))
+}
+
+/// Run a respawn's stop and start under `limits`. A stop that overruns is
+/// abandoned (the start is not attempted) and reported as `Failed`, so the
+/// watchdog backs off and tries again later instead of waiting forever.
+pub(crate) async fn bounded_respawn<Stop, Start, StartFut>(
+    stop: Stop,
+    start: Start,
+    limits: RespawnLimits,
+) -> Result<(), RespawnError>
+where
+    Stop: std::future::Future<Output = ()>,
+    Start: FnOnce() -> StartFut,
+    StartFut: std::future::Future<Output = Result<(), RespawnError>>,
+{
+    if tokio::time::timeout(limits.stop, stop).await.is_err() {
+        return Err(RespawnError::Failed(format!(
+            "{RESPAWN_TIMEOUT}stopping the old engine took longer than {}s",
+            limits.stop.as_secs()
+        )));
+    }
+    match tokio::time::timeout(limits.start, start()).await {
+        Ok(result) => result,
+        Err(_) => Err(RespawnError::Failed(format!(
+            "{RESPAWN_TIMEOUT}starting the engine took longer than {}s",
+            limits.start.as_secs()
+        ))),
+    }
+}
+
+/// Stop whatever is left of the engine and start a fresh generation. Used by
+/// the health watchdog; never changes the recording intent. A pause made
+/// while this runs leaves the new engine up without capture, and a quit or
+/// relaunch that begins meanwhile retires the new generation again (see
+/// [`start_generation`]). Returns `Ok` without doing anything when another
+/// start is already under way. Both halves are bounded by [`RespawnLimits`];
+/// running out of time is `Failed`.
+pub(crate) async fn respawn_engine(app: &tauri::AppHandle) -> Result<(), RespawnError> {
+    let Some(state) = app.try_state::<RecordingState>() else {
+        return Err(RespawnError::Failed("recording state not ready".into()));
+    };
+    let server_absent = state.server.lock().await.is_none();
+    if state.is_starting.load(Ordering::SeqCst) && server_absent {
+        info!("engine respawn skipped: a start is already in progress");
+        return Ok(());
+    }
+    let start_state = state.clone();
+    let start_app = app.clone();
+    let result = bounded_respawn(
+        stop_engine(&state),
+        move || async move {
+            start_engine(start_state, start_app)
+                .await
+                .map_err(RespawnError::from)
+        },
+        RespawnLimits::default(),
+    )
+    .await;
+    if matches!(&result, Err(e) if is_respawn_timeout(e)) {
+        // The abandoned step may have left the start flags set. Nothing is
+        // starting any more, so clear them; otherwise the next attempt would
+        // read the empty server slot as a start in progress and skip itself.
+        state.is_starting.store(false, Ordering::SeqCst);
+        state.is_starting_capture.store(false, Ordering::SeqCst);
+        state.last_spawn_epoch.store(0, Ordering::SeqCst);
+    }
+    result
+}
+
+/// Developer command: make the engine look crashed. Its runtime is stopped
+/// (taking the HTTP server and every engine task with it) while the dead
+/// `ServerCore` is put back in state, which is what a crashed engine thread
+/// leaves behind. The watchdog should respawn it within its configured
+/// checks. Needs a debug build or developer mode.
+#[tauri::command]
+#[specta::specta]
+pub async fn debug_kill_engine(
+    state: State<'_, RecordingState>,
+    app: tauri::AppHandle,
+) -> Result<String, String> {
+    if !crate::relaunch::debug_commands_allowed(&app) {
+        return Err("debug commands need developer mode".to_string());
+    }
+    warn!("debug: simulating an engine crash");
+    if let Some(session) = state.capture.lock().await.take() {
+        session.stop().await;
+    }
+    let core = state
+        .server
+        .lock()
+        .await
+        .take()
+        .ok_or_else(|| "the engine is not running".to_string())?;
+    let port = core.port;
+    ENGINE_RETIRED.notify_waiters();
+    // The engine thread (the boot one included) wakes on the notification,
+    // sees the empty slot and stops its runtime.
+    let deadline = Instant::now() + Duration::from_secs(20);
+    while crate::port_conflict::port_in_use(port).await && Instant::now() < deadline {
+        tokio::time::sleep(Duration::from_millis(250)).await;
+    }
+    *state.server.lock().await = Some(core);
+    let still_bound = crate::port_conflict::port_in_use(port).await;
+    Ok(if still_bound {
+        format!("engine on port {port} did not stop within 20s")
+    } else {
+        format!("engine on port {port} stopped; the watchdog should respawn it")
+    })
+}
+
+#[cfg(test)]
+mod respawn_tests {
+    use super::*;
+    use std::sync::atomic::AtomicUsize;
+
+    fn short() -> RespawnLimits {
+        RespawnLimits {
+            stop: Duration::from_millis(50),
+            start: Duration::from_millis(50),
+        }
+    }
+
+    #[test]
+    fn default_limits_cover_a_long_migration_but_not_a_wedged_stop() {
+        let limits = RespawnLimits::default();
+        assert_eq!(limits.stop, Duration::from_secs(45));
+        assert!(limits.start >= Duration::from_secs(30 * 60));
+    }
+
+    #[tokio::test]
+    async fn a_stop_that_never_returns_fails_the_respawn_without_starting() {
+        let starts = AtomicUsize::new(0);
+        let begun = Instant::now();
+        let result = bounded_respawn(
+            std::future::pending::<()>(),
+            || async {
+                starts.fetch_add(1, Ordering::SeqCst);
+                Ok(())
+            },
+            short(),
+        )
+        .await;
+        assert!(begun.elapsed() < Duration::from_secs(5));
+        let err = result.expect_err("a wedged stop must not report success");
+        // Failed (not PortHeld), so the watchdog's backoff keeps scheduling.
+        assert!(matches!(err, RespawnError::Failed(_)), "{err:?}");
+        assert!(is_respawn_timeout(&err));
+        assert_eq!(starts.load(Ordering::SeqCst), 0);
+    }
+
+    #[tokio::test]
+    async fn a_start_that_never_returns_fails_the_respawn() {
+        let result = bounded_respawn(
+            async {},
+            || std::future::pending::<Result<(), RespawnError>>(),
+            short(),
+        )
+        .await;
+        let err = result.expect_err("a wedged start must not report success");
+        assert!(is_respawn_timeout(&err), "{err:?}");
+    }
+
+    #[tokio::test]
+    async fn start_results_pass_through_unchanged() {
+        assert_eq!(
+            bounded_respawn(async {}, || async { Ok(()) }, short()).await,
+            Ok(())
+        );
+        let held = bounded_respawn(
+            async {},
+            || async { Err(RespawnError::PortHeld("port 3035 held".into())) },
+            short(),
+        )
+        .await;
+        assert_eq!(held, Err(RespawnError::PortHeld("port 3035 held".into())));
+        let failed = RespawnError::Failed("no monitors".into());
+        assert!(!is_respawn_timeout(&failed));
+    }
+
+    #[test]
+    fn a_respawn_is_port_held_only_when_its_own_start_says_so() {
+        // The classification travels with the start's own error; there is
+        // no shared "last block" an earlier attempt could leave behind.
+        assert_eq!(
+            RespawnError::from(StartError::PortHeld("port 3035 held".into())),
+            RespawnError::PortHeld("port 3035 held".into())
+        );
+        assert_eq!(
+            RespawnError::from(StartError::Other("no monitors matched".into())),
+            RespawnError::Failed("no monitors matched".into())
+        );
+        // A plain String error inside the start (`?`, `.into()`) is never
+        // PortHeld.
+        assert_eq!(
+            StartError::from("Server startup channel dropped".to_string()),
+            StartError::Other("Server startup channel dropped".into())
+        );
+        // The Tauri command still gets just the message.
+        assert_eq!(
+            StartError::PortHeld("held".into()).into_message(),
+            "held".to_string()
+        );
+    }
+
+    #[test]
+    fn a_new_generation_never_overrides_a_pause_or_a_quit() {
+        use InstallDecision::*;
+        // A quit or relaunch began while the engine was starting: whatever
+        // was started is stopped again, intent or not.
+        assert_eq!(install_decision(true, true, true), Retire);
+        assert_eq!(install_decision(true, true, false), Retire);
+        assert_eq!(install_decision(true, false, true), Retire);
+        // Paused while capture was starting: the engine stays up, the new
+        // capture session is stopped instead of stored.
+        assert_eq!(install_decision(false, false, true), EngineOnly);
+        // No session to store (paused before capture, or capture failed).
+        assert_eq!(install_decision(false, true, false), EngineOnly);
+        assert_eq!(install_decision(false, false, false), EngineOnly);
+        // Only a start nobody paused or quit during records.
+        assert_eq!(install_decision(false, true, true), EngineAndCapture);
+    }
+
+    #[test]
+    fn a_capture_failure_keeps_the_engine_and_its_runtime() {
+        let failed = GenerationStart::CaptureFailed("no monitors matched".into());
+        assert!(failed.keeps_engine());
+        assert!(!failed.is_running());
+        assert_eq!(failed.into_result(), Err("no monitors matched".to_string()));
+
+        let paused = GenerationStart::Running { capture: false };
+        assert!(paused.keeps_engine());
+        assert!(paused.is_running());
+        assert_eq!(paused.into_result(), Ok(()));
+
+        for gone in [
+            GenerationStart::Failed("db".into()),
+            GenerationStart::Retired,
+        ] {
+            assert!(!gone.keeps_engine(), "{gone:?}");
+            assert!(!gone.is_running(), "{gone:?}");
+            assert!(gone.into_result().is_err());
+        }
+    }
+
+    #[tokio::test]
+    async fn the_teardown_can_wait_for_an_engine_that_is_starting_or_stopping() {
+        // Only this test creates transitions.
+        assert!(!wait_for_engine_transitions().await, "nothing in flight");
+        let in_flight = EngineTransition::begin();
+        assert_eq!(engine_transitions(), 1);
+        let begun = Instant::now();
+        let release = tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(150)).await;
+            drop(in_flight);
+        });
+        assert!(wait_for_engine_transitions().await);
+        assert!(begun.elapsed() >= Duration::from_millis(100));
+        release.await.unwrap();
+        assert_eq!(engine_transitions(), 0);
+
+        // A panic that unwinds through a transition ends it as well.
+        let joined = std::thread::spawn(|| {
+            let _in_flight = EngineTransition::begin();
+            panic!("engine thread panicked mid-start");
+        })
+        .join();
+        assert!(joined.is_err());
+        assert_eq!(engine_transitions(), 0);
+    }
+
+    static PANIC_REPORTS: AtomicUsize = AtomicUsize::new(0);
+
+    fn count_report(_: &str) -> bool {
+        PANIC_REPORTS.fetch_add(1, Ordering::SeqCst);
+        true
+    }
+
+    fn guard(flag: &Arc<AtomicBool>) -> StartPanicGuard {
+        StartPanicGuard {
+            flag: Some(flag.clone()),
+            report: count_report,
+        }
+    }
+
+    #[test]
+    fn a_boot_thread_that_panics_mid_start_clears_its_start_flag() {
+        let flag = Arc::new(AtomicBool::new(true));
+        let armed = guard(&flag);
+        let joined = std::thread::spawn(move || {
+            let _guard = armed;
+            panic!("ServerCore::start panicked");
+        })
+        .join();
+        assert!(joined.is_err());
+        assert!(
+            !flag.load(Ordering::SeqCst),
+            "the watchdog must not wait on a dead start"
+        );
+        assert_eq!(PANIC_REPORTS.load(Ordering::SeqCst), 1);
+
+        // Once the start is over the flag belongs to whoever set it next.
+        let flag = Arc::new(AtomicBool::new(true));
+        let mut finished = guard(&flag);
+        let joined = std::thread::spawn(move || {
+            finished.disarm();
+            let _guard = finished;
+            panic!("after the start");
+        })
+        .join();
+        assert!(joined.is_err());
+        assert!(flag.load(Ordering::SeqCst));
+
+        // An ordinary return leaves it to the start path, which clears it
+        // itself where the base code did.
+        let flag = Arc::new(AtomicBool::new(true));
+        drop(guard(&flag));
+        assert!(flag.load(Ordering::SeqCst));
+        assert_eq!(PANIC_REPORTS.load(Ordering::SeqCst), 1);
+    }
 }
