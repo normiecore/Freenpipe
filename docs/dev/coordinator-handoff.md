@@ -6,9 +6,9 @@ Updated 2026-10-20 evening. Git, PR heads and CI are the source of truth; this f
 
 - Waves 0 and 1 are merged (18 WPs). Wave 1 integration (runbook 4.7) has not been recorded yet: it needs a
   full Linux build of main and was held for disk.
-- Wave 2 core merged: W2-05, W2-12, W2-13, W2-16, W2-17, W2-18, W2-19, W2-22, W2-26 (27/155 overall).
-- Open: W2-08 (PR #24, approved; CI re-running after the schema-test fix 0ee4802), W2-23 (PR #27, approved,
-  CI pending). Building: W2-27 + W2-11, W2-10 + W3-30.
+- Wave 2 core merged: W2-05, W2-12, W2-13, W2-16, W2-17, W2-18, W2-19, W2-22, W2-23, W2-26 (28/155 overall).
+- Open: W2-08 (PR #24, approved; CI re-running after the schema-test fix 0ee4802). Building: W2-27 + W2-11,
+  W2-10 + W3-30.
 - Core set still to start (decision 6): W2-01, W2-04, W2-09, W3-25, then the wave 3/4 core WPs as their
   dependencies merge.
 
@@ -38,8 +38,11 @@ Updated 2026-10-20 evening. Git, PR heads and CI are the source of truth; this f
   export/adapter/`SCREENPIPE_DIRECTML` checks (W2-19 open question 16): route them through the same policy
   (W4-15) or ship the redactor on CPU.
 - Trademark: the CLI binary is still named `screenpipe`.
-- W2-23 follow-ups (PR #27): Clear Cache still deletes the user's global `~/.pi/agent` (W8-02); a failed tree
-  swap during a Pi rebuild can leave node_modules missing; seed and settings writes can race on first start.
+- W2-23 follow-ups (PR #27, approval comment 6302600646): Clear Cache still deletes the user's global
+  `~/.pi/agent` (W8-02); a failed tree swap plus a failed restore during a Pi rebuild leaves node_modules
+  missing until the next start; seed and settings writes can race on first start (the engine starts the pipe
+  scheduler before `ensure_installed`); `ensure_bash_available` runs on an async worker and can block it
+  up to 25 s when a bash candidate hangs.
 
 ## Older follow-ups (wave 0)
 
