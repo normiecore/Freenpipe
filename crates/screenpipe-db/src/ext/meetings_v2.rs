@@ -122,9 +122,9 @@ pub enum SummaryRejection {
     FailureText,
 }
 
-/// Openers of a sentence that apologises or reports an inability. Matched at
-/// the start of the first sentence, on a word boundary.
-const FAILURE_OPENERS: &[&str] = &[
+/// Apologies: the assistant speaking about itself. Matched at the start of
+/// the first sentence, on a word boundary.
+const APOLOGY_OPENERS: &[&str] = &[
     "sorry",
     "i'm sorry",
     "i am sorry",
@@ -132,33 +132,62 @@ const FAILURE_OPENERS: &[&str] = &[
     "my apologies",
     "i apologize",
     "i apologise",
-    "unfortunately",
+];
+
+/// First-person reports of not managing something ("I couldn't ...").
+/// Meeting summaries are written in the third person, so these open a note
+/// about the summary run rather than about the meeting.
+const SELF_INABILITY_OPENERS: &[&str] = &[
     "i couldn't",
     "i could not",
     "i can't",
     "i cannot",
     "i was unable",
     "i was not able",
+    "i wasn't able",
     "i'm unable",
     "i am unable",
     "i'm not able",
     "i am not able",
-    "unable to",
-    "failed to",
-    "error",
 ];
 
-/// Words that tie such a sentence to producing the summary itself.
-const SUMMARY_TASK_WORDS: &[&str] = &[
-    "summar",
-    "transcript",
-    "recording",
-    "audio",
-    "speech",
-    "captured",
+/// An error label at the very start ("Error: ...").
+const ERROR_LABEL: &str = "error:";
+
+/// Subjectless openers that report the run itself failing. They count only
+/// when a task verb follows ("Unable to summarize", "Failed to fetch the
+/// transcript"), so "Failed to ship the audio feature, ..." is a summary.
+const TASK_FAILURE_OPENERS: &[&str] = &["unable to", "failed to"];
+
+/// Verbs that follow [`TASK_FAILURE_OPENERS`] in a failure notice.
+const TASK_VERBS: &[&str] = &[
+    "summarize",
+    "summarise",
+    "generate",
+    "produce",
+    "create",
+    "write",
+    "access",
+    "find",
+    "fetch",
+    "load",
+    "read",
+    "retrieve",
+    "process",
+    "transcribe",
 ];
 
-/// Words that say something was missing or did not work.
+/// "Unfortunately" also opens ordinary sentences about the meeting
+/// ("Unfortunately the launch slipped", "Unfortunately, the recording of the
+/// demo failed, so ..."). It counts only in a sentence about producing the
+/// summary, or in a short one-clause text that says the input is missing.
+const SOFT_OPENER: &str = "unfortunately";
+
+/// Words naming what a summary is made from (substring match).
+const INPUT_WORDS: &[&str] = &["transcript", "recording", "audio", "speech", "captured"];
+
+/// Words that say something was missing or did not work (substring match).
+/// Used only after an apology, a first-person opener or an error label.
 const LACK_WORDS: &[&str] = &[
     "no ",
     "not",
@@ -171,6 +200,37 @@ const LACK_WORDS: &[&str] = &[
     "insufficient",
     "failed",
     "error",
+];
+
+/// Words that say the summary could not be produced (whole words).
+const INABILITY_WORDS: &[&str] = &[
+    "unable",
+    "couldn't",
+    "could not",
+    "can't",
+    "cannot",
+    "not able",
+    "wasn't able",
+    "not possible",
+    "impossible",
+    "no summary",
+];
+
+/// Words that say the input is missing altogether (whole words).
+const MISSING_WORDS: &[&str] = &[
+    "no",
+    "none",
+    "nothing",
+    "empty",
+    "missing",
+    "unavailable",
+    "not available",
+    "wasn't available",
+    "not captured",
+    "wasn't captured",
+    "not recorded",
+    "wasn't recorded",
+    "not found",
 ];
 
 /// Short answers that are nothing but a placeholder.
@@ -267,16 +327,67 @@ pub fn summary_rejection(summary: &str) -> Option<SummaryRejection> {
         }
     }
 
-    // An apology or inability report about producing the summary itself.
     let first = first_sentence(stripped);
-    let opens_with_failure = FAILURE_OPENERS.iter().any(|p| starts_with_word(first, p));
-    if opens_with_failure
-        && SUMMARY_TASK_WORDS.iter().any(|w| first.contains(w))
-        && LACK_WORDS.iter().any(|w| first.contains(w))
+    if is_self_report_of_failure(first)
+        || is_report_that_summary_was_not_made(first)
+        || (stripped.chars().count() <= SHORT_TEXT_CHARS && is_missing_input_notice(stripped))
     {
         return Some(SummaryRejection::FailureText);
     }
     None
+}
+
+/// The first sentence is the assistant talking about itself (an apology, a
+/// first-person "I couldn't", an "Error:" label, or "Unfortunately, I ...")
+/// and says the summary or its input was missing or did not work: "I'm
+/// sorry, but there is no transcript", "Error: failed to read the audio".
+fn is_self_report_of_failure(sentence: &str) -> bool {
+    let opens_as_self = |s: &str| {
+        APOLOGY_OPENERS
+            .iter()
+            .chain(SELF_INABILITY_OPENERS)
+            .any(|o| starts_with_word(s, o))
+    };
+    let speaks_as_assistant = opens_as_self(sentence)
+        || sentence.starts_with(ERROR_LABEL)
+        || sentence
+            .strip_prefix(SOFT_OPENER)
+            .map(|rest| rest.trim_start_matches([',', ' ', '-']))
+            .is_some_and(|rest| {
+                SELF_INABILITY_OPENERS
+                    .iter()
+                    .any(|o| starts_with_word(rest, o))
+            });
+    speaks_as_assistant
+        && (sentence.contains("summar") || mentions_any(sentence, INPUT_WORDS))
+        && mentions_any(sentence, LACK_WORDS)
+}
+
+/// The first sentence says, without an "I", that the summary was not made:
+/// "Unfortunately, no summary could be produced", "Unable to summarize this
+/// call", "Failed to fetch the transcript".
+fn is_report_that_summary_was_not_made(sentence: &str) -> bool {
+    if starts_with_word(sentence, SOFT_OPENER) {
+        return sentence.contains("summar")
+            && INABILITY_WORDS.iter().any(|w| has_word(sentence, w));
+    }
+    TASK_FAILURE_OPENERS.iter().any(|opener| {
+        sentence
+            .strip_prefix(opener)
+            .map(str::trim_start)
+            .is_some_and(|rest| TASK_VERBS.iter().any(|v| starts_with_word(rest, v)))
+    }) && (sentence.contains("summar") || mentions_any(sentence, INPUT_WORDS))
+}
+
+/// A short text that is one clause opening with "unfortunately" and only says
+/// the input is missing: "Unfortunately, no transcript was available."
+/// Anything after a full stop or semicolon ("...; the second half covered
+/// the roadmap") makes it a summary.
+fn is_missing_input_notice(text: &str) -> bool {
+    starts_with_word(text, SOFT_OPENER)
+        && is_single_clause(text)
+        && mentions_any(text, INPUT_WORDS)
+        && MISSING_WORDS.iter().any(|w| has_word(text, w))
 }
 
 /// Replace the last `## Summary` section of `note` with `summary` (a cleaned
@@ -399,6 +510,28 @@ fn first_sentence(text: &str) -> &str {
         }
     }
     &text[..end]
+}
+
+/// Nothing but punctuation and spaces follows the first full stop,
+/// question mark, exclamation mark, semicolon or line break.
+fn is_single_clause(text: &str) -> bool {
+    match text.find(['.', '!', '?', ';', '\n']) {
+        Some(i) => text[i..].chars().all(|c| !c.is_alphanumeric()),
+        None => true,
+    }
+}
+
+fn mentions_any(text: &str, words: &[&str]) -> bool {
+    words.iter().any(|w| text.contains(w))
+}
+
+/// `word` occurs in `text` with no letter or digit right before or after it.
+fn has_word(text: &str, word: &str) -> bool {
+    text.match_indices(word).any(|(i, _)| {
+        let before = text[..i].chars().next_back();
+        let after = text[i + word.len()..].chars().next();
+        before.is_none_or(|c| !c.is_alphanumeric()) && after.is_none_or(|c| !c.is_alphanumeric())
+    })
 }
 
 /// `text` starts with `prefix`, followed by a non-alphanumeric character or the end.
@@ -844,6 +977,11 @@ mod tests {
             "Unfortunately I was unable to summarize this recording.",
             "I can\u{2019}t summarize this meeting: the transcript is empty.",
             "Error: failed to read the transcript",
+            "Unfortunately, no transcript was available for this meeting.",
+            "Unfortunately, I couldn't access the transcript for this meeting.",
+            "Unfortunately, the summary could not be generated because the recording is empty.",
+            "Unable to summarize: the transcript is empty.",
+            "Failed to fetch the transcript.",
             "No transcript available.",
             "Nothing to summarize.",
             "Not enough transcript content to summarize.",
@@ -871,6 +1009,13 @@ mod tests {
              assigned owners for each theme and agreed to revisit the hiring plan next Tuesday \
              after the budget review.",
             "Sorry state of the build was discussed; Bo will fix CI.",
+            "Unfortunately, the recording of the demo failed, so the team rescheduled it.",
+            "Unfortunately there's no recording of the first half; the second half covered \
+             the Q3 roadmap.",
+            "Unfortunately, the summary from last week was not shared, so Ana will resend it.",
+            "Unfortunately the summary pipeline failed last week; Bo is on it.",
+            "Failed to ship the audio feature, so the team cut scope.",
+            "Error budget for the audio service was not met; the team adds alerts.",
         ] {
             assert_eq!(summary_rejection(text), None, "{text}");
         }

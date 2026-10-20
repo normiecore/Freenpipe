@@ -357,14 +357,64 @@ enum OfferCheck {
 }
 
 fn take_room_change_offer(meeting_id: i64, token: &str) -> OfferCheck {
-    with_room_change_offers(|offers| match offers.get(&meeting_id) {
+    let check = with_room_change_offers(|offers| match offers.get(&meeting_id) {
         Some(offer) if offer.token == token => {
             offers.remove(&meeting_id);
             OfferCheck::Matched
         }
         Some(_) => OfferCheck::Mismatch,
         None => OfferCheck::NotRegistered,
-    })
+    });
+    if check == OfferCheck::NotRegistered {
+        tracing::debug!(
+            "room change for meeting {}: no prompt registered for it, accepting the token as given",
+            meeting_id
+        );
+    }
+    check
+}
+
+/// How often the in-meeting flag is checked while a room-change successor
+/// holds the manual slot.
+const SUCCESSOR_FLAG_CHECK_INTERVAL: Duration = Duration::from_secs(1);
+
+/// Keep the audio pipeline's in-meeting flag raised while `meeting_id` (the
+/// meeting a room change opened) holds the manual slot, and return once the
+/// slot holds anything else.
+///
+/// The room change sends `detector_stop_tracking` for the old meeting. When
+/// the UI-scan detector was tracking it, its stop branch lowers the flag
+/// without looking at the manual slot, and while the slot is taken it skips
+/// the step that would raise it again. Left alone, the successor would read as
+/// no meeting at all: batch transcription stops deferring, a +HD session falls
+/// back to its short timer and `/health` reports no meeting.
+///
+/// The check runs under the slot's read lock. The stop route and the
+/// detector's auto-end clear the slot under its write lock before they lower
+/// the flag, so this never raises the flag again after the successor really
+/// ended.
+async fn keep_in_meeting_flag_for_successor(
+    manual_meeting: Arc<RwLock<Option<i64>>>,
+    detector: Arc<screenpipe_audio::meeting_detector::MeetingDetector>,
+    meeting_id: i64,
+    interval: Duration,
+) {
+    loop {
+        {
+            let slot = manual_meeting.read().await;
+            if *slot != Some(meeting_id) {
+                return;
+            }
+            if !detector.is_in_meeting() {
+                tracing::debug!(
+                    "room change: in-meeting flag was lowered while meeting {} is open; raising it",
+                    meeting_id
+                );
+                detector.set_v2_in_meeting(true);
+            }
+        }
+        tokio::time::sleep(interval).await;
+    }
 }
 
 #[derive(OaSchema, Debug, Serialize, Deserialize, Clone)]
@@ -1377,13 +1427,23 @@ pub(crate) async fn resolve_room_change_handler(
 
             // The user asked for a new note, so the successor is theirs: it
             // takes the manual slot, the UI-scan detector stands down while it
-            // is open, and the stop button and inactivity auto-end target it.
+            // is open, and the stop button targets it. Ending it when the call
+            // ends needs a detector that adopts it (open-questions W2-08 #8).
             {
                 let mut lock = state.manual_meeting.write().await;
                 *lock = Some(new_id);
             }
             if let Some(detector) = state.audio_manager.meeting_detector().await {
                 detector.set_v2_in_meeting(true);
+                // The UI-scan detector lowers the flag when it handles the
+                // stop signal below for the old meeting; keep it raised for
+                // the successor.
+                tokio::spawn(keep_in_meeting_flag_for_successor(
+                    state.manual_meeting.clone(),
+                    detector,
+                    new_id,
+                    SUCCESSOR_FLAG_CHECK_INTERVAL,
+                ));
             }
 
             emit_detector_stop_tracking(meeting_id, &meeting_app);
@@ -1705,6 +1765,65 @@ mod tests {
         assert!(!withdraw_room_change_offer(id, "old"));
         assert!(withdraw_room_change_offer(id, "new"));
         assert_eq!(take_room_change_offer(id, "new"), OfferCheck::NotRegistered);
+    }
+
+    #[tokio::test]
+    async fn successor_keeps_in_meeting_flag_until_its_slot_is_released() {
+        use screenpipe_audio::meeting_detector::MeetingDetector;
+
+        let slot = Arc::new(RwLock::new(Some(42)));
+        let detector = Arc::new(MeetingDetector::new());
+        detector.set_v2_in_meeting(true);
+        let keeper = tokio::spawn(keep_in_meeting_flag_for_successor(
+            slot.clone(),
+            detector.clone(),
+            42,
+            Duration::from_millis(5),
+        ));
+
+        // The UI-scan detector handles the stop signal for the old meeting.
+        detector.set_v2_in_meeting(false);
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while !detector.is_in_meeting() && Instant::now() < deadline {
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+        assert!(detector.is_in_meeting(), "flag was not raised again");
+
+        // The stop route: release the slot, then lower the flag.
+        {
+            let mut lock = slot.write().await;
+            *lock = None;
+        }
+        detector.set_v2_in_meeting(false);
+        tokio::time::timeout(Duration::from_secs(5), keeper)
+            .await
+            .expect("keeper returns once the slot is released")
+            .unwrap();
+        tokio::time::sleep(Duration::from_millis(20)).await;
+        assert!(!detector.is_in_meeting(), "flag raised after the stop");
+    }
+
+    #[tokio::test]
+    async fn successor_flag_keeper_returns_when_another_meeting_takes_the_slot() {
+        use screenpipe_audio::meeting_detector::MeetingDetector;
+
+        let slot = Arc::new(RwLock::new(Some(7)));
+        let detector = Arc::new(MeetingDetector::new());
+        let keeper = tokio::spawn(keep_in_meeting_flag_for_successor(
+            slot.clone(),
+            detector.clone(),
+            7,
+            Duration::from_millis(5),
+        ));
+        // A second room change hands the slot to a newer successor.
+        {
+            let mut lock = slot.write().await;
+            *lock = Some(8);
+        }
+        tokio::time::timeout(Duration::from_secs(5), keeper)
+            .await
+            .expect("keeper returns once the slot moves on")
+            .unwrap();
     }
 
     #[test]
