@@ -1332,6 +1332,36 @@ async fn attach_tx(conn: &mut SqliteConnection, by_run: BTreeMap<i64, Vec<i64>>)
     Ok(updated)
 }
 
+async fn create_actor_tx(conn: &mut SqliteConnection, name: &str) -> Result<SemanticActor> {
+    let id = sqlx::query("INSERT INTO semantic_actors (name) VALUES (?1)")
+        .bind(name)
+        .execute(&mut *conn)
+        .await?
+        .last_insert_rowid();
+    require_actor(conn, id).await
+}
+
+async fn rename_actor_tx(
+    conn: &mut SqliteConnection,
+    id: i64,
+    name: &str,
+) -> Result<SemanticActor> {
+    let changed = sqlx::query(
+        "UPDATE semantic_actors \
+         SET name = ?1, updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now') \
+         WHERE id = ?2",
+    )
+    .bind(name)
+    .bind(id)
+    .execute(&mut *conn)
+    .await?
+    .rows_affected();
+    if changed == 0 {
+        return Err(SemanticStoreError::not_found("semantic actor"));
+    }
+    require_actor(conn, id).await
+}
+
 async fn merge_tx(
     conn: &mut SqliteConnection,
     keep_id: i64,
@@ -1896,16 +1926,7 @@ impl DatabaseManager {
     pub async fn create_semantic_actor(&self, name: &str) -> Result<SemanticActor> {
         let name = clean_actor_name(name)?;
         let mut tx = self.begin_immediate_with_retry().await?;
-        let out = async {
-            let conn: &mut SqliteConnection = tx.conn();
-            let id = sqlx::query("INSERT INTO semantic_actors (name) VALUES (?1)")
-                .bind(&name)
-                .execute(&mut *conn)
-                .await?
-                .last_insert_rowid();
-            require_actor(conn, id).await
-        }
-        .await;
+        let out = create_actor_tx(&mut **tx.conn(), &name).await;
         finish_tx(tx, out).await
     }
 
@@ -1915,24 +1936,7 @@ impl DatabaseManager {
         require_positive("id", id)?;
         let name = clean_actor_name(name)?;
         let mut tx = self.begin_immediate_with_retry().await?;
-        let out = async {
-            let conn: &mut SqliteConnection = tx.conn();
-            let changed = sqlx::query(
-                "UPDATE semantic_actors \
-                 SET name = ?1, updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now') \
-                 WHERE id = ?2",
-            )
-            .bind(&name)
-            .bind(id)
-            .execute(&mut *conn)
-            .await?
-            .rows_affected();
-            if changed == 0 {
-                return Err(SemanticStoreError::not_found("semantic actor"));
-            }
-            require_actor(conn, id).await
-        }
-        .await;
+        let out = rename_actor_tx(&mut **tx.conn(), id, &name).await;
         finish_tx(tx, out).await
     }
 
