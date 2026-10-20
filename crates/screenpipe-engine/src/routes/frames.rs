@@ -5,13 +5,17 @@
 use axum::{
     body::Body,
     extract::{Path, Query, State},
-    http::StatusCode,
+    http::{header, HeaderMap, StatusCode},
     response::{Json as JsonResponse, Response},
 };
 use oasgen::{oasgen, OaSchema};
 
 use chrono::{DateTime, Utc};
 use screenpipe_core::pii_removal::detect_pii_regions;
+use screenpipe_db::ext::frames_preview::{
+    normalize_browser_domain, FrameMediaLocation, FrameMediaRow, FramePreviewFilter,
+    REMOTE_PATH_PREFIX,
+};
 use screenpipe_db::TextPosition;
 
 use image::GenericImageView;
@@ -19,16 +23,20 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::{
     collections::HashMap,
+    fmt,
     sync::Arc,
     time::{Duration, Instant},
 };
 use tokio::fs::File;
+use tokio::io::{AsyncReadExt, AsyncSeekExt};
 use tokio_util::io::ReaderStream;
 use tracing::{debug, error};
 
+use super::ext::{documented_routes, DocumentedRoutes, ExtRouter};
 use crate::{
+    frame_thumbnail_cache as thumbs,
     server::AppState,
-    video_utils::{extract_frame_from_video, redact_frame_pii},
+    video_utils::{extract_frame_from_video, extract_frame_jpeg_bytes, redact_frame_pii},
 };
 
 use tokio::time::timeout;
@@ -49,215 +57,18 @@ pub async fn get_frame_data(
 ) -> Result<Response<Body>, (StatusCode, JsonResponse<Value>)> {
     let start_time = Instant::now();
 
-    match timeout(Duration::from_secs(5), async {
-        // Skip cache if redact_pii is requested (need fresh processing)
-        if !query.redact_pii {
-            // Try to get frame from cache if enabled
-            if let Some(cache) = &state.frame_image_cache {
-                let cache_result = cache.try_lock();
-                match cache_result {
-                    Ok(mut cache) => {
-                        if let Some((file_path, timestamp)) = cache.get(&frame_id) {
-                            // Increased TTL from 5 minutes to 30 minutes.
-                            // Frames are immutable once captured, so longer caching is safe
-                            // and significantly improves timeline scrolling performance.
-                            if timestamp.elapsed() < Duration::from_secs(1800) {
-                                let path_owned = file_path.clone();
-                                drop(cache);
-                                match serve_file(&path_owned).await {
-                                    Ok(resp) => {
-                                        debug!(
-                                            "Cache hit for frame_id: {}. Retrieved in {:?}",
-                                            frame_id,
-                                            start_time.elapsed()
-                                        );
-                                        return Ok(resp);
-                                    }
-                                    Err(_) => {
-                                        // File was deleted (e.g. by compaction) — evict stale entry
-                                        // and fall through to DB lookup for updated path
-                                        debug!(
-                                            "Cache stale for frame_id: {} (file gone), evicting",
-                                            frame_id
-                                        );
-                                        if let Ok(mut cache) =
-                                            state.frame_image_cache.as_ref().unwrap().try_lock()
-                                        {
-                                            cache.pop(&frame_id);
-                                        }
-                                    }
-                                }
-                            } else {
-                                cache.pop(&frame_id);
-                            }
-                        }
-                    }
-                    Err(_) => {
-                        debug!("Cache lock contention for frame_id: {}", frame_id);
-                    }
-                }
-            }
-        }
-
-        // If not in cache or cache disabled, get from database
-        match state.db.get_frame(frame_id).await {
-            Ok(Some((file_path, offset_index, is_snapshot))) => {
-                // Synced frame from another device — no local file exists.
-                // Return metadata (OCR text, app/window context) instead of 410.
-                if file_path.starts_with("cloud://") {
-                    let ocr_text = state
-                        .db
-                        .get_frame_ocr_text_json(frame_id)
-                        .await
-                        .ok()
-                        .flatten();
-                    let timestamp = state.db.get_frame_timestamp(frame_id).await.ok().flatten();
-                    let (acc_text, _) = state
-                        .db
-                        .get_frame_accessibility_data(frame_id)
-                        .await
-                        .unwrap_or((None, None));
-
-                    let metadata = json!({
-                        "error": "Frame is on a remote device",
-                        "error_type": "remote_device",
-                        "frame_id": frame_id,
-                        "timestamp": timestamp,
-                        "ocr_text": ocr_text,
-                        "accessibility_text": acc_text,
-                    });
-                    return Err((StatusCode::NOT_FOUND, JsonResponse(metadata)));
-                }
-
-                if is_snapshot {
-                    // Snapshot frame — serve JPEG directly (no ffmpeg needed)
-                    match serve_file(&file_path).await {
-                        Ok(resp) => {
-                            if query.redact_pii {
-                                return apply_pii_redaction(&state, frame_id, &file_path).await;
-                            }
-                            // Cache snapshot path
-                            if let Some(cache) = &state.frame_image_cache {
-                                if let Ok(mut cache) = cache.try_lock() {
-                                    cache.put(frame_id, (file_path.clone(), Instant::now()));
-                                }
-                            }
-                            debug!(
-                                "Snapshot frame {} served in {:?}",
-                                frame_id,
-                                start_time.elapsed()
-                            );
-                            return Ok(resp);
-                        }
-                        Err(_) => {
-                            // Snapshot file missing (compacted/deleted) — try nearest frame
-                            debug!(
-                                "Snapshot file missing for frame {}, trying nearest frame",
-                                frame_id
-                            );
-                            if let Some(fallback) =
-                                try_nearest_frame(&state, frame_id, query.redact_pii).await
-                            {
-                                return Ok(fallback);
-                            }
-                            return Err((
-                                StatusCode::NOT_FOUND,
-                                JsonResponse(json!({
-                                    "error": "Snapshot file missing and no nearby frame available",
-                                    "error_type": "snapshot_missing",
-                                    "frame_id": frame_id
-                                })),
-                            ));
-                        }
-                    }
-                }
-
-                // Legacy video-chunk frame — extract via ffmpeg
-                match try_extract_and_serve_frame(
-                    &state,
-                    frame_id,
-                    &file_path,
-                    offset_index,
-                    query.redact_pii,
-                )
-                .await
-                {
-                    Ok(response) => {
-                        debug!("Frame {} extracted in {:?}", frame_id, start_time.elapsed());
-                        Ok(response)
-                    }
-                    Err(e) => {
-                        // Extraction failed — try the nearest valid frame as fallback
-                        debug!(
-                            "Frame {} extraction failed ({}), trying nearest frame",
-                            frame_id, e
-                        );
-                        if let Some(fallback) =
-                            try_nearest_frame(&state, frame_id, query.redact_pii).await
-                        {
-                            return Ok(fallback);
-                        }
-
-                        // No fallback found either
-                        let err_str = e.to_string();
-                        if err_str.contains("FFPROBE_NOT_FOUND") {
-                            error!("ffprobe not found — frame extraction will fail for all compacted frames: {}", err_str);
-                            Err((
-                                StatusCode::INTERNAL_SERVER_ERROR,
-                                JsonResponse(json!({
-                                    "error": "ffprobe not found - install ffprobe alongside ffmpeg to extract frames from compacted videos",
-                                    "error_type": "ffprobe_not_found",
-                                    "frame_id": frame_id,
-                                    "file_path": file_path,
-                                    "details": err_str
-                                })),
-                            ))
-                        } else if err_str.contains("VIDEO_CORRUPTED")
-                            || err_str.contains("VIDEO_NOT_FOUND")
-                        {
-                            Err((
-                                StatusCode::GONE,
-                                JsonResponse(json!({
-                                    "error": "Frame unavailable - video file corrupted or missing",
-                                    "error_type": "video_corrupted",
-                                    "frame_id": frame_id,
-                                    "file_path": file_path,
-                                    "details": err_str
-                                })),
-                            ))
-                        } else {
-                            error!("Failed to extract frame {}: {}", frame_id, e);
-                            Err((
-                                StatusCode::INTERNAL_SERVER_ERROR,
-                                JsonResponse(json!({
-                                    "error": format!("Failed to extract frame: {}", e),
-                                    "frame_id": frame_id,
-                                    "file_path": file_path
-                                })),
-                            ))
-                        }
-                    }
-                }
-            }
-            Ok(None) => Err((
-                StatusCode::NOT_FOUND,
-                JsonResponse(json!({
-                    "error": "Frame not found",
-                    "frame_id": frame_id
-                })),
-            )),
-            Err(e) => Err((
-                StatusCode::INTERNAL_SERVER_ERROR,
-                JsonResponse(json!({
-                    "error": format!("Database error: {}", e),
-                    "frame_id": frame_id
-                })),
-            )),
-        }
-    })
+    match timeout(
+        Duration::from_secs(5),
+        serve_frame_image(&state, frame_id, query.redact_pii),
+    )
     .await
     {
-        Ok(result) => result,
+        Ok(result) => {
+            if result.is_ok() {
+                debug!("Frame {} served in {:?}", frame_id, start_time.elapsed());
+            }
+            result
+        }
         Err(_) => {
             error!("Request timeout for frame_id: {}", frame_id);
             Err((
@@ -269,6 +80,351 @@ pub async fn get_frame_data(
             ))
         }
     }
+}
+
+/// Serve the full image of one frame.
+///
+/// The frames table is read on every request, before any cache: the image
+/// cache only remembers where an extracted video frame was written, and it
+/// must never answer for a frame that was deleted or whose media was evicted.
+async fn serve_frame_image(
+    state: &Arc<AppState>,
+    frame_id: i64,
+    redact_pii: bool,
+) -> Result<Response<Body>, (StatusCode, JsonResponse<Value>)> {
+    let row = lookup_frame_media(state, frame_id).await?;
+    match row.location() {
+        FrameMediaLocation::Remote => Err(remote_frame_error(state, frame_id).await),
+        FrameMediaLocation::Unavailable => Err(frame_media_unavailable_error(frame_id)),
+        FrameMediaLocation::Snapshot { path } => {
+            serve_snapshot_frame(state, frame_id, &path, redact_pii).await
+        }
+        FrameMediaLocation::Video {
+            path, offset_index, ..
+        } => serve_video_frame(state, frame_id, &path, offset_index, redact_pii).await,
+    }
+}
+
+/// The exact frame's row, or the 404/500 the frame routes answer with.
+async fn lookup_frame_media(
+    state: &Arc<AppState>,
+    frame_id: i64,
+) -> Result<FrameMediaRow, (StatusCode, JsonResponse<Value>)> {
+    match state.db.get_frame_media(frame_id).await {
+        Ok(Some(row)) => Ok(row),
+        Ok(None) => Err(frame_not_found_error(frame_id)),
+        Err(e) => Err(frame_db_error(frame_id, &e)),
+    }
+}
+
+/// Serve a snapshot frame. A missing file is looked up again before it is
+/// reported: snapshot compaction may have moved the frame into an MP4 between
+/// the first lookup and the read.
+async fn serve_snapshot_frame(
+    state: &Arc<AppState>,
+    frame_id: i64,
+    snapshot_path: &str,
+    redact_pii: bool,
+) -> Result<Response<Body>, (StatusCode, JsonResponse<Value>)> {
+    match read_snapshot_file(snapshot_path).await {
+        Ok(bytes) => return snapshot_response(state, frame_id, snapshot_path, bytes, redact_pii).await,
+        Err(SnapshotReadError::Unreadable(details)) => {
+            return Err(snapshot_read_failed_error(frame_id, snapshot_path, &details))
+        }
+        Err(SnapshotReadError::Missing) => {}
+    }
+
+    debug!(
+        "Snapshot file missing for frame {}, checking the frame's location again",
+        frame_id
+    );
+    let fresh = lookup_frame_media(state, frame_id).await?;
+    match fresh.location() {
+        FrameMediaLocation::Video {
+            path, offset_index, ..
+        } => return serve_video_frame(state, frame_id, &path, offset_index, redact_pii).await,
+        FrameMediaLocation::Snapshot { path } if path != snapshot_path => {
+            match read_snapshot_file(&path).await {
+                Ok(bytes) => {
+                    return snapshot_response(state, frame_id, &path, bytes, redact_pii).await
+                }
+                Err(SnapshotReadError::Unreadable(details)) => {
+                    return Err(snapshot_read_failed_error(frame_id, &path, &details))
+                }
+                Err(SnapshotReadError::Missing) => {}
+            }
+        }
+        FrameMediaLocation::Snapshot { .. } => {}
+        FrameMediaLocation::Remote => return Err(remote_frame_error(state, frame_id).await),
+        FrameMediaLocation::Unavailable => return Err(frame_media_unavailable_error(frame_id)),
+    }
+
+    // Still missing after the re-check: try the nearest frame instead.
+    debug!(
+        "Snapshot file missing for frame {}, trying nearest frame",
+        frame_id
+    );
+    if let Some(fallback) = try_nearest_frame(state, frame_id, redact_pii).await {
+        return Ok(fallback);
+    }
+    Err((
+        StatusCode::NOT_FOUND,
+        JsonResponse(json!({
+            "error": "Snapshot file missing and no nearby frame available",
+            "error_type": "snapshot_missing",
+            "frame_id": frame_id
+        })),
+    ))
+}
+
+/// Response for a snapshot whose bytes were read successfully.
+async fn snapshot_response(
+    state: &Arc<AppState>,
+    frame_id: i64,
+    snapshot_path: &str,
+    bytes: Vec<u8>,
+    redact_pii: bool,
+) -> Result<Response<Body>, (StatusCode, JsonResponse<Value>)> {
+    if redact_pii {
+        return apply_pii_redaction(state, frame_id, snapshot_path).await;
+    }
+    Response::builder()
+        .header("content-type", "image/jpeg")
+        .header("cache-control", "public, max-age=604800") // Cache for 7 days
+        .body(Body::from(bytes))
+        .map_err(|e| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                JsonResponse(json!({"error": format!("Failed to create response: {}", e)})),
+            )
+        })
+}
+
+/// Serve a frame stored inside a video chunk (compacted or legacy), using the
+/// extracted-image cache when it still has the file.
+async fn serve_video_frame(
+    state: &Arc<AppState>,
+    frame_id: i64,
+    file_path: &str,
+    offset_index: i64,
+    redact_pii: bool,
+) -> Result<Response<Body>, (StatusCode, JsonResponse<Value>)> {
+    // Skip cache if redact_pii is requested (need fresh processing)
+    if !redact_pii {
+        if let Some(response) = cached_extracted_frame(state, frame_id).await {
+            return Ok(response);
+        }
+    }
+
+    match try_extract_and_serve_frame(state, frame_id, file_path, offset_index, redact_pii).await {
+        Ok(response) => Ok(response),
+        Err(e) => {
+            // Extraction failed — try the nearest valid frame as fallback
+            debug!(
+                "Frame {} extraction failed ({}), trying nearest frame",
+                frame_id, e
+            );
+            if let Some(fallback) = try_nearest_frame(state, frame_id, redact_pii).await {
+                return Ok(fallback);
+            }
+
+            // No fallback found either
+            let err_str = e.to_string();
+            if err_str.contains("FFPROBE_NOT_FOUND") {
+                error!("ffprobe not found — frame extraction will fail for all compacted frames: {}", err_str);
+                Err((
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    JsonResponse(json!({
+                        "error": "ffprobe not found - install ffprobe alongside ffmpeg to extract frames from compacted videos",
+                        "error_type": "ffprobe_not_found",
+                        "frame_id": frame_id,
+                        "file_path": file_path,
+                        "details": err_str
+                    })),
+                ))
+            } else if err_str.contains("VIDEO_CORRUPTED") || err_str.contains("VIDEO_NOT_FOUND") {
+                Err((
+                    StatusCode::GONE,
+                    JsonResponse(json!({
+                        "error": "Frame unavailable - video file corrupted or missing",
+                        "error_type": "video_corrupted",
+                        "frame_id": frame_id,
+                        "file_path": file_path,
+                        "details": err_str
+                    })),
+                ))
+            } else {
+                error!("Failed to extract frame {}: {}", frame_id, e);
+                Err((
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    JsonResponse(json!({
+                        "error": format!("Failed to extract frame: {}", e),
+                        "frame_id": frame_id,
+                        "file_path": file_path
+                    })),
+                ))
+            }
+        }
+    }
+}
+
+/// A previously extracted video frame from the image cache, if its file is
+/// still there and the entry is fresh. Stale entries are evicted.
+async fn cached_extracted_frame(state: &Arc<AppState>, frame_id: i64) -> Option<Response<Body>> {
+    let cache = state.frame_image_cache.as_ref()?;
+    let cached = match cache.try_lock() {
+        Ok(mut cache) => match cache.get(&frame_id) {
+            // Frames are immutable once captured, so a 30 minute TTL is safe
+            // and keeps timeline scrolling fast.
+            Some((file_path, stamp)) if stamp.elapsed() < Duration::from_secs(1800) => {
+                Some(file_path.clone())
+            }
+            Some(_) => {
+                cache.pop(&frame_id);
+                None
+            }
+            None => None,
+        },
+        Err(_) => {
+            debug!("Cache lock contention for frame_id: {}", frame_id);
+            None
+        }
+    }?;
+    match serve_file(&cached).await {
+        Ok(response) => {
+            debug!("Cache hit for frame_id: {}", frame_id);
+            Some(response)
+        }
+        Err(_) => {
+            // The extracted file was cleaned up: evict and extract again.
+            debug!(
+                "Cache stale for frame_id: {} (file gone), evicting",
+                frame_id
+            );
+            if let Ok(mut cache) = cache.try_lock() {
+                cache.pop(&frame_id);
+            }
+            None
+        }
+    }
+}
+
+/// Why a snapshot file could not be read.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum SnapshotReadError {
+    /// No file at the path (or a path component is not a directory).
+    Missing,
+    /// The path exists but reading it failed, or it is not a regular file.
+    Unreadable(String),
+}
+
+fn is_missing_file_error(e: &std::io::Error) -> bool {
+    matches!(
+        e.kind(),
+        std::io::ErrorKind::NotFound | std::io::ErrorKind::NotADirectory
+    )
+}
+
+/// Read a snapshot JPEG fully, telling a missing file apart from one that
+/// exists but cannot be read.
+async fn read_snapshot_file(path: &str) -> Result<Vec<u8>, SnapshotReadError> {
+    let classify = |e: std::io::Error| {
+        if is_missing_file_error(&e) {
+            SnapshotReadError::Missing
+        } else {
+            SnapshotReadError::Unreadable(e.to_string())
+        }
+    };
+    let metadata = tokio::fs::metadata(path).await.map_err(classify)?;
+    if !metadata.is_file() {
+        return Err(SnapshotReadError::Unreadable(
+            "snapshot path is not a regular file".to_string(),
+        ));
+    }
+    tokio::fs::read(path).await.map_err(classify)
+}
+
+fn frame_not_found_error(frame_id: i64) -> (StatusCode, JsonResponse<Value>) {
+    (
+        StatusCode::NOT_FOUND,
+        JsonResponse(json!({
+            "error": "Frame not found",
+            "frame_id": frame_id
+        })),
+    )
+}
+
+fn frame_db_error(frame_id: i64, e: &sqlx::Error) -> (StatusCode, JsonResponse<Value>) {
+    (
+        StatusCode::INTERNAL_SERVER_ERROR,
+        JsonResponse(json!({
+            "error": format!("Database error: {}", e),
+            "frame_id": frame_id
+        })),
+    )
+}
+
+fn frame_media_unavailable_error(frame_id: i64) -> (StatusCode, JsonResponse<Value>) {
+    (
+        StatusCode::NOT_FOUND,
+        JsonResponse(json!({
+            "error": "This frame has no stored image to serve",
+            "error_type": "frame_media_unavailable",
+            "frame_id": frame_id
+        })),
+    )
+}
+
+fn snapshot_read_failed_error(
+    frame_id: i64,
+    path: &str,
+    details: &str,
+) -> (StatusCode, JsonResponse<Value>) {
+    error!(
+        "Failed to read snapshot {} for frame {}: {}",
+        path, frame_id, details
+    );
+    (
+        StatusCode::INTERNAL_SERVER_ERROR,
+        JsonResponse(json!({
+            "error": "The frame's snapshot file exists but could not be read",
+            "error_type": "snapshot_read_failed",
+            "frame_id": frame_id,
+            "details": details
+        })),
+    )
+}
+
+/// The 404 for a frame synced from another device: no local file exists, so
+/// the frame's text and timestamp are returned instead.
+async fn remote_frame_error(
+    state: &Arc<AppState>,
+    frame_id: i64,
+) -> (StatusCode, JsonResponse<Value>) {
+    let ocr_text = state
+        .db
+        .get_frame_ocr_text_json(frame_id)
+        .await
+        .ok()
+        .flatten();
+    let timestamp = state.db.get_frame_timestamp(frame_id).await.ok().flatten();
+    let (acc_text, _) = state
+        .db
+        .get_frame_accessibility_data(frame_id)
+        .await
+        .unwrap_or((None, None));
+
+    (
+        StatusCode::NOT_FOUND,
+        JsonResponse(json!({
+            "error": "Frame is on a remote device",
+            "error_type": "remote_device",
+            "frame_id": frame_id,
+            "timestamp": timestamp,
+            "ocr_text": ocr_text,
+            "accessibility_text": acc_text,
+        })),
+    )
 }
 
 /// Query parameters for finding the next valid frame
@@ -1128,6 +1284,910 @@ pub(crate) async fn serve_file(path: &str) -> Result<Response, (StatusCode, Json
             ))
         }
     }
+}
+
+// ---------------------------------------------------------------------------
+// Frame media routes: thumbnails, preview samples and preview media.
+// ---------------------------------------------------------------------------
+
+/// Routes of this module that are mounted through `routes/ext.rs`, so they
+/// join the OpenAPI spec without another edit to `server.rs`.
+pub fn documented() -> DocumentedRoutes {
+    documented_routes!(oasgen::Server::axum()
+        .get("/frames/preview-samples", get_frame_preview_samples)
+        .get(
+            "/frames/preview-media/:video_chunk_id",
+            get_frame_preview_media
+        )
+        .get("/frames/:frame_id/thumbnail", get_frame_thumbnail))
+}
+
+/// No undocumented routes.
+pub fn router() -> ExtRouter {
+    ExtRouter::new()
+}
+
+/// Overall time a thumbnail request may take, fallbacks included.
+const THUMBNAIL_TIMEOUT: Duration = Duration::from_secs(15);
+/// Nearby frames tried in each direction when a thumbnail source fails.
+/// Each video candidate may cost an ffmpeg run, so keep this small.
+const THUMBNAIL_NEARBY_LIMIT: u32 = 3;
+/// A video chunk smaller than this cannot hold a frame.
+const MIN_VIDEO_BYTES: u64 = 1024;
+
+/// Preview samples returned when the request names no limit.
+pub const PREVIEW_DEFAULT_LIMIT: u32 = 6;
+/// Most preview samples one request may ask for.
+pub const PREVIEW_MAX_LIMIT: u32 = 12;
+/// Longest time range a preview-sample request may cover.
+pub const PREVIEW_MAX_RANGE_HOURS: i64 = 24;
+/// Longest accepted `app_name`, in characters.
+pub const PREVIEW_MAX_APP_NAME_CHARS: usize = 256;
+/// Candidates read per time slice, so a missing file can be skipped.
+const PREVIEW_CANDIDATES_PER_SLICE: u32 = 4;
+
+fn invalid_request(message: impl Into<String>) -> (StatusCode, JsonResponse<Value>) {
+    (
+        StatusCode::BAD_REQUEST,
+        JsonResponse(json!({
+            "error": message.into(),
+            "error_type": "invalid_request"
+        })),
+    )
+}
+
+/// Accepts `true/false`, `1/0`, `yes/no` and `on/off` for boolean query flags.
+fn deserialize_query_flag<'de, D>(deserializer: D) -> Result<Option<bool>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let raw: Option<String> = Option::deserialize(deserializer)?;
+    match raw.as_deref().map(str::trim) {
+        None | Some("") => Ok(None),
+        Some(value) => match value.to_ascii_lowercase().as_str() {
+            "true" | "1" | "yes" | "on" => Ok(Some(true)),
+            "false" | "0" | "no" | "off" => Ok(Some(false)),
+            other => Err(serde::de::Error::custom(format!(
+                "invalid boolean '{other}': expected true or false"
+            ))),
+        },
+    }
+}
+
+/// Query parameters of `GET /frames/:frame_id/thumbnail`.
+#[derive(Debug, Default, Deserialize, OaSchema)]
+pub struct FrameThumbnailQuery {
+    /// Target width in pixels, 32 to 3840 (default 320). A thumbnail is never
+    /// wider than its frame; the height follows the aspect ratio.
+    pub width: Option<u32>,
+    /// JPEG quality, 1 to 100 (default 75).
+    pub quality: Option<u32>,
+    /// When the frame's own media cannot be used, serve a nearby frame of the
+    /// same monitor instead (default true).
+    #[serde(default, deserialize_with = "deserialize_query_flag")]
+    pub fallback: Option<bool>,
+    /// Cache buster for clients that retry a failed image; ignored.
+    pub retry: Option<String>,
+}
+
+/// Validated thumbnail parameters.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ThumbnailParams {
+    pub width: u32,
+    pub quality: u8,
+    pub fallback: bool,
+}
+
+impl ThumbnailParams {
+    /// Apply defaults and range checks to a thumbnail query.
+    pub fn from_query(query: &FrameThumbnailQuery) -> Result<Self, String> {
+        let width = query.width.unwrap_or(thumbs::DEFAULT_WIDTH);
+        if !(thumbs::MIN_WIDTH..=thumbs::MAX_WIDTH).contains(&width) {
+            return Err(format!(
+                "width must be between {} and {} pixels, got {}",
+                thumbs::MIN_WIDTH,
+                thumbs::MAX_WIDTH,
+                width
+            ));
+        }
+        let quality = query.quality.unwrap_or(u32::from(thumbs::DEFAULT_QUALITY));
+        let quality = u8::try_from(quality)
+            .ok()
+            .filter(|q| (thumbs::MIN_QUALITY..=thumbs::MAX_QUALITY).contains(q))
+            .ok_or_else(|| {
+                format!(
+                    "quality must be between {} and {}, got {}",
+                    thumbs::MIN_QUALITY,
+                    thumbs::MAX_QUALITY,
+                    quality
+                )
+            })?;
+        Ok(Self {
+            width,
+            quality,
+            fallback: query.fallback.unwrap_or(true),
+        })
+    }
+}
+
+/// A small JPEG of one frame, for search results, timelines and previews.
+///
+/// The image is resized to `width` (never enlarged) and encoded at `quality`.
+/// Responses carry an `ETag` and `Cache-Control: private, no-cache`, so
+/// browsers revalidate with `If-None-Match` and get a 304 while the frame's
+/// media is unchanged. If the frame's own media is unusable, a nearby frame
+/// of the same monitor is served unless `fallback=false`.
+#[oasgen]
+pub async fn get_frame_thumbnail(
+    State(state): State<Arc<AppState>>,
+    Path(frame_id): Path<i64>,
+    Query(query): Query<FrameThumbnailQuery>,
+    headers: HeaderMap,
+) -> Result<Response<Body>, (StatusCode, JsonResponse<Value>)> {
+    let params = ThumbnailParams::from_query(&query).map_err(invalid_request)?;
+    let if_none_match = headers
+        .get(header::IF_NONE_MATCH)
+        .and_then(|v| v.to_str().ok())
+        .map(str::to_owned);
+
+    match timeout(
+        THUMBNAIL_TIMEOUT,
+        thumbnail_for_frame(&state, frame_id, params, if_none_match.as_deref()),
+    )
+    .await
+    {
+        Ok(result) => result,
+        Err(_) => {
+            error!("Thumbnail request timed out for frame_id: {}", frame_id);
+            Err((
+                StatusCode::SERVICE_UNAVAILABLE,
+                JsonResponse(json!({
+                    "error": "Producing the thumbnail took too long",
+                    "error_type": "thumbnail_timeout",
+                    "frame_id": frame_id
+                })),
+            ))
+        }
+    }
+}
+
+/// A thumbnail ready to send, or a 304 for a client that already has it.
+enum ServedThumbnail {
+    Image {
+        thumbnail: Arc<thumbs::Thumbnail>,
+        status: thumbs::CacheStatus,
+        etag: String,
+    },
+    NotModified {
+        etag: String,
+    },
+}
+
+impl ServedThumbnail {
+    fn into_response(self) -> Result<Response<Body>, (StatusCode, JsonResponse<Value>)> {
+        let builder = match &self {
+            ServedThumbnail::Image {
+                thumbnail,
+                status,
+                etag,
+            } => Response::builder()
+                .status(StatusCode::OK)
+                .header(header::CONTENT_TYPE, "image/jpeg")
+                .header(header::CACHE_CONTROL, "private, no-cache")
+                .header(header::ETAG, etag.as_str())
+                .header("x-screenpipe-thumbnail-cache", status.as_str())
+                .header("x-screenpipe-thumbnail-width", thumbnail.width.to_string())
+                .header("x-screenpipe-thumbnail-height", thumbnail.height.to_string())
+                .header(header::CONTENT_LENGTH, thumbnail.jpeg.len().to_string()),
+            ServedThumbnail::NotModified { etag } => Response::builder()
+                .status(StatusCode::NOT_MODIFIED)
+                .header(header::CACHE_CONTROL, "private, no-cache")
+                .header(header::ETAG, etag.as_str()),
+        };
+        let body = match self {
+            ServedThumbnail::Image { thumbnail, .. } => Body::from(thumbnail.jpeg.clone()),
+            ServedThumbnail::NotModified { .. } => Body::empty(),
+        };
+        builder.body(body).map_err(|e| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                JsonResponse(json!({"error": format!("Failed to create response: {}", e)})),
+            )
+        })
+    }
+}
+
+/// Why one frame could not supply a thumbnail.
+#[derive(Debug, Clone)]
+struct ThumbnailFailure {
+    /// The source that was tried; `None` when the row had no media at all.
+    kind: Option<thumbs::SourceKind>,
+    error: thumbs::ThumbnailError,
+}
+
+impl ThumbnailFailure {
+    fn no_media() -> Self {
+        Self {
+            kind: None,
+            error: thumbs::ThumbnailError::SourceMissing(
+                "the frame has no stored image".to_string(),
+            ),
+        }
+    }
+
+    /// A snapshot file that is gone: worth looking the frame up again.
+    fn is_missing_snapshot(&self) -> bool {
+        self.kind == Some(thumbs::SourceKind::Snapshot) && self.error.is_missing()
+    }
+
+    /// The `error_type` reported when this failure ends the request.
+    fn error_type(&self) -> &'static str {
+        if self.is_missing_snapshot() {
+            "snapshot_missing"
+        } else {
+            "frame_unavailable"
+        }
+    }
+}
+
+impl fmt::Display for ThumbnailFailure {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self.kind {
+            Some(thumbs::SourceKind::Snapshot) => write!(f, "snapshot {}", self.error),
+            Some(thumbs::SourceKind::Video) => write!(f, "video {}", self.error),
+            None => write!(f, "{}", self.error),
+        }
+    }
+}
+
+async fn thumbnail_for_frame(
+    state: &Arc<AppState>,
+    frame_id: i64,
+    params: ThumbnailParams,
+    if_none_match: Option<&str>,
+) -> Result<Response<Body>, (StatusCode, JsonResponse<Value>)> {
+    // Always start from the frames table: a deleted frame must get a 404 even
+    // while one of its thumbnails is still cached.
+    let exact = match state.db.get_frame_media(frame_id).await {
+        Ok(Some(row)) => row,
+        Ok(None) => {
+            return Err((
+                StatusCode::NOT_FOUND,
+                JsonResponse(json!({
+                    "error": "Frame not found",
+                    "error_type": "frame_not_found",
+                    "frame_id": frame_id
+                })),
+            ))
+        }
+        Err(e) => return Err(frame_db_error(frame_id, &e)),
+    };
+    if exact.location() == FrameMediaLocation::Remote {
+        return Err(remote_thumbnail_error(frame_id));
+    }
+
+    let mut failure = match thumbnail_from_row(state, &exact, params, if_none_match).await {
+        Ok(served) => return served.into_response(),
+        Err(failure) => failure,
+    };
+
+    if failure.is_missing_snapshot() {
+        // Compaction may have moved the frame into an MP4 since the lookup.
+        match state.db.get_frame_media(frame_id).await {
+            Ok(Some(fresh)) if fresh != exact => {
+                if fresh.location() == FrameMediaLocation::Remote {
+                    return Err(remote_thumbnail_error(frame_id));
+                }
+                match thumbnail_from_row(state, &fresh, params, if_none_match).await {
+                    Ok(served) => return served.into_response(),
+                    Err(again) => failure = again,
+                }
+            }
+            Ok(Some(_)) => {}
+            Ok(None) => {
+                return Err((
+                    StatusCode::NOT_FOUND,
+                    JsonResponse(json!({
+                        "error": "Frame not found",
+                        "error_type": "frame_not_found",
+                        "frame_id": frame_id
+                    })),
+                ))
+            }
+            Err(e) => return Err(frame_db_error(frame_id, &e)),
+        }
+    }
+
+    if !params.fallback {
+        debug!(
+            "thumbnail: the source of frame {} failed ({}) and fallback is off",
+            frame_id, failure
+        );
+        return Err((
+            StatusCode::NOT_FOUND,
+            JsonResponse(json!({
+                "error": "No thumbnail can be made for this exact frame (fallback disabled)",
+                "error_type": failure.error_type(),
+                "frame_id": frame_id
+            })),
+        ));
+    }
+
+    debug!(
+        "thumbnail: the source of frame {} failed ({}), trying nearby frames",
+        frame_id, failure
+    );
+    for forward in [false, true] {
+        let candidates = match state
+            .db
+            .get_frame_media_neighbours(&exact, forward, THUMBNAIL_NEARBY_LIMIT)
+            .await
+        {
+            Ok(candidates) => candidates,
+            Err(e) => {
+                debug!("thumbnail: nearby-frame lookup failed: {}", e);
+                continue;
+            }
+        };
+        for candidate in candidates {
+            if let Ok(served) = thumbnail_from_row(state, &candidate, params, if_none_match).await
+            {
+                debug!(
+                    "thumbnail: serving frame {} in place of frame {}",
+                    candidate.frame_id, frame_id
+                );
+                return served.into_response();
+            }
+        }
+    }
+
+    Err((
+        StatusCode::NOT_FOUND,
+        JsonResponse(json!({
+            "error": "No thumbnail is available for this frame or the frames around it",
+            "error_type": failure.error_type(),
+            "frame_id": frame_id
+        })),
+    ))
+}
+
+fn remote_thumbnail_error(frame_id: i64) -> (StatusCode, JsonResponse<Value>) {
+    (
+        StatusCode::NOT_FOUND,
+        JsonResponse(json!({
+            "error": "This frame was captured on another device and has no local image",
+            "error_type": "remote_device",
+            "frame_id": frame_id
+        })),
+    )
+}
+
+/// Produce (or revalidate) the thumbnail of one frame row from its own media.
+async fn thumbnail_from_row(
+    state: &Arc<AppState>,
+    row: &FrameMediaRow,
+    params: ThumbnailParams,
+    if_none_match: Option<&str>,
+) -> Result<ServedThumbnail, ThumbnailFailure> {
+    let (kind, path, offset_index) = match row.location() {
+        FrameMediaLocation::Snapshot { path } => (thumbs::SourceKind::Snapshot, path, 0),
+        FrameMediaLocation::Video {
+            path, offset_index, ..
+        } => (thumbs::SourceKind::Video, path, offset_index),
+        FrameMediaLocation::Remote | FrameMediaLocation::Unavailable => {
+            return Err(ThumbnailFailure::no_media())
+        }
+    };
+    let fail = |error| ThumbnailFailure {
+        kind: Some(kind),
+        error,
+    };
+
+    let metadata = match tokio::fs::metadata(&path).await {
+        Ok(metadata) => metadata,
+        Err(e) if is_missing_file_error(&e) => {
+            if kind == thumbs::SourceKind::Video {
+                debug!(
+                    "thumbnail: video source of frame {} is missing: {}",
+                    row.frame_id, path
+                );
+            }
+            return Err(fail(thumbs::ThumbnailError::SourceMissing(path)));
+        }
+        Err(e) => return Err(fail(thumbs::ThumbnailError::SourceUnreadable(e.to_string()))),
+    };
+    if !metadata.is_file() {
+        debug!(
+            "thumbnail: source of frame {} is not a regular file: {}",
+            row.frame_id, path
+        );
+        return Err(fail(thumbs::ThumbnailError::SourceUnreadable(
+            "not a regular file".to_string(),
+        )));
+    }
+    if kind == thumbs::SourceKind::Video && metadata.len() < MIN_VIDEO_BYTES {
+        debug!(
+            "thumbnail: video source of frame {} is damaged ({} bytes): {}",
+            row.frame_id,
+            metadata.len(),
+            path
+        );
+        return Err(fail(thumbs::ThumbnailError::Extract(
+            "video file too small to hold a frame".to_string(),
+        )));
+    }
+
+    let stamp = thumbs::SourceStamp {
+        kind,
+        path: &path,
+        offset_index,
+        len: metadata.len(),
+        modified: metadata.modified().ok(),
+    };
+    let key = thumbs::ThumbnailKey {
+        frame_id: row.frame_id,
+        width: params.width,
+        quality: params.quality,
+        generation: stamp.generation(),
+    };
+    let etag = key.etag();
+    if if_none_match.is_some_and(|value| thumbs::if_none_match_matches(value, &etag)) {
+        return Ok(ServedThumbnail::NotModified { etag });
+    }
+
+    let source = async {
+        match kind {
+            thumbs::SourceKind::Snapshot => {
+                read_snapshot_file(&path).await.map_err(|e| match e {
+                    SnapshotReadError::Missing => {
+                        thumbs::ThumbnailError::SourceMissing(path.clone())
+                    }
+                    SnapshotReadError::Unreadable(details) => {
+                        thumbs::ThumbnailError::SourceUnreadable(details)
+                    }
+                })
+            }
+            thumbs::SourceKind::Video => {
+                // Share the ffmpeg limit with full-frame extraction.
+                let _permit = state
+                    .frame_extraction_semaphore
+                    .acquire()
+                    .await
+                    .map_err(|e| thumbs::ThumbnailError::Worker(e.to_string()))?;
+                extract_frame_jpeg_bytes(&path, offset_index, Some(params.width))
+                    .await
+                    .map_err(|e| {
+                        debug!(
+                            "thumbnail: video source of frame {} is missing or damaged: {}",
+                            row.frame_id, e
+                        );
+                        thumbs::ThumbnailError::Extract(e.to_string())
+                    })
+            }
+        }
+    };
+    let (thumbnail, status) = thumbs::FrameThumbnailCache::global()
+        .get_or_render(key, source)
+        .await
+        .map_err(|e| fail((*e).clone()))?;
+    Ok(ServedThumbnail::Image {
+        thumbnail,
+        status,
+        etag,
+    })
+}
+
+/// Query parameters of `GET /frames/preview-samples`.
+#[derive(Debug, Default, Deserialize, OaSchema)]
+pub struct FramePreviewSamplesQuery {
+    /// Start of the range (inclusive).
+    #[serde(
+        default,
+        deserialize_with = "super::time::deserialize_flexible_datetime_option"
+    )]
+    pub start_time: Option<DateTime<Utc>>,
+    /// End of the range (exclusive); at most 24 hours after `start_time`.
+    #[serde(
+        default,
+        deserialize_with = "super::time::deserialize_flexible_datetime_option"
+    )]
+    pub end_time: Option<DateTime<Utc>>,
+    /// App whose frames to sample (case-insensitive), 1 to 256 characters.
+    pub app_name: Option<String>,
+    /// Number of samples, 1 to 12 (default 6).
+    pub limit: Option<u32>,
+    /// Only frames whose browser URL is on this host or one of its
+    /// subdomains, e.g. `github.com`.
+    pub browser_domain: Option<String>,
+}
+
+/// A validated time range.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct TimeRange {
+    pub start: DateTime<Utc>,
+    /// Exclusive.
+    pub end: DateTime<Utc>,
+}
+
+/// A validated preview-sample request.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PreviewSamplesRequest {
+    pub range: TimeRange,
+    pub app_name: String,
+    pub limit: u32,
+    pub browser_domain: Option<String>,
+}
+
+impl PreviewSamplesRequest {
+    /// Apply defaults and checks to a preview-sample query.
+    pub fn from_query(query: &FramePreviewSamplesQuery) -> Result<Self, String> {
+        let (Some(start), Some(end)) = (query.start_time, query.end_time) else {
+            return Err("start_time and end_time are both required".to_string());
+        };
+        if start >= end {
+            return Err("start_time must be earlier than end_time".to_string());
+        }
+        if end - start > chrono::Duration::hours(PREVIEW_MAX_RANGE_HOURS) {
+            return Err(format!(
+                "the time range may span at most {} hours",
+                PREVIEW_MAX_RANGE_HOURS
+            ));
+        }
+        let app_name = query.app_name.as_deref().map(str::trim).unwrap_or("");
+        let app_chars = app_name.chars().count();
+        if app_chars == 0 || app_chars > PREVIEW_MAX_APP_NAME_CHARS {
+            return Err(format!(
+                "app_name is required and may have at most {} characters",
+                PREVIEW_MAX_APP_NAME_CHARS
+            ));
+        }
+        let limit = query.limit.unwrap_or(PREVIEW_DEFAULT_LIMIT);
+        if !(1..=PREVIEW_MAX_LIMIT).contains(&limit) {
+            return Err(format!(
+                "limit must be between 1 and {}, got {}",
+                PREVIEW_MAX_LIMIT, limit
+            ));
+        }
+        let browser_domain = match query.browser_domain.as_deref().map(str::trim) {
+            None | Some("") => None,
+            Some(raw) => Some(normalize_browser_domain(raw).ok_or_else(|| {
+                format!("browser_domain must be a host name such as github.com, got '{raw}'")
+            })?),
+        };
+        Ok(Self {
+            range: TimeRange { start, end },
+            app_name: app_name.to_string(),
+            limit,
+            browser_domain,
+        })
+    }
+}
+
+/// Where a preview sample's pixels come from.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, OaSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum FramePreviewSource {
+    /// A snapshot JPEG; load it through the thumbnail route.
+    Snapshot,
+    /// A frame inside a compacted MP4; play `video_chunk_id` through the
+    /// preview-media route and seek to `video_offset_seconds`.
+    Video,
+}
+
+/// One sample frame of a preview strip.
+#[derive(Debug, Clone, PartialEq, Serialize, OaSchema)]
+pub struct FramePreviewSample {
+    pub frame_id: i64,
+    pub timestamp: DateTime<Utc>,
+    pub source: FramePreviewSource,
+    /// Video chunk holding the frame (only for `source: "video"`).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub video_chunk_id: Option<i64>,
+    /// Position of the frame inside the video chunk, in seconds (only for
+    /// `source: "video"`).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub video_offset_seconds: Option<f64>,
+}
+
+/// Response of `GET /frames/preview-samples`.
+#[derive(Debug, Clone, PartialEq, Serialize, OaSchema)]
+pub struct FramePreviewSamplesResponse {
+    pub frames: Vec<FramePreviewSample>,
+}
+
+/// A handful of frames spread over a time range, for a short preview of an
+/// app (optionally one website) in the UI.
+///
+/// Only references are returned: snapshot samples are meant to be loaded
+/// through the thumbnail route, video samples name an existing MP4 and an
+/// offset so the browser can decode it itself. Nothing is extracted, decoded
+/// or created.
+#[oasgen]
+pub async fn get_frame_preview_samples(
+    State(state): State<Arc<AppState>>,
+    Query(query): Query<FramePreviewSamplesQuery>,
+) -> Result<JsonResponse<FramePreviewSamplesResponse>, (StatusCode, JsonResponse<Value>)> {
+    let request = PreviewSamplesRequest::from_query(&query).map_err(invalid_request)?;
+    let filter = FramePreviewFilter {
+        start: request.range.start,
+        end: request.range.end,
+        app_name: &request.app_name,
+        browser_domain: request.browser_domain.as_deref(),
+    };
+    let slices = state
+        .db
+        .get_frame_preview_candidates(&filter, request.limit, PREVIEW_CANDIDATES_PER_SLICE)
+        .await
+        .map_err(|e| {
+            error!("preview samples: query failed: {}", e);
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                JsonResponse(json!({
+                    "error": "Failed to look up preview samples",
+                    "error_type": "preview_samples_failed",
+                    "details": e.to_string()
+                })),
+            )
+        })?;
+
+    let mut frames = Vec::with_capacity(slices.len());
+    for slice in slices {
+        for candidate in slice {
+            if let Some(sample) = preview_sample_for(&candidate).await {
+                frames.push(sample);
+                break;
+            }
+        }
+    }
+    frames.truncate(request.limit as usize);
+    Ok(JsonResponse(FramePreviewSamplesResponse { frames }))
+}
+
+/// A preview sample for `row` when its media file is on disk.
+async fn preview_sample_for(row: &FrameMediaRow) -> Option<FramePreviewSample> {
+    match row.location() {
+        FrameMediaLocation::Snapshot { path } => {
+            is_regular_file(&path).await.then(|| FramePreviewSample {
+                frame_id: row.frame_id,
+                timestamp: row.timestamp,
+                source: FramePreviewSource::Snapshot,
+                video_chunk_id: None,
+                video_offset_seconds: None,
+            })
+        }
+        FrameMediaLocation::Video { chunk_id, path, .. } => {
+            let offset = row.video_offset_seconds()?;
+            (has_mp4_extension(&path) && is_regular_file(&path).await).then(|| {
+                FramePreviewSample {
+                    frame_id: row.frame_id,
+                    timestamp: row.timestamp,
+                    source: FramePreviewSource::Video,
+                    video_chunk_id: Some(chunk_id),
+                    video_offset_seconds: Some(offset),
+                }
+            })
+        }
+        FrameMediaLocation::Remote | FrameMediaLocation::Unavailable => None,
+    }
+}
+
+async fn is_regular_file(path: &str) -> bool {
+    tokio::fs::metadata(path)
+        .await
+        .map(|m| m.is_file())
+        .unwrap_or(false)
+}
+
+fn has_mp4_extension(path: &str) -> bool {
+    std::path::Path::new(path)
+        .extension()
+        .and_then(|e| e.to_str())
+        .is_some_and(|e| e.eq_ignore_ascii_case("mp4"))
+}
+
+/// The byte range a request asked for, resolved against a file length.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ByteRangeRequest {
+    /// No usable range: send the whole file with 200.
+    Full,
+    /// Send bytes `start..=end` with 206.
+    Partial { start: u64, end: u64 },
+    /// Malformed, multi-part or out-of-bounds range: answer 416.
+    Unsatisfiable,
+}
+
+fn parse_range_number(text: &str) -> Option<u64> {
+    if text.is_empty() || !text.bytes().all(|b| b.is_ascii_digit()) {
+        return None;
+    }
+    text.parse().ok()
+}
+
+/// Resolve a `Range` header value against a resource of `len` bytes.
+///
+/// Only one `bytes` range is supported: `a-b`, `a-` or the suffix form `-n`.
+/// A different unit is ignored (the whole file is sent), as RFC 9110 asks.
+/// Anything else (bad syntax, several ranges, a start past the end, an end
+/// before the start, or any range on an empty file) is unsatisfiable. The
+/// result never reaches past `len - 1`.
+pub fn parse_byte_range(value: &str, len: u64) -> ByteRangeRequest {
+    let Some((unit, set)) = value.trim().split_once('=') else {
+        return ByteRangeRequest::Unsatisfiable;
+    };
+    if !unit.trim().eq_ignore_ascii_case("bytes") {
+        return ByteRangeRequest::Full;
+    }
+    let set = set.trim();
+    if set.contains(',') || len == 0 {
+        return ByteRangeRequest::Unsatisfiable;
+    }
+    let Some((first, last)) = set.split_once('-') else {
+        return ByteRangeRequest::Unsatisfiable;
+    };
+    let (first, last) = (first.trim(), last.trim());
+    let final_byte = len - 1;
+
+    if first.is_empty() {
+        // Suffix range: the last `n` bytes.
+        return match parse_range_number(last) {
+            Some(n) if n > 0 => ByteRangeRequest::Partial {
+                start: len.saturating_sub(n),
+                end: final_byte,
+            },
+            _ => ByteRangeRequest::Unsatisfiable,
+        };
+    }
+    let Some(start) = parse_range_number(first) else {
+        return ByteRangeRequest::Unsatisfiable;
+    };
+    if start > final_byte {
+        return ByteRangeRequest::Unsatisfiable;
+    }
+    let end = if last.is_empty() {
+        final_byte
+    } else {
+        match parse_range_number(last) {
+            Some(end) if end >= start => end.min(final_byte),
+            _ => return ByteRangeRequest::Unsatisfiable,
+        }
+    };
+    ByteRangeRequest::Partial { start, end }
+}
+
+fn preview_media_not_found(video_chunk_id: i64, reason: &str) -> (StatusCode, JsonResponse<Value>) {
+    debug!(
+        "preview media: chunk {} not served: {}",
+        video_chunk_id, reason
+    );
+    (
+        StatusCode::NOT_FOUND,
+        JsonResponse(json!({
+            "error": "No local MP4 is available for this video chunk",
+            "error_type": "preview_media_not_found",
+            "video_chunk_id": video_chunk_id
+        })),
+    )
+}
+
+fn preview_media_lookup_failed(video_chunk_id: i64, details: String) -> (StatusCode, JsonResponse<Value>) {
+    error!(
+        "preview media: lookup of chunk {} failed: {}",
+        video_chunk_id, details
+    );
+    (
+        StatusCode::INTERNAL_SERVER_ERROR,
+        JsonResponse(json!({
+            "error": "Failed to look up the video chunk",
+            "error_type": "preview_media_lookup_failed",
+            "video_chunk_id": video_chunk_id,
+            "details": details
+        })),
+    )
+}
+
+/// An existing compacted MP4, streamed as it is with HTTP byte ranges, so a
+/// preview plays in the browser's own video decoder. Nothing is extracted or
+/// re-encoded. Supports a single `Range: bytes=...` per request (206 with
+/// `Content-Range`); malformed or out-of-bounds ranges get 416.
+#[oasgen]
+pub async fn get_frame_preview_media(
+    State(state): State<Arc<AppState>>,
+    Path(video_chunk_id): Path<i64>,
+    headers: HeaderMap,
+) -> Result<Response<Body>, (StatusCode, JsonResponse<Value>)> {
+    let chunk = match state.db.get_preview_media_chunk(video_chunk_id).await {
+        Ok(Some(chunk)) => chunk,
+        Ok(None) => return Err(preview_media_not_found(video_chunk_id, "no such chunk")),
+        Err(e) => return Err(preview_media_lookup_failed(video_chunk_id, e.to_string())),
+    };
+    let path = chunk.file_path.as_str();
+    if chunk.evicted || path.is_empty() {
+        return Err(preview_media_not_found(video_chunk_id, "media evicted"));
+    }
+    if path.starts_with(REMOTE_PATH_PREFIX) {
+        return Err(preview_media_not_found(video_chunk_id, "chunk is on another device"));
+    }
+    if !has_mp4_extension(path) {
+        return Err(preview_media_not_found(video_chunk_id, "not an MP4 file"));
+    }
+    // The path itself must be a regular file, not a link to somewhere else.
+    match tokio::fs::symlink_metadata(path).await {
+        Ok(meta) if meta.is_file() => {}
+        Ok(_) => return Err(preview_media_not_found(video_chunk_id, "not a regular file")),
+        Err(e) if is_missing_file_error(&e) => {
+            return Err(preview_media_not_found(video_chunk_id, "file missing"))
+        }
+        Err(e) => return Err(preview_media_lookup_failed(video_chunk_id, e.to_string())),
+    }
+
+    let mut file = match File::open(path).await {
+        Ok(file) => file,
+        Err(e) if is_missing_file_error(&e) => {
+            return Err(preview_media_not_found(video_chunk_id, "file missing"))
+        }
+        Err(e) => return Err(preview_media_lookup_failed(video_chunk_id, e.to_string())),
+    };
+    // Size of the file that was actually opened.
+    let len = match file.metadata().await {
+        Ok(meta) if meta.is_file() => meta.len(),
+        Ok(_) => return Err(preview_media_not_found(video_chunk_id, "not a regular file")),
+        Err(e) => return Err(preview_media_lookup_failed(video_chunk_id, e.to_string())),
+    };
+    if len == 0 {
+        return Err(preview_media_not_found(video_chunk_id, "empty file"));
+    }
+
+    // A conditional range (If-Range) cannot match: this route sends no
+    // validators. RFC 9110 then asks for the whole representation.
+    let range = match headers.get(header::RANGE) {
+        None => ByteRangeRequest::Full,
+        Some(_) if headers.contains_key(header::IF_RANGE) => ByteRangeRequest::Full,
+        Some(value) => match value.to_str() {
+            Ok(text) => parse_byte_range(text, len),
+            Err(_) => ByteRangeRequest::Unsatisfiable,
+        },
+    };
+
+    let response = Response::builder()
+        .header(header::ACCEPT_RANGES, "bytes")
+        .header(header::CACHE_CONTROL, "private");
+    let built = match range {
+        ByteRangeRequest::Unsatisfiable => response
+            .status(StatusCode::RANGE_NOT_SATISFIABLE)
+            .header(header::CONTENT_TYPE, "application/json")
+            .header(header::CONTENT_RANGE, format!("bytes */{len}"))
+            .body(Body::from(
+                json!({
+                    "error": "The requested byte range cannot be served",
+                    "error_type": "range_not_satisfiable",
+                    "video_chunk_id": video_chunk_id
+                })
+                .to_string(),
+            )),
+        ByteRangeRequest::Full => response
+            .status(StatusCode::OK)
+            .header(header::CONTENT_TYPE, "video/mp4")
+            .header(header::CONTENT_LENGTH, len.to_string())
+            .body(Body::from_stream(ReaderStream::new(file.take(len)))),
+        ByteRangeRequest::Partial { start, end } => {
+            if let Err(e) = file.seek(std::io::SeekFrom::Start(start)).await {
+                return Err(preview_media_lookup_failed(video_chunk_id, e.to_string()));
+            }
+            let length = end - start + 1;
+            response
+                .status(StatusCode::PARTIAL_CONTENT)
+                .header(header::CONTENT_TYPE, "video/mp4")
+                .header(header::CONTENT_LENGTH, length.to_string())
+                .header(header::CONTENT_RANGE, format!("bytes {start}-{end}/{len}"))
+                .body(Body::from_stream(ReaderStream::new(file.take(length))))
+        }
+    };
+    built.map_err(|e| {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            JsonResponse(json!({"error": format!("Failed to create response: {}", e)})),
+        )
+    })
 }
 
 /// FrameContent imported from content module for use in video export
