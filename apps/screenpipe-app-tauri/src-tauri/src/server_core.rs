@@ -899,10 +899,8 @@ impl ServerCore {
 
         // Workers registered in screenpipe_engine::core (none until a feature
         // adds one). They live as long as the server core.
-        let background_workers = screenpipe_engine::core::start_background_workers(
-            db.clone(),
-            local_data_dir.clone(),
-        );
+        let background_workers =
+            screenpipe_engine::core::start_background_workers(db.clone(), local_data_dir.clone());
 
         Ok(Self {
             db,

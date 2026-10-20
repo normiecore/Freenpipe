@@ -33,10 +33,10 @@ use oasgen::{OpenAPI, Operation, PathItem, RefOr};
 use crate::server::AppState;
 
 use super::{
-    activity_ledger, agent, ai_feedback, artifacts, cloud_agents, connect_broker,
-    data_sync_proxy, internal_telemetry, live_views, local_chat, meeting_overlay, pipe_stream,
-    request_origin, response_format, search_only, semantic, starred, structured_outputs, vision,
-    web_search, workflows,
+    activity_ledger, agent, ai_feedback, artifacts, cloud_agents, connect_broker, data_sync_proxy,
+    internal_telemetry, live_views, local_chat, meeting_overlay, pipe_stream, request_origin,
+    response_format, search_only, semantic, starred, structured_outputs, vision, web_search,
+    workflows,
 };
 
 /// Router type every feature module returns. State is the shared [`AppState`].
@@ -187,7 +187,10 @@ impl std::error::Error for RouteCollision {}
 /// `server.rs`). A path both sides define is merged method by method, the
 /// same way axum merges the routers; defining the same method twice is an
 /// error. Returns how many new paths were added.
-pub fn extend_spec(spec: &mut OpenAPI, features: &[FeatureRoutes]) -> Result<usize, RouteCollision> {
+pub fn extend_spec(
+    spec: &mut OpenAPI,
+    features: &[FeatureRoutes],
+) -> Result<usize, RouteCollision> {
     let mut added = 0;
     for feature in features {
         let Some(feature_spec) = feature.documented.spec.as_ref() else {
@@ -249,8 +252,20 @@ fn merge_path_item(
     slot(&mut existing.get, &incoming.get, "get", feature, path)?;
     slot(&mut existing.put, &incoming.put, "put", feature, path)?;
     slot(&mut existing.post, &incoming.post, "post", feature, path)?;
-    slot(&mut existing.delete, &incoming.delete, "delete", feature, path)?;
-    slot(&mut existing.options, &incoming.options, "options", feature, path)?;
+    slot(
+        &mut existing.delete,
+        &incoming.delete,
+        "delete",
+        feature,
+        path,
+    )?;
+    slot(
+        &mut existing.options,
+        &incoming.options,
+        "options",
+        feature,
+        path,
+    )?;
     slot(&mut existing.head, &incoming.head, "head", feature, path)?;
     slot(&mut existing.patch, &incoming.patch, "patch", feature, path)?;
     slot(&mut existing.trace, &incoming.trace, "trace", feature, path)?;

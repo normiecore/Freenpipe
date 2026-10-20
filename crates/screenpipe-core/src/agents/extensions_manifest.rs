@@ -262,7 +262,11 @@ mod tests {
             listed,
             vec![
                 ("web-search", "web-search.ts", ExtensionGate::WebSearch),
-                ("context-pruning", "context-pruning.ts", ExtensionGate::Always),
+                (
+                    "context-pruning",
+                    "context-pruning.ts",
+                    ExtensionGate::Always
+                ),
                 ("orphan-guard", "orphan-guard.ts", ExtensionGate::Always),
                 ("mcp-bridge", "mcp-bridge.ts", ExtensionGate::Always),
                 (
@@ -367,7 +371,12 @@ mod tests {
         let ids: Vec<&str> = errors.iter().map(|e| e.id).collect();
         assert_eq!(
             ids,
-            vec!["web-search", "context-pruning", "orphan-guard", "mcp-bridge"]
+            vec![
+                "web-search",
+                "context-pruning",
+                "orphan-guard",
+                "mcp-bridge"
+            ]
         );
         assert!(first_error(errors).is_err());
         assert!(first_error(Vec::new()).is_ok());

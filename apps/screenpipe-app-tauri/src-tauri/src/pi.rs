@@ -3526,7 +3526,11 @@ error: InstallFailed extracting tarball"#;
     #[test]
     fn test_web_search_extension_needs_a_gateway() {
         let dir = tempfile::tempdir().unwrap();
-        let ext = dir.path().join(".pi").join("extensions").join("web-search.ts");
+        let ext = dir
+            .path()
+            .join(".pi")
+            .join("extensions")
+            .join("web-search.ts");
         let pc = make_provider_config("screenpipe-cloud", "auto");
         let sync = |provider: &PiProviderConfig, gateway: bool| {
             crate::pi_extensions_manifest::sync_chat_extensions(
