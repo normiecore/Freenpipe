@@ -66,17 +66,24 @@ async fn binding_claims_an_event_for_one_meeting_only() {
     );
     // Idempotent for the owner.
     assert_eq!(
-        db.bind_meeting_calendar_event(first, " evt1 ").await.unwrap(),
+        db.bind_meeting_calendar_event(first, " evt1 ")
+            .await
+            .unwrap(),
         CalendarBinding::AlreadyBound
     );
     // Another meeting cannot take it, and nothing errors.
     assert_eq!(
-        db.bind_meeting_calendar_event(second, "evt1").await.unwrap(),
+        db.bind_meeting_calendar_event(second, "evt1")
+            .await
+            .unwrap(),
         CalendarBinding::OwnedElsewhere {
             other_meeting_id: Some(first)
         }
     );
-    assert_eq!(db.get_meeting_calendar_event_id(second).await.unwrap(), None);
+    assert_eq!(
+        db.get_meeting_calendar_event_id(second).await.unwrap(),
+        None
+    );
     // An existing binding is never overwritten.
     assert_eq!(
         db.bind_meeting_calendar_event(first, "evt2").await.unwrap(),
@@ -176,7 +183,9 @@ async fn room_switch_ends_the_meeting_and_opens_a_successor() {
         .insert_meeting("Google Chrome", "ui_scan", Some("Design review"), None)
         .await
         .unwrap();
-    db.bind_meeting_calendar_event(old, "evt-design").await.unwrap();
+    db.bind_meeting_calendar_event(old, "evt-design")
+        .await
+        .unwrap();
 
     let RoomSwitch::Switched {
         ended_id,
@@ -203,9 +212,15 @@ async fn room_switch_ends_the_meeting_and_opens_a_successor() {
     assert_eq!(fresh.meeting_app, "Google Chrome");
     assert_eq!(fresh.detection_source, MEETING_DETECTION_SOURCE_ROOM_CHANGE);
     assert_eq!(fresh.title, None);
-    assert_eq!(db.get_meeting_calendar_event_id(new_id).await.unwrap(), None);
     assert_eq!(
-        db.get_most_recent_active_meeting().await.unwrap().map(|m| m.id),
+        db.get_meeting_calendar_event_id(new_id).await.unwrap(),
+        None
+    );
+    assert_eq!(
+        db.get_most_recent_active_meeting()
+            .await
+            .unwrap()
+            .map(|m| m.id),
         Some(new_id)
     );
 
@@ -366,7 +381,10 @@ async fn summary_snapshot_follows_the_newest_matching_execution() {
         Some("summary_not_saved"),
     )
     .await;
-    let snap = db.meeting_summary_run_snapshot(id, pipe, None).await.unwrap();
+    let snap = db
+        .meeting_summary_run_snapshot(id, pipe, None)
+        .await
+        .unwrap();
     assert_eq!(snap.state(), MeetingSummaryState::Failed);
     let exec = snap.latest_execution.unwrap();
     assert_eq!(exec.id, failed);
@@ -382,7 +400,10 @@ async fn summary_snapshot_follows_the_newest_matching_execution() {
         None,
     )
     .await;
-    let snap = db.meeting_summary_run_snapshot(id, pipe, None).await.unwrap();
+    let snap = db
+        .meeting_summary_run_snapshot(id, pipe, None)
+        .await
+        .unwrap();
     assert_eq!(snap.state(), MeetingSummaryState::Running);
     assert_eq!(snap.latest_execution.unwrap().id, recovery);
 
@@ -460,22 +481,35 @@ async fn list_q_matches_meeting_app_and_treats_wildcards_literally() {
         .await
         .unwrap();
 
-    let ids = |v: Vec<screenpipe_db::MeetingRecord>| v.into_iter().map(|m| m.id).collect::<Vec<_>>();
+    let ids =
+        |v: Vec<screenpipe_db::MeetingRecord>| v.into_iter().map(|m| m.id).collect::<Vec<_>>();
     assert_eq!(
-        ids(db.list_meetings(None, None, Some("ZOOM"), 20, 0).await.unwrap()),
+        ids(db
+            .list_meetings(None, None, Some("ZOOM"), 20, 0)
+            .await
+            .unwrap()),
         vec![zoom]
     );
     assert_eq!(
-        ids(db.list_meetings(None, None, Some("teams"), 20, 0).await.unwrap()),
+        ids(db
+            .list_meetings(None, None, Some("teams"), 20, 0)
+            .await
+            .unwrap()),
         vec![teams]
     );
     assert_eq!(
-        ids(db.list_meetings(None, None, Some("100%"), 20, 0).await.unwrap()),
+        ids(db
+            .list_meetings(None, None, Some("100%"), 20, 0)
+            .await
+            .unwrap()),
         vec![teams]
     );
     // `%` alone is a literal percent sign, not "match everything".
     assert_eq!(
-        ids(db.list_meetings(None, None, Some("%"), 20, 0).await.unwrap()),
+        ids(db
+            .list_meetings(None, None, Some("%"), 20, 0)
+            .await
+            .unwrap()),
         vec![teams]
     );
     assert!(db
@@ -488,7 +522,10 @@ async fn list_q_matches_meeting_app_and_treats_wildcards_literally() {
 #[tokio::test]
 async fn transcript_rows_carry_their_offset_in_the_chunk() {
     let db = setup_test_db().await;
-    let id = db.insert_meeting("manual", "manual", None, None).await.unwrap();
+    let id = db
+        .insert_meeting("manual", "manual", None, None)
+        .await
+        .unwrap();
     db.end_meeting(id, &ts(3600), None).await.unwrap();
     let at = Utc::now() + Duration::seconds(5);
 

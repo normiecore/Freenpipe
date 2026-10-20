@@ -174,14 +174,7 @@ const LACK_WORDS: &[&str] = &[
 ];
 
 /// Short answers that are nothing but a placeholder.
-const PLACEHOLDER_ANSWERS: &[&str] = &[
-    "none",
-    "n/a",
-    "na",
-    "nothing",
-    "no summary",
-    "no content",
-];
+const PLACEHOLDER_ANSWERS: &[&str] = &["none", "n/a", "na", "nothing", "no summary", "no content"];
 
 /// Short answers that open by saying there was nothing to summarize.
 const NOTHING_TO_SUMMARIZE: &[&str] = &[
@@ -588,9 +581,7 @@ impl DatabaseManager {
                 // Not expected under the write lock; report what the row holds.
                 tx.rollback().await?;
                 match self.get_meeting_calendar_event_id(meeting_id).await {
-                    Ok(Some(existing)) if existing == event_id => {
-                        Ok(CalendarBinding::AlreadyBound)
-                    }
+                    Ok(Some(existing)) if existing == event_id => Ok(CalendarBinding::AlreadyBound),
                     Ok(Some(existing)) => Ok(CalendarBinding::MeetingHasOtherEvent { existing }),
                     Ok(None) | Err(SqlxError::RowNotFound) => Ok(CalendarBinding::MeetingMissing),
                     Err(e) => Err(e),
