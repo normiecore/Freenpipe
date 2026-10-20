@@ -8266,6 +8266,7 @@ dependencies = [
  "base64 0.22.1",
  "chacha20poly1305",
  "chrono",
+ "chrono-tz",
  "clap",
  "core-foundation 0.10.1",
  "core-graphics",
