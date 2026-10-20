@@ -9,6 +9,9 @@
 //! to the event bus every 60s for meeting detection.
 //! All EventKit calls go through `spawn_blocking` (EKEventStore is !Send).
 
+// Planned: meeting reminder scheduling (empty until the feature lands).
+pub mod reminders;
+
 use serde::{Deserialize, Serialize};
 use specta::Type;
 use tracing::{debug, error, info, warn};

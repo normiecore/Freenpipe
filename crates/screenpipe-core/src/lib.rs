@@ -6,6 +6,7 @@ pub mod ai_gateway;
 pub mod brand;
 pub mod connections;
 pub mod endpoints;
+pub mod env;
 pub mod ffmpeg;
 pub mod memories;
 pub mod paths;

@@ -16,6 +16,9 @@ pub mod permissions;
 pub mod preset_fallback;
 pub mod sync;
 
+// Run-lifecycle hooks that features register instead of editing this file.
+pub mod hooks;
+
 use crate::agents::{
     pi::{PiExecutor, SCREENPIPE_API_URL},
     AgentExecutor, ExecutionHandle,
@@ -1170,17 +1173,19 @@ async fn setup_pipe_permissions(
     config: &PipeConfig,
     token_registry: Option<&Arc<dyn permissions::PipeTokenRegistry>>,
 ) -> Option<String> {
-    if let Err(e) = PiExecutor::ensure_permissions_extension(pipe_dir, config) {
-        warn!("failed to install permissions extension: {}", e);
-    }
-    if let Err(e) = PiExecutor::ensure_context_pruning_extension(pipe_dir) {
-        warn!("failed to install context-pruning extension: {}", e);
-    }
-    if let Err(e) = PiExecutor::ensure_orphan_guard_extension(pipe_dir) {
-        warn!("failed to install orphan-guard extension: {}", e);
-    }
-    if let Err(e) = PiExecutor::ensure_subagent_extension(pipe_dir, config.subagent) {
-        warn!("failed to install sub-agent extension: {}", e);
+    // Bundled extensions come from the manifest: the always-on ones plus the
+    // permission and sub-agent extensions this pipe's config decides.
+    let extension_conditions = crate::agents::extensions_manifest::ExtensionConditions {
+        pipe_permissions: Some(
+            permissions::PipePermissions::from_config(config).has_any_restrictions(),
+        ),
+        sub_agent: Some(config.subagent),
+        web_search: None,
+    };
+    for failure in
+        crate::agents::extensions_manifest::sync_bundled_extensions(pipe_dir, &extension_conditions)
+    {
+        warn!("failed to install {}", failure);
     }
     if let Err(e) = PiExecutor::ensure_screenpipe_skill_filtered(pipe_dir, config) {
         warn!("failed to install filtered skills: {}", e);
@@ -1286,6 +1291,9 @@ pub struct PipeManager {
     local_api_key: Option<String>,
     /// Circuit breaker registry for AI preset fallback.
     fallback_registry: Arc<preset_fallback::PresetFallbackRegistry>,
+    /// Run-lifecycle hooks (see [`hooks`]). Register them before
+    /// `start_scheduler`; the scheduler takes a copy when it starts.
+    run_hooks: hooks::PipeHooks,
 }
 
 impl PipeManager {
@@ -1325,7 +1333,19 @@ impl PipeManager {
             connections_context: None,
             local_api_key: None,
             fallback_registry: registry,
+            run_hooks: hooks::PipeHooks::new(),
         }
+    }
+
+    /// Register a run-lifecycle hook. Call before `start_scheduler`, which
+    /// takes a copy of the registered hooks for scheduled runs.
+    pub fn add_run_hook(&mut self, hook: Arc<dyn hooks::PipeRunHook>) {
+        self.run_hooks.register(hook);
+    }
+
+    /// The registered run-lifecycle hooks.
+    pub fn run_hooks(&self) -> &hooks::PipeHooks {
+        &self.run_hooks
     }
 
     /// Returns the pipes directory (e.g. `~/.screenpipe/pipes/`).
@@ -2004,11 +2024,19 @@ impl PipeManager {
         let on_output = self.on_output_line.clone();
         let pipes_dir_for_log = self.pipes_dir.clone();
         let pipe_timeout = config.timeout.unwrap_or(DEFAULT_TIMEOUT_SECS);
+        let run_hooks = self.run_hooks.clone();
 
         // Spawn the actual execution in a background task
         tokio::spawn(async move {
             let started_at = Utc::now();
             let timeout_duration = std::time::Duration::from_secs(pipe_timeout);
+            let hook_run = hooks::RunStart {
+                pipe_name: &pipe_name,
+                trigger: "manual",
+                execution_id: exec_id,
+                pipe_dir: &pipe_dir,
+            };
+            run_hooks.before_run(&hook_run).await;
 
             // Create streaming channel and drainer task
             let (line_tx, mut line_rx) = tokio::sync::mpsc::unbounded_channel::<String>();
@@ -2200,6 +2228,14 @@ impl PipeManager {
                     info!("cleared Pi session for '{}' after context overflow — next run starts fresh", pipe_name);
                 }
             }
+
+            run_hooks
+                .after_run(&hooks::RunEnd {
+                    start: hook_run,
+                    log: &log,
+                    error_type: cb_error_type.as_deref(),
+                })
+                .await;
 
             // Append to in-memory logs
             let duration_secs = (finished_at - started_at).num_milliseconds() as f64 / 1000.0;
@@ -2520,6 +2556,14 @@ impl PipeManager {
                 }
             });
 
+            let hook_run = hooks::RunStart {
+                pipe_name: name,
+                trigger,
+                execution_id: exec_id,
+                pipe_dir: &pipe_dir,
+            };
+            self.run_hooks.before_run(&hook_run).await;
+
             let run_result = tokio::time::timeout(
                 timeout_duration,
                 executor.run_streaming(
@@ -2556,6 +2600,9 @@ impl PipeManager {
             let finished_at = Utc::now();
             let _duration_ms = (finished_at - started_at).num_milliseconds();
 
+            // Failure category handed to run hooks (same values the other run
+            // paths give the run-complete callback).
+            let mut hook_error_type: Option<String> = None;
             let log = match run_result {
                 Ok(Ok(output)) => {
                     // Normal completion
@@ -2565,6 +2612,10 @@ impl PipeManager {
                     } else {
                         (None, None)
                     };
+                    if !output.success {
+                        hook_error_type =
+                            Some(error_type.clone().unwrap_or_else(|| "unknown".to_string()));
+                    }
 
                     let status = if output.success {
                         "completed"
@@ -2617,6 +2668,7 @@ impl PipeManager {
                 }
                 Ok(Err(e)) => {
                     // Executor error (not timeout)
+                    hook_error_type = Some("crash".to_string());
                     if let (Some(ref store), Some(id)) = (&self.store, exec_id) {
                         let _ = store
                             .finish_execution(
@@ -2646,6 +2698,7 @@ impl PipeManager {
                 }
                 Err(_elapsed) => {
                     // Timeout — kill the process
+                    hook_error_type = Some("timeout".to_string());
                     warn!(
                         "pipe '{}' timed out after {}s, killing process",
                         name, pipe_timeout
@@ -2688,6 +2741,14 @@ impl PipeManager {
             if let Some(ref token) = pipe_token {
                 cleanup_pipe_token(token, self.token_registry.as_ref());
             }
+
+            self.run_hooks
+                .after_run(&hooks::RunEnd {
+                    start: hook_run,
+                    log: &log,
+                    error_type: hook_error_type.as_deref(),
+                })
+                .await;
 
             // Immediate fallback retry: if the run failed and there is another
             // fallback preset we haven't tried this run, retry now with the next
@@ -3201,6 +3262,7 @@ impl PipeManager {
         let extra_context = self.extra_context.clone();
         let connections_context = self.connections_context.clone();
         let local_api_key = self.local_api_key.clone();
+        let run_hooks = self.run_hooks.clone();
 
         let handle = tokio::spawn(async move {
             info!("pipe scheduler started (generation {})", generation);
@@ -3314,6 +3376,15 @@ impl PipeManager {
 
                     // Expire old chain cooldowns
                     recent_chain.retain(|_, ts| ts.elapsed() < CHAIN_COOLDOWN);
+
+                    for (event_name, data) in &pending_events {
+                        run_hooks
+                            .on_event(&hooks::PipeEvent {
+                                name: event_name,
+                                data,
+                            })
+                            .await;
+                    }
 
                     for (event_name, _data) in &pending_events {
                         for (name, config, _body) in &pipe_snapshot {
@@ -3591,6 +3662,7 @@ impl PipeManager {
                     let semaphore = execution_semaphore.clone();
                     let pipes_dir_for_mark = pipes_dir.clone();
                     let queued_ref = queued_or_running.clone();
+                    let run_hooks = run_hooks.clone();
 
                     tokio::spawn(async move {
                         // Event-triggered pipes skip the queue for low-latency response.
@@ -3699,6 +3771,14 @@ impl PipeManager {
                                 cb(&sched_pipe_name, sched_exec_id, r#"{"type":"pipe_done"}"#);
                             }
                         });
+
+                        let hook_run = hooks::RunStart {
+                            pipe_name: &pipe_name,
+                            trigger,
+                            execution_id: exec_id,
+                            pipe_dir: &pipe_dir,
+                        };
+                        run_hooks.before_run(&hook_run).await;
 
                         let run_result = tokio::time::timeout(
                             timeout_duration,
@@ -3887,6 +3967,14 @@ impl PipeManager {
                                 info!("cleared Pi session for '{}' after context overflow — next run starts fresh", pipe_name);
                             }
                         }
+
+                        run_hooks
+                            .after_run(&hooks::RunEnd {
+                                start: hook_run,
+                                log: &log,
+                                error_type: cb_error_type.as_deref(),
+                            })
+                            .await;
 
                         // Append to in-memory logs
                         let duration_secs =
