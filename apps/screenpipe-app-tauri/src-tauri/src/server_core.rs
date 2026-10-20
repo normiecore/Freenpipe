@@ -635,19 +635,24 @@ impl ServerCore {
         //   - "tinfoil" → a confidential-compute enclave the user runs and
         //                 configured (SCREENPIPE_PRIVACY_FILTER_*). There is
         //                 no built-in enclave: without a complete setup the
-        //                 local backend is used.
+        //                 local backend is used. The enclave client is only
+        //                 in builds with the opt-in `tinfoil-enclave`
+        //                 feature (AGPL-3.0 SDK); other builds always use
+        //                 the local backend.
         let backend = config.pii_backend.as_str();
         let wants_tinfoil = matches!(backend, "tinfoil" | "cloud" | "enclave");
         // The enclave host goes through the endpoint switchboard so a
         // settings override applies here as well as the environment.
         let enclave_host = screenpipe_core::endpoints::privacy_filter_base();
-        let use_tinfoil = wants_tinfoil
-            && screenpipe_redact::adapters::tinfoil::is_configured_for(enclave_host.clone());
+        let enclave_availability =
+            screenpipe_redact::adapters::tinfoil::availability_for(enclave_host.clone());
+        let use_tinfoil = wants_tinfoil && enclave_availability.is_ready();
         if wants_tinfoil && !use_tinfoil {
             warn!(
-                "piiBackend is '{}' but no enclave is configured (SCREENPIPE_PRIVACY_FILTER_ENCLAVE, \
-                 _REPO and _API_KEY); using the local redactor",
-                backend
+                "piiBackend is '{}' but the enclave backend is unavailable ({}); using the \
+                 local redactor",
+                backend,
+                enclave_availability.describe()
             );
         }
 
@@ -670,7 +675,6 @@ impl ServerCore {
 
         if config.async_pii_redaction {
             use screenpipe_redact::adapters::onnx::{OnnxConfig, OnnxRedactor};
-            use screenpipe_redact::adapters::opf::{OpfAdapter, OpfConfig};
             use screenpipe_redact::adapters::tinfoil::{TinfoilConfig, TinfoilRedactor};
             use screenpipe_redact::pipeline::{Pipeline, PipelineConfig};
             use screenpipe_redact::worker::{Worker, WorkerConfig, ALL_TARGET_TABLES};
@@ -678,12 +682,13 @@ impl ServerCore {
             use screenpipe_redact::TextRedactionPolicy;
 
             // Backend selection for the text "AI" step:
-            //   - "local"   → on-device candle OPF v3 (opf-rs). First
-            //                 run downloads ~2.8 GB from
-            //                 huggingface.co/screenpipe/pii-text-redactor
-            //                 in the background; until the download
-            //                 finishes the worker runs regex-only.
-            //   - "tinfoil" → Tinfoil confidential-compute enclave.
+            //   - "local"   → on-device v45 ONNX text model, with the
+            //                 opf-rs candle model as a fallback only in
+            //                 builds with the opt-in `redact-opf-text`
+            //                 feature (opf-rs is CC BY-NC 4.0). Until a
+            //                 model is ready the worker runs regex-only.
+            //   - "tinfoil" → Tinfoil confidential-compute enclave (opt-in
+            //                 `tinfoil-enclave` builds only).
             //
             // The worker is destructive-only: it overwrites the source
             // columns (`text` / `transcription` / `text_content` /
@@ -730,9 +735,10 @@ impl ServerCore {
                     // Prefer the local ONNX text redactor (~278 MB INT8,
                     // sub-10 ms p50, gets CoreML on macOS / DirectML on
                     // Windows / CPU on Linux via the redact-onnx-* CI
-                    // feature). Fall back to the legacy OPF candle
-                    // adapter (~2.8 GB) if the ONNX feature isn't
-                    // compiled in or the HF download fails. The concrete
+                    // feature). Builds with the opt-in `redact-opf-text`
+                    // feature fall back to the legacy OPF candle adapter
+                    // (~2.8 GB) if the HF download fails; every other
+                    // build goes straight to regex-only. The concrete
                     // model name + version are logged once it loads, so
                     // these strings never drift on a model bump.
                     let onnx_cfg = OnnxConfig::default();
@@ -762,32 +768,47 @@ impl ServerCore {
                             )
                         }
                         Err(onnx_err) => {
-                            warn!(
-                                "couldn't load local ONNX text redactor ({onnx_err}); falling \
-                                 back to OPF candle"
-                            );
-                            match OpfAdapter::load_or_download(OpfConfig::default()).await {
-                                Ok(adapter) => {
-                                    info!(
-                                        model = adapter.name(),
-                                        version = adapter.version(),
-                                        "starting async text-PII reconciliation worker \
-                                         (backend=local, fallback)"
-                                    );
-                                    let ai: Arc<dyn Redactor> = Arc::new(adapter);
-                                    Pipeline::regex_then_ai(
-                                        ai,
-                                        PipelineConfig {
-                                            policy: policy.clone(),
-                                            ..Default::default()
-                                        },
-                                    )
+                            #[cfg(feature = "redact-opf-text")]
+                            let fallback: Option<Arc<dyn Redactor>> = {
+                                use screenpipe_redact::adapters::opf::{OpfAdapter, OpfConfig};
+                                warn!(
+                                    "couldn't load local ONNX text redactor ({onnx_err}); \
+                                     falling back to OPF candle"
+                                );
+                                match OpfAdapter::load_or_download(OpfConfig::default()).await {
+                                    Ok(adapter) => {
+                                        info!(
+                                            model = adapter.name(),
+                                            version = adapter.version(),
+                                            "starting async text-PII reconciliation worker \
+                                             (backend=local, fallback)"
+                                        );
+                                        Some(Arc::new(adapter))
+                                    }
+                                    Err(e) => {
+                                        warn!("couldn't load OPF redactor either ({e})");
+                                        None
+                                    }
                                 }
-                                Err(e) => {
-                                    warn!(
-                                        "couldn't load OPF redactor either ({e}); running \
-                                         text-PII worker in regex-only mode."
-                                    );
+                            };
+                            #[cfg(not(feature = "redact-opf-text"))]
+                            let fallback: Option<Arc<dyn Redactor>> = {
+                                warn!(
+                                    "couldn't load local ONNX text redactor ({onnx_err}); this \
+                                     build has no other local text model"
+                                );
+                                None
+                            };
+                            match fallback {
+                                Some(ai) => Pipeline::regex_then_ai(
+                                    ai,
+                                    PipelineConfig {
+                                        policy: policy.clone(),
+                                        ..Default::default()
+                                    },
+                                ),
+                                None => {
+                                    warn!("running text-PII worker in regex-only mode.");
                                     Pipeline::regex_only_with_policy(policy.clone())
                                 }
                             }

@@ -2,26 +2,26 @@
 
 > Generated file: the merger routine regenerates it with `python3 tools/plan/status.py --write`. Do not edit it by hand. The plan is [PLAN.md](PLAN.md); the process is [docs/dev/cloud-runbook.md](../dev/cloud-runbook.md).
 
-Generated 2026-10-20T02:27:32Z from `origin/main` (latest code commit `d482528`). GitHub data: available (via gh).
+Generated 2026-10-20T06:15:34Z from `origin/main` (latest code commit `40c94a6`). GitHub data: available (via gh).
 
 ## Progress
 
-**13 of 154 work packages merged (8.4%)**: 0 in review, 0 claimed, 7 ready, 134 blocked.
+**15 of 155 work packages merged (9.7%)**: 0 in review, 0 claimed, 8 ready, 132 blocked.
 
 | Wave | Theme | Merged | In review | Claimed | Ready | Blocked | Progress |
 |---|---|---|---|---|---|---|---|
 | 0 | Foundation: build, ee/ stubs, de-cloud, rebrand | 13/13 | 0 | 0 | 0 | 0 | `##########` 100% |
-| 1 | Cross-cutting foundations: schema v2.7, settings schema, integration seams | 0/4 | 0 | 0 | 4 | 0 | `----------` 0% |
-| 2 | Engine data layer and core backends | 0/27 | 0 | 0 | 3 | 24 | `----------` 0% |
+| 1 | Cross-cutting foundations: schema v2.7, settings schema, integration seams | 2/5 | 0 | 0 | 3 | 0 | `####------` 40% |
+| 2 | Engine data layer and core backends | 0/27 | 0 | 0 | 5 | 22 | `----------` 0% |
 | 3 | Feature backends (search, pipes, connections, capture, audio) | 0/31 | 0 | 0 | 0 | 31 | `----------` 0% |
 | 4 | Advanced backends, agents runtime, app shell | 0/22 | 0 | 0 | 0 | 22 | `----------` 0% |
 | 5 | Feature UIs and second-tier backends | 0/24 | 0 | 0 | 0 | 24 | `----------` 0% |
 | 6 | Agent/workflow UIs, piggyback, hybrid bulk | 0/21 | 0 | 0 | 0 | 21 | `----------` 0% |
 | 7 | Hybrid lifecycle, overlays, chat follow-ups | 0/9 | 0 | 0 | 0 | 9 | `----------` 0% |
 | 8 | Final UI pieces and surface audit | 0/3 | 0 | 0 | 0 | 3 | `----------` 0% |
-| all | | 13/154 | 0 | 0 | 7 | 134 | `#---------` 8.4% |
+| all | | 15/155 | 0 | 0 | 8 | 132 | `#---------` 9.7% |
 
-CI on main (merge gate on the latest non-status commit `d482528`): **pending** (gates: queued; linux: queued; test-windows: in_progress; trufflehog: queued; windows: queued)
+CI on main (merge gate on the latest non-status commit `40c94a6`): **pending** (gates: in_progress; linux: in_progress; test-windows: in_progress; trufflehog: in_progress; windows: in_progress)
 
 ## In review
 
@@ -35,19 +35,60 @@ None.
 
 | WP | Wave | Size | Title |
 |---|---|---|---|
-| W1-01 | 1 | L | Schema v2.7.104: 28 migrations and ocr_text retirement |
 | W1-02 | 1 | L | Settings schema v2 and store compatibility |
 | W1-03 | 1 | M | Integration seams, stub modules and shared constants |
 | W1-04 | 1 | S | Enterprise and plan-gate no-op surface |
 | W2-06 | 2 | XL | screenpipe-semantic parser crate |
 | W2-12 | 2 | L | Native WinRT/D3D11 Windows Graphics Capture and frame-diff hardening |
+| W2-16 | 2 | L | Speakers v2: samples, search paging, merge integrity, reassign v2 |
+| W2-17 | 2 | L | Stream-scoped live speakers and strict meeting-segment mapping |
 | W2-19 | 2 | L | GPU runtimes and bundled models: Vulkan whisper, DirectML, install layout |
 
 ## Wave integration log
 
-No wave integration has been recorded by the merger yet.
+### Wave 0: partial (recorded 2026-10-20T05:34:35Z, main `4d052c5`)
 
-Complete waves awaiting the integration checklist: 0.
+# Wave 0 integration
+
+Recorded 2026-10-20 on main `4d052c5`, which carries all 13 wave 0 work packages. (The unreviewed W1-01 checkpoint merged as PR #11 was reverted in `61f0faf`, so the code under `crates/` and `apps/` is the reviewed wave 0 state.)
+
+## CI on main
+
+- Freenpipe CI (windows, linux, gates): success, https://github.com/normiecore/Freenpipe/actions/runs/39369534010
+- Windows CLI Integration Test: success, https://github.com/normiecore/Freenpipe/actions/runs/39369534021
+- Secret scan: success, https://github.com/normiecore/Freenpipe/actions/runs/39369534077
+- Release build of all five installers (Windows x64/ARM, macOS Intel/Apple Silicon, Linux) from `c5489be`, the same code: success, published as pre-release `v2.5.28-alpha.1`, https://github.com/normiecore/Freenpipe/actions/runs/39361490499
+
+## Acceptance checks
+
+| WP | Check | Result |
+|---|---|---|
+| W0-01 | release-dev engine and app builds; frontend build and bindings check | pass (CI windows/linux jobs and the release build) |
+| W0-01 | `ee/desktop` grep | pass: no build reference; two doc comments in screenpipe-team-memory and screenpipe-sync name upstream file paths |
+| W0-01 | harness `/health` on port 3035 with FP_DD | not run (needs a local engine build; disk is reserved for wave 1 builds) |
+| W0-01, W0-12 | vendor guard | pass (strict mode, CI gates) |
+| W0-02 | telemetry key and host grep | pass: remaining hits are the user's own Sentry connector (`screenpipe-connect`) and a PII regex that detects PostHog keys |
+| W0-02 | 2-minute engine log without posthog/sentry | not run (needs a local engine run) |
+| W0-03 | `api/app-update` grep, release workflow grep | pass |
+| W0-03, W0-04, W0-07, W0-09, W0-11 | cargo tests (updates::, entitlement, oauth::, speaker::models, screenpipe-db) | pass (CI engine and app test steps) |
+| W0-03 | latest.json generator on fixtures | pass (app crate test `release_script_fixture_parses_as_a_tauri_manifest`) |
+| W0-04, W0-05, W0-06, W0-09, W0-10 | bun tests | pass (CI frontend tests) |
+| W0-04, W0-05, W0-06, W0-07, W0-09, W0-10 | vendor endpoint greps | pass |
+| W0-06, W0-08 | harness checks on port 3035 (gateway 503 and forwarding, empty pipe store, static registry) | covered by the WPs' own integration tests in CI (`cloud_proxy_test`, pipe store tests); live harness not run |
+| W0-08 | `screenpi.pe` endpoint grep | pass: remaining hits are a vendor-name filter list in pi.rs and a test email address in calendar_speaker_id.rs |
+| W0-11 | SQLite version, FTS5 contentless_delete, out-of-order migration | pass (CI `sqlite_toolchain_test`, `migrator_compat_test`) |
+| W0-12 | route, settings key and SQL identifiers unchanged | pass (W0-12 review) |
+| W0-13 | no vendor-org git deps; third_party/README.md complete | pass (grep; CI third-party guard) |
+| W0-04, W0-05, W0-07, W0-10, W0-12 | UI, tray, OAuth, installer and registry checks | Windows smoke checklist |
+
+## Windows smoke checklist
+
+46 wave 0 entries in `docs/dev/windows-smoke-checklist.md`; 0 ticked by the owner so far. The pre-release installer `v2.5.28-alpha.1` is the build to run them on.
+
+## Follow-ups
+
+- Run the local harness checks (W0-01 `/health`, W0-02 log scan, W0-06 and W0-08 live calls) when disk allows a main-checkout engine build.
+- Review-time follow-ups are listed in `docs/dev/coordinator-handoff.md`.
 
 ## Board
 
@@ -69,36 +110,37 @@ Complete waves awaiting the integration checklist: 0.
 | W0-12 | M | merged | Rebrand user-visible identity to Freenpipe | merge `06383cc` |
 | W0-13 | M | merged | Vendor git dependencies into third_party/ | merge `d482528` |
 
-### Wave 1: Cross-cutting foundations: schema v2.7, settings schema, integration seams (0/4 merged)
+### Wave 1: Cross-cutting foundations: schema v2.7, settings schema, integration seams (2/5 merged)
 
 | WP | Size | Status | Title | Detail |
 |---|---|---|---|---|
-| W1-01 | L | ready | Schema v2.7.104: 28 migrations and ocr_text retirement |  |
+| W1-01 | L | merged | Schema v2.7.104: 28 migrations and ocr_text retirement | merge `93094cd` |
 | W1-02 | L | ready | Settings schema v2 and store compatibility |  |
 | W1-03 | M | ready | Integration seams, stub modules and shared constants |  |
 | W1-04 | S | ready | Enterprise and plan-gate no-op surface |  |
+| W1-05 | M | merged | Licence gating for commercial builds | merge `40c94a6` |
 
 ### Wave 2: Engine data layer and core backends (0/27 merged)
 
 | WP | Size | Status | Title | Detail |
 |---|---|---|---|---|
-| W2-01 | L | blocked | DB runtime hardening: pragmas, WAL maintenance, preflight, planner stats, cancellable reads | waits for W1-01, W1-03 |
-| W2-02 | L | blocked | Outputs and artifacts registry | waits for W1-01, W1-03 |
-| W2-03 | M | blocked | Unified AI feedback table and /feedback | waits for W1-01, W1-03 |
-| W2-04 | M | blocked | Starred work sessions backend and HD binding | waits for W1-01, W1-03 |
-| W2-05 | M | blocked | Semantic store: runs, items, FTS, actors | waits for W1-01, W1-03 |
+| W2-01 | L | blocked | DB runtime hardening: pragmas, WAL maintenance, preflight, planner stats, cancellable reads | waits for W1-03 |
+| W2-02 | L | blocked | Outputs and artifacts registry | waits for W1-03 |
+| W2-03 | M | blocked | Unified AI feedback table and /feedback | waits for W1-03 |
+| W2-04 | M | blocked | Starred work sessions backend and HD binding | waits for W1-03 |
+| W2-05 | M | blocked | Semantic store: runs, items, FTS, actors | waits for W1-03 |
 | W2-06 | XL | ready | screenpipe-semantic parser crate |  |
-| W2-07 | L | blocked | Activity ledger store and deterministic reconciler | waits for W1-01, W1-03 |
-| W2-08 | L | blocked | Meetings API v2: calendar binding, summary endpoints, room-change route | waits for W1-01, W1-03 |
-| W2-09 | M | blocked | Response formats, calendar time literals, tag autocomplete | waits for W1-01, W1-03 |
-| W2-10 | L | blocked | Frame media routes: thumbnail, preview samples, preview media, typed errors, auth | waits for W1-01, W1-03 |
-| W2-11 | L | blocked | Per-monitor vision control and display layout persistence | waits for W1-01, W1-03 |
+| W2-07 | L | blocked | Activity ledger store and deterministic reconciler | waits for W1-03 |
+| W2-08 | L | blocked | Meetings API v2: calendar binding, summary endpoints, room-change route | waits for W1-03 |
+| W2-09 | M | blocked | Response formats, calendar time literals, tag autocomplete | waits for W1-03 |
+| W2-10 | L | blocked | Frame media routes: thumbnail, preview samples, preview media, typed errors, auth | waits for W1-03 |
+| W2-11 | L | blocked | Per-monitor vision control and display layout persistence | waits for W1-03 |
 | W2-12 | L | ready | Native WinRT/D3D11 Windows Graphics Capture and frame-diff hardening |  |
 | W2-13 | L | blocked | Health v2, vision metrics and recording coverage | waits for W1-03 |
 | W2-14 | L | blocked | Resource monitor v2: process tree, breakdown, leak trend | waits for W1-03 |
-| W2-15 | L | blocked | Snapshot compaction v2 and suspend/lock awareness | waits for W1-01, W1-03 |
-| W2-16 | L | blocked | Speakers v2: samples, search paging, merge integrity, reassign v2 | waits for W1-01 |
-| W2-17 | L | blocked | Stream-scoped live speakers and strict meeting-segment mapping | waits for W1-01 |
+| W2-15 | L | blocked | Snapshot compaction v2 and suspend/lock awareness | waits for W1-03 |
+| W2-16 | L | ready | Speakers v2: samples, search paging, merge integrity, reassign v2 |  |
+| W2-17 | L | ready | Stream-scoped live speakers and strict meeting-segment mapping |  |
 | W2-18 | L | blocked | Windows WASAPI loopback engine and exe-based audio exclusions | waits for W1-02 |
 | W2-19 | L | ready | GPU runtimes and bundled models: Vulkan whisper, DirectML, install layout |  |
 | W2-20 | L | blocked | Connections core: secret-safe reads, webhook proxy, Telegram send, router deltas, MCP refs | waits for W1-03 |
@@ -123,9 +165,9 @@ Complete waves awaiting the integration checklist: 0.
 | W3-07 | M | blocked | Live meeting overlay websocket | waits for W2-17, W2-13 |
 | W3-08 | L | blocked | UI-scan meeting detector: calendar binding and lock awareness | waits for W2-08 |
 | W3-09 | L | blocked | Retention v2: lean mode, strip, NULL-safe deletes, coverage | waits for W2-05, W2-11 |
-| W3-10 | L | blocked | PII redaction surfaces v2 | waits for W1-01, W1-02 |
+| W3-10 | L | blocked | PII redaction surfaces v2 | waits for W1-02 |
 | W3-11 | L | blocked | Capture loop hardening A: stages and wedge watchdog, probe timeouts, fail-closed exclusions, corrupt frames | waits for W2-11, W2-13 |
-| W3-12 | M | blocked | Dedicated Windows OCR worker and OCR availability reporting | waits for W1-01, W2-10 |
+| W3-12 | M | blocked | Dedicated Windows OCR worker and OCR availability reporting | waits for W2-10 |
 | W3-13 | L | blocked | URL domain rules, Windows window identity, input-hook watchdog | waits for W1-02, W2-11 |
 | W3-14 | L | blocked | Audio capture modes and device status events | waits for W1-02, W2-13 |
 | W3-15 | L | blocked | Software AEC3 + NS + AGC2 (aecMode=screenpipe) | waits for W2-18 |

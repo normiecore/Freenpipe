@@ -20,7 +20,9 @@ screenpipe-screen = { path = "../screenpipe-screen" }
 screenpipe-audio = { path = "../screenpipe-audio" }
 screenpipe-core = { path = "../screenpipe-core", features = ["security", "cloud-sync", "secrets"] }
 screenpipe-db = { path = "../screenpipe-db" }
-screenpipe-redact = { path = "../screenpipe-redact", features = ["opf-text"] }
+# No backend features here: the opt-in licence-gated ones are forwarded by
+# the `redact-opf-text` and `tinfoil-enclave` features below.
+screenpipe-redact = { path = "../screenpipe-redact" }
 screenpipe-a11y = { path = "../screenpipe-a11y", features = ["db"] }
 screenpipe-capture = { path = "../screenpipe-capture" }
 screenpipe-apple-intelligence = { path = "../screenpipe-apple-intelligence", optional = true }
@@ -74,15 +76,18 @@ dirs = "5.0"
 # Password input (no-echo for vault CLI)
 rpassword = "5"
 
-# Client http
-reqwest = { workspace = true }
+# Client http. `stream` is for routes/cloud_proxy.rs (`bytes_stream`); it used
+# to arrive only through the tinfoil SDK's reqwest features, which no longer
+# link by default (W1-05).
+reqwest = { workspace = true, features = ["stream"] }
 
 # Tinfoil enclave attestation: AMD SEV-SNP attestation + Sigstore code-provenance
-# verification + TLS cert pinning for the privacy-filter PII redaction service
+# verification + TLS cert pinning for a user-run privacy-filter enclave
 # (see src/privacy_filter.rs). Without this, a MITM or compromised CA could
 # observe unredacted text on its way to the enclave.
 # Upstream tinfoilsh/tinfoil-rs main, post-#21 (the ring-backend fix).
-tinfoil = { git = "https://github.com/tinfoilsh/tinfoil-rs", rev = "82143d767b540195dea265df0b01c4b4fc93c424" }
+# AGPL-3.0: optional, linked only by the opt-in `tinfoil-enclave` feature.
+tinfoil = { git = "https://github.com/tinfoilsh/tinfoil-rs", rev = "82143d767b540195dea265df0b01c4b4fc93c424", optional = true }
 
 # Concurrency
 crossbeam = { workspace = true }
@@ -175,6 +180,21 @@ redact-onnx-coreml = ["screenpipe-redact/onnx-coreml"]
 # in Windows 10+ since 2019. Distinct from the existing `directml`
 # feature, which forwards to screenpipe-audio's whisper.cpp.
 redact-onnx-directml = ["screenpipe-redact/onnx-directml"]
+
+# Licence-gated backends (DECISIONS.md decision 7). Opt-in only: no default
+# feature set and no release workflow may enable them, and
+# scripts/ci/licence-guard.test.ts fails CI if one does.
+#
+# opf-rs text redactor (candle, ~2.8 GB checkpoint), the engine's fallback
+# when the v45 ONNX model cannot load. opf-rs is CC BY-NC 4.0, so a build
+# with this feature is for non-commercial use only. Without it the text
+# worker goes from v45 ONNX straight to regex-only.
+redact-opf-text = ["screenpipe-redact/opf-text"]
+# Attested client for a user-run Tinfoil enclave: the search-time
+# `filter_pii` enclave path and the tinfoil text/image adapters. The SDK is
+# AGPL-3.0. Without it a configured enclave is reported as "not built with
+# enclave support" and redaction stays on the device.
+tinfoil-enclave = ["dep:tinfoil", "screenpipe-redact/tinfoil-enclave"]
 
 jemalloc = ["tikv-jemallocator"]
 

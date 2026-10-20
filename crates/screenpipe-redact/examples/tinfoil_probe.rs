@@ -6,7 +6,10 @@
 // and print the full reqwest error chain when something goes wrong.
 //
 // Run:
-//   cargo run --example tinfoil_probe -p screenpipe-redact
+//   cargo run --example tinfoil_probe -p screenpipe-redact --features tinfoil-enclave
+//
+// Needs the opt-in `tinfoil-enclave` feature (the SDK is AGPL-3.0) and a
+// configured enclave (SCREENPIPE_PRIVACY_FILTER_ENCLAVE, _REPO, _API_KEY).
 
 use screenpipe_redact::{adapters::tinfoil::TinfoilRedactor, Redactor};
 

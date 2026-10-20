@@ -282,6 +282,16 @@ jobs:
         timeout-minutes: 15
         run: xvfb-run -a python3 scripts/ci/cargo_test.py --platform linux --suite engine --quarantined -- --profile release-dev --workspace --exclude screenpipe-rfdetr-mlx --no-fail-fast
 
+      # The licence-gated backends (opf-rs, CC BY-NC; the tinfoil SDK, AGPL)
+      # are opt-in only since W1-05, so no step above compiles them. Keep them
+      # building. Same profile as the engine build, so build scripts are reused.
+      - name: Check opt-in licence-gated features (opf-text, tinfoil-enclave)
+        if: ${{ !cancelled() && steps.engine.outcome == 'success' }}
+        timeout-minutes: 30
+        run: |
+          cargo check --profile release-dev -p screenpipe-redact --tests --features opf-text,tinfoil-enclave
+          cargo check --profile release-dev -p screenpipe-engine --lib --bins --features redact-opf-text,tinfoil-enclave
+
       - name: Frontend install
         id: bun_install
         if: ${{ !cancelled() }}
@@ -322,7 +332,7 @@ jobs:
   gates:
     name: gates
     runs-on: ubuntu-24.04
-    timeout-minutes: 20
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
         with:
@@ -357,3 +367,38 @@ jobs:
       - name: Third-party dependency guard
         if: ${{ !cancelled() }}
         run: bun test scripts/ci/third-party.test.ts
+
+      # Commercial-ready builds (W1-05, owner decision 7): the default and
+      # release feature sets of the engine and the app crate must not reach
+      # opf-rs or tinfoil, or any package whose licence is GPL, AGPL, SSPL,
+      # CC BY-NC, unreviewed or undeclared. The test runs `cargo tree
+      # --offline`, so the crate sources of both lockfiles are fetched first
+      # (no compilation).
+      - name: Rust toolchain for the licence guard
+        id: licence_toolchain
+        if: ${{ !cancelled() }}
+        run: |
+          rustup toolchain install || rustup show active-toolchain
+          cargo --version
+
+      - name: Fetch crate sources (both lockfiles)
+        id: licence_fetch
+        if: ${{ !cancelled() && steps.licence_toolchain.outcome == 'success' }}
+        run: |
+          cargo fetch --locked
+          cargo fetch --locked --manifest-path apps/screenpipe-app-tauri/src-tauri/Cargo.toml
+
+      - name: Licence guard
+        if: ${{ !cancelled() && steps.licence_fetch.outcome == 'success' }}
+        run: |
+          set +e
+          bun test scripts/ci/licence-guard.test.ts 2>&1 | tee "$RUNNER_TEMP/licence-guard.log"
+          status=${PIPESTATUS[0]}
+          {
+            echo "## Licence guard"
+            echo
+            echo '```'
+            grep -E '^(licence-guard:|\(fail\))' "$RUNNER_TEMP/licence-guard.log" | head -n 60
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+          exit "$status"

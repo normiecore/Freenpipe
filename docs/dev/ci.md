@@ -8,7 +8,7 @@ gated on the checks below, and a merge waits for all of them to pass.
 
 | Workflow (file) | Runs on | Triggers | Typical wall time |
 |---|---|---|---|
-| **Freenpipe CI** (`freenpipe-ci.yml`) | windows-2022, ubuntu-24.04 | every PR (any base), push to `main` and `ci/**`, dispatch | windows 70 min cold, linux 40 min cold, gates < 1 min (see Durations) |
+| **Freenpipe CI** (`freenpipe-ci.yml`) | windows-2022, ubuntu-24.04 | every PR (any base), push to `main` and `ci/**`, dispatch | windows 70 min cold, linux 40 min cold, gates about 5 min (see Durations) |
 | Windows CLI Integration Test (`windows-integration-test.yml`) | windows-2022 | every PR, push to `main` and `ci/**`, dispatch | 18-30 min |
 | Secret Scan (trufflehog) (`gitleaks.yml`) | ubuntu | every PR, push to `main` | 1 min |
 | Meeting Detection Eval (`eval-meeting-detection.yml`) | ubuntu | PRs that touch the meeting detector or `crates/screenpipe-meeting-eval`, dispatch | under 30 min (its timeout) |
@@ -46,6 +46,13 @@ image as the cloud VM) run the same steps:
    `screenpipe-rfdetr-mlx` is macOS-only.
 6. **Quarantined engine tests (informational):** runs only the quarantined
    tests and reports each one; never fails the job.
+   *Linux only, after this step:* **opt-in licence-gated features** —
+   `cargo check --profile release-dev` of `screenpipe-redact --tests
+   --features opf-text,tinfoil-enclave` and of `screenpipe-engine --lib --bins
+   --features redact-opf-text,tinfoil-enclave`. Since W1-05 no default or
+   release build compiles opf-rs or the tinfoil SDK, so this step is what
+   keeps those opt-in paths building. It reuses the engine build's build
+   scripts (same profile) and adds a few minutes.
 7. `bun install --frozen-lockfile`, `bun run build` (the type-checked Next
    static export), `bun run test` (vitest suite plus the bun:test files).
 8. App crate: `cargo build --profile release-dev` in `src-tauri`, against
@@ -69,7 +76,8 @@ never shipped, and LTO would be paid for every test binary), and caps
 Every step after the engine build runs even when an earlier one failed
 (`!cancelled()`), so one run reports all independent failures.
 
-`gates` (ubuntu, under a minute):
+`gates` (ubuntu, about 5 minutes, most of it fetching crate sources for the
+licence guard):
 
 - **Vendor-host guard:** `bun test scripts/ci/vendor-guard.test.ts`, the way
   its header says. Strict by default since W0-12: a vendor host or key, a
@@ -94,6 +102,26 @@ Every step after the engine build runs even when an earlier one failed
   its README), when `third_party/` stops being excluded from the workspace,
   when a path dependency into `third_party/` is broken, or when
   `third_party/README.md` misses a vendored tree or a remaining git source.
+- **Licence guard** (W1-05, owner decision 7: every shipped build must be
+  usable commercially): the job installs the pinned toolchain, runs
+  `cargo fetch --locked` for the root and the app manifest (sources only, no
+  compilation), then `bun test scripts/ci/licence-guard.test.ts`. For the
+  default features of `screenpipe-engine` and the app crate, and for every
+  feature set in `release-app.yml` (`args`, `tauri-args`) and the engine's
+  `cargo build` lines in `release-cli.yml`, it lists the linked packages
+  with `cargo tree --offline --locked -e normal,build` (dev-dependencies do
+  not ship) and fails when one of them is opf-rs or tinfoil (opt-in only:
+  `redact-opf-text`, `tinfoil-enclave`), when a licence expression cannot be
+  met with the reviewed list in the test (GPL but not LGPL, AGPL, SSPL,
+  BUSL, Elastic and CC BY-NC are refused by name; unknown identifiers fail
+  too; MPL-2.0 and LGPL pass and are listed in the summary for the release
+  licence audit), or when a package declares no licence and is neither
+  Freenpipe's own crate nor in the test's commented `DECLARED_ELSEWHERE`
+  list. Negative tests rebuild the engine manifest in a symlinked overlay
+  workspace with `opf-text` or `tinfoil-enclave` switched back on and expect
+  the gate to fail. Per-build package counts and failures go to the job
+  summary. Locally: fetch once with the two `cargo fetch --locked` commands
+  above, then run the same `bun test` line; it works offline.
 
 ### What CI does not cover
 

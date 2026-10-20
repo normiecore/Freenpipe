@@ -3,6 +3,9 @@
 Spec ambiguities that a work package had to decide. Each entry gives the question, the decision
 taken and the reason. Later work packages may revisit a decision; say so under their own heading.
 
+Work packages from wave 1 on write their decisions to `docs/clean-room/open-questions/<WP>.md` (one file per
+WP, so parallel WPs never conflict). This file keeps the wave 0 entries.
+
 ## W0-05
 
 - **Question:** the base Settings "Usage" section only counted local chat and pipe requests per

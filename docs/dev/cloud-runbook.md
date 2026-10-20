@@ -433,7 +433,7 @@ When every WP of a wave is merged:
    wave's WPs that can run on Linux (greps, `cargo test -p ...`, `bun test ...`, Linux harness checks
    on port 3035 with `$FP_DD`). Use background runs for long builds. Note each check as pass, fail,
    or not run with the reason (Windows-only, smoke checklist, too long).
-3. Summarise the wave's entries in `docs/dev/windows-smoke-checklist.md`: count them, and count those
+3. Summarise the wave's entries in `docs/dev/windows-smoke-checklist.md` (wave 0) and `docs/dev/smoke/<WP>.md` (wave 1 on): count them, and count those
    the owner has already ticked.
 4. Write the notes to `$FP_STATE/wave-N.md` (Markdown: CI result with run links, the checks table,
    the smoke summary, any follow-ups) and record it:

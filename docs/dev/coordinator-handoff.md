@@ -22,6 +22,10 @@ Ten of the 154 planned work packages are merged (10/13 in wave 0).
 
 The Rust 1.93.1 build cache in `~/.cache/freenpipe/target` was cleared on 2026-10-19 (W0-11 moves the toolchain to 1.94.1), so the next build anywhere is a full rebuild.
 
+## Must-do before W1-01 merges
+
+PR #11 merged an unreviewed W1-01 checkpoint (3b88171) into main on 2026-10-20; it broke the engine tests and was reverted on main as `61f0faf`. Before W1-01's reviewed PR merges: merge origin/main into `wp/W1-01`, then `git revert 61f0faf` on the branch so 3b88171's changes come back, run the checks, push, wait for CI, then approve and merge. Skipping this silently drops the checkpoint's changes from the merge.
+
 ## Follow-ups from the wave 0 reviews
 
 Minor findings the reviewers allowed through. None blocks a merge; pick them up in the WP that owns the area or in a small fix PR.

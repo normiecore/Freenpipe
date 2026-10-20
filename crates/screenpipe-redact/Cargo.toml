@@ -30,11 +30,17 @@ sha3 = "0.10"
 sqlx = { workspace = true, features = ["chrono"] }
 thiserror = "1"
 # Tinfoil enclave attestation: AMD SEV-SNP attestation + Sigstore code-
-# provenance verification + TLS cert pinning for the privacy-filter PII
-# redaction service. See adapters/tinfoil.rs for the threat model
-# (without this a compromised CA can still observe unredacted text in
-# transit even though the enclave itself is honest).
-tinfoil = { git = "https://github.com/tinfoilsh/tinfoil-rs", rev = "82143d767b540195dea265df0b01c4b4fc93c424" }
+# provenance verification + TLS cert pinning for a user-run privacy-filter
+# enclave. See adapters/tinfoil.rs for the threat model (without this a
+# compromised CA can still observe unredacted text in transit even though
+# the enclave itself is honest).
+#
+# AGPL-3.0, so it is optional and only the opt-in `tinfoil-enclave` feature
+# links it. Default and release builds leave it out (DECISIONS.md decision 7;
+# third_party/README.md). Without it the tinfoil adapters keep their
+# configuration surface and answer every request with "not built with
+# enclave support".
+tinfoil = { git = "https://github.com/tinfoilsh/tinfoil-rs", rev = "82143d767b540195dea265df0b01c4b4fc93c424", optional = true }
 tokio = { workspace = true }
 tracing = { workspace = true }
 
@@ -48,13 +54,24 @@ name = "v45_phase3_smoke"
 path = "examples/v45_phase3_smoke.rs"
 required-features = ["onnx-cpu"]
 
+[[example]]
+name = "tinfoil_probe"
+path = "examples/tinfoil_probe.rs"
+required-features = ["tinfoil-enclave"]
+
 # Optional model adapters. Off by default so the crate builds without
 # any heavy ML deps. Picks the platform-appropriate accelerator.
 #
-# Two independent backends:
+# Independent backends:
 #   - `onnx-*` for the IMAGE PII path (rfdetr_v8, ONNX Runtime via ort)
 #   - `opf-text` for the TEXT PII path (OPF v3 in pure-Rust candle, via
-#     the local `opf-rs` crate at ../../../opf-rs)
+#     the vendored `opf-rs` crate in third_party/opf-rs)
+#   - `tinfoil-enclave` for the attested client of a user-run enclave
+#
+# Commercial-use rule (DECISIONS.md decision 7): `opf-text` (CC BY-NC 4.0)
+# and `tinfoil-enclave` (AGPL-3.0) are opt-in only. No default feature set
+# and no release workflow may enable them; scripts/ci/licence-guard.test.ts
+# fails the build if one does.
 [features]
 default = []
 
@@ -67,10 +84,15 @@ onnx-coreml = ["onnx-cpu", "ort/coreml"]
 onnx-directml = ["onnx-cpu", "ort/directml"]
 
 # Enable the candle-based OPF text redactor via the opf-rs crate. Off
-# by default; opt-in for local dev / packaged builds that ship the
-# 2.8 GB checkpoint. Mac builds get Metal acceleration through opf-rs's
-# default `metal` feature.
+# by default and opt-in only: opf-rs is licensed CC BY-NC 4.0, so a build
+# with this feature may not be used commercially. Mac builds get Metal
+# acceleration through opf-rs's `metal` feature.
 opf-text = ["dep:opf"]
+
+# Link the Tinfoil SDK so the tinfoil adapters can attest and talk to an
+# enclave the user configured. Off by default and opt-in only: the SDK is
+# AGPL-3.0. Without it the adapters report "not built with enclave support".
+tinfoil-enclave = ["dep:tinfoil"]
 
 # Mac: rfdetr image PII via mlx-rs (Apple Silicon-only, ~6× faster
 # than CoreML EP for this model). Picks up the same HF model file as
