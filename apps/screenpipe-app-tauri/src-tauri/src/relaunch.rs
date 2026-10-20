@@ -4,7 +4,8 @@
 //! One bounded teardown for every way the app ends, and a safe relaunch.
 //!
 //! Quit (tray), the `RunEvent::Exit` path and a safe relaunch all run the
-//! same [`teardown`]: stop capture, shut the engine down (background workers,
+//! same [`teardown`]: release the keep-awake hold, stop capture, shut the
+//! engine down (background workers,
 //! pipe scheduler and audio manager, 15 s for audio, and any engine another
 //! task is starting or stopping at that moment), wait for the engine's HTTP
 //! runtime to drain, close the engine's read pool (its write pool goes with the
@@ -200,6 +201,8 @@ fn spawn_pending_restart(context: &str) {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct TeardownBudget {
     pub overall: Duration,
+    /// Giving back the keep-awake hold (`keepComputerAwake`).
+    pub keep_awake: Duration,
     pub capture: Duration,
     /// `ServerCore::shutdown`: background workers (their grace,
     /// [`BACKGROUND_WORKER_GRACE`]), the pipe scheduler (aborted, normally at
@@ -224,6 +227,7 @@ impl Default for TeardownBudget {
             // Capture and the engine at their limits still leave a little
             // room for the drain; the later steps are not critical.
             overall: Duration::from_secs(29),
+            keep_awake: crate::power_awake::RELEASE_LIMIT + Duration::from_secs(1),
             capture: Duration::from_secs(6),
             engine,
             http_drain: Duration::from_secs(3),
@@ -410,6 +414,18 @@ async fn teardown(app: &tauri::AppHandle, reason: &str, budget: TeardownBudget) 
 
     // The watchdog must not bring the engine back while it is being stopped.
     crate::health::set_recording_intended(false);
+
+    // First, while the budget is untouched: the OS would release the hold
+    // when the process ends anyway, but a relaunch or a slow teardown should
+    // not keep the machine awake meanwhile.
+    run_step(
+        &mut report,
+        "keep_awake",
+        budget.keep_awake,
+        deadline,
+        crate::power_awake::release_for_teardown(),
+    )
+    .await;
 
     let state = app.try_state::<RecordingState>();
     let (capture_arc, server_arc) = match &state {
@@ -1219,6 +1235,8 @@ pub async fn safe_relaunch(
                 .lock()
                 .unwrap_or_else(|e| e.into_inner()) = Some(tx);
             crate::health::set_recording_intended(true);
+            // The teardown gave back the keep-awake hold; take it again.
+            crate::power_awake::apply_saved_setting(&app);
             let state = app.state::<RecordingState>();
             if let Err(err) = crate::recording::spawn_screenpipe(state, app.clone(), None).await {
                 error!("safe relaunch: could not resume recording: {err}");

@@ -223,6 +223,10 @@ windows = { version = "0.58", features = [
     "Win32_System_Com",
     "Win32_UI_Accessibility",
     "Win32_UI_WindowsAndMessaging",
+    # Free space of the data-dir volume (disk_pressure.rs).
+    "Win32_Storage_FileSystem",
+    # Power requests and SetThreadExecutionState (power/keep_awake.rs).
+    "Win32_System_Power",
 ] }
 socket2 = "0.5"
 
