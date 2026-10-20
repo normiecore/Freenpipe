@@ -62,6 +62,7 @@ describe("one-time migrations of a screenpipe store", () => {
   const screenpipeStore = () => ({
     piiBackend: "tinfoil",
     analyticsEnabled: true,
+    enhancedAI: true,
     cloudMediaAnalysisEnabled: true,
     aiPresets: [
       {
@@ -104,11 +105,12 @@ describe("one-time migrations of a screenpipe store", () => {
     expect((settings as any)[PRIVACY_DEFAULTS_MIGRATION_FLAG]).toBe(true);
   });
 
-  test("analytics and media analysis are switched off", () => {
+  test("analytics, enhanced AI and media analysis are switched off", () => {
     const { settings } = applyFreenpipeMigrations(screenpipeStore(), {
       gatewayConfigured: true,
     });
     expect(settings.analyticsEnabled).toBe(false);
+    expect(settings.enhancedAI).toBe(false);
     expect(settings.cloudMediaAnalysisEnabled).toBe(false);
   });
 
