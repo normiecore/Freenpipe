@@ -11,7 +11,7 @@
 -- (by heuristic, or reconciled by the user or a pipe). Aliases map a source's
 -- labels to an actor and outlive the items they were first seen on.
 
-CREATE TABLE IF NOT EXISTS semantic_actors (
+CREATE TABLE semantic_actors (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     name TEXT NOT NULL
         CHECK (length(trim(name)) BETWEEN 1 AND 256),
@@ -19,10 +19,10 @@ CREATE TABLE IF NOT EXISTS semantic_actors (
     updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
 );
 
-CREATE INDEX IF NOT EXISTS idx_semantic_actors_name
+CREATE INDEX idx_semantic_actors_name
     ON semantic_actors(name COLLATE NOCASE);
 
-CREATE TABLE IF NOT EXISTS semantic_actor_aliases (
+CREATE TABLE semantic_actor_aliases (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     actor_id INTEGER NOT NULL,
     source_key TEXT NOT NULL CHECK (length(source_key) BETWEEN 1 AND 1024),
@@ -36,12 +36,12 @@ CREATE TABLE IF NOT EXISTS semantic_actor_aliases (
     FOREIGN KEY (actor_id) REFERENCES semantic_actors(id) ON DELETE CASCADE
 );
 
-CREATE INDEX IF NOT EXISTS idx_semantic_actor_aliases_actor
+CREATE INDEX idx_semantic_actor_aliases_actor
     ON semantic_actor_aliases(actor_id);
-CREATE INDEX IF NOT EXISTS idx_semantic_actor_aliases_observed_label
+CREATE INDEX idx_semantic_actor_aliases_observed_label
     ON semantic_actor_aliases(observed_label COLLATE NOCASE);
 
-CREATE TABLE IF NOT EXISTS semantic_item_actors (
+CREATE TABLE semantic_item_actors (
     item_id INTEGER PRIMARY KEY,
     actor_id INTEGER NOT NULL,
     observed_alias_id INTEGER,
@@ -54,5 +54,5 @@ CREATE TABLE IF NOT EXISTS semantic_item_actors (
         REFERENCES semantic_actor_aliases(id) ON DELETE SET NULL
 );
 
-CREATE INDEX IF NOT EXISTS idx_semantic_item_actors_actor
+CREATE INDEX idx_semantic_item_actors_actor
     ON semantic_item_actors(actor_id, item_id);

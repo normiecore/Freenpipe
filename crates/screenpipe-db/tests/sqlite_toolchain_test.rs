@@ -23,7 +23,7 @@ use rusqlite::vtab::{
     VTabConnection, VTabCursor,
 };
 use screenpipe_config::DbConfig;
-use screenpipe_db::{DatabaseManager, FrameWindowData, OcrEngine};
+use screenpipe_db::{DatabaseManager, FrameWindowData};
 use sqlx::sqlite::{SqliteConnectOptions, SqliteConnection};
 use sqlx::{ConnectOptions, Row};
 
@@ -233,7 +233,6 @@ async fn record_frames(db: &DatabaseManager, first: i64, count: i64) {
             Some(start + chrono::Duration::seconds(offset)),
             offset,
             &windows,
-            Arc::new(OcrEngine::Tesseract),
         )
         .await
         .expect("insert frame");

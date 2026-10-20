@@ -72,6 +72,18 @@ pub const MEETING_END_REASON_AUTO_END: &str = "auto_end";
 /// App shutdown closed an active meeting row. Eligible for auto-merge on next launch.
 pub const MEETING_END_REASON_SHUTDOWN: &str = "shutdown";
 
+/// OCR word boxes worth storing in `frames.text_json`: `None` for an empty
+/// string or an empty JSON array, which is what OCR returns when it found
+/// nothing.
+pub(crate) fn stored_ocr_boxes(text_json: &str) -> Option<&str> {
+    let trimmed = text_json.trim();
+    if trimmed.is_empty() || trimmed == "[]" {
+        None
+    } else {
+        Some(text_json)
+    }
+}
+
 fn normalize_timestamp_for_range_query(timestamp: &str) -> String {
     DateTime::parse_from_rfc3339(timestamp)
         .map(|dt| dt.with_timezone(&Utc).to_rfc3339())
@@ -3051,8 +3063,7 @@ impl DatabaseManager {
                 // OCR word boxes live on the frame row (frames.text_json);
                 // the OCR text itself is already folded into full_text.
                 text_json: ocr_data
-                    .map(|(_, j)| j)
-                    .filter(|j| !j.is_empty())
+                    .and_then(|(_, j)| stored_ocr_boxes(j))
                     .map(String::from),
                 full_text,
                 elements_ref_frame_id,
@@ -3131,7 +3142,8 @@ impl DatabaseManager {
         text: &str,
         text_json: &str,
     ) -> Result<(), sqlx::Error> {
-        if text.is_empty() && text_json.is_empty() {
+        let text_json = stored_ocr_boxes(text_json);
+        if text.is_empty() && text_json.is_none() {
             return Ok(());
         }
         let mut tx = self.begin_immediate_with_retry().await?;
@@ -3144,7 +3156,7 @@ impl DatabaseManager {
             .execute(&mut **tx.conn())
             .await?;
         }
-        if !text_json.is_empty() {
+        if let Some(text_json) = text_json {
             sqlx::query("UPDATE frames SET text_json = ?1 WHERE id = ?2")
                 .bind(text_json)
                 .bind(frame_id)
@@ -3324,11 +3336,7 @@ impl DatabaseManager {
                 } else {
                     Some(window.text.as_str())
                 };
-                let text_json = if window.text.is_empty() || window.text_json.is_empty() {
-                    None
-                } else {
-                    Some(window.text_json.as_str())
-                };
+                let text_json = stored_ocr_boxes(&window.text_json);
 
                 let frame_id = sqlx::query(
                     "INSERT INTO frames (video_chunk_id, offset_index, timestamp, name, browser_url, app_name, window_name, focused, device_name, full_text, text_json) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",

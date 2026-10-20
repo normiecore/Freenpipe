@@ -11,9 +11,8 @@
 mod tests {
     use chrono::Utc;
     use screenpipe_db::{
-        AudioDevice, ContentType, DatabaseManager, DeviceType, OcrEngine, SearchResult,
+        AudioDevice, ContentType, DatabaseManager, DeviceType, SearchResult,
     };
-    use std::sync::Arc;
 
     async fn setup_test_db() -> DatabaseManager {
         let db = DatabaseManager::new("sqlite::memory:", Default::default())
@@ -55,7 +54,6 @@ mod tests {
             frame_id,
             "Hello from event-driven capture",
             "",
-            Arc::new(OcrEngine::Tesseract),
         )
         .await
         .unwrap();
@@ -135,7 +133,6 @@ mod tests {
                 frame_id,
                 &format!("pagination test item {}", i),
                 "",
-                Arc::new(OcrEngine::Tesseract),
             )
             .await
             .unwrap();
@@ -259,7 +256,6 @@ mod tests {
                 frame_id,
                 &format!("allbug ocr content number {}", i),
                 "",
-                Arc::new(OcrEngine::Tesseract),
             )
             .await
             .unwrap();
@@ -363,7 +359,6 @@ mod tests {
                 frame_id,
                 &format!("pagebug screen text item {}", i),
                 "",
-                Arc::new(OcrEngine::Tesseract),
             )
             .await
             .unwrap();

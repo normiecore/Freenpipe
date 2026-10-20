@@ -4,12 +4,9 @@
 
 #[cfg(test)]
 mod tests {
-    use std::sync::Arc;
-
     use chrono::Utc;
     use screenpipe_db::{
-        AudioDevice, ContentType, DatabaseManager, DeviceType, Frame, OcrEngine, SearchResult,
-        TagContentType,
+        AudioDevice, ContentType, DatabaseManager, DeviceType, Frame, SearchResult, TagContentType,
     };
 
     async fn setup_test_db() -> DatabaseManager {
@@ -59,7 +56,6 @@ mod tests {
             frame_id,
             "Hello, world!",
             "",
-            Arc::new(OcrEngine::Tesseract),
         )
         .await
         .unwrap();
@@ -111,7 +107,7 @@ mod tests {
                 .insert_frame("test_device", None, None, Some(app), Some(""), false, None)
                 .await
                 .unwrap();
-            db.insert_ocr_text(id, text, "", Arc::new(OcrEngine::Tesseract))
+            db.insert_ocr_text(id, text, "")
                 .await
                 .unwrap();
             id
@@ -262,7 +258,7 @@ mod tests {
             .insert_frame("dev", None, None, Some("app"), Some(""), false, None)
             .await
             .unwrap();
-        db.insert_ocr_text(f, "frame text", "", Arc::new(OcrEngine::Tesseract))
+        db.insert_ocr_text(f, "frame text", "")
             .await
             .unwrap();
         db.add_tags(f, TagContentType::Vision, vec!["person:ada".to_string()])
@@ -274,7 +270,7 @@ mod tests {
             .insert_frame("dev", None, None, Some("app2"), Some(""), false, None)
             .await
             .unwrap();
-        db.insert_ocr_text(f_adam, "near miss", "", Arc::new(OcrEngine::Tesseract))
+        db.insert_ocr_text(f_adam, "near miss", "")
             .await
             .unwrap();
         db.add_tags(
@@ -703,7 +699,6 @@ mod tests {
             frame_id,
             "Hello from OCR",
             "",
-            Arc::new(OcrEngine::Tesseract),
         )
         .await
         .unwrap();
@@ -827,7 +822,6 @@ mod tests {
             frame_id1,
             "Hello from OCR 1",
             "",
-            Arc::new(OcrEngine::Tesseract),
         )
         .await
         .unwrap();
@@ -876,13 +870,12 @@ mod tests {
             frame_id2,
             "Hello from OCR 2",
             "",
-            Arc::new(OcrEngine::Tesseract),
         )
         .await
         .unwrap();
 
-        let raw_ocr_text: Vec<(String, Option<i64>)> =
-            sqlx::query_as("SELECT text, frame_id FROM ocr_text")
+        let raw_ocr_text: Vec<(Option<String>, i64)> =
+            sqlx::query_as("SELECT full_text, id FROM frames")
                 .fetch_all(&db.pool)
                 .await
                 .unwrap();
@@ -1145,7 +1138,6 @@ mod tests {
             frame_id1,
             "Hello from OCR 1",
             "",
-            Arc::new(OcrEngine::Tesseract),
         )
         .await
         .unwrap();
@@ -1192,7 +1184,6 @@ mod tests {
             frame_id2,
             "Hello from OCR 2",
             "",
-            Arc::new(OcrEngine::Tesseract),
         )
         .await
         .unwrap();
@@ -1741,7 +1732,6 @@ mod tests {
             frame_id1,
             "Hello from frame 1",
             "",
-            Arc::new(OcrEngine::Tesseract),
         )
         .await
         .unwrap();
@@ -1763,7 +1753,6 @@ mod tests {
             frame_id2,
             "Hello from frame 2",
             "",
-            Arc::new(OcrEngine::Tesseract),
         )
         .await
         .unwrap();
@@ -1910,7 +1899,6 @@ mod tests {
             frame_id,
             "Hello from OCR",
             "",
-            Arc::new(OcrEngine::Tesseract),
         )
         .await
         .unwrap();

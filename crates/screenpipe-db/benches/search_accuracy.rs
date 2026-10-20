@@ -58,7 +58,7 @@ async fn get_test_words(pool: &sqlx::SqlitePool) -> Vec<String> {
                         ELSE substr(text, 1, 20)
                     END
                 )) as word
-            FROM ocr_text
+            FROM (SELECT full_text AS text FROM frames)
             WHERE text IS NOT NULL AND LENGTH(text) > 20
             ORDER BY RANDOM()
             LIMIT 3000
@@ -103,7 +103,7 @@ async fn fts_prefix_search(pool: &sqlx::SqlitePool, query: &str) -> HashSet<i64>
 
 async fn like_search(pool: &sqlx::SqlitePool, query: &str) -> HashSet<i64> {
     let pattern = format!("%{}%", query.to_lowercase());
-    let rows = sqlx::query("SELECT frame_id FROM ocr_text WHERE LOWER(text) LIKE ?")
+    let rows = sqlx::query("SELECT id FROM frames WHERE LOWER(full_text) LIKE ?")
         .bind(&pattern)
         .fetch_all(pool)
         .await
@@ -121,7 +121,9 @@ async fn simulated_split_search(pool: &sqlx::SqlitePool, query: &str) -> HashSet
     let pattern = format!("%{}%", query.to_lowercase());
 
     // Get all LIKE matches
-    let rows = sqlx::query("SELECT frame_id, text FROM ocr_text WHERE LOWER(text) LIKE ?")
+    let rows = sqlx::query(
+        "SELECT id AS frame_id, full_text AS text FROM frames WHERE LOWER(full_text) LIKE ?",
+    )
         .bind(&pattern)
         .fetch_all(pool)
         .await

@@ -8,7 +8,6 @@ use axum::{
     Router,
 };
 use screenpipe_audio::audio_manager::AudioManagerBuilder;
-use screenpipe_screen::OcrEngine;
 use serde_json::json;
 use std::{net::SocketAddr, path::PathBuf, sync::Arc};
 use tower::ServiceExt;
@@ -438,7 +437,6 @@ async fn insert_test_data(db: &Arc<DatabaseManager>) {
         frame_id,
         "Test OCR text",
         "{'text': 'Test OCR text', 'confidence': 0.9}",
-        Arc::new(OcrEngine::Tesseract.into()),
     )
     .await
     .unwrap();

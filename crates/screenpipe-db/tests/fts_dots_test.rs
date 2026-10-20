@@ -10,8 +10,7 @@
 #[cfg(test)]
 mod tests {
     use chrono::Utc;
-    use screenpipe_db::{ContentType, DatabaseManager, OcrEngine};
-    use std::sync::Arc;
+    use screenpipe_db::{ContentType, DatabaseManager};
 
     async fn setup_test_db() -> DatabaseManager {
         let db = DatabaseManager::new("sqlite::memory:", Default::default())
@@ -55,7 +54,6 @@ mod tests {
             frame_id,
             "meeting notes",
             "",
-            Arc::new(OcrEngine::Tesseract),
         )
         .await
         .unwrap();
@@ -118,7 +116,7 @@ mod tests {
             .await
             .unwrap();
 
-        db.insert_ocr_text(frame_id, "example page", "", Arc::new(OcrEngine::Tesseract))
+        db.insert_ocr_text(frame_id, "example page", "")
             .await
             .unwrap();
 
@@ -179,7 +177,7 @@ mod tests {
             .await
             .unwrap();
 
-        db.insert_ocr_text(frame_id, "rust code", "", Arc::new(OcrEngine::Tesseract))
+        db.insert_ocr_text(frame_id, "rust code", "")
             .await
             .unwrap();
 
@@ -244,7 +242,6 @@ mod tests {
             frame_id,
             "meeting notes",
             "",
-            Arc::new(OcrEngine::Tesseract),
         )
         .await
         .unwrap();
@@ -303,7 +300,6 @@ mod tests {
             frame_id,
             "meeting notes",
             "",
-            Arc::new(OcrEngine::Tesseract),
         )
         .await
         .unwrap();
@@ -441,7 +437,7 @@ mod tests {
             .await
             .unwrap();
 
-        db.insert_ocr_text(frame_id, "hello zoom", "", Arc::new(OcrEngine::Tesseract))
+        db.insert_ocr_text(frame_id, "hello zoom", "")
             .await
             .unwrap();
 
@@ -526,7 +522,6 @@ mod tests {
             frame_id,
             "Visit zoom.us for the meeting",
             "",
-            Arc::new(OcrEngine::Tesseract),
         )
         .await
         .unwrap();
@@ -597,7 +592,7 @@ mod tests {
                 .await
                 .unwrap();
 
-            db.insert_ocr_text(frame_id, "test text", "", Arc::new(OcrEngine::Tesseract))
+            db.insert_ocr_text(frame_id, "test text", "")
                 .await
                 .unwrap();
 

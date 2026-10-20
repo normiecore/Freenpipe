@@ -9,7 +9,7 @@
 -- Time ranges the user starred. A session covers [start, end); hd_requested
 -- marks ranges whose media should be kept at full quality, and revision counts
 -- edits to the range.
-CREATE TABLE IF NOT EXISTS starred_sessions (
+CREATE TABLE starred_sessions (
     id TEXT PRIMARY KEY NOT NULL,
     start TEXT NOT NULL,
     end TEXT NOT NULL,
@@ -18,4 +18,4 @@ CREATE TABLE IF NOT EXISTS starred_sessions (
     CHECK (end > start)
 );
 
-CREATE INDEX IF NOT EXISTS idx_starred_sessions_start_end ON starred_sessions(start, end);
+CREATE INDEX idx_starred_sessions_start_end ON starred_sessions(start, end);

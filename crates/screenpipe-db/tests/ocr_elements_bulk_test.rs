@@ -9,8 +9,7 @@
 #[cfg(test)]
 mod tests {
     use chrono::Utc;
-    use screenpipe_db::{DatabaseManager, FrameWindowData, OcrEngine, OcrTextBlock};
-    use std::sync::Arc;
+    use screenpipe_db::{DatabaseManager, FrameWindowData, OcrTextBlock};
 
     type ElementRow = (
         i64,
@@ -121,7 +120,6 @@ mod tests {
                 Some(Utc::now()),
                 0,
                 &windows,
-                Arc::new(OcrEngine::AppleNative),
             )
             .await
             .unwrap();
@@ -149,7 +147,6 @@ mod tests {
                 Some(Utc::now()),
                 0,
                 &windows,
-                Arc::new(OcrEngine::AppleNative),
             )
             .await
             .unwrap();
@@ -178,7 +175,6 @@ mod tests {
                 Some(Utc::now()),
                 0,
                 &windows,
-                Arc::new(OcrEngine::AppleNative),
             )
             .await
             .unwrap();
@@ -230,7 +226,6 @@ mod tests {
                 Some(Utc::now()),
                 0,
                 &windows,
-                Arc::new(OcrEngine::AppleNative),
             )
             .await
             .unwrap();

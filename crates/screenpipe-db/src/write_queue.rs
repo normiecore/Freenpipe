@@ -1268,18 +1268,14 @@ async fn execute_single_write(
             let mut results = Vec::with_capacity(windows.len());
             for (idx, window) in windows.iter().enumerate() {
                 // OCR text is the frame's searchable text and its word boxes
-                // stay on the frame row (text_json); both only when OCR found
-                // something.
+                // stay on the frame row (text_json), each only when OCR
+                // found something.
                 let full_text = if window.text.is_empty() {
                     None
                 } else {
                     Some(window.text.as_str())
                 };
-                let text_json = if window.text.is_empty() || window.text_json.is_empty() {
-                    None
-                } else {
-                    Some(window.text_json.as_str())
-                };
+                let text_json = crate::db::stored_ocr_boxes(&window.text_json);
 
                 let frame_id = sqlx::query(
                     "INSERT INTO frames (video_chunk_id, offset_index, timestamp, name, browser_url, app_name, window_name, focused, device_name, full_text, text_json) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",

@@ -19,7 +19,7 @@
 --                    the three triggers below
 -- frames.semantic_run_id points a frame at the run parsed from it.
 
-CREATE TABLE IF NOT EXISTS semantic_runs (
+CREATE TABLE semantic_runs (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     input_fingerprint BLOB NOT NULL UNIQUE
         CHECK (length(input_fingerprint) = 32),
@@ -41,10 +41,10 @@ CREATE TABLE IF NOT EXISTS semantic_runs (
     created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
 );
 
-CREATE INDEX IF NOT EXISTS idx_semantic_runs_parser
+CREATE INDEX idx_semantic_runs_parser
     ON semantic_runs(parser_id, parser_version, schema_version);
 
-CREATE TABLE IF NOT EXISTS semantic_items (
+CREATE TABLE semantic_items (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     entity_fingerprint BLOB NOT NULL CHECK (length(entity_fingerprint) = 32),
     version_fingerprint BLOB NOT NULL UNIQUE
@@ -65,12 +65,12 @@ CREATE TABLE IF NOT EXISTS semantic_items (
     created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
 );
 
-CREATE INDEX IF NOT EXISTS idx_semantic_items_entity
+CREATE INDEX idx_semantic_items_entity
     ON semantic_items(entity_fingerprint);
-CREATE INDEX IF NOT EXISTS idx_semantic_items_kind_time
+CREATE INDEX idx_semantic_items_kind_time
     ON semantic_items(kind, occurred_at);
 
-CREATE TABLE IF NOT EXISTS semantic_run_items (
+CREATE TABLE semantic_run_items (
     run_id INTEGER NOT NULL,
     local_id TEXT NOT NULL,
     item_id INTEGER NOT NULL,
@@ -86,10 +86,10 @@ CREATE TABLE IF NOT EXISTS semantic_run_items (
         DEFERRABLE INITIALLY DEFERRED
 );
 
-CREATE INDEX IF NOT EXISTS idx_semantic_run_items_item
+CREATE INDEX idx_semantic_run_items_item
     ON semantic_run_items(item_id);
 
-CREATE VIRTUAL TABLE IF NOT EXISTS semantic_items_fts USING fts5(
+CREATE VIRTUAL TABLE semantic_items_fts USING fts5(
     title,
     body,
     actor,
@@ -100,12 +100,12 @@ CREATE VIRTUAL TABLE IF NOT EXISTS semantic_items_fts USING fts5(
     tokenize='unicode61'
 );
 
-CREATE TRIGGER IF NOT EXISTS semantic_items_ai AFTER INSERT ON semantic_items BEGIN
+CREATE TRIGGER semantic_items_ai AFTER INSERT ON semantic_items BEGIN
     INSERT INTO semantic_items_fts(rowid, title, body, actor, status, metadata_json)
     VALUES (new.id, new.title, new.body, new.actor, new.status, new.metadata_json);
 END;
 
-CREATE TRIGGER IF NOT EXISTS semantic_items_ad AFTER DELETE ON semantic_items BEGIN
+CREATE TRIGGER semantic_items_ad AFTER DELETE ON semantic_items BEGIN
     INSERT INTO semantic_items_fts(
         semantic_items_fts, rowid, title, body, actor, status, metadata_json
     ) VALUES (
@@ -113,7 +113,7 @@ CREATE TRIGGER IF NOT EXISTS semantic_items_ad AFTER DELETE ON semantic_items BE
     );
 END;
 
-CREATE TRIGGER IF NOT EXISTS semantic_items_au AFTER UPDATE ON semantic_items BEGIN
+CREATE TRIGGER semantic_items_au AFTER UPDATE ON semantic_items BEGIN
     INSERT INTO semantic_items_fts(
         semantic_items_fts, rowid, title, body, actor, status, metadata_json
     ) VALUES (
@@ -126,6 +126,6 @@ END;
 ALTER TABLE frames ADD COLUMN semantic_run_id INTEGER
     REFERENCES semantic_runs(id) ON DELETE SET NULL;
 
-CREATE INDEX IF NOT EXISTS idx_frames_semantic_run_id
+CREATE INDEX idx_frames_semantic_run_id
     ON frames(semantic_run_id)
     WHERE semantic_run_id IS NOT NULL;
