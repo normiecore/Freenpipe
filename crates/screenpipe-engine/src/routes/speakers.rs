@@ -305,8 +305,12 @@ pub(crate) async fn merge_speakers_handler(
         .merge_speakers(speaker_to_keep_id, speaker_to_merge_id)
         .await
         .map_err(|e| {
+            let status = match e {
+                sqlx::Error::RowNotFound => StatusCode::NOT_FOUND,
+                _ => StatusCode::INTERNAL_SERVER_ERROR,
+            };
             (
-                StatusCode::INTERNAL_SERVER_ERROR,
+                status,
                 JsonResponse(json!({"error": e.to_string(), "speaker_to_keep_id": speaker_to_keep_id, "speaker_to_merge_id": speaker_to_merge_id})),
             )
         })?;
