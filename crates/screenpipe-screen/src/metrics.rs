@@ -701,6 +701,39 @@ impl LoopStageTracker {
     }
 }
 
+impl PipelineMetrics {
+    /// Register `monitor_id`'s capture loop with the stage tracker. The loop
+    /// starts in `heartbeat`; dropping the guard (when the loop returns, by
+    /// any path) removes the monitor from the tracker.
+    pub fn track_capture_loop(self: &std::sync::Arc<Self>, monitor_id: u32) -> LoopStageGuard {
+        self.loop_stages.enter(monitor_id, CaptureLoopStage::Heartbeat);
+        LoopStageGuard {
+            metrics: self.clone(),
+            monitor_id,
+        }
+    }
+}
+
+/// Keeps a monitor registered in [`LoopStageTracker`] while its loop runs.
+#[derive(Debug)]
+pub struct LoopStageGuard {
+    metrics: std::sync::Arc<PipelineMetrics>,
+    monitor_id: u32,
+}
+
+impl LoopStageGuard {
+    /// Move the loop to `stage`.
+    pub fn enter(&self, stage: CaptureLoopStage) {
+        self.metrics.loop_stages.enter(self.monitor_id, stage);
+    }
+}
+
+impl Drop for LoopStageGuard {
+    fn drop(&mut self) {
+        self.metrics.loop_stages.remove(self.monitor_id);
+    }
+}
+
 fn most_stuck_of(reports: &[LoopStageReport]) -> Option<LoopStageReport> {
     reports
         .iter()
@@ -929,6 +962,23 @@ mod tests {
         tracker.remove(1);
         tracker.remove(2);
         assert!(tracker.most_stuck().is_none());
+    }
+
+    #[test]
+    fn loop_guard_registers_and_unregisters_the_monitor() {
+        let metrics = std::sync::Arc::new(PipelineMetrics::new());
+        {
+            let guard = metrics.track_capture_loop(4);
+            assert_eq!(
+                metrics.loop_stages.most_stuck().unwrap().stage,
+                CaptureLoopStage::Heartbeat
+            );
+            guard.enter(CaptureLoopStage::Capture);
+            let report = metrics.loop_stages.most_stuck().unwrap();
+            assert_eq!(report.monitor_id, 4);
+            assert_eq!(report.stage, CaptureLoopStage::Capture);
+        }
+        assert!(metrics.loop_stages.most_stuck().is_none());
     }
 
     #[test]
