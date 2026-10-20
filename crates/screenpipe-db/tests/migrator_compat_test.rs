@@ -13,13 +13,16 @@
 //!   unchanged, and the repair path still runs;
 //! * the `_sqlx_migrations` bookkeeping table keeps the layout earlier sqlx
 //!   releases created, and stored checksums are still the SHA-384 of each
-//!   migration file, so a database migrated by the sqlx 0.7 base opens without
-//!   any checksum repair.
+//!   base migration file, so a database migrated by the sqlx 0.7 base opens
+//!   without any checksum repair. The v2.7.104 versions store screenpipe's
+//!   checksum instead (see `schema_migrations`), so a database screenpipe
+//!   migrated opens without one either.
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 use screenpipe_config::DbConfig;
+use screenpipe_db::schema_migrations::upstream_checksum;
 use screenpipe_db::DatabaseManager;
 use sha2::{Digest, Sha384};
 use sqlx::migrate::{MigrateError, Migrator};
@@ -235,7 +238,7 @@ fn migration_files() -> BTreeMap<i64, PathBuf> {
 }
 
 #[tokio::test]
-async fn stored_checksums_are_sha384_of_migration_files() {
+async fn stored_checksums_match_files_or_pinned_upstream_values() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("db.sqlite");
     drop(open_manager(&path).await);
@@ -254,7 +257,17 @@ async fn stored_checksums_are_sha384_of_migration_files() {
         files.keys().copied().collect::<Vec<_>>(),
         "every migration file should be applied exactly once"
     );
+    let mut pinned = 0;
     for (version, checksum) in stored {
+        if let Some(upstream) = upstream_checksum(version) {
+            pinned += 1;
+            assert_eq!(
+                checksum, upstream,
+                "{version} should record screenpipe's checksum so screenpipe \
+                 accepts this database without a repair"
+            );
+            continue;
+        }
         let text = std::fs::read_to_string(&files[&version]).unwrap();
         assert_eq!(
             checksum,
@@ -263,6 +276,10 @@ async fn stored_checksums_are_sha384_of_migration_files() {
              migrated by an earlier sqlx would need a checksum repair"
         );
     }
+    assert_eq!(
+        pinned, 28,
+        "every v2.7.104 version carries a pinned checksum"
+    );
 }
 
 /// The same guarantees, shown on the bare sqlx `Migrator` with migrations read

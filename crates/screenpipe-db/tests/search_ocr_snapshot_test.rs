@@ -10,16 +10,13 @@
 #[cfg(test)]
 mod tests {
     use chrono::Utc;
-    use screenpipe_db::{
-        AudioDevice, ContentType, DatabaseManager, DeviceType, OcrEngine, SearchResult,
-    };
-    use std::sync::Arc;
+    use screenpipe_db::{AudioDevice, ContentType, DatabaseManager, DeviceType, SearchResult};
 
     async fn setup_test_db() -> DatabaseManager {
         let db = DatabaseManager::new("sqlite::memory:", Default::default())
             .await
             .unwrap();
-        sqlx::migrate!("./src/migrations")
+        screenpipe_db::schema_migrations::migrator()
             .run(&db.pool)
             .await
             .unwrap();
@@ -51,14 +48,9 @@ mod tests {
             .unwrap();
 
         // Insert OCR text for that frame
-        db.insert_ocr_text(
-            frame_id,
-            "Hello from event-driven capture",
-            "",
-            Arc::new(OcrEngine::Tesseract),
-        )
-        .await
-        .unwrap();
+        db.insert_ocr_text(frame_id, "Hello from event-driven capture", "")
+            .await
+            .unwrap();
 
         // Search should find it (was broken: INNER JOIN video_chunks dropped the row)
         let results = db
@@ -131,14 +123,9 @@ mod tests {
                 .await
                 .unwrap();
 
-            db.insert_ocr_text(
-                frame_id,
-                &format!("pagination test item {}", i),
-                "",
-                Arc::new(OcrEngine::Tesseract),
-            )
-            .await
-            .unwrap();
+            db.insert_ocr_text(frame_id, &format!("pagination test item {}", i), "")
+                .await
+                .unwrap();
         }
 
         // Page 1: limit=2, offset=0
@@ -255,14 +242,9 @@ mod tests {
                 .await
                 .unwrap();
 
-            db.insert_ocr_text(
-                frame_id,
-                &format!("allbug ocr content number {}", i),
-                "",
-                Arc::new(OcrEngine::Tesseract),
-            )
-            .await
-            .unwrap();
+            db.insert_ocr_text(frame_id, &format!("allbug ocr content number {}", i), "")
+                .await
+                .unwrap();
         }
 
         // Insert 3 audio items matching "allbug"
@@ -359,14 +341,9 @@ mod tests {
                 .await
                 .unwrap();
 
-            db.insert_ocr_text(
-                frame_id,
-                &format!("pagebug screen text item {}", i),
-                "",
-                Arc::new(OcrEngine::Tesseract),
-            )
-            .await
-            .unwrap();
+            db.insert_ocr_text(frame_id, &format!("pagebug screen text item {}", i), "")
+                .await
+                .unwrap();
         }
 
         // Insert 3 audio items

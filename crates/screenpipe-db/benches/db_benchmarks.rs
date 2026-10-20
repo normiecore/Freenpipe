@@ -6,8 +6,7 @@
 
 use criterion::{criterion_group, criterion_main, Criterion};
 use rand::Rng;
-use screenpipe_db::{AudioDevice, ContentType, DatabaseManager, DeviceType, OcrEngine};
-use std::sync::Arc;
+use screenpipe_db::{AudioDevice, ContentType, DatabaseManager, DeviceType};
 use tokio::runtime::Runtime;
 
 async fn setup_large_db(size: usize) -> DatabaseManager {
@@ -27,14 +26,9 @@ async fn setup_large_db(size: usize) -> DatabaseManager {
             .unwrap();
         let ocr_text = format!("OCR text {}", rng.gen::<u32>());
         let text_json = format!(r#"{{"text": "{}"}}"#, ocr_text);
-        db.insert_ocr_text(
-            frame_id,
-            &ocr_text,
-            &text_json,
-            Arc::new(OcrEngine::default()), // Assuming a default implementation
-        )
-        .await
-        .unwrap();
+        db.insert_ocr_text(frame_id, &ocr_text, &text_json)
+            .await
+            .unwrap();
 
         let audio_id = db.insert_audio_chunk("test_audio.mp4", None).await.unwrap();
         let audio_text = format!("Audio transcription {}", rng.gen::<u32>());
