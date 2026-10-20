@@ -185,7 +185,8 @@ function buildCreatePipeDisplayLabel(prompt: string): string {
 }
 
 function buildOptimizePrompt(pipeName: string): string {
-  const sessionDir = `~/.pi/agent/sessions/`;
+  // Pi runs with Freenpipe's own config dir, so its sessions live there.
+  const sessionDir = `~/.screenpipe/pi-agent/pi-config/sessions/`;
   return `i need help optimizing my Freenpipe pipe "${pipeName}".
 
 ## your task

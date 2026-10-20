@@ -130,15 +130,20 @@ export function normalizeProviderError(error) {
 // Network failures surface as generic text ("fetch failed", "terminated",
 // "Connection error.") while the useful part, the socket or TLS error code,
 // sits on error.cause. Append recognised codes so logs and the retry check
-// can see them.
-const FP_TRANSPORT_CODES = new Set(["ECONNRESET", "ECONNREFUSED", "ECONNABORTED", "ETIMEDOUT", "EPIPE", "ENOTFOUND", "EAI_AGAIN", "EHOSTUNREACH", "ENETUNREACH", "ENETDOWN", "EPROTO", "UND_ERR_SOCKET", "UND_ERR_CONNECT_TIMEOUT", "UND_ERR_HEADERS_TIMEOUT", "UND_ERR_BODY_TIMEOUT", "UND_ERR_CLOSED", "CERT_HAS_EXPIRED", "UNABLE_TO_VERIFY_LEAF_SIGNATURE", "SELF_SIGNED_CERT_IN_CHAIN", "DEPTH_ZERO_SELF_SIGNED_CERT", "ERR_TLS_CERT_ALTNAME_INVALID"]);
+// can see them. Node reports errno-style codes (ECONNREFUSED, undici's
+// UND_ERR_*); bun, which runs Pi here, also uses names like ConnectionRefused.
+const FP_TRANSPORT_CODES = new Set(["ConnectionRefused", "ConnectionClosed", "ConnectionReset", "ConnectionTimeout", "FailedToOpenSocket", "UnableToConnect", "TimeoutError", "CERT_HAS_EXPIRED", "CERT_NOT_YET_VALID", "UNABLE_TO_VERIFY_LEAF_SIGNATURE", "UNABLE_TO_GET_ISSUER_CERT", "UNABLE_TO_GET_ISSUER_CERT_LOCALLY", "SELF_SIGNED_CERT_IN_CHAIN", "DEPTH_ZERO_SELF_SIGNED_CERT"]);
+const FP_TRANSPORT_CODE_PATTERN = /^(E(?!RR_)[A-Z][A-Z0-9_]+|UND_ERR_[A-Z_]+|ERR_(TLS|SSL)_[A-Z0-9_]+)$/;
+function fpIsTransportCode(code) {
+    return typeof code === "string" && (FP_TRANSPORT_CODES.has(code) || FP_TRANSPORT_CODE_PATTERN.test(code));
+}
 function fpWithTransportCause(error, message) {
     try {
         const codes = [];
         let current = error;
         for (let depth = 0; current && typeof current === "object" && depth < 6; depth++) {
             const code = current.code;
-            if (typeof code === "string" && FP_TRANSPORT_CODES.has(code) && !codes.includes(code)) codes.push(code);
+            if (fpIsTransportCode(code) && !codes.includes(code)) codes.push(code);
             current = current.cause;
         }
         const text = typeof message === "string" ? message : String(message);

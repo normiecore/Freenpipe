@@ -8,6 +8,7 @@ import {
   estimateMessagesTokens,
   excerpt,
   excerptLimitFor,
+  latestStepTokens,
   messageRecord,
   noteCompactionFailure,
   observedOverheadTokens,
@@ -17,6 +18,7 @@ import {
   sizeCompactionSettings,
   summaryProblems,
   TOOL_EXCERPT_CHARS,
+  withMinimumKeep,
 } from "./freenpipe-compaction.js";
 
 const DEFAULTS = { enabled: true, reserveTokens: 16384, keepRecentTokens: 20000 };
@@ -112,8 +114,13 @@ describe("summary validation", () => {
   test("a summary without its sections is rejected", () => {
     const loose = { stopReason: "stop", content: [{ type: "text", text: "The user asked about notes and we searched for a while." }] };
     expect(() => checkSummary(loose)).toThrow(/Goal, Progress, Next Steps/);
-    // A turn-prefix summary has its own headings and is only checked for content.
-    expect(() => checkSummary(loose, "turn-prefix")).not.toThrow();
+    // A turn-prefix summary has its own headings.
+    expect(() => checkSummary(loose, "turn-prefix")).toThrow(/Original Request, Early Progress/);
+    const prefix = {
+      stopReason: "stop",
+      content: [{ type: "text", text: "## Original Request\nPrint data\n\n## Early Progress\n- ran bash\n\n## Context for Suffix\n- output is x" }],
+    };
+    expect(() => checkSummary(prefix, "turn-prefix")).not.toThrow();
   });
 });
 
@@ -243,6 +250,38 @@ describe("proactive compaction", () => {
       throw new Error("boom");
     };
     expect(await afterToolStep(s, toolTurn, context, helpers(9_900))).toBe(context);
+  });
+
+  test("while compacting mid-run the latest step is always kept", async () => {
+    const s = fakeSession();
+    let seenKeep = 0;
+    s._runAutoCompaction = async () => {
+      seenKeep = settingsForSession(s, DEFAULTS, { estimateTokens: (m: any) => m.size ?? 10 }).keepRecentTokens;
+      return false;
+    };
+    s.model.contextWindow = 8_192;
+    const big = {
+      systemPrompt: "s",
+      tools: [],
+      messages: [
+        { role: "user", size: 100 },
+        { role: "assistant", size: 50 },
+        { role: "toolResult", size: 5_000 },
+      ],
+    };
+    await afterToolStep(s, toolTurn, big, { estimateContextTokens: () => ({ tokens: 7_000 }), estimateTokens: (m: any) => m.size ?? 10 });
+    // The sized budget for 8K would be ~1.5K; the step needs 5,050 plus margin.
+    expect(seenKeep).toBeGreaterThanOrEqual(5_050);
+    // Outside a proactive compaction the sized budget applies again.
+    expect(settingsForSession(s, DEFAULTS, { estimateTokens: () => 10 }).keepRecentTokens).toBeLessThan(5_050);
+  });
+
+  test("the latest step starts at the last assistant message", () => {
+    const est = (m: any) => m.size;
+    expect(latestStepTokens([{ role: "user", size: 1 }, { role: "assistant", size: 2 }, { role: "toolResult", size: 3 }], est)).toBe(5);
+    expect(latestStepTokens([{ role: "user", size: 4 }], est)).toBe(0);
+    expect(withMinimumKeep(DEFAULTS, 100)).toBe(DEFAULTS);
+    expect(withMinimumKeep(DEFAULTS, 25_000).keepRecentTokens).toBe(25_000);
   });
 
   test("per-message estimates ignore usage figures", () => {

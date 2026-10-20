@@ -310,10 +310,16 @@ static INSTALL_LOCK: Mutex<()> = Mutex::new(());
 pub fn ensure_current(install_dir: &Path, stock_bun: Option<String>) -> Result<EnsureOutcome, String> {
     let _guard = INSTALL_LOCK.lock().unwrap_or_else(|p| p.into_inner());
     let bun = prepare_bun(install_dir, stock_bun);
-    let state = install_state(install_dir);
+    let mut state = install_state(install_dir);
     if state == InstallState::Healthy {
-        let _ = pi_compaction::sync(install_dir);
-        return Ok(EnsureOutcome::Current);
+        match pi_compaction::sync(install_dir) {
+            // An older build's patch: only fresh stock files can take the
+            // current one, so reinstall (bun's local cache makes it quick).
+            pi_compaction::Outcome::Stale(why) if bun.is_some() => {
+                state = InstallState::Broken(format!("the runtime patch is outdated ({why})"));
+            }
+            _ => return Ok(EnsureOutcome::Current),
+        }
     }
     let bun = bun.ok_or_else(|| {
         format!(
@@ -508,6 +514,53 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let err = ensure_current(dir.path(), None).unwrap_err();
         assert!(err.contains("not installed") && err.contains("bun"), "{err}");
+    }
+
+    /// A real install from the npm registry into a fresh data dir: the
+    /// acceptance check "the installed package.json pins 0.84.1 and pi-config
+    /// carries the .migrated-from-global marker". Needs network and bun:
+    /// `FREENPIPE_PI_TEST_DATA_DIR=<dir> cargo test -p screenpipe-core --lib
+    /// pi_install -- --ignored`. The directory may already hold an install
+    /// (an outdated or stale one is upgraded).
+    #[test]
+    #[ignore]
+    fn a_real_install_into_a_fresh_data_dir() {
+        let Some(data) = std::env::var_os("FREENPIPE_PI_TEST_DATA_DIR").map(PathBuf::from) else {
+            eprintln!("FREENPIPE_PI_TEST_DATA_DIR is not set; skipping");
+            return;
+        };
+        let bun = which::which("bun").expect("bun on PATH");
+        let install_dir = pi_runtime::install_dir_in(&data);
+        let outcome =
+            ensure_current(&install_dir, Some(bun.to_string_lossy().into_owned())).unwrap();
+        eprintln!("first ensure_current: {outcome:?}");
+        assert_eq!(install_state(&install_dir), InstallState::Healthy);
+
+        let pkg = pi_runtime::read_json_object(&install_dir.join("package.json"));
+        assert_eq!(pkg["dependencies"][pi_runtime::PI_CODING_AGENT], "0.84.1");
+        assert_eq!(pkg["overrides"][pi_runtime::PI_AI], "0.84.1");
+        assert_eq!(
+            pi_runtime::installed_version(&install_dir).as_deref(),
+            Some("0.84.1")
+        );
+        // The runtime patch is in place.
+        let session = pi_runtime::package_dir(&install_dir).join("dist/core/agent-session.js");
+        let text = std::fs::read_to_string(session).unwrap();
+        assert!(text.contains("freenpipe-patch:proactive-compaction-v1"));
+        // A second start finds everything current.
+        let again = ensure_current(&install_dir, Some(bun.to_string_lossy().into_owned()));
+        assert_eq!(again, Ok(EnsureOutcome::Current));
+
+        // The isolated config, seeded from a stand-in global config.
+        let home = data.join("home");
+        let global = home.join(".pi").join("agent");
+        std::fs::create_dir_all(&global).unwrap();
+        std::fs::write(global.join("auth.json"), "{}").unwrap();
+        let config = pi_runtime::resolve_config_dir(None, &data);
+        let global_dir = pi_runtime::resolve_global_config_dir(None, Some(&home), &config);
+        pi_runtime::seed_from_global(&config, global_dir.as_deref()).unwrap();
+        assert!(config.join(pi_runtime::MIGRATED_MARKER).is_file());
+        assert!(config.join("auth.json").is_file());
     }
 
     #[test]

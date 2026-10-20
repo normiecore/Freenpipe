@@ -18,7 +18,12 @@
 //!   markers);
 //! * every hunk's text must occur exactly once, and all files are checked
 //!   before any is written, so a mismatch changes nothing;
-//! * it is idempotent: markers in the edited files show what is applied;
+//! * it is idempotent: markers in the edited files show what is applied. A
+//!   file that carries every marker but not the current hook text was patched
+//!   by an older build; it is reported as stale so the installer can restore
+//!   the stock files (a reinstall) and patch again. A hunk whose replacement
+//!   changes therefore keeps working without a new id, although a new id is
+//!   still the clearer way to change one;
 //! * when anything does not match, Pi keeps running unpatched and the reason
 //!   is logged once per process;
 //! * `SCREENPIPE_DISABLE_PI_PATCHES=1` turns it off and restores the stock
@@ -220,6 +225,9 @@ pub enum FileState {
     Stock,
     /// Every hunk is applied.
     Patched,
+    /// Every marker is there but some hook text differs: an older build's
+    /// patch. Only a reinstall restores the stock file.
+    Stale(String),
     /// Neither: another release, a local edit, or a half-applied state.
     Mismatch(String),
 }
@@ -232,7 +240,20 @@ pub fn file_state(file: &FilePatch, content: &str) -> FileState {
         .filter(|h| content.contains(&h.marker()))
         .count();
     if present == file.hunks.len() {
-        return FileState::Patched;
+        let outdated: Vec<&str> = file
+            .hunks
+            .iter()
+            .filter(|h| content.matches(h.replace.as_str()).count() != 1)
+            .map(|h| h.id.as_str())
+            .collect();
+        if outdated.is_empty() {
+            return FileState::Patched;
+        }
+        return FileState::Stale(format!(
+            "{} carries an older patch (hunks {})",
+            file.path,
+            outdated.join(", ")
+        ));
     }
     if present > 0 {
         return FileState::Mismatch(format!(
@@ -307,6 +328,9 @@ pub enum Outcome {
     Removed,
     /// Patches are disabled and none was present.
     Disabled,
+    /// An older build's patch is in place; the stock files must be
+    /// reinstalled before the current patch can be applied.
+    Stale(String),
     /// The install does not match the patch; Pi runs unpatched.
     Skipped(String),
 }
@@ -316,8 +340,14 @@ struct Planned {
     new_content: Option<String>,
 }
 
-fn plan_files(install_dir: &Path, patch: &Patch, apply: bool) -> Result<Vec<Planned>> {
+enum Plan {
+    Files(Vec<Planned>),
+    Stale(String),
+}
+
+fn plan_files(install_dir: &Path, patch: &Patch, apply: bool) -> Result<Plan> {
     let mut planned = Vec::new();
+    let mut stale = Vec::new();
     for file in &patch.files {
         let dir = package_dir(install_dir, &file.package)
             .ok_or_else(|| anyhow!("{} is not installed", file.package))?;
@@ -328,11 +358,18 @@ fn plan_files(install_dir: &Path, patch: &Patch, apply: bool) -> Result<Vec<Plan
             (FileState::Stock, true) => Some(patch_text(file, &content)?),
             (FileState::Patched, true) | (FileState::Stock, false) => None,
             (FileState::Patched, false) => Some(unpatch_text(file, &content)?),
+            (FileState::Stale(why), _) => {
+                stale.push(why);
+                None
+            }
             (FileState::Mismatch(why), _) => bail!(why),
         };
         planned.push(Planned { path, new_content });
     }
-    Ok(planned)
+    if !stale.is_empty() {
+        return Ok(Plan::Stale(stale.join("; ")));
+    }
+    Ok(Plan::Files(planned))
 }
 
 fn check_targets(install_dir: &Path, patch: &Patch) -> Result<()> {
@@ -354,7 +391,10 @@ pub fn apply_in(install_dir: &Path, patch: &Patch, module_source: &str) -> Resul
         return Ok(Outcome::NotInstalled);
     }
     check_targets(install_dir, patch)?;
-    let planned = plan_files(install_dir, patch, true)?;
+    let planned = match plan_files(install_dir, patch, true)? {
+        Plan::Files(files) => files,
+        Plan::Stale(why) => return Ok(Outcome::Stale(why)),
+    };
 
     let (module_pkg, module_rel) = &patch.module;
     let module_dir = package_dir(install_dir, module_pkg)
@@ -384,7 +424,10 @@ pub fn remove_in(install_dir: &Path, patch: &Patch) -> Result<Outcome> {
     if !pi_runtime::cli_entrypoint(install_dir).is_file() {
         return Ok(Outcome::NotInstalled);
     }
-    let planned = plan_files(install_dir, patch, false)?;
+    let planned = match plan_files(install_dir, patch, false)? {
+        Plan::Files(files) => files,
+        Plan::Stale(why) => return Ok(Outcome::Stale(why)),
+    };
     if planned.iter().all(|p| p.new_content.is_none()) {
         return Ok(Outcome::Disabled);
     }
@@ -424,6 +467,9 @@ pub fn sync(install_dir: &Path) -> Outcome {
                     install_dir.display()
                 ),
                 Outcome::Removed => info!("pi runtime patch removed (patches are disabled)"),
+                Outcome::Stale(ref why) => {
+                    warn!("pi runtime patch is from an older build: {}", why)
+                }
                 _ => {}
             }
             outcome
@@ -447,28 +493,28 @@ mod tests {
     use super::*;
 
     fn fixture_patch(stock: &str) -> String {
-        format!(
-            "# test\n\
-target @earendil-works/pi-coding-agent 0.84.1\n\
-module @earendil-works/pi-coding-agent dist/core/compaction/fp.js\n\
-file @earendil-works/pi-coding-agent dist/a.js {}\n\
-hunk one-v1\n\
-@@@ find\n\
-const a = 1;\n\
-@@@ replace\n\
-const a = 2; // freenpipe-patch:one-v1\n\
-@@@ end\n\
-hunk two-v1\n\
-@@@ find\n\
-function f() {{\n\
-    return a;\n\
-@@@ replace\n\
-function f() {{\n\
-    // freenpipe-patch:two-v1\n\
-    return a + 1;\n\
-@@@ end\n",
-            sha256_hex(stock.as_bytes())
-        )
+        // A raw string: the indentation inside the hunks is part of the text.
+        const TEMPLATE: &str = r#"# test
+target @earendil-works/pi-coding-agent 0.84.1
+module @earendil-works/pi-coding-agent dist/core/compaction/fp.js
+file @earendil-works/pi-coding-agent dist/a.js STOCK_SHA
+hunk one-v1
+@@@ find
+const a = 1;
+@@@ replace
+const a = 2; // freenpipe-patch:one-v1
+@@@ end
+hunk two-v1
+@@@ find
+function f() {
+    return a;
+@@@ replace
+function f() {
+    // freenpipe-patch:two-v1
+    return a + 1;
+@@@ end
+"#;
+        TEMPLATE.replace("STOCK_SHA", &sha256_hex(stock.as_bytes()))
     }
 
     const STOCK: &str = "const a = 1;\nfunction f() {\n    return a;\n}\n";
@@ -589,6 +635,30 @@ function f() {{\n\
         let full = patch_text(file, STOCK).unwrap();
         assert_eq!(file_state(file, &full), FileState::Patched);
         assert_eq!(unpatch_text(file, &full).unwrap(), STOCK);
+    }
+
+    #[test]
+    fn an_older_builds_patch_is_reported_stale_and_left_alone() {
+        let dir = tempfile::tempdir().unwrap();
+        install(dir.path(), "0.84.1", STOCK);
+        let old = parse(&fixture_patch(STOCK)).unwrap();
+        apply_in(dir.path(), &old, "export {};\n").unwrap();
+        let file = pi_runtime::package_dir(dir.path()).join("dist/a.js");
+        let applied = std::fs::read_to_string(&file).unwrap();
+
+        // The next build changes hunk two's hook text but keeps its id.
+        let newer = parse(&fixture_patch(STOCK).replace("return a + 1;", "return a + 2;")).unwrap();
+        assert!(matches!(
+            file_state(&newer.files[0], &applied),
+            FileState::Stale(_)
+        ));
+        let outcome = apply_in(dir.path(), &newer, "export const v = 3;\n").unwrap();
+        assert!(matches!(outcome, Outcome::Stale(ref why) if why.contains("two-v1")), "{outcome:?}");
+        assert!(matches!(remove_in(dir.path(), &newer).unwrap(), Outcome::Stale(_)));
+        // Nothing was touched: hooks and module still match each other.
+        assert_eq!(std::fs::read_to_string(&file).unwrap(), applied);
+        let module = pi_runtime::package_dir(dir.path()).join("dist/core/compaction/fp.js");
+        assert_eq!(std::fs::read_to_string(module).unwrap(), "export {};\n");
     }
 
     #[test]

@@ -170,6 +170,8 @@ export function serializeConversationRecords(messages, limit = excerptLimit) {
 
 /** Sections a history summary must contain (Pi asks for these headings). */
 export const REQUIRED_SUMMARY_SECTIONS = ["Goal", "Progress", "Next Steps"];
+/** Sections the summary of a split turn's first part must contain. */
+export const REQUIRED_TURN_PREFIX_SECTIONS = ["Original Request", "Early Progress"];
 const MIN_SUMMARY_CHARS = 40;
 
 function hasSection(text, name) {
@@ -190,8 +192,9 @@ export function summaryProblems(response, kind = "history") {
     const text = textOf(response.content).trim();
     if (text.length < MIN_SUMMARY_CHARS) {
         problems.push("it is empty or too short");
-    } else if (kind === "history") {
-        const missing = REQUIRED_SUMMARY_SECTIONS.filter((s) => !hasSection(text, s));
+    } else {
+        const required = kind === "turn-prefix" ? REQUIRED_TURN_PREFIX_SECTIONS : REQUIRED_SUMMARY_SECTIONS;
+        const missing = required.filter((s) => !hasSection(text, s));
         if (missing.length) problems.push(`it lacks the ${missing.join(", ")} section(s)`);
     }
     return problems;
@@ -282,6 +285,17 @@ export function sizeCompactionSettings(base, contextWindow, overheadTokens) {
     };
 }
 
+/**
+ * Raise `keepRecentTokens` to `minKeep` when given. Used while compacting in
+ * the middle of a run: Pi only cuts the history at user or assistant
+ * messages, so the budget must at least cover the latest step (its
+ * assistant message and tool results), or there is no place to cut.
+ */
+export function withMinimumKeep(settings, minKeep) {
+    if (!settings || !(minKeep > 0) || settings.keepRecentTokens >= minKeep) return settings;
+    return { ...settings, keepRecentTokens: Math.ceil(minKeep) };
+}
+
 /** Hook in `AgentSession`: the compaction settings for its current model. */
 export function settingsForSession(session, base, helpers = {}) {
     try {
@@ -290,7 +304,8 @@ export function settingsForSession(session, base, helpers = {}) {
         setExcerptLimit(excerptLimitFor(contextWindow));
         const state = session.agent?.state ?? {};
         const overhead = observedOverheadTokens(state.messages, state.systemPrompt, state.tools, helpers.estimateTokens);
-        return sizeCompactionSettings(base, contextWindow, overhead);
+        const sized = sizeCompactionSettings(base, contextWindow, overhead);
+        return withMinimumKeep(sized, runStates.get(session)?.minKeep);
     } catch {
         return base;
     }
@@ -305,7 +320,7 @@ const runStates = new WeakMap();
 function stateOf(session) {
     let state = runStates.get(session);
     if (!state) {
-        state = { failure: undefined, ineffective: 0 };
+        state = { failure: undefined, ineffective: 0, minKeep: undefined };
         runStates.set(session, state);
     }
     return state;
@@ -338,6 +353,22 @@ export function estimateMessagesTokens(messages, estimateTokens) {
     }
     return total;
 }
+
+/** Tokens of the latest step: its assistant message and everything after. */
+export function latestStepTokens(messages, estimateTokens) {
+    const list = Array.isArray(messages) ? messages : [];
+    let start = list.length;
+    for (let i = list.length - 1; i >= 0; i--) {
+        if (list[i] && list[i].role === "assistant") {
+            start = i;
+            break;
+        }
+    }
+    return estimateMessagesTokens(list.slice(start), estimateTokens);
+}
+
+/** Margin over the latest step so the cut lands on its assistant message. */
+const KEEP_MARGIN_TOKENS = 64;
 
 function latestCompactionId(session) {
     const branch = session.sessionManager?.getBranch?.() ?? [];
@@ -373,12 +404,17 @@ export async function afterToolStep(session, turn, context, helpers = {}) {
         }
         state = stateOf(session);
         state.failure = undefined;
+        state.minKeep = latestStepTokens(messages, helpers.estimateTokens) + KEEP_MARGIN_TOKENS;
     } catch {
         return context;
     }
 
     const before = latestCompactionId(session);
-    await session._runAutoCompaction("threshold", false);
+    try {
+        await session._runAutoCompaction("threshold", false);
+    } finally {
+        state.minKeep = undefined;
+    }
     if (state.failure) {
         const reason = state.failure;
         state.failure = undefined;
