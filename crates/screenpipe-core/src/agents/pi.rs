@@ -2166,6 +2166,17 @@ fn download_portable_git() -> std::result::Result<String, String> {
     ));
 
     // Use bun or curl to download (bun is always available since we bundle it)
+    let curl_download = || {
+        // curl.exe ships with Windows 10+.
+        let mut cmd = std::process::Command::new("curl.exe");
+        cmd.args(["-fSL", "-o", &temp_file.to_string_lossy(), PORTABLE_GIT_URL]);
+        {
+            use std::os::windows::process::CommandExt;
+            const CREATE_NO_WINDOW: u32 = 0x08000000;
+            cmd.creation_flags(CREATE_NO_WINDOW);
+        }
+        cmd.output()
+    };
     let download_result = if let Some(bun) = find_bun_executable() {
         let script = format!(
             r#"const r = await fetch("{}"); if (!r.ok) throw new Error(r.statusText); const b = await r.arrayBuffer(); require("fs").writeFileSync("{}", Buffer.from(b));"#,
@@ -2179,17 +2190,23 @@ fn download_portable_git() -> std::result::Result<String, String> {
             const CREATE_NO_WINDOW: u32 = 0x08000000;
             cmd.creation_flags(CREATE_NO_WINDOW);
         }
-        cmd.output()
-    } else {
-        // Fallback: try curl.exe (ships with Windows 10+)
-        let mut cmd = std::process::Command::new("curl.exe");
-        cmd.args(["-fSL", "-o", &temp_file.to_string_lossy(), PORTABLE_GIT_URL]);
-        {
-            use std::os::windows::process::CommandExt;
-            const CREATE_NO_WINDOW: u32 = 0x08000000;
-            cmd.creation_flags(CREATE_NO_WINDOW);
+        match cmd.output() {
+            Ok(output) if output.status.success() => Ok(output),
+            other => {
+                // A bun that cannot run on this CPU (or any other failure):
+                // try curl before giving up on bash.
+                if let Ok(ref output) = other {
+                    if bun_runtime::is_illegal_instruction_exit(output.status.code()) {
+                        bun_runtime::handle_stock_bun_crash(&pi_runtime::install_dir());
+                    }
+                }
+                warn!("PortableGit download with bun failed; retrying with curl.exe");
+                let _ = std::fs::remove_file(&temp_file);
+                curl_download()
+            }
         }
-        cmd.output()
+    } else {
+        curl_download()
     };
 
     match download_result {
