@@ -298,6 +298,16 @@ pub fn apply_platform_defaults(settings: &mut RecordingSettings) {
     settings.ignored_windows = ignored;
 }
 
+/// Apply the values the desktop app writes for a brand-new install where they
+/// differ from what an existing store without the key means.
+///
+/// `audioCaptureMode` is the one such key: new installs record audio only
+/// during meetings, while a store that predates the setting keeps recording
+/// all the time.
+pub fn apply_new_install_defaults(settings: &mut RecordingSettings) {
+    settings.audio_capture_mode = crate::AudioCaptureMode::NEW_INSTALL.as_str().to_string();
+}
+
 /// Apply device-tier defaults to a `RecordingSettings`.
 ///
 /// Called once on first launch after hardware detection. Adjusts capture
@@ -331,6 +341,14 @@ pub fn apply_tier_defaults(settings: &mut RecordingSettings, tier: DeviceTier) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn new_installs_record_audio_during_meetings_only() {
+        let mut settings = RecordingSettings::default();
+        assert_eq!(settings.audio_capture_mode, "always");
+        apply_new_install_defaults(&mut settings);
+        assert_eq!(settings.audio_capture_mode, "meetings-only");
+    }
 
     #[test]
     fn tier_round_trips() {

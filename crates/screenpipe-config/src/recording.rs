@@ -6,6 +6,11 @@
 
 use serde::{Deserialize, Serialize};
 
+use crate::url_rules::{DomainRule, UrlRule};
+use crate::{
+    AecFlags, AecMode, AudioCaptureMode, RecordingDetail, SemanticContextMode, SettingsPlatform,
+};
+
 /// Custom vocabulary entry for transcription biasing and word replacement.
 #[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq)]
 #[cfg_attr(feature = "specta", derive(specta::Type))]
@@ -62,6 +67,14 @@ pub struct RecordingSettings {
     #[serde(rename = "transcriptionMode")]
     pub transcription_mode: String,
 
+    /// When audio is recorded: `"always"`, `"meetings-only"` (devices open
+    /// only while a confirmed meeting runs) or `"disabled"`. A store without
+    /// the key behaves as `"always"`; the desktop app writes
+    /// `"meetings-only"` for new installs. Parse with
+    /// [`RecordingSettings::audio_capture_mode`].
+    #[serde(rename = "audioCaptureMode", default = "default_audio_capture_mode")]
+    pub audio_capture_mode: String,
+
     /// Stream live notes only for manually-started live meetings. This is
     /// separate from 24/7 background transcription: the recorder still writes
     /// durable chunks, while this powers the low-latency meeting note UI.
@@ -101,6 +114,16 @@ pub struct RecordingSettings {
     )]
     pub experimental_coreaudio_system_audio: bool,
 
+    /// "Smart recording": during a meeting, follow the meeting app's own
+    /// output and microphone instead of the configured devices.
+    #[serde(rename = "experimentalMeetingPiggyback", default = "default_true")]
+    pub experimental_meeting_piggyback: bool,
+
+    /// Keep a Bluetooth headset microphone open outside meetings too. Off by
+    /// default because an open headset mic degrades its playback quality.
+    #[serde(rename = "alwaysRecordBluetoothMic", default)]
+    pub always_record_bluetooth_mic: bool,
+
     /// Experimental: request Windows WASAPI microphone Acoustic Echo Cancellation.
     /// Ignored on non-Windows platforms and fail-open when unsupported by device/driver.
     #[serde(rename = "windowsInputAecEnabled", default)]
@@ -110,6 +133,18 @@ pub struct RecordingSettings {
     /// Ignored on non-macOS platforms. Only the system default input uses VPIO; other devices use HAL.
     #[serde(rename = "macosInputVpioEnabled", default)]
     pub macos_input_vpio_enabled: bool,
+
+    /// Run the built-in software echo canceller on microphone audio. Kept in
+    /// step with `aecMode` (true exactly when the mode is `"screenpipe"`).
+    #[serde(rename = "screenpipeAecEnabled", default)]
+    pub screenpipe_aec_enabled: bool,
+
+    /// Echo cancellation choice: `"off"`, `"screenpipe"` (software, any
+    /// platform), `"macos"` or `"windows"` (OS cancellers, own platform
+    /// only). The three AEC booleans above follow from it; see
+    /// [`RecordingSettings::effective_aec_mode`].
+    #[serde(rename = "aecMode", default = "default_aec_mode")]
+    pub aec_mode: String,
 
     /// Duration of each audio chunk in seconds before transcription.
     /// Stored as i32 to match existing store.bin schema (cast to u64 by engine).
@@ -142,6 +177,23 @@ pub struct RecordingSettings {
     #[serde(rename = "disableVision")]
     pub disable_vision: bool,
 
+    /// Keep capturing accessibility text and frame metadata but store no
+    /// screenshot images (and so run no OCR or visual-change checks).
+    #[serde(rename = "disableScreenshots", default)]
+    pub disable_screenshots: bool,
+
+    /// Run local semantic parsing of captured app content.
+    #[serde(rename = "enableSemanticContext", default = "default_true")]
+    pub enable_semantic_context: bool,
+
+    /// What semantic parsing is tuned for: `"memory"`, `"computerUse"` or
+    /// `"both"`.
+    #[serde(
+        rename = "semanticContextMode",
+        default = "default_semantic_context_mode"
+    )]
+    pub semantic_context_mode: String,
+
     /// Disable the timeline / rewind feature. When true, the engine skips
     /// timeline-only work: warming the hot frame cache from the DB at startup
     /// and buffering captured frames/audio into the in-memory hot cache that
@@ -160,6 +212,11 @@ pub struct RecordingSettings {
     /// Video quality preset: "low", "balanced", "high", "max".
     #[serde(rename = "videoQuality")]
     pub video_quality: String,
+
+    /// Width cap applied when a frame is captured, before any analysis.
+    /// `None` or 0 derives the cap from `videoQuality`.
+    #[serde(rename = "captureMaxWidth", default)]
+    pub capture_max_width: Option<u32>,
 
     /// Maximum width for stored snapshots. Images wider than this are downscaled
     /// (preserving aspect ratio) before JPEG encoding. 0 = no limit (store at
@@ -295,13 +352,24 @@ pub struct RecordingSettings {
     #[serde(rename = "includedWindows")]
     pub included_windows: Vec<String>,
 
-    /// URLs to exclude from capture.
+    /// Websites to exclude from capture: legacy pattern strings and/or
+    /// structured domain rules, each kept in the shape it was stored in.
     #[serde(rename = "ignoredUrls", default)]
-    pub ignored_urls: Vec<String>,
+    pub ignored_urls: Vec<UrlRule>,
+
+    /// Allow list of websites. When non-empty, browser windows are recorded
+    /// only on matching sites; the block list still wins.
+    #[serde(rename = "includedUrls", default)]
+    pub included_urls: Vec<DomainRule>,
 
     /// Automatically detect and skip incognito / private browsing windows.
     #[serde(rename = "ignoreIncognitoWindows")]
     pub ignore_incognito_windows: bool,
+
+    /// macOS: ask supported browsers whether the front window is private
+    /// instead of guessing from its title. No effect elsewhere.
+    #[serde(rename = "enhancedIncognitoDetection", default)]
+    pub enhanced_incognito_detection: bool,
 
     /// Experimental: pause screen capture when a DRM-protected streaming app
     /// (Netflix, Disney+, etc.) or a remote-desktop client (Omnissa/VMware
@@ -326,6 +394,10 @@ pub struct RecordingSettings {
     #[serde(rename = "disableKeyboardCapture", default = "default_true")]
     pub disable_keyboard_capture: bool,
 
+    /// Skip persisting mouse-click rows in the UI recorder.
+    #[serde(rename = "disableClickCapture", default)]
+    pub disable_click_capture: bool,
+
     /// Continue recording audio when the screen is locked.
     /// Default: false (audio pauses when screen is locked to save resources).
     #[serde(rename = "recordWhileLocked", default)]
@@ -349,6 +421,11 @@ pub struct RecordingSettings {
     /// `screenpipe-redact` for the full design.
     #[serde(rename = "asyncPiiRedaction", default)]
     pub async_pii_redaction: bool,
+
+    /// Mask secrets (keys, tokens, passwords) in the transcripts and logs of
+    /// local agent sessions before they are written to disk.
+    #[serde(rename = "redactAgentSessionSecrets", default = "default_true")]
+    pub redact_agent_session_secrets: bool,
 
     /// Enable image-PII redaction on captured screen frames. When
     /// `true`, the `screenpipe_redact::image::worker` runs alongside
@@ -401,6 +478,17 @@ pub struct RecordingSettings {
     )]
     pub pii_redaction_labels: Vec<String>,
 
+    /// Extra captured fields the AI redaction workers rewrite, by column id
+    /// (for example `ui_element_value`, `browser_url`). `None` selects the
+    /// built-in set.
+    #[serde(rename = "piiRedactionColumns", default)]
+    pub pii_redaction_columns: Option<Vec<String>>,
+
+    /// Replace redacted values with stable per-install pseudonyms instead of
+    /// bare category placeholders.
+    #[serde(rename = "piiRedactionPseudonyms", default)]
+    pub pii_redaction_pseudonyms: bool,
+
     // ── Cloud / Auth ───────────────────────────────────────────────────
     /// Screenpipe cloud user ID. Empty string means not logged in.
     /// Kept as String (not Option) to match existing store.bin schema.
@@ -446,6 +534,15 @@ pub struct RecordingSettings {
     /// Previously stored in SettingsStore.extra["powerMode"].
     #[serde(rename = "powerMode", default)]
     pub power_mode: Option<String>,
+
+    /// Scroll snapshot cadence: `"auto"`, `"low_impact"`, `"balanced"` or
+    /// `"more_detail"`.
+    #[serde(rename = "recordingDetail", default = "default_recording_detail")]
+    pub recording_detail: String,
+
+    /// Keep the computer from sleeping while recording.
+    #[serde(rename = "keepComputerAwake", default)]
+    pub keep_computer_awake: bool,
 
     /// Use Chinese mirror for Hugging Face model downloads.
     #[serde(rename = "useChineseMirror")]
@@ -531,6 +628,70 @@ impl RecordingSettings {
             .map(str::trim)
             .filter(|name| !name.is_empty())
     }
+
+    /// The parsed `audioCaptureMode` (unknown values count as `always`).
+    pub fn audio_capture_mode(&self) -> AudioCaptureMode {
+        AudioCaptureMode::from_setting(&self.audio_capture_mode)
+    }
+
+    /// The echo-cancellation mode that can run on `platform`.
+    ///
+    /// `aecMode` decides when it names a canceller. When it is `"off"` (or
+    /// unreadable) the three booleans still count: stores written before
+    /// `aecMode` existed carry the choice there, and a store that has the
+    /// mode keeps the booleans in step with it, so nothing turns on that the
+    /// user did not choose.
+    pub fn effective_aec_mode(&self, platform: SettingsPlatform) -> AecMode {
+        match AecMode::parse(&self.aec_mode).unwrap_or(AecMode::Off) {
+            AecMode::Off => AecMode::from_flags(self.aec_flags(), platform),
+            mode => mode.for_platform(platform),
+        }
+    }
+
+    /// The three stored AEC booleans.
+    pub fn aec_flags(&self) -> AecFlags {
+        AecFlags {
+            screenpipe_aec_enabled: self.screenpipe_aec_enabled,
+            macos_input_vpio_enabled: self.macos_input_vpio_enabled,
+            windows_input_aec_enabled: self.windows_input_aec_enabled,
+        }
+    }
+
+    /// Set `aecMode` and the three AEC booleans together, validated for
+    /// `platform`.
+    pub fn set_aec_mode(&mut self, mode: AecMode, platform: SettingsPlatform) {
+        let mode = mode.for_platform(platform);
+        let AecFlags {
+            screenpipe_aec_enabled,
+            macos_input_vpio_enabled,
+            windows_input_aec_enabled,
+        } = mode.flags();
+        self.aec_mode = mode.as_str().to_string();
+        self.screenpipe_aec_enabled = screenpipe_aec_enabled;
+        self.macos_input_vpio_enabled = macos_input_vpio_enabled;
+        self.windows_input_aec_enabled = windows_input_aec_enabled;
+    }
+
+    /// The parsed `recordingDetail` (unknown values count as `auto`).
+    pub fn recording_detail(&self) -> RecordingDetail {
+        RecordingDetail::from_setting(&self.recording_detail)
+    }
+
+    /// The parsed `semanticContextMode` (unknown values count as `memory`).
+    pub fn semantic_context_mode(&self) -> SemanticContextMode {
+        SemanticContextMode::from_setting(&self.semantic_context_mode)
+    }
+
+    /// Block-list entries as plain patterns for code that matches legacy
+    /// strings only (see [`UrlRule::legacy_pattern`]).
+    pub fn ignored_url_patterns(&self) -> Vec<String> {
+        crate::url_rules::legacy_patterns(&self.ignored_urls)
+    }
+
+    /// Effective capture-time width cap: the explicit setting when positive.
+    pub fn effective_capture_max_width(&self) -> Option<u32> {
+        self.capture_max_width.filter(|w| *w > 0)
+    }
 }
 
 impl Default for RecordingSettings {
@@ -540,23 +701,32 @@ impl Default for RecordingSettings {
             audio_transcription_engine: crate::best_engine_for_platform(crate::detect_tier())
                 .to_string(),
             transcription_mode: "batch".to_string(),
+            audio_capture_mode: default_audio_capture_mode(),
             meeting_live_transcription_enabled: true,
             meeting_live_transcription_provider: "selected-engine".to_string(),
             audio_devices: vec![],
             use_system_default_audio: true,
             experimental_coreaudio_system_audio: false,
+            experimental_meeting_piggyback: true,
+            always_record_bluetooth_mic: false,
             windows_input_aec_enabled: false,
             macos_input_vpio_enabled: false,
+            screenpipe_aec_enabled: false,
+            aec_mode: default_aec_mode(),
             audio_chunk_duration: 30,
             deepgram_api_key: String::new(),
-            filter_music: false,
+            filter_music: true,
             batch_max_duration_secs: None,
             vocabulary: vec![],
             disable_vision: false,
+            disable_screenshots: false,
+            enable_semantic_context: true,
+            semantic_context_mode: default_semantic_context_mode(),
             disable_timeline: false,
             monitor_ids: vec![],
             use_all_monitors: true,
             video_quality: "balanced".to_string(),
+            capture_max_width: None,
             max_snapshot_width: default_max_snapshot_width(),
             disable_snapshot_compaction: false,
             disable_meeting_detector: false,
@@ -576,17 +746,23 @@ impl Default for RecordingSettings {
             ignored_windows: vec![],
             included_windows: vec![],
             ignored_urls: vec![],
+            included_urls: vec![],
             ignore_incognito_windows: true,
+            enhanced_incognito_detection: false,
             pause_on_drm_content: false,
             disable_clipboard_capture: true,
             disable_keyboard_capture: true,
+            disable_click_capture: false,
             record_while_locked: false,
             languages: vec![],
-            use_pii_removal: false,
+            use_pii_removal: true,
             async_pii_redaction: false,
+            redact_agent_session_secrets: true,
             async_image_pii_redaction: false,
             pii_backend: default_pii_backend(),
             pii_redaction_labels: default_pii_redaction_labels(),
+            pii_redaction_columns: None,
+            pii_redaction_pseudonyms: false,
             user_id: String::new(),
             user_name: None,
             openai_compatible_endpoint: None,
@@ -596,6 +772,8 @@ impl Default for RecordingSettings {
             openai_compatible_raw_audio: false,
             port: 3030,
             power_mode: None,
+            recording_detail: default_recording_detail(),
+            keep_computer_awake: false,
             use_chinese_mirror: false,
             analytics_enabled: false,
             analytics_id: String::new(),
@@ -623,6 +801,23 @@ fn default_true() -> bool {
 /// Users who hit SCK's sleep/wake display-enumeration bug can still opt in.
 fn default_experimental_coreaudio_system_audio() -> bool {
     false
+}
+
+/// Missing `audioCaptureMode` keeps the historical always-on behaviour.
+fn default_audio_capture_mode() -> String {
+    AudioCaptureMode::UNSET.as_str().to_string()
+}
+
+fn default_aec_mode() -> String {
+    AecMode::Off.as_str().to_string()
+}
+
+fn default_semantic_context_mode() -> String {
+    SemanticContextMode::Memory.as_str().to_string()
+}
+
+fn default_recording_detail() -> String {
+    RecordingDetail::Auto.as_str().to_string()
 }
 
 fn default_max_snapshot_width() -> u32 {
@@ -863,5 +1058,311 @@ mod tests {
         let toml_str = toml::to_string_pretty(&settings).unwrap();
         let deserialized: RecordingSettings = toml::from_str(&toml_str).unwrap();
         assert_eq!(settings, deserialized);
+    }
+
+    // ---- Settings schema v2 (Freenpipe W1-02) ----
+
+    /// Every recording key of the v2 store schema, in field order.
+    const SCHEMA_V2_KEYS: &[&str] = &[
+        "disableAudio",
+        "audioTranscriptionEngine",
+        "transcriptionMode",
+        "audioCaptureMode",
+        "meetingLiveTranscriptionEnabled",
+        "meetingLiveTranscriptionProvider",
+        "audioDevices",
+        "useSystemDefaultAudio",
+        "experimentalCoreaudioSystemAudio",
+        "experimentalMeetingPiggyback",
+        "alwaysRecordBluetoothMic",
+        "windowsInputAecEnabled",
+        "macosInputVpioEnabled",
+        "screenpipeAecEnabled",
+        "aecMode",
+        "audioChunkDuration",
+        "deepgramApiKey",
+        "filterMusic",
+        "batchMaxDurationSecs",
+        "vocabularyWords",
+        "disableVision",
+        "disableScreenshots",
+        "enableSemanticContext",
+        "semanticContextMode",
+        "disableTimeline",
+        "monitorIds",
+        "useAllMonitors",
+        "videoQuality",
+        "captureMaxWidth",
+        "maxSnapshotWidth",
+        "disableSnapshotCompaction",
+        "disableMeetingDetector",
+        "ignoredMeetingApps",
+        "idleCaptureIntervalMs",
+        "visualCheckIntervalMs",
+        "visualChangeThreshold",
+        "minCaptureIntervalMs",
+        "hdRecordingDefault",
+        "hdRecordingIntervalMs",
+        "captureOnKeystroke",
+        "captureOnClipboard",
+        "captureScroll",
+        "prioritizeInputLatency",
+        "extractionThreadPriority",
+        "pauseExtractionOnInputMs",
+        "ignoredWindows",
+        "includedWindows",
+        "ignoredUrls",
+        "includedUrls",
+        "ignoreIncognitoWindows",
+        "enhancedIncognitoDetection",
+        "pauseOnDrmContent",
+        "disableClipboardCapture",
+        "disableKeyboardCapture",
+        "disableClickCapture",
+        "recordWhileLocked",
+        "languages",
+        "usePiiRemoval",
+        "asyncPiiRedaction",
+        "redactAgentSessionSecrets",
+        "asyncImagePiiRedaction",
+        "piiBackend",
+        "piiRedactionLabels",
+        "piiRedactionColumns",
+        "piiRedactionPseudonyms",
+        "userId",
+        "userName",
+        "openaiCompatibleEndpoint",
+        "openaiCompatibleApiKey",
+        "openaiCompatibleModel",
+        "openaiCompatibleHeaders",
+        "openaiCompatibleRawAudio",
+        "port",
+        "powerMode",
+        "recordingDetail",
+        "keepComputerAwake",
+        "useChineseMirror",
+        "analyticsEnabled",
+        "analyticsId",
+        "enableWorkflowEvents",
+        "deviceTier",
+        "scheduleEnabled",
+        "scheduleRules",
+        "apiAuth",
+        "apiKey",
+        "listenOnLan",
+    ];
+
+    const TARGET_FIXTURE: &str = include_str!("../testdata/target-settings.json");
+
+    /// The store keeps recording keys and app keys side by side; this mirrors
+    /// how the desktop app wraps `RecordingSettings`.
+    #[derive(Serialize, Deserialize)]
+    struct StoreShape {
+        #[serde(flatten)]
+        recording: RecordingSettings,
+        #[serde(flatten)]
+        other: serde_json::Map<String, serde_json::Value>,
+    }
+
+    #[test]
+    fn struct_fields_are_exactly_the_v2_keys_in_order() {
+        let mut settings = RecordingSettings::default();
+        // Optional fields that skip serialisation when unset.
+        settings.device_tier = Some("high".into());
+        let text = serde_json::to_string(&settings).unwrap();
+        let value: serde_json::Value = serde_json::from_str(&text).unwrap();
+        let keys: Vec<&String> = value.as_object().unwrap().keys().collect();
+        assert_eq!(
+            keys.len(),
+            SCHEMA_V2_KEYS.len(),
+            "unexpected key set: {keys:?}"
+        );
+        for key in SCHEMA_V2_KEYS {
+            assert!(value.get(*key).is_some(), "missing {key}");
+        }
+        // Serialisation follows declaration order, which follows the schema.
+        let mut last = 0;
+        for key in SCHEMA_V2_KEYS {
+            let at = text.find(&format!("\"{key}\":")).unwrap();
+            assert!(at >= last, "{key} is out of order");
+            last = at;
+        }
+    }
+
+    #[test]
+    fn target_fixture_round_trips_every_key_and_keeps_unknown_keys() {
+        let original: serde_json::Value = serde_json::from_str(TARGET_FIXTURE).unwrap();
+        for key in SCHEMA_V2_KEYS {
+            assert!(original.get(*key).is_some(), "fixture lacks {key}");
+        }
+
+        let loaded = crate::lenient::from_value_lenient::<StoreShape>(original.clone()).unwrap();
+        assert!(
+            loaded.rejected.is_empty(),
+            "rejected: {:?}",
+            loaded.rejected
+        );
+        let store = loaded.value;
+        let s = &store.recording;
+
+        assert_eq!(s.audio_capture_mode(), AudioCaptureMode::MeetingsOnly);
+        assert!(s.experimental_meeting_piggyback);
+        assert!(s.always_record_bluetooth_mic);
+        assert_eq!(s.aec_mode, "windows");
+        assert_eq!(
+            s.effective_aec_mode(SettingsPlatform::Windows),
+            AecMode::Windows
+        );
+        assert_eq!(s.effective_aec_mode(SettingsPlatform::Macos), AecMode::Off);
+        assert!(s.disable_screenshots);
+        assert!(!s.enable_semantic_context);
+        assert_eq!(s.semantic_context_mode(), SemanticContextMode::Both);
+        assert_eq!(s.effective_capture_max_width(), Some(2560));
+        assert_eq!(s.ignored_urls.len(), 2);
+        assert_eq!(s.ignored_urls[0], UrlRule::Legacy("bank.example".into()));
+        assert!(
+            s.ignored_urls[1]
+                .as_domain_rule()
+                .unwrap()
+                .include_subdomains
+        );
+        assert_eq!(s.included_urls[0].domain, "docs.example.org");
+        assert!(s.enhanced_incognito_detection);
+        assert!(s.disable_click_capture);
+        assert!(!s.redact_agent_session_secrets);
+        assert_eq!(
+            s.pii_redaction_columns.as_deref(),
+            Some(
+                &[
+                    "accessibility_text".to_string(),
+                    "ui_element_value".into(),
+                    "browser_url".into()
+                ][..]
+            )
+        );
+        assert!(s.pii_redaction_pseudonyms);
+        assert_eq!(s.recording_detail(), RecordingDetail::MoreDetail);
+        assert!(s.keep_computer_awake);
+        assert_eq!(
+            s.ignored_url_patterns(),
+            vec!["bank.example".to_string(), "mail.example.com".to_string()]
+        );
+
+        // Keys outside RecordingSettings stay in the side map untouched.
+        assert_eq!(
+            store.other["someFutureKey"],
+            serde_json::json!({"nested": [1, 2, 3]})
+        );
+        assert!(store.other.contains_key("sidebarNavLayout"));
+        assert!(store.other.contains_key("remoteControlPreferences"));
+
+        // Writing it back reproduces the input exactly.
+        assert_eq!(serde_json::to_value(&store).unwrap(), original);
+    }
+
+    #[test]
+    fn missing_v2_keys_take_their_defaults() {
+        let s: RecordingSettings = serde_json::from_str("{}").unwrap();
+        assert_eq!(
+            s.audio_capture_mode, "always",
+            "unset means always-on capture"
+        );
+        assert!(s.experimental_meeting_piggyback);
+        assert!(!s.always_record_bluetooth_mic);
+        assert!(!s.screenpipe_aec_enabled);
+        assert_eq!(s.aec_mode, "off");
+        assert!(!s.disable_screenshots);
+        assert!(s.enable_semantic_context);
+        assert_eq!(s.semantic_context_mode, "memory");
+        assert_eq!(s.capture_max_width, None);
+        assert!(s.included_urls.is_empty());
+        assert!(!s.enhanced_incognito_detection);
+        assert!(!s.disable_click_capture);
+        assert!(s.redact_agent_session_secrets);
+        assert_eq!(s.pii_redaction_columns, None);
+        assert!(!s.pii_redaction_pseudonyms);
+        assert_eq!(s.recording_detail, "auto");
+        assert!(!s.keep_computer_awake);
+        assert_eq!(s, RecordingSettings::default());
+    }
+
+    #[test]
+    fn v2_default_changes() {
+        let s = RecordingSettings::default();
+        assert!(s.use_pii_removal);
+        assert!(s.filter_music);
+        // Kept off on purpose: the base macOS capture path still loses
+        // meeting audio through the process tap (see W1-02 open questions).
+        assert!(!s.experimental_coreaudio_system_audio);
+    }
+
+    #[test]
+    fn aec_mode_falls_back_to_legacy_flags() {
+        // A store from before `aecMode`: only the Windows boolean is set.
+        let legacy: RecordingSettings =
+            serde_json::from_value(serde_json::json!({"windowsInputAecEnabled": true})).unwrap();
+        assert_eq!(legacy.aec_mode, "off");
+        assert_eq!(
+            legacy.effective_aec_mode(SettingsPlatform::Windows),
+            AecMode::Windows
+        );
+        assert_eq!(
+            legacy.effective_aec_mode(SettingsPlatform::Linux),
+            AecMode::Off
+        );
+
+        // An explicit mode wins over stale booleans.
+        let explicit: RecordingSettings = serde_json::from_value(serde_json::json!({
+            "aecMode": "screenpipe",
+            "windowsInputAecEnabled": true
+        }))
+        .unwrap();
+        assert_eq!(
+            explicit.effective_aec_mode(SettingsPlatform::Windows),
+            AecMode::Screenpipe
+        );
+    }
+
+    #[test]
+    fn set_aec_mode_keeps_the_booleans_in_step() {
+        let mut s = RecordingSettings::default();
+        s.set_aec_mode(AecMode::Windows, SettingsPlatform::Windows);
+        assert_eq!(s.aec_mode, "windows");
+        assert!(s.windows_input_aec_enabled);
+        assert!(!s.screenpipe_aec_enabled && !s.macos_input_vpio_enabled);
+
+        s.set_aec_mode(AecMode::Macos, SettingsPlatform::Windows);
+        assert_eq!(
+            s.aec_mode, "off",
+            "an OS canceller of another platform is off"
+        );
+        assert!(!s.windows_input_aec_enabled);
+
+        s.set_aec_mode(AecMode::Screenpipe, SettingsPlatform::Linux);
+        assert!(s.screenpipe_aec_enabled);
+    }
+
+    #[test]
+    fn url_rules_round_trip_through_toml() {
+        let settings = RecordingSettings {
+            ignored_urls: vec![
+                UrlRule::from("bank.example"),
+                UrlRule::from(DomainRule {
+                    domain: "mail.example.com".into(),
+                    include_subdomains: true,
+                    excluded_subdomains: vec!["public.mail.example.com".into()],
+                }),
+            ],
+            included_urls: vec![DomainRule {
+                domain: "docs.example.org".into(),
+                ..DomainRule::default()
+            }],
+            capture_max_width: Some(1280),
+            pii_redaction_columns: Some(vec!["browser_url".into()]),
+            ..RecordingSettings::default()
+        };
+        let text = toml::to_string_pretty(&settings).unwrap();
+        let back: RecordingSettings = toml::from_str(&text).unwrap();
+        assert_eq!(back, settings);
     }
 }

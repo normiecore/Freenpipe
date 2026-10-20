@@ -190,7 +190,7 @@ source scripts/dev/dev-env.sh [name]
 
 | Variable | Default | Read by |
 |---|---|---|
-| `FP_DD`, `SCREENPIPE_DATA_DIR` | `%LOCALAPPDATA%/freenpipe-dev[/name]` | engine (`--data-dir`), every Rust reader that goes through `screenpipe_core::paths::default_screenpipe_data_dir()`, including the app's Rust side (its `store.bin`, db, media, logs, `pi-agent/`). **Not the app's webview**, which builds `~/.screenpipe/...` itself (see "Remaining hard-coded paths") |
+| `FP_DD`, `SCREENPIPE_DATA_DIR` | `%LOCALAPPDATA%/freenpipe-dev[/name]` | engine (`--data-dir`), every Rust reader that goes through `screenpipe_core::paths::default_screenpipe_data_dir()`, including the app's Rust side (its `store.bin`, db, media, logs, `pi-agent/`). The app's webview opens the same `store.bin` and asks the backend for the data dir (`lib/data-dirs.ts`), but some of its other paths still build `~/.screenpipe/...` (see "Remaining hard-coded paths") |
 | `FP_PORT`, `SCREENPIPE_PORT` | 3035 | engine `--port`; the app's Rust side (embedded engine port, `get_local_api_config`). The webview can override it with `settings.port` from its own store (see "Webview API port") |
 | `SCREENPIPE_FOCUS_PORT` | 11436 | the app's control server (but not the notification client, which still posts to :11435) |
 | `SCREENPIPE_API_KEY` | `fp-dev-key` | engine and app API auth; keeps the key resolver off any `auth.json` |
@@ -217,16 +217,16 @@ scripts/dev/app-dev.sh --check   # guards only
 scripts/dev/app-dev.sh           # guards, then `bun run tauri dev`
 ```
 
-The app's Rust side honours `SCREENPIPE_DATA_DIR`, but its webview does
-not. The frontend builds its settings store, chat history, Pi chat
-sessions and a few other paths as `homeDir()/.screenpipe/...` (audit
-below). Until the owning work packages route those through a data-dir
-command, an app dev session reads and writes the real `~/.screenpipe`:
-it loads the installed screenpipe's `store.bin` (and its load-time
-migrations can save it straight back), lists its chats at boot, and puts
-dev chats and Pi sessions next to them. If `~/.screenpipe` does not exist,
-the session creates it, and a later screenpipe start would adopt the dev
-settings and chats.
+The app's Rust side honours `SCREENPIPE_DATA_DIR`, and so do the
+webview's settings store and data-dir lookups, which go through the
+backend (`lib/data-dirs.ts`). The webview still builds its chat history,
+Pi chat sessions and a few other paths as `homeDir()/.screenpipe/...`
+(audit below). Until the owning work packages route those through a
+data-dir command, an app dev session reads and writes the real
+`~/.screenpipe`: it lists its chats at boot, puts dev chats and Pi
+sessions next to them, and the shortcut overlay reads the installed
+screenpipe's `store.bin`. If `~/.screenpipe` does not exist, the session
+creates it, and a later screenpipe start would adopt the dev chats.
 
 `app-dev.sh` contains the damage rather than claiming isolation:
 
@@ -261,13 +261,18 @@ from the bundled one anyway.
 ### Webview API port
 
 `lib/api.ts` loads the engine port and key from `get_local_api_config`,
-which honours `SCREENPIPE_PORT`. The settings provider then calls
-`configureApi({ port: settings.port ?? 3030 })` with the port from the
-webview's own store, at load and on every `updateSettings`
-(`lib/hooks/use-settings.tsx`). Whichever runs last wins, so a dev UI can
-send its requests to :3030. If an installed screenpipe is listening there,
-the dev UI is then driving the real engine. Owner: W1-02 (settings
-provider).
+which honours `SCREENPIPE_PORT` once the engine is up. The settings
+provider then calls `configureApi({ port: settings.port ?? 3030 })` at load
+and on every `updateSettings` (`lib/hooks/use-settings.tsx`). Whichever
+runs last wins. The store is the backend's `store.bin`, so `settings.port`
+is the port the embedded engine is configured with; only the
+`SCREENPIPE_PORT` override is lost. A dev store that keeps the default port
+therefore sends the dev UI's requests to :3030, and if an installed
+screenpipe is listening there, the dev UI drives the real engine. Setting
+`port` to `$FP_PORT` in the dev `store.bin` avoids it. The fix (let the
+backend report the configured port even before the engine is up, then drop
+the override) is recorded in docs/clean-room/open-questions/W1-02.md,
+question 19.
 
 ### What the code no longer does
 
@@ -318,9 +323,7 @@ audit.
 
 | Location | Path | Access, and when | Owner |
 |---|---|---|---|
-| `lib/hooks/use-settings.tsx:649` `getStore` | `store.bin` | The webview's settings store. Read on every window load and written by every settings save. The load-time migrations (`deviceId`, the notification and CoreAudio markers, default presets) also save at boot when a marker is missing. The Rust side keeps its own store at `$SCREENPIPE_DATA_DIR/store.bin`, so in a dev run the UI and the engine config see different stores. | W1-02 |
-| `lib/hooks/use-settings.tsx:1226` `getDataDir` | the dir itself when `dataDir` is `default` | Read: the storage and disk-usage views, and the remote-sync source in `components/settings/agent-card.tsx` (a user-started sync would upload the real `~/.screenpipe`) | W1-02 |
-| `app/shortcut-reminder/page.tsx:153` | `store.bin` | Read by the shortcut overlay on every store change | W1-02 (store path); file owned by W5-14/W6-19 |
+| `app/shortcut-reminder/page.tsx:153` | `store.bin` | Read by the shortcut overlay on every store change. The fix is `resolveStorePath()` from `lib/data-dirs.ts`. | W5-14/W6-19 (the file's owners) |
 | `lib/chat-storage.ts:63` `getChatsDir` | `chats/` | Listed at boot (`lib/stores/pi-event-router.ts` hydrate calls `listConversations`). Created and written on every chat save, delete and archive. | W5-15 |
 | `components/standalone-chat.tsx:4746, 5839, 5954, 6504, 6787` | `pi-chat/` | Passed to `piStart` as the Pi session working dir when chat starts, restarts after a crash, re-authenticates or auto-spawns Pi | W4-05 |
 | `components/standalone-chat.tsx:780` `externalizeLargeContextIfNeeded` | `pi-chat/large-context/<session>/...` | Written when a prompt is too large to send inline | W4-05 |
@@ -340,10 +343,15 @@ the gap closes:
   table, frontend-009, W5-15).
 
 Implemented over `screenpipe_core::paths::default_screenpipe_data_dir()`,
-they honour `SCREENPIPE_DATA_DIR`. Once W1-02 lands the base-dir command,
-a small shared TS helper (resolve once through the command, fall back to
-`homeDir()/.screenpipe` outside Tauri) turns each row above into a
-one-line change for its owner. When the table is empty, drop the
+they honour `SCREENPIPE_DATA_DIR`. W1-02 added the first two and the
+shared TS helper, `lib/data-dirs.ts`: `resolveStoreDir`, `resolveStorePath`
+and `resolveActiveDataDir`, plus `resolveDirWith` for any other directory
+command such as `get_chats_dir`. It asks the backend and falls back to
+`homeDir()/.screenpipe` only outside Tauri or with an older backend that
+lacks the command; an error the command returns is thrown instead. The
+settings store (`getStore`) and `getDataDir` in `lib/hooks/use-settings.tsx`
+already use it, and each row above is now a one-line change for its
+owner. When the table is empty, drop the
 `~/.screenpipe` guard from `scripts/dev/app-dev.sh` and the "not isolated
 on disk" warning in this document.
 

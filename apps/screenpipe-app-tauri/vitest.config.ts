@@ -42,6 +42,8 @@ export default defineConfig({
 			"lib/events/__tests__/bus.test.ts",
 			"lib/__tests__/ai-gateway-settings.test.ts",
 			"lib/__tests__/mcp-config.test.ts",
+			"lib/__tests__/settings-schema.test.ts",
+			"lib/__tests__/data-dirs.test.ts",
 			// KNOWN-BROKEN: pre-existing failures surfaced when wiring tests
 			// into CI. Each is a real assertion failure (component drifted
 			// from its test) — excluded so we can ship the CI gate now and

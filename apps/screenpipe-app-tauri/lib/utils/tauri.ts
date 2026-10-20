@@ -458,6 +458,19 @@ async forceRegenerateSuggestions() : Promise<Result<CachedSuggestions, string>> 
 }
 },
 /**
+ * Recording data directory in use: the custom `dataDir` chosen in settings
+ * when it is usable, otherwise the default directory. Uses the settings
+ * loaded at startup, because a data-dir change only applies after a restart.
+ */
+async getActiveDataDir() : Promise<Result<string, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("get_active_data_dir") };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
  * Whether an AI gateway credential is available to the engine: the
  * `aiGatewayApiKey` setting, else `SCREENPIPE_AI_GATEWAY_KEY`. The key itself
  * is never returned. Gateway transcription needs this and a gateway URL.
@@ -526,14 +539,14 @@ async getCachedSuggestions() : Promise<Result<CachedSuggestions, string>> {
 }
 },
 /**
- * Read the token stored in `auth.json` under the screenpipe data dir.
- * Returns None when the file is missing, malformed, or the token field is
- * empty.
+ * Read the cached account token: the secret store's `cloud.auth_token`
+ * first, then the legacy `auth.json` under the data dir. Returns None when
+ * neither holds a non-empty token.
  *
  * Freenpipe never signs in to a hosted account, so nothing here comes from
- * a login flow. The file is kept as local key plumbing: a token placed there
- * (or pushed with [`set_cloud_token`]) is what the engine forwards to a
- * user-configured, self-hosted AI gateway.
+ * a login flow. A token only exists when a store came over from screenpipe
+ * (moved out of `store.bin` at startup, see `store::migrate_cloud_token`)
+ * or was placed in `auth.json` by hand.
  */
 async getCloudToken() : Promise<string | null> {
     return await TAURI_INVOKE("get_cloud_token");
@@ -693,6 +706,19 @@ async getPrivacyFilterEnclaveConfigured() : Promise<boolean> {
 async getScreenpipeAiGatewayUrl() : Promise<Result<string, string>> {
     try {
     return { status: "ok", data: await TAURI_INVOKE("get_screenpipe_ai_gateway_url") };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
+ * Directory that holds `store.bin` (normally `~/.screenpipe`, or
+ * `SCREENPIPE_DATA_DIR`). The frontend opens the settings store here so it
+ * always reads the same file as the backend.
+ */
+async getScreenpipeBaseDir() : Promise<Result<string, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("get_screenpipe_base_dir") };
 } catch (e) {
     if(e instanceof Error) throw e;
     else return { status: "error", error: e  as any };
@@ -2335,7 +2361,13 @@ async writeBrowserLogs(entries: BrowserLogEntry[]) : Promise<void> {
 
 /** user-defined types **/
 
-export type AIPreset = { id: string; prompt: string; provider: AIProviderType; url?: string; model?: string; defaultPreset: boolean; apiKey: string | null; maxContextChars: number; maxTokens?: number }
+export type AIPreset = { id: string; prompt: string; provider: AIProviderType; url?: string; model?: string; defaultPreset: boolean; apiKey: string | null; maxContextChars: number; maxTokens?: number;
+/**
+ * Set by screenpipe on presets an enterprise administrator pushed.
+ * Kept as stored so the preset round-trips; Freenpipe has no managed
+ * presets and never sets it.
+ */
+enterpriseManaged?: boolean | null }
 export type AIProviderType = "openai" | "openai-chatgpt" | "native-ollama" | "custom" | "screenpipe-cloud" | "pi" | "anthropic"
 export type AudioDeviceInfo = { name: string; isDefault: boolean }
 export type BootPhaseSnapshot = {
@@ -2423,6 +2455,24 @@ export type DiscoveredHost = { host: string; port: number; user: string | null; 
  * Only set when `HostName` resolves to an IP different from the alias.
  */
 alias?: string | null }
+/**
+ * A structured website rule: one registrable host, optionally with its
+ * subdomains, minus any excluded subdomains.
+ */
+export type DomainRule = {
+/**
+ * Host name the rule is about, for example `example.com`.
+ */
+domain: string;
+/**
+ * When true the rule also covers hosts below `domain`.
+ */
+includeSubdomains?: boolean;
+/**
+ * Hosts below `domain` that stay outside the rule even when
+ * `include_subdomains` is on.
+ */
+excludedSubdomains?: string[] }
 export type E2eAgentStreamResult = { emitted_deltas: number; emit_ms: number }
 export type EmbeddedLLM = { enabled: boolean; model: string; port: number }
 /**
@@ -2582,12 +2632,58 @@ needs_attention?: boolean }
 export type OSPermission = "screenRecording" | "microphone" | "accessibility" | "automation" | "inputMonitoring" | "calendar"
 export type OSPermissionStatus = "notNeeded" | "empty" | "granted" | "denied"
 export type OSPermissionsCheck = { screenRecording: OSPermissionStatus; microphone: OSPermissionStatus; accessibility: OSPermissionStatus }
-export type OnboardingStore = { isCompleted: boolean; completedAt: string | null;
+/**
+ * The `onboarding` object of `store.bin`.
+ *
+ * Besides the onboarding progress it records the state of the first-run
+ * summary (a short recap offered after the first minutes of recording).
+ * Newer fields carry field-level defaults, and `extra` keeps keys this
+ * version does not model, so stores written by screenpipe round-trip.
+ */
+export type OnboardingStore =
+/**
+ * Keys this version does not model, kept as stored.
+ */
+({ [key in string]: null | boolean | number | string | JsonValue[] | { [key in string]: JsonValue } }) & { isCompleted: boolean; completedAt: string | null;
 /**
  * Current step in onboarding flow (login, intro, usecases, status)
  * Used to resume after app restart (e.g., after granting permissions)
  */
-currentStep?: string | null }
+currentStep?: string | null;
+/**
+ * Where the first-run summary is in its lifecycle (for example
+ * waiting, generating, ready, failed).
+ */
+firstRunSummaryPhase?: string | null;
+/**
+ * When the first-run summary was started (RFC 3339).
+ */
+firstRunSummaryStartedAt?: string | null;
+/**
+ * Chat conversation that holds the first-run summary.
+ */
+firstRunSummaryChatId?: string | null;
+/**
+ * When the "summary ready" notification was shown (RFC 3339).
+ */
+firstRunSummaryNotificationSentAt?: string | null;
+/**
+ * Id of that notification, to update or dismiss it.
+ */
+firstRunSummaryNotificationId?: string | null;
+/**
+ * Last error from generating the summary.
+ */
+firstRunSummaryError?: string | null;
+/**
+ * Version marker screenpipe kept for its own analytics. Freenpipe keeps
+ * the stored value and never reports it.
+ */
+firstRunSummaryTelemetryVersion?: number | null;
+/**
+ * Set by screenpipe's trial experiment. Accepted and ignored.
+ */
+trialActivationFreshInstall?: boolean | null }
 /**
  * Snapshot of a pending update, exposed to the frontend via
  * `get_pending_update`. The banner queries this on mount so it can hydrate
@@ -2690,6 +2786,16 @@ endTime: string;
  */
 recordMode: string }
 export type SchedulerStatus = { running: boolean; last_sync: string | null; last_error: string | null }
+/**
+ * The `settings` object of `store.bin`.
+ *
+ * Fields follow the order of the settings schema (v2): app keys first, then
+ * the flattened recording keys, then `extra`, which keeps every key this
+ * version does not model so a store shared with screenpipe or a newer
+ * Freenpipe round-trips without losing data. Keys added after the first
+ * schema carry a field-level default so they are optional in the generated
+ * TypeScript type and absent keys load with their documented default.
+ */
 export type SettingsStore =
 /**
  * All recording/capture config lives here. Flattened so the JSON shape
@@ -2711,6 +2817,14 @@ audioTranscriptionEngine: string;
  * Previously stored in SettingsStore.extra["transcriptionMode"].
  */
 transcriptionMode: string;
+/**
+ * When audio is recorded: `"always"`, `"meetings-only"` (devices open
+ * only while a confirmed meeting runs) or `"disabled"`. A store without
+ * the key behaves as `"always"`; the desktop app writes
+ * `"meetings-only"` for new installs. Parse with
+ * [`RecordingSettings::audio_capture_mode`].
+ */
+audioCaptureMode?: string;
 /**
  * Stream live notes only for manually-started live meetings. This is
  * separate from 24/7 background transcription: the recorder still writes
@@ -2748,6 +2862,16 @@ useSystemDefaultAudio: boolean;
  */
 experimentalCoreaudioSystemAudio?: boolean;
 /**
+ * "Smart recording": during a meeting, follow the meeting app's own
+ * output and microphone instead of the configured devices.
+ */
+experimentalMeetingPiggyback?: boolean;
+/**
+ * Keep a Bluetooth headset microphone open outside meetings too. Off by
+ * default because an open headset mic degrades its playback quality.
+ */
+alwaysRecordBluetoothMic?: boolean;
+/**
  * Experimental: request Windows WASAPI microphone Acoustic Echo Cancellation.
  * Ignored on non-Windows platforms and fail-open when unsupported by device/driver.
  */
@@ -2757,6 +2881,18 @@ windowsInputAecEnabled?: boolean;
  * Ignored on non-macOS platforms. Only the system default input uses VPIO; other devices use HAL.
  */
 macosInputVpioEnabled?: boolean;
+/**
+ * Run the built-in software echo canceller on microphone audio. Kept in
+ * step with `aecMode` (true exactly when the mode is `"screenpipe"`).
+ */
+screenpipeAecEnabled?: boolean;
+/**
+ * Echo cancellation choice: `"off"`, `"screenpipe"` (software, any
+ * platform), `"macos"` or `"windows"` (OS cancellers, own platform
+ * only). The three AEC booleans above follow from it; see
+ * [`RecordingSettings::effective_aec_mode`].
+ */
+aecMode?: string;
 /**
  * Duration of each audio chunk in seconds before transcription.
  * Stored as i32 to match existing store.bin schema (cast to u64 by engine).
@@ -2788,6 +2924,20 @@ vocabularyWords?: VocabEntry[];
  */
 disableVision: boolean;
 /**
+ * Keep capturing accessibility text and frame metadata but store no
+ * screenshot images (and so run no OCR or visual-change checks).
+ */
+disableScreenshots?: boolean;
+/**
+ * Run local semantic parsing of captured app content.
+ */
+enableSemanticContext?: boolean;
+/**
+ * What semantic parsing is tuned for: `"memory"`, `"computerUse"` or
+ * `"both"`.
+ */
+semanticContextMode?: string;
+/**
  * Disable the timeline / rewind feature. When true, the engine skips
  * timeline-only work: warming the hot frame cache from the DB at startup
  * and buffering captured frames/audio into the in-memory hot cache that
@@ -2806,6 +2956,11 @@ useAllMonitors: boolean;
  * Video quality preset: "low", "balanced", "high", "max".
  */
 videoQuality: string;
+/**
+ * Width cap applied when a frame is captured, before any analysis.
+ * `None` or 0 derives the cap from `videoQuality`.
+ */
+captureMaxWidth?: number | null;
 /**
  * Maximum width for stored snapshots. Images wider than this are downscaled
  * (preserving aspect ratio) before JPEG encoding. 0 = no limit (store at
@@ -2924,13 +3079,24 @@ ignoredWindows: string[];
  */
 includedWindows: string[];
 /**
- * URLs to exclude from capture.
+ * Websites to exclude from capture: legacy pattern strings and/or
+ * structured domain rules, each kept in the shape it was stored in.
  */
-ignoredUrls?: string[];
+ignoredUrls?: UrlRule[];
+/**
+ * Allow list of websites. When non-empty, browser windows are recorded
+ * only on matching sites; the block list still wins.
+ */
+includedUrls?: DomainRule[];
 /**
  * Automatically detect and skip incognito / private browsing windows.
  */
 ignoreIncognitoWindows: boolean;
+/**
+ * macOS: ask supported browsers whether the front window is private
+ * instead of guessing from its title. No effect elsewhere.
+ */
+enhancedIncognitoDetection?: boolean;
 /**
  * Experimental: pause screen capture when a DRM-protected streaming app
  * (Netflix, Disney+, etc.) or a remote-desktop client (Omnissa/VMware
@@ -2955,6 +3121,10 @@ disableClipboardCapture?: boolean;
  */
 disableKeyboardCapture?: boolean;
 /**
+ * Skip persisting mouse-click rows in the UI recorder.
+ */
+disableClickCapture?: boolean;
+/**
  * Continue recording audio when the screen is locked.
  * Default: false (audio pauses when screen is locked to save resources).
  */
@@ -2978,6 +3148,11 @@ usePiiRemoval: boolean;
  * `screenpipe-redact` for the full design.
  */
 asyncPiiRedaction?: boolean;
+/**
+ * Mask secrets (keys, tokens, passwords) in the transcripts and logs of
+ * local agent sessions before they are written to disk.
+ */
+redactAgentSessionSecrets?: boolean;
 /**
  * Enable image-PII redaction on captured screen frames. When
  * `true`, the `screenpipe_redact::image::worker` runs alongside
@@ -3027,6 +3202,17 @@ piiBackend?: string;
  */
 piiRedactionLabels?: string[];
 /**
+ * Extra captured fields the AI redaction workers rewrite, by column id
+ * (for example `ui_element_value`, `browser_url`). `None` selects the
+ * built-in set.
+ */
+piiRedactionColumns?: string[] | null;
+/**
+ * Replace redacted values with stable per-install pseudonyms instead of
+ * bare category placeholders.
+ */
+piiRedactionPseudonyms?: boolean;
+/**
  * Screenpipe cloud user ID. Empty string means not logged in.
  * Kept as String (not Option) to match existing store.bin schema.
  */
@@ -3071,6 +3257,15 @@ port: number;
  * Previously stored in SettingsStore.extra["powerMode"].
  */
 powerMode?: string | null;
+/**
+ * Scroll snapshot cadence: `"auto"`, `"low_impact"`, `"balanced"` or
+ * `"more_detail"`.
+ */
+recordingDetail?: string;
+/**
+ * Keep the computer from sleeping while recording.
+ */
+keepComputerAwake?: boolean;
 /**
  * Use Chinese mirror for Hugging Face model downloads.
  */
@@ -3125,21 +3320,62 @@ listenOnLan?: boolean }) &
  * Catch-all for fields added by the frontend (e.g. chatHistory)
  * that the Rust struct doesn't know about. Without this, `save()` would
  * serialize only known fields and silently wipe frontend-only data.
+ * It also holds, unchanged, any stored value whose type did not fit its
+ * field (see [`SettingsStore::from_stored_value`]); such an entry is
+ * written back in place of the field's default until code assigns the
+ * field (see [`SettingsStore::to_stored_value`]).
  */
-({ [key in string]: null | boolean | number | string | JsonValue[] | { [key in string]: JsonValue } }) & { aiPresets: AIPreset[]; isLoading: boolean; devMode: boolean; ocrEngine: string; dataDir: string; embeddedLLM: EmbeddedLLM; autoStartEnabled: boolean; platform: string; disabledShortcuts: string[]; user: User; showScreenpipeShortcut: string; startRecordingShortcut: string; stopRecordingShortcut: string; startAudioShortcut: string; stopAudioShortcut: string; showChatShortcut: string; searchShortcut: string; lockVaultShortcut?: string; showShortcutOverlay?: boolean;
+({ [key in string]: null | boolean | number | string | JsonValue[] | { [key in string]: JsonValue } }) & { aiPresets: AIPreset[]; isLoading: boolean;
+/**
+ * Interface language: `"system"` (follow the OS) or a language tag.
+ */
+uiLocale?: string;
+/**
+ * Whether translated interface text is used at all. Off until the user
+ * turns it on.
+ */
+uiLocalizationEnabled?: boolean; devMode: boolean; ocrEngine: string; dataDir: string; embeddedLLM: EmbeddedLLM; autoStartEnabled: boolean; platform: string; disabledShortcuts: string[]; user: User; showScreenpipeShortcut: string; startRecordingShortcut: string; stopRecordingShortcut: string; startAudioShortcut: string; stopAudioShortcut: string; showChatShortcut: string; searchShortcut: string; lockVaultShortcut?: string;
+/**
+ * Global shortcut that stars the current session.
+ */
+starSessionShortcut?: string;
 /**
  * Overlay size: "small" (default), "medium" (1.5x), "large" (2x)
  */
-shortcutOverlaySize?: string;
+shortcutOverlaySize?: string; showShortcutOverlay?: boolean;
+/**
+ * Timestamp until which the shortcut overlay stays hidden; `None` when
+ * it is not snoozed.
+ */
+shortcutOverlaySnoozedUntil?: string | null;
+/**
+ * Let the user hide the shortcut overlay from its own menu.
+ */
+allowHidingShortcutOverlay?: boolean;
+/**
+ * Screen edge the overlay is docked to: `top-center`, `right-center`,
+ * `bottom-center` or `left-center`. `None` is treated as `top-center`.
+ */
+shortcutOverlayAnchor?: string | null;
+/**
+ * Display the overlay was last docked on (written by the app only).
+ */
+shortcutOverlayDisplay?: string | null;
 /**
  * Unique device ID for AI usage tracking (generated on first launch)
  */
 deviceId?: string;
 /**
- * Auto-install updates and restart when a new version is available.
- * When disabled, users must click "update now" in the tray menu.
+ * Install updates on their own once the updater offers one. The updater
+ * itself stays off until a release feed and signing key are configured
+ * (see `updates.rs`), so this only matters after that.
  */
 autoUpdate?: boolean;
+/**
+ * Release channel: `"stable"` or `"pre-release"` (older stores may say
+ * `"beta"`, which loads as `"pre-release"`).
+ */
+updateChannel?: string;
 /**
  * Auto-update store-installed pipes that haven't been locally modified.
  */
@@ -3162,6 +3398,17 @@ aiGatewayUrl?: string;
  */
 aiGatewayApiKey?: string;
 /**
+ * Remote support-log collection. Freenpipe has no support service: the
+ * key is kept for stores shared with screenpipe but is always false and
+ * never read.
+ */
+remoteLogCollectionEnabled?: boolean;
+/**
+ * Account id that consented to remote log collection (screenpipe only;
+ * kept as stored, never used).
+ */
+remoteLogCollectionUserId?: string | null;
+/**
  * Timeline overlay mode: "fullscreen" (floating panel above everything) or
  * "window" (normal resizable window with title bar).
  */
@@ -3172,6 +3419,14 @@ overlayMode?: string;
  */
 showOverlayInScreenRecording?: boolean;
 /**
+ * Keep the timeline overlay out of other apps' screen recordings.
+ */
+hideOverlayInScreenRecording?: boolean;
+/**
+ * Keep every app window out of screen shares and screen recordings.
+ */
+hideAppInScreenShare?: boolean;
+/**
  * When true, the chat window stays above all other windows (default: true).
  */
 chatAlwaysOnTop?: boolean;
@@ -3180,6 +3435,10 @@ chatAlwaysOnTop?: boolean;
  * Disabled by default for now until the stall detector is more reliable.
  */
 showRestartNotifications?: boolean;
+/**
+ * Stop recording when free disk space runs low.
+ */
+stopRecordingOnLowDisk?: boolean;
 /**
  * When true, apply macOS vibrancy effect to the sidebar for a translucent look.
  */
@@ -3200,7 +3459,20 @@ uiTheme?: string;
  * Read by the CloseRequested handler in main.rs. Default off (historical
  * minimize-to-taskbar behavior).
  */
-minimizeToTrayOnClose?: boolean }
+minimizeToTrayOnClose?: boolean;
+/**
+ * Run without any app window: capture and the local API keep running
+ * and the tray reopens the interface.
+ */
+headless?: boolean;
+/**
+ * Stricter headless mode: recording only, the interface stays closed.
+ */
+headlessRecordOnly?: boolean;
+/**
+ * Keep the local search API answering after the app is quit.
+ */
+keepSearchAvailableAfterQuit?: boolean }
 export type ShowRewindWindow = "Main" | { Home: { page: string | null } } | { Search: { query: string | null } } | "Onboarding" | "Chat" | "PermissionRecovery"
 export type Suggestion = { text: string;
 /**
@@ -3248,6 +3520,20 @@ manifest_url: string | null;
  * Releases page for manual downloads.
  */
 releases_url: string }
+/**
+ * One entry of the `ignoredUrls` list: a legacy pattern string or a
+ * structured [`DomainRule`]. Serialised without a tag so either shape
+ * round-trips exactly as stored.
+ */
+export type UrlRule =
+/**
+ * A free-form pattern from older stores (a host, a URL or a bare word).
+ */
+string |
+/**
+ * A structured domain rule.
+ */
+DomainRule
 /**
  * Cached screenpipe account record.
  *

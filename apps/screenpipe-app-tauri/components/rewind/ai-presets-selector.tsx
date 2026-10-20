@@ -126,7 +126,7 @@ interface OpenAIModel {
 export const DEFAULT_PROMPT = `Rules:
 - Media: use standard markdown with angle-bracket local paths, like ![description](</path/to/file.mp4>) for videos and ![description](</path/to/image.jpg>) for images
 - Use the exact absolute file_path from search results inside the angle brackets, do not modify it
-- Always wrap local file paths in angle brackets because screenpipe paths often contain spaces or parentheses
+- Put angle brackets around every local file path, since recorded paths can include spaces or parentheses
 - Always answer my question/intent, do not make up things
 `;
 
