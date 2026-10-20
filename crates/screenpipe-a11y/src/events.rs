@@ -1132,7 +1132,11 @@ mod tests {
             .collect();
         let chain = ancestors_root_first(walk);
         let json = ancestors_json(&chain).unwrap();
-        assert!(json.len() <= MAX_ANCESTORS_JSON_BYTES, "{} bytes", json.len());
+        assert!(
+            json.len() <= MAX_ANCESTORS_JSON_BYTES,
+            "{} bytes",
+            json.len()
+        );
         let kept: Vec<ElementAncestor> = serde_json::from_str(&json).unwrap();
         assert!(!kept.is_empty());
         // The outermost entries went first: the nearest container survives.
@@ -1153,7 +1157,8 @@ mod tests {
     #[test]
     fn click_rows_carry_element_ancestors() {
         let chain = ancestors_root_first(vec![raw("List", Some("Messages")), raw("Window", None)]);
-        let event = UiEvent::click(Utc::now(), 0, 10, 20, 0, 1, 0).with_element(element_with(chain));
+        let event =
+            UiEvent::click(Utc::now(), 0, 10, 20, 0, 1, 0).with_element(element_with(chain));
         let row = event.to_db_insert(None);
         assert_eq!(
             row.element_ancestors.as_deref(),

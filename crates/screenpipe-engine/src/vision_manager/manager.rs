@@ -696,7 +696,10 @@ impl VisionManager {
     pub async fn pause_monitor(&self, monitor_id: u32) -> Result<()> {
         let _ops = self.monitor_ops.lock().await;
         if self.device_control.mark_paused(monitor_id) {
-            info!(monitor_id, "user paused vision capture on monitor {}", monitor_id);
+            info!(
+                monitor_id,
+                "user paused vision capture on monitor {}", monitor_id
+            );
         }
         self.stop_monitor_locked(monitor_id).await
     }
@@ -707,7 +710,10 @@ impl VisionManager {
     pub async fn resume_monitor(&self, monitor_id: u32) -> Result<(), DeviceControlError> {
         let _ops = self.monitor_ops.lock().await;
         if self.device_control.clear_paused(monitor_id) {
-            info!(monitor_id, "user resumed vision capture on monitor {}", monitor_id);
+            info!(
+                monitor_id,
+                "user resumed vision capture on monitor {}", monitor_id
+            );
         }
         if *self.status.read().await != VisionManagerStatus::Running {
             return Ok(());
@@ -1351,12 +1357,17 @@ mod tests {
         control.pause_monitor(1).await.expect("pause");
         assert!(vm.is_user_paused(1));
         assert!(!vm.recording_tasks.contains_key(&1), "task stopped");
-        assert!(vm.recording_tasks.contains_key(&2), "other monitor untouched");
+        assert!(
+            vm.recording_tasks.contains_key(&2),
+            "other monitor untouched"
+        );
         let row = control.status().into_iter().find(|m| m.id == 1).unwrap();
         assert!(row.user_disabled && !row.active);
 
         // Watcher-style restart attempts are refused while paused.
-        vm.start_monitor(1).await.expect("start of a paused monitor is a no-op");
+        vm.start_monitor(1)
+            .await
+            .expect("start of a paused monitor is a no-op");
         assert!(!vm.recording_tasks.contains_key(&1));
 
         // The manager is not running, so resume only lifts the pause; the

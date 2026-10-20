@@ -506,7 +506,8 @@ impl UiaContext {
         let started = Instant::now();
         let mut nearest_first: Vec<RawAncestor> = Vec::new();
         let mut current = element.clone();
-        while nearest_first.len() < MAX_ELEMENT_ANCESTORS && started.elapsed() < ANCESTOR_WALK_BUDGET
+        while nearest_first.len() < MAX_ELEMENT_ANCESTORS
+            && started.elapsed() < ANCESTOR_WALK_BUDGET
         {
             let parent = unsafe {
                 self.tree_walker
@@ -516,7 +517,9 @@ impl UiaContext {
                 Ok(parent) => parent,
                 Err(_) => break,
             };
-            if self.get_cached_string(&parent, UIA_ClassNamePropertyId).as_deref()
+            if self
+                .get_cached_string(&parent, UIA_ClassNamePropertyId)
+                .as_deref()
                 == Some(DESKTOP_ROOT_CLASS)
             {
                 break;

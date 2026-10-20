@@ -56,10 +56,8 @@ pub struct VisionDeviceStatusEntry {
     pub user_disabled: bool,
 }
 
-type ControlResult = Result<
-    Json<VisionDeviceControlResponse>,
-    (StatusCode, Json<VisionDeviceControlResponse>),
->;
+type ControlResult =
+    Result<Json<VisionDeviceControlResponse>, (StatusCode, Json<VisionDeviceControlResponse>)>;
 
 /// Which way a control request goes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -131,7 +129,10 @@ async fn control_device(
 }
 
 /// Status rows for `GET /vision/device/status`.
-fn device_status(control: &VisionDeviceControl, vision_disabled: bool) -> Vec<VisionDeviceStatusEntry> {
+fn device_status(
+    control: &VisionDeviceControl,
+    vision_disabled: bool,
+) -> Vec<VisionDeviceStatusEntry> {
     if vision_disabled {
         return Vec::new();
     }
@@ -244,7 +245,10 @@ mod tests {
     #[test]
     fn status_lists_selected_monitors_only_and_is_empty_when_vision_is_off() {
         let control = control_with(vec![summary(1, "A", true), summary(2, "B", false)]);
-        let ids: Vec<u32> = device_status(&control, false).iter().map(|r| r.id).collect();
+        let ids: Vec<u32> = device_status(&control, false)
+            .iter()
+            .map(|r| r.id)
+            .collect();
         assert_eq!(ids, vec![1]);
         assert!(device_status(&control, true).is_empty());
     }
@@ -295,7 +299,9 @@ mod tests {
     async fn unknown_monitors_are_404_and_disabled_vision_is_409() {
         let control = control_with(vec![summary(1, "A", true)]);
         for action in [DeviceAction::Pause, DeviceAction::Resume] {
-            let (status, body) = control_device(&control, false, 99, action).await.unwrap_err();
+            let (status, body) = control_device(&control, false, 99, action)
+                .await
+                .unwrap_err();
             assert_eq!(status, StatusCode::NOT_FOUND);
             assert!(!body.0.success);
             assert!(body.0.message.contains("99"), "{}", body.0.message);
@@ -319,5 +325,84 @@ mod tests {
                 "/vision/device/stop".to_string(),
             ]
         );
+    }
+
+    /// The routes are mounted on the real server router and answer with the
+    /// interop shapes (what `api /vision/device/status` sees).
+    #[tokio::test]
+    async fn routes_are_served_by_the_engine_router() {
+        use axum::body::{to_bytes, Body};
+        use axum::http::Request;
+        use screenpipe_audio::audio_manager::AudioManagerBuilder;
+        use screenpipe_db::DatabaseManager;
+        use tower::ServiceExt;
+
+        let db = Arc::new(
+            DatabaseManager::new("sqlite::memory:", Default::default())
+                .await
+                .unwrap(),
+        );
+        let data_dir = tempfile::tempdir().unwrap();
+        let audio_manager = Arc::new(
+            AudioManagerBuilder::new()
+                .output_path(data_dir.path().to_path_buf())
+                .is_disabled(true)
+                .build(db.clone())
+                .await
+                .unwrap(),
+        );
+        let router = crate::SCServer::new(
+            db,
+            std::net::SocketAddr::from(([127, 0, 0, 1], 3035)),
+            data_dir.path().to_path_buf(),
+            false,
+            true,
+            audio_manager,
+            false,
+            "balanced".to_string(),
+        )
+        .create_router()
+        .await;
+
+        let response = router
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/vision/device/status")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        let rows: Vec<serde_json::Value> = serde_json::from_slice(&body).unwrap();
+        for row in &rows {
+            let mut keys: Vec<&str> = row
+                .as_object()
+                .unwrap()
+                .keys()
+                .map(|k| k.as_str())
+                .collect();
+            keys.sort();
+            assert_eq!(keys, vec!["active", "id", "name", "user_disabled"]);
+        }
+
+        // An id no enumeration produces: refused with the control body shape.
+        let response = router
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/vision/device/stop")
+                    .header("Content-Type", "application/json")
+                    .body(Body::from(r#"{"monitor_id": 4000000000}"#))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::NOT_FOUND);
+        let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        let refused: VisionDeviceControlResponse = serde_json::from_slice(&body).unwrap();
+        assert!(!refused.success);
     }
 }
