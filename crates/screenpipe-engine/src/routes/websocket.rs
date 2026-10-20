@@ -295,6 +295,7 @@ async fn handle_metrics_socket(
                         "total_words": audio.total_words,
                         "audio_level_rms": audio.audio_level_rms,
                         "device_levels": per_device_levels,
+                        "mic_capture_active": crate::routes::health::mic_capture_active(&state),
                     },
                     "vision": {
                         "frames_captured": vision.frames_captured,

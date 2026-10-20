@@ -11,23 +11,33 @@ use tokio::sync::Mutex;
 use tracing::{debug, info, warn};
 
 /// A download that retrying cannot fix: the server answered that the file
-/// does not exist at this URL (HTTP 404 or 410). Once a URL fails this way,
-/// waiters stop polling and no further attempt is made for it in this
-/// process, so a wrong or missing mirror costs one request instead of
-/// minutes of retries.
+/// does not exist at this URL (HTTP 404 or 410), or it served a file that
+/// does not match the pinned size and SHA-256 (`status` 0, `mismatch` set).
+/// Once a URL fails this way, waiters stop polling and no further attempt is
+/// made for it in this process, so a wrong or missing mirror costs one
+/// request instead of minutes of retries.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PermanentDownloadError {
     pub url: String,
     pub status: u16,
+    /// Why the served bytes were rejected (pinned downloads only).
+    pub mismatch: Option<String>,
 }
 
 impl std::fmt::Display for PermanentDownloadError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(
-            f,
-            "HTTP {} for {}: the file is not available at this address; not retrying",
-            self.status, self.url
-        )
+        match &self.mismatch {
+            Some(reason) => write!(
+                f,
+                "the file served by {} was rejected: {}; not retrying",
+                self.url, reason
+            ),
+            None => write!(
+                f,
+                "HTTP {} for {}: the file is not available at this address; not retrying",
+                self.status, self.url
+            ),
+        }
     }
 }
 
@@ -66,6 +76,105 @@ fn record_permanent_failure(failure: PermanentDownloadError) {
         .insert(failure.url.clone(), failure);
 }
 
+/// Size and SHA-256 a downloaded file must match before it is kept
+/// (Freenpipe, W2-19). Checked on the downloaded bytes, before the file is
+/// moved into the cache, so a wrong or tampered file never lands there.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ExpectedFile {
+    pub size: u64,
+    /// Lower-case hex.
+    pub sha256: &'static str,
+}
+
+impl ExpectedFile {
+    pub fn check(&self, bytes: &[u8]) -> Result<()> {
+        if bytes.len() as u64 != self.size {
+            return Err(anyhow!(
+                "got {} bytes, expected {} (pinned size)",
+                bytes.len(),
+                self.size
+            ));
+        }
+        let actual = sha256_hex(bytes);
+        if actual != self.sha256 {
+            return Err(anyhow!(
+                "sha256 {actual} does not match the pinned {}",
+                self.sha256
+            ));
+        }
+        Ok(())
+    }
+
+    /// True when `path` is a regular file of the pinned size (cheap test that
+    /// rules out Git LFS pointers and truncated copies).
+    pub fn has_size(&self, path: &Path) -> bool {
+        std::fs::metadata(path)
+            .map(|m| m.is_file() && m.len() == self.size)
+            .unwrap_or(false)
+    }
+
+    /// True when the file at `path` has the pinned size and SHA-256. The size
+    /// is checked first, so other files are never read.
+    pub fn matches_file(&self, path: &Path) -> bool {
+        self.has_size(path)
+            && std::fs::read(path)
+                .map(|bytes| self.check(&bytes).is_ok())
+                .unwrap_or(false)
+    }
+}
+
+fn sha256_hex(bytes: &[u8]) -> String {
+    use sha2::{Digest, Sha256};
+    Sha256::digest(bytes)
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect()
+}
+
+/// Where a locally found model came from.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ModelOrigin {
+    /// Shipped with the app, next to the executable.
+    Installed,
+    /// Downloaded earlier into the per-user cache.
+    Cache,
+}
+
+/// Directories next to the running executable that may hold `relative`
+/// (for example `vad` or `models`): the exe dir itself, then the macOS
+/// bundle `Resources` dir and the Linux package resource dirs.
+pub fn install_dirs(relative: &str) -> Vec<PathBuf> {
+    std::env::current_exe()
+        .map(|exe| {
+            screenpipe_core::agents::cli_runtime::install_roots(&exe)
+                .into_iter()
+                .map(|root| root.join(relative))
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// Model lookup without network: the first installed copy that `installed_ok`
+/// accepts, then the cache copy if `cached_ok` accepts it. `None` means a
+/// download is needed.
+pub fn find_local_model(
+    filename: &str,
+    installed_dirs: &[PathBuf],
+    cache_dir: &Path,
+    installed_ok: impl Fn(&Path) -> bool,
+    cached_ok: impl Fn(&Path) -> bool,
+) -> Option<(PathBuf, ModelOrigin)> {
+    installed_dirs
+        .iter()
+        .map(|dir| dir.join(filename))
+        .find(|candidate| installed_ok(candidate))
+        .map(|path| (path, ModelOrigin::Installed))
+        .or_else(|| {
+            let cached = cache_dir.join(filename);
+            cached_ok(&cached).then_some((cached, ModelOrigin::Cache))
+        })
+}
+
 /// Shared model download with retries, validation, and concurrent download handling.
 /// Uses atomic flag to prevent duplicate concurrent downloads and timeout for callers
 /// waiting on another thread's download.
@@ -76,6 +185,7 @@ pub struct ModelDownloader {
     cache_dir: PathBuf,
     downloading_flag: &'static AtomicBool,
     model_path_lock: &'static Mutex<Option<PathBuf>>,
+    expected: Option<ExpectedFile>,
 }
 
 impl ModelDownloader {
@@ -92,7 +202,14 @@ impl ModelDownloader {
             cache_dir,
             downloading_flag,
             model_path_lock,
+            expected: None,
         }
+    }
+
+    /// Reject a download that does not match `expected` (size and SHA-256).
+    pub fn with_expected(mut self, expected: ExpectedFile) -> Self {
+        self.expected = Some(expected);
+        self
     }
 
     /// Non-blocking: check in-memory and disk cache, start download in background if needed.
@@ -195,6 +312,7 @@ impl ModelDownloader {
             let cache_dir = self.cache_dir.clone();
             let flag = self.downloading_flag;
             let model_path_lock = self.model_path_lock;
+            let expected = self.expected;
 
             tokio::spawn(async move {
                 const MAX_RETRIES: u32 = 3;
@@ -204,7 +322,9 @@ impl ModelDownloader {
                         "{} model download attempt {}/{}",
                         filename, attempt, MAX_RETRIES
                     );
-                    match download_model(&url, &filename, &cache_dir, model_path_lock).await {
+                    match download_model(&url, &filename, &cache_dir, model_path_lock, expected)
+                        .await
+                    {
                         Ok(_) => {
                             last_err = None;
                             break;
@@ -317,6 +437,7 @@ async fn download_model(
     filename: &str,
     cache_dir: &Path,
     model_path_lock: &'static Mutex<Option<PathBuf>>,
+    expected: Option<ExpectedFile>,
 ) -> Result<()> {
     info!("downloading {} model from {}", filename, url);
     let response = match reqwest::get(url).await {
@@ -344,6 +465,7 @@ async fn download_model(
             return Err(anyhow::Error::new(PermanentDownloadError {
                 url: url.to_string(),
                 status: status.as_u16(),
+                mismatch: None,
             }));
         }
         let hint = match status.as_u16() {
@@ -396,6 +518,18 @@ async fn download_model(
     };
     if model_data.is_empty() {
         return Err(anyhow!("download returned empty body for {}", filename));
+    }
+    if let Some(expected) = expected {
+        // Different bytes at a pinned address will not fix themselves, so
+        // this counts as permanent (no retries, waiters stop at once).
+        expected.check(&model_data).map_err(|e| {
+            anyhow::Error::new(PermanentDownloadError {
+                url: url.to_string(),
+                status: 0,
+                mismatch: Some(e.to_string()),
+            })
+            .context(format!("downloaded {filename} was rejected"))
+        })?;
     }
 
     tokio::fs::create_dir_all(cache_dir).await?;
@@ -699,10 +833,8 @@ mod tests {
     #[tokio::test]
     #[ignore]
     async fn integration_real_silero_vad_download() {
-        // Use real Silero VAD URL (smaller/faster than pyannote models)
-        let url =
-            "https://github.com/snakers4/silero-vad/raw/master/src/silero_vad/data/silero_vad.onnx"
-                .to_string();
+        // The pinned Silero VAD URL (smaller/faster than pyannote models)
+        let url = crate::vad::silero::MODEL_URL.to_string();
         let filename = "test_silero_vad_integration.onnx".to_string();
 
         let dir = tempdir().unwrap();
@@ -714,7 +846,8 @@ mod tests {
         let flag = INTEG_FLAG.get_or_init(|| AtomicBool::new(false));
         let lock = INTEG_LOCK.get_or_init(|| Mutex::const_new(None));
 
-        let downloader = ModelDownloader::new(url, filename.clone(), cache_dir.clone(), flag, lock);
+        let downloader = ModelDownloader::new(url, filename.clone(), cache_dir.clone(), flag, lock)
+            .with_expected(crate::vad::silero::MODEL_PIN);
 
         // First call: download from URL
         let start = std::time::Instant::now();
@@ -902,5 +1035,172 @@ mod tests {
         println!("Downloaded successfully in {:?}", elapsed);
 
         println!("PASSED: Retry logic works (fails fast on bad URLs, succeeds on valid)");
+    }
+
+    // --- W2-19: pinned downloads and local lookup -------------------------
+
+    // sha256("abc")
+    const ABC: ExpectedFile = ExpectedFile {
+        size: 3,
+        sha256: "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad",
+    };
+
+    #[test]
+    fn expected_file_checks_size_and_hash() {
+        ABC.check(b"abc").unwrap();
+        assert!(ABC
+            .check(b"ab")
+            .unwrap_err()
+            .to_string()
+            .contains("pinned size"));
+        assert!(ABC
+            .check(b"abd")
+            .unwrap_err()
+            .to_string()
+            .contains("sha256"));
+    }
+
+    #[test]
+    fn installed_copy_wins_over_the_cache() {
+        let tmp = tempdir().unwrap();
+        let exe_dir = tmp.path().join("install").join("vad");
+        let pointer_dir = tmp.path().join("checkout").join("vad");
+        let cache = tmp.path().join("cache");
+        for dir in [&exe_dir, &pointer_dir, &cache] {
+            std::fs::create_dir_all(dir).unwrap();
+        }
+        std::fs::write(exe_dir.join("m.onnx"), b"abc").unwrap();
+        std::fs::write(pointer_dir.join("m.onnx"), b"version https://git-lfs").unwrap();
+        std::fs::write(cache.join("m.onnx"), b"cached").unwrap();
+
+        let dirs = vec![pointer_dir.clone(), exe_dir.clone()];
+        let found = find_local_model(
+            "m.onnx",
+            &dirs,
+            &cache,
+            |p| ABC.has_size(p),
+            |p| p.is_file(),
+        );
+        assert_eq!(
+            found,
+            Some((exe_dir.join("m.onnx"), ModelOrigin::Installed))
+        );
+
+        // Without an acceptable installed copy the cache is used.
+        let found = find_local_model(
+            "m.onnx",
+            &dirs[..1],
+            &cache,
+            |p| ABC.has_size(p),
+            |p| p.is_file(),
+        );
+        assert_eq!(found, Some((cache.join("m.onnx"), ModelOrigin::Cache)));
+
+        // Neither: a download is needed.
+        let empty = tmp.path().join("empty");
+        assert_eq!(
+            find_local_model("m.onnx", &[], &empty, |p| p.is_file(), |p| p.is_file()),
+            None
+        );
+    }
+
+    #[test]
+    fn install_dirs_start_next_to_the_executable() {
+        let exe_dir = std::env::current_exe()
+            .unwrap()
+            .parent()
+            .unwrap()
+            .to_path_buf();
+        let dirs = install_dirs("vad");
+        assert_eq!(dirs.first(), Some(&exe_dir.join("vad")));
+    }
+
+    /// Local HTTP server that answers every request with 200 and `body`.
+    async fn serve_body(body: &'static [u8]) -> String {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            while let Ok((mut socket, _)) = listener.accept().await {
+                tokio::spawn(async move {
+                    let mut request = [0u8; 4096];
+                    let _ = socket.read(&mut request).await;
+                    let head = format!(
+                        "HTTP/1.1 200 OK\r\ncontent-type: application/octet-stream\r\ncontent-length: {}\r\nconnection: close\r\n\r\n",
+                        body.len()
+                    );
+                    let _ = socket.write_all(head.as_bytes()).await;
+                    let _ = socket.write_all(body).await;
+                    let _ = socket.shutdown().await;
+                });
+            }
+        });
+        format!("http://{addr}")
+    }
+
+    #[tokio::test]
+    async fn pinned_download_keeps_only_matching_bytes() {
+        static LOCK_GOOD: Mutex<Option<PathBuf>> = Mutex::const_new(None);
+        static LOCK_BAD: Mutex<Option<PathBuf>> = Mutex::const_new(None);
+        let dir = tempdir().unwrap();
+
+        let good = serve_body(b"abc").await;
+        download_model(
+            &format!("{good}/m.onnx"),
+            "good.onnx",
+            dir.path(),
+            &LOCK_GOOD,
+            Some(ABC),
+        )
+        .await
+        .unwrap();
+        assert_eq!(std::fs::read(dir.path().join("good.onnx")).unwrap(), b"abc");
+
+        let bad = serve_body(b"abd").await;
+        let err = download_model(
+            &format!("{bad}/m.onnx"),
+            "bad.onnx",
+            dir.path(),
+            &LOCK_BAD,
+            Some(ABC),
+        )
+        .await
+        .unwrap_err();
+        assert!(err.to_string().contains("rejected"), "{err}");
+        let failure = permanent_failure(&err).expect("a pin mismatch is permanent");
+        assert_eq!(failure.status, 0);
+        assert!(failure.mismatch.as_deref().unwrap().contains("sha256"));
+        assert!(!dir.path().join("bad.onnx").exists());
+        assert!(!dir.path().join("bad.onnx.downloading").exists());
+        assert!(LOCK_BAD.lock().await.is_none());
+    }
+
+    /// A waiter on a pinned download that keeps serving the wrong bytes gets
+    /// the rejection at once instead of polling until the timeout.
+    #[tokio::test]
+    async fn pinned_mismatch_stops_waiters_without_retries() {
+        static FLAG: AtomicBool = AtomicBool::new(false);
+        static LOCK: Mutex<Option<PathBuf>> = Mutex::const_new(None);
+        let dir = tempdir().unwrap();
+        let base = serve_body(b"xyz").await;
+        let url = format!("{base}/pinned/m.onnx");
+        let downloader = ModelDownloader::new(
+            url.clone(),
+            "m.onnx".to_string(),
+            dir.path().to_path_buf(),
+            &FLAG,
+            &LOCK,
+        )
+        .with_expected(ABC);
+        let started = std::time::Instant::now();
+        let err = downloader.ensure_model_available().await.unwrap_err();
+        assert!(
+            started.elapsed() < std::time::Duration::from_secs(10),
+            "took {:?}",
+            started.elapsed()
+        );
+        assert!(permanent_failure(&err).is_some(), "{err:#}");
+        assert!(recorded_permanent_failure(&url).is_some());
+        assert!(!dir.path().join("m.onnx").exists());
     }
 }

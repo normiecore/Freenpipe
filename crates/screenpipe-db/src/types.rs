@@ -384,6 +384,10 @@ pub struct MeetingTranscriptSegment {
     pub audio_transcription_id: Option<i64>,
     pub audio_chunk_id: Option<i64>,
     pub audio_file_path: Option<String>,
+    /// Where this row starts inside `audio_file_path`, in seconds (background
+    /// rows; `None` for live rows, which have no chunk).
+    #[sqlx(default)]
+    pub audio_start_time_secs: Option<f64>,
     pub speaker_id: Option<i64>,
     pub speaker_name: Option<String>,
     /// Live provider speaker label scoped to the stream that produced it

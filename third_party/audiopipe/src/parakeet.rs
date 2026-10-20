@@ -5,7 +5,7 @@
 use crate::audio::{self, MelConfig};
 use crate::error::{Error, Result};
 use crate::hf_cache;
-use crate::model::{Engine, Segment, TranscribeOptions, TranscribeResult};
+use crate::model::{Accelerator, Engine, Segment, TranscribeOptions, TranscribeResult};
 use ndarray::{Array1, Array2, Array3};
 use std::path::{Path, PathBuf};
 
@@ -60,6 +60,11 @@ impl ParakeetEngine {
     /// Load from HuggingFace cache only — never downloads. Fails with [`Error::ModelNotCached`]
     /// if any required file is missing locally.
     pub fn from_pretrained_cache_only(name: &str) -> Result<Self> {
+        Self::from_pretrained_cache_only_with(name, Accelerator::Auto)
+    }
+
+    /// [`Self::from_pretrained_cache_only`] with an explicit execution provider.
+    pub fn from_pretrained_cache_only_with(name: &str, accelerator: Accelerator) -> Result<Self> {
         let repo = match name {
             "parakeet-tdt-0.6b-v2" => "istupakov/parakeet-tdt-0.6b-v2-onnx",
             "parakeet-tdt-0.6b-v3" => "istupakov/parakeet-tdt-0.6b-v3-onnx",
@@ -85,7 +90,7 @@ impl ParakeetEngine {
         }
         let _ = hf_cache::cache_get(repo, "encoder-model.onnx.data");
 
-        Self::from_dir(&model_dir).map(|mut e| {
+        Self::from_dir_with(&model_dir, accelerator).map(|mut e| {
             e.name = name.to_string();
             e
         })
@@ -93,6 +98,11 @@ impl ParakeetEngine {
 
     /// Load from a local directory containing ONNX files + vocab.txt.
     pub fn from_dir(dir: &Path) -> Result<Self> {
+        Self::from_dir_with(dir, Accelerator::Auto)
+    }
+
+    /// [`Self::from_dir`] with an explicit execution provider.
+    pub fn from_dir_with(dir: &Path, accelerator: Accelerator) -> Result<Self> {
         // Prefer int8 models: they're self-contained (no external .data files) and
         // work with CoreML's MLProgram format for ANE acceleration.
         // fp32 models with external data can't use CoreML due to ort limitations.
@@ -104,10 +114,10 @@ impl ParakeetEngine {
         let vocab_size = vocab.len();
 
         tracing::info!("loading encoder from {}", encoder_path.display());
-        let encoder = build_session_with_ep(&encoder_path)?;
+        let encoder = build_session_with_ep(&encoder_path, accelerator)?;
 
         tracing::info!("loading decoder from {}", decoder_path.display());
-        let decoder = build_session_with_ep(&decoder_path)?;
+        let decoder = build_session_with_ep(&decoder_path, accelerator)?;
 
         tracing::info!("parakeet loaded: vocab_size={}", vocab_size);
 
@@ -130,8 +140,19 @@ impl ParakeetEngine {
 ///
 /// On Windows with `directml` feature: tries DirectML for GPU acceleration.
 /// Falls back to CPU if no accelerator works.
-fn build_session_with_ep(onnx_path: &std::path::Path) -> Result<ort::session::Session> {
+///
+/// Freenpipe: `accelerator` other than [`Accelerator::Auto`] overrides that
+/// choice; an explicit DirectML request that fails is returned as an error.
+fn build_session_with_ep(onnx_path: &std::path::Path, accelerator: Accelerator) -> Result<ort::session::Session> {
     let file_name = onnx_path.file_name().unwrap_or_default().to_string_lossy().to_string();
+
+    match accelerator {
+        Accelerator::Auto => {}
+        Accelerator::Cpu => return build_cpu_session(onnx_path, &file_name),
+        Accelerator::DirectMl { device_id } => {
+            return build_directml_session(onnx_path, &file_name, device_id)
+        }
+    }
 
     // DirectML GPU acceleration — opt-in via SCREENPIPE_DIRECTML=1 env var.
     // Screenpipe's GPU detection sets this when a discrete GPU (NVIDIA/AMD/Intel Arc)
@@ -158,12 +179,40 @@ fn build_session_with_ep(onnx_path: &std::path::Path) -> Result<ort::session::Se
     }
 
     // CPU execution with thread limiting — default path.
+    build_cpu_session(onnx_path, &file_name)
+}
+
+fn build_cpu_session(onnx_path: &Path, file_name: &str) -> Result<ort::session::Session> {
     let intra_threads = 1;
     tracing::info!("parakeet: loading {} on CPU ({} threads)", file_name, intra_threads);
     Ok(ort::session::Session::builder()?
         .with_intra_threads(intra_threads)?
         .with_inter_threads(1)?
         .commit_from_file(onnx_path)?)
+}
+
+/// DirectML session on one adapter. The DirectML provider does not support
+/// memory patterns or parallel execution, so both are off.
+#[cfg(feature = "directml")]
+fn build_directml_session(onnx_path: &Path, file_name: &str, device_id: i32) -> Result<ort::session::Session> {
+    let provider = ort::execution_providers::DirectMLExecutionProvider::default()
+        .with_device_id(device_id)
+        .build()
+        .error_on_failure();
+    let session = ort::session::Session::builder()?
+        .with_memory_pattern(false)?
+        .with_parallel_execution(false)?
+        .with_execution_providers([provider])?
+        .commit_from_file(onnx_path)?;
+    tracing::info!("parakeet: DirectML session created for {} on adapter {}", file_name, device_id);
+    Ok(session)
+}
+
+#[cfg(not(feature = "directml"))]
+fn build_directml_session(_onnx_path: &Path, file_name: &str, device_id: i32) -> Result<ort::session::Session> {
+    Err(Error::Other(format!(
+        "DirectML requested for {file_name} on adapter {device_id}, but audiopipe was built without the `directml` feature"
+    )))
 }
 
 /// Helper to extract f32 tensor from ort output as a raw shape + data.
