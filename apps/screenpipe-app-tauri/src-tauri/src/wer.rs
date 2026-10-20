@@ -239,12 +239,12 @@ static REGISTRATION: OnceLock<Registration> = OnceLock::new();
 /// early in `app_main`. Safe to call before logging is set up: the outcome
 /// is kept for [`log_and_harvest`].
 pub fn register_early(data_dir: &Path) {
-    let _ = std::fs::create_dir_all(pending_dir(data_dir));
     REGISTRATION.get_or_init(|| platform::register(data_dir));
 }
 
 /// Log the registration outcome and collect dumps from earlier crashes on a
-/// background thread. Call once logging works.
+/// background thread (Windows only: no other platform has a helper that
+/// writes dumps). Call once logging works.
 pub fn log_and_harvest(data_dir: &Path) {
     match REGISTRATION.get() {
         Some(Registration::Enabled { dll }) => info!(
@@ -260,6 +260,9 @@ pub fn log_and_harvest(data_dir: &Path) {
             dll.display()
         ),
         Some(Registration::Unsupported) | None => {}
+    }
+    if !cfg!(windows) {
+        return;
     }
 
     let data_dir = data_dir.to_path_buf();
@@ -374,6 +377,9 @@ mod platform {
         if let Err(reason) = allow_list(&dll) {
             return Registration::Failed { dll, reason };
         }
+        // The directory the context block names. The helper creates it as
+        // well, but having it in place before any crash is cheaper.
+        let _ = std::fs::create_dir_all(pending_dir(data_dir));
         // The block lives for the rest of the process: the helper reads it
         // out of our memory after a crash. A path too long for it leaves the
         // context empty, and the helper writes next to itself instead.

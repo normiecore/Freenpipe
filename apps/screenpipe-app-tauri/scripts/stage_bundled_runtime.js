@@ -177,7 +177,9 @@ export const WER_HELPER_DLL = 'screenpipe_wer_dump_helper.dll'
  * The build links the C runtime statically: WerFault.exe loads the DLL from
  * System32's search path, where the bundled vcruntime140.dll is not found.
  * It uses its own target directory so those flags do not invalidate the
- * main build cache.
+ * main build cache. A release matrix entry names its triple in
+ * SCREENPIPE_RELEASE_TARGET; the helper is then built for that triple, and
+ * cargo puts it under `<target-dir>/<triple>/release`.
  */
 export function werHelperPlan({ repoRoot, platform, env }) {
 	if (platform !== 'windows') return null
@@ -185,12 +187,17 @@ export function werHelperPlan({ repoRoot, platform, env }) {
 	const wanted = env.FREENPIPE_BUILD_WER_HELPER === '1' || env.FREENPIPE_REQUIRE_BUNDLED_RUNTIME === '1'
 	if (!wanted) return null
 	const targetDir = path.join(env.CARGO_TARGET_DIR || path.join(repoRoot, 'target'), 'wer-helper')
+	const triple = (env.SCREENPIPE_RELEASE_TARGET || '').trim()
+	const args = ['build', '--release', '-p', 'screenpipe-wer-helper', '--target-dir', targetDir]
+	if (triple) args.push('--target', triple)
 	return {
 		build: {
-			args: ['build', '--release', '-p', 'screenpipe-wer-helper', '--target-dir', targetDir],
+			args,
 			env: { RUSTFLAGS: [env.RUSTFLAGS, '-C target-feature=+crt-static'].filter(Boolean).join(' ') },
 		},
-		source: path.join(targetDir, 'release', WER_HELPER_DLL),
+		source: triple
+			? path.join(targetDir, triple, 'release', WER_HELPER_DLL)
+			: path.join(targetDir, 'release', WER_HELPER_DLL),
 	}
 }
 

@@ -177,6 +177,35 @@ describe('WER helper DLL', () => {
 		expect(required.source).toBe(path.join('/cache/target', 'wer-helper', 'release', WER_HELPER_DLL))
 	})
 
+	it('builds for the release matrix triple when one is named', () => {
+		const targetDir = path.join(root, 'target', 'wer-helper')
+		const triple = 'x86_64-pc-windows-msvc'
+		const plan = werHelperPlan({
+			repoRoot: root,
+			platform: 'windows',
+			env: { FREENPIPE_REQUIRE_BUNDLED_RUNTIME: '1', SCREENPIPE_RELEASE_TARGET: triple },
+		})
+		expect(plan.build.args).toEqual([
+			'build',
+			'--release',
+			'-p',
+			'screenpipe-wer-helper',
+			'--target-dir',
+			targetDir,
+			'--target',
+			triple,
+		])
+		expect(plan.source).toBe(path.join(targetDir, triple, 'release', WER_HELPER_DLL))
+		// An empty value behaves like an unset one.
+		const unset = werHelperPlan({
+			repoRoot: root,
+			platform: 'windows',
+			env: { FREENPIPE_BUILD_WER_HELPER: '1', SCREENPIPE_RELEASE_TARGET: '' },
+		})
+		expect(unset.build.args).not.toContain('--target')
+		expect(unset.source).toBe(path.join(targetDir, 'release', WER_HELPER_DLL))
+	})
+
 	it('matches the crate, the app and the Windows bundle mapping', async () => {
 		const cargo = await readFile(path.join(repoRoot, 'crates/screenpipe-wer-helper/Cargo.toml'), 'utf8')
 		expect(cargo).toContain(`name = "${WER_HELPER_DLL.replace(/\.dll$/, '')}"`)

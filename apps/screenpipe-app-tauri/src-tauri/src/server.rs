@@ -113,16 +113,58 @@ pub struct FocusIdentity {
     pub schemes: Vec<String>,
 }
 
+/// The file that names this install in a handoff, canonicalised when
+/// possible.
+///
+/// Normally that is `current_exe`. A Linux AppImage is the exception: each
+/// run mounts the image at a fresh `/tmp/.mount_*` directory and runs the
+/// binary from there, so the running copy and a second launch of the same
+/// AppImage have different `current_exe` paths. The AppImage runtime names
+/// the image file in `$APPIMAGE` and the mount in `$APPDIR`; when
+/// `current_exe` lies inside `$APPDIR`, the image file identifies the
+/// install instead. (The check on `$APPDIR` keeps a stray inherited
+/// `$APPIMAGE` from relabelling some other executable.)
+pub fn install_executable(
+    current_exe: Option<std::path::PathBuf>,
+    appimage: Option<&std::ffi::OsStr>,
+    appdir: Option<&std::ffi::OsStr>,
+    canonicalize: impl Fn(&std::path::Path) -> Option<std::path::PathBuf>,
+) -> Option<std::path::PathBuf> {
+    let resolve = |p: &std::path::Path| canonicalize(p).unwrap_or_else(|| p.to_path_buf());
+    let exe = current_exe.map(|exe| resolve(&exe));
+    let non_empty = |v: Option<&std::ffi::OsStr>| v.filter(|v| !v.is_empty());
+    if let (Some(exe), Some(image), Some(mount)) = (&exe, non_empty(appimage), non_empty(appdir)) {
+        if exe.starts_with(resolve(std::path::Path::new(mount))) {
+            return Some(resolve(std::path::Path::new(image)));
+        }
+    }
+    exe
+}
+
+/// [`install_executable`] for this process. `$APPIMAGE` only means
+/// something on Linux.
+pub fn this_install_executable() -> Option<std::path::PathBuf> {
+    let (appimage, appdir) = if cfg!(target_os = "linux") {
+        (std::env::var_os("APPIMAGE"), std::env::var_os("APPDIR"))
+    } else {
+        (None, None)
+    };
+    install_executable(
+        std::env::current_exe().ok(),
+        appimage.as_deref(),
+        appdir.as_deref(),
+        |p| std::fs::canonicalize(p).ok(),
+    )
+}
+
 impl FocusIdentity {
-    /// Identity of the running app: its executable and the schemes in the
-    /// `deep-link` section of its Tauri config.
+    /// Identity of the running app: its install executable (see
+    /// [`install_executable`]) and the schemes in the `deep-link` section of
+    /// its Tauri config.
     pub fn of_app(app: &tauri::AppHandle) -> Self {
-        let current_exe = std::env::current_exe()
-            .ok()
-            .map(|exe| std::fs::canonicalize(&exe).unwrap_or(exe));
         let deep_link = app.config().plugins.0.get("deep-link");
         FocusIdentity {
-            current_exe,
+            current_exe: this_install_executable(),
             schemes: registered_schemes(deep_link),
         }
     }
@@ -575,9 +617,9 @@ pub fn handoff_payload(args: &[String]) -> FocusPayload {
         args: args.to_vec(),
         deep_link_url: crate::brand::find_deep_link_arg(args),
         target: None,
-        launch_exe: std::env::current_exe()
-            .ok()
-            .map(|p| p.display().to_string()),
+        // The AppImage file rather than its per-run mount (see
+        // `install_executable`), so the running copy recognises itself.
+        launch_exe: this_install_executable().map(|p| p.display().to_string()),
         launchd_job_label: if cfg!(target_os = "macos") {
             // launchd names a job's process through this variable.
             std::env::var("XPC_SERVICE_NAME")
@@ -604,16 +646,29 @@ pub async fn hand_off(payload: &FocusPayload, port: u16) -> Handoff {
     match response {
         Ok(resp) if resp.status().is_success() => Handoff::Delivered,
         Ok(resp) if resp.status().as_u16() == StatusCode::FORBIDDEN.as_u16() => {
-            let message = resp
-                .json::<serde_json::Value>()
-                .await
-                .ok()
-                .and_then(|v| v.get("message").and_then(|m| m.as_str()).map(String::from))
-                .unwrap_or_else(|| "the running instance refused the handoff".to_string());
-            Handoff::Refused(message)
+            // Only the control server's own refusal counts. Any other
+            // program on this port that answers 403 is not an instance of
+            // the app: start normally and let `port_conflict` report it.
+            match resp.bytes().await.ok().and_then(|b| refusal_message(&b)) {
+                Some(message) => Handoff::Refused(message),
+                None => Handoff::NoInstance,
+            }
         }
         _ => Handoff::NoInstance,
     }
+}
+
+/// The message of a control-server refusal: a JSON body
+/// `{"success": false, "message": "..."}` (an [`ApiResponse`]). `None` for
+/// any other body.
+pub fn refusal_message(body: &[u8]) -> Option<String> {
+    let value: serde_json::Value = serde_json::from_slice(body).ok()?;
+    let object = value.as_object()?;
+    if object.get("success")?.as_bool()? {
+        return None;
+    }
+    let message = object.get("message")?.as_str()?;
+    Some(message.to_string())
 }
 
 pub async fn run_server(app_handle: tauri::AppHandle, port: u16) {
@@ -1173,6 +1228,120 @@ mod tests {
     }
 
     #[test]
+    fn appimage_runs_from_different_mounts_are_one_install() {
+        use std::ffi::OsStr;
+        let image = OsStr::new("/home/ada/Apps/Freenpipe.AppImage");
+        // The running copy and a second launch of the same AppImage, each
+        // mounted at its own random directory.
+        let running = install_executable(
+            Some("/tmp/.mount_FreenpAbC123/usr/bin/freenpipe".into()),
+            Some(image),
+            Some(OsStr::new("/tmp/.mount_FreenpAbC123")),
+            resolve_as_is,
+        );
+        let second = install_executable(
+            Some("/tmp/.mount_FreenpXyZ789/usr/bin/freenpipe".into()),
+            Some(image),
+            Some(OsStr::new("/tmp/.mount_FreenpXyZ789")),
+            resolve_as_is,
+        );
+        assert_eq!(running, Some(PathBuf::from(image)));
+        assert_eq!(second, running);
+        let payload = FocusPayload {
+            launch_exe: second.map(|p| p.display().to_string()),
+            ..Default::default()
+        };
+        assert_eq!(
+            decide_focus(&payload, &identity(running.clone()), resolve_as_is),
+            FocusDecision::Accept
+        );
+
+        // Another AppImage (another version or channel) is another install.
+        let other = install_executable(
+            Some("/tmp/.mount_FreenpQqQ000/usr/bin/freenpipe".into()),
+            Some(OsStr::new("/home/ada/Apps/Freenpipe-beta.AppImage")),
+            Some(OsStr::new("/tmp/.mount_FreenpQqQ000")),
+            resolve_as_is,
+        );
+        let payload = FocusPayload {
+            launch_exe: other.map(|p| p.display().to_string()),
+            ..Default::default()
+        };
+        assert!(matches!(
+            decide_focus(&payload, &identity(running), resolve_as_is),
+            FocusDecision::Reject(FocusRejection::OtherExecutable { .. })
+        ));
+    }
+
+    #[test]
+    fn appimage_variables_only_apply_inside_the_mount() {
+        use std::ffi::OsStr;
+        let exe = PathBuf::from("/usr/bin/freenpipe");
+        // Inherited from an AppImage parent, but this binary is not in its
+        // mount: the executable itself names the install.
+        assert_eq!(
+            install_executable(
+                Some(exe.clone()),
+                Some(OsStr::new("/home/ada/Freenpipe.AppImage")),
+                Some(OsStr::new("/tmp/.mount_FreenpAbC123")),
+                resolve_as_is,
+            ),
+            Some(exe.clone())
+        );
+        // No AppImage, or only half of its variables.
+        for (image, mount) in [
+            (None, None),
+            (Some(OsStr::new("/home/ada/Freenpipe.AppImage")), None),
+            (Some(OsStr::new("")), Some(OsStr::new("/usr"))),
+        ] {
+            assert_eq!(
+                install_executable(Some(exe.clone()), image, mount, resolve_as_is),
+                Some(exe.clone()),
+                "{image:?} {mount:?}"
+            );
+        }
+        // Resolution applies to the executable as before.
+        assert_eq!(
+            install_executable(Some(exe.clone()), None, None, |_| Some(
+                PathBuf::from("/real/freenpipe")
+            )),
+            Some(PathBuf::from("/real/freenpipe"))
+        );
+        assert_eq!(install_executable(None, None, None, resolve_as_is), None);
+    }
+
+    #[test]
+    fn only_the_control_server_refusal_counts_as_refused() {
+        let ours = serde_json::to_vec(&ApiResponse {
+            success: false,
+            message: "another install is already running".to_string(),
+        })
+        .unwrap();
+        assert_eq!(
+            refusal_message(&ours).as_deref(),
+            Some("another install is already running")
+        );
+        for body in [
+            &b"Forbidden"[..],
+            b"",
+            b"<html><body>403 Forbidden</body></html>",
+            br#"{"error":"forbidden"}"#,
+            br#"{"success":true,"message":"ok"}"#,
+            br#"{"success":"false","message":"x"}"#,
+            br#"{"success":false}"#,
+            br#"{"success":false,"message":3}"#,
+            br#"[false,"message"]"#,
+        ] {
+            assert_eq!(
+                refusal_message(body),
+                None,
+                "{}",
+                String::from_utf8_lossy(body)
+            );
+        }
+    }
+
+    #[test]
     fn handoff_from_an_unresolvable_executable_is_refused() {
         let payload = FocusPayload {
             launch_exe: Some("/gone/freenpipe".into()),
@@ -1275,10 +1444,9 @@ mod tests {
         );
         assert_eq!(
             payload.launch_exe,
-            std::env::current_exe()
-                .ok()
-                .map(|p| p.display().to_string())
+            this_install_executable().map(|p| p.display().to_string())
         );
+        assert!(payload.launch_exe.is_some());
         let json = serde_json::to_value(&payload).unwrap();
         for field in [
             "args",
@@ -1513,6 +1681,35 @@ mod tests {
         drop(free);
         assert_eq!(
             hand_off(&FocusPayload::default(), port).await,
+            Handoff::NoInstance
+        );
+    }
+
+    #[tokio::test]
+    async fn a_foreign_service_answering_403_is_not_an_instance() {
+        // Some other program on the focus port that refuses everything.
+        let foreign = Router::new().route(
+            "/focus",
+            axum::routing::post(|| async { (StatusCode::FORBIDDEN, "Forbidden") }),
+        );
+        let addr = serve(foreign).await;
+        assert_eq!(
+            hand_off(&FocusPayload::default(), addr.port()).await,
+            Handoff::NoInstance
+        );
+        // Same with a JSON body of another shape.
+        let json_only = Router::new().route(
+            "/focus",
+            axum::routing::post(|| async {
+                (
+                    StatusCode::FORBIDDEN,
+                    Json(serde_json::json!({ "error": "no" })),
+                )
+            }),
+        );
+        let addr = serve(json_only).await;
+        assert_eq!(
+            hand_off(&FocusPayload::default(), addr.port()).await,
             Handoff::NoInstance
         );
     }
