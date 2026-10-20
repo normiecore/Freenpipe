@@ -335,9 +335,6 @@ export type Settings = SettingsStore & {
 	showChatSuggestions?: boolean;
 	/** macOS: hide the Dock icon. Default false. */
 	hideDockIcon?: boolean;
-	/** Remote-control keys written by screenpipe. Kept as stored, never read. */
-	remoteControlPreferences?: Record<string, unknown>;
-	remoteControlPolicy?: Record<string, unknown>;
 	/** Remote devices to monitor pipes on (LAN addresses) */
 		monitorDevices?: Array<{
 			address: string;

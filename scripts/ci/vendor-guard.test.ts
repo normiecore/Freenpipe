@@ -139,6 +139,12 @@ const COMMERCE_ALLOWED: { path: string; rules: string[]; reason: string }[] = [
     reason: "reads trial onboarding steps that screenpipe stored and treats them as complete",
   },
   {
+    path: "apps/screenpipe-app-tauri/src-tauri/testdata/screenpipe-v2-store.json",
+    rules: ["remote-control-policy"],
+    reason:
+      "synthetic store as screenpipe writes it; the store tests check the key round-trips without being read (W1-02)",
+  },
+  {
     path: "apps/screenpipe-app-tauri/lib/account-deep-link.ts",
     rules: ["purchase-deep-link"],
     reason: "recognises vendor purchase deep links so they can be dropped",
