@@ -1,48 +1,49 @@
 {
- "generated_at": "2026-10-20T06:15:34Z",
+ "generated_at": "2026-10-20T09:56:40Z",
  "generator": "python3 tools/plan/status.py --write",
  "main": {
   "ref": "origin/main",
-  "sha": "40c94a686c1d66b9f07759122106996a08b75bb7",
-  "code_sha": "40c94a686c1d66b9f07759122106996a08b75bb7",
+  "sha": "b3d3c3149083c2bfe741e92f44a54177dfed46a8",
+  "code_sha": "b3d3c3149083c2bfe741e92f44a54177dfed46a8",
   "ci": {
    "state": "pending",
    "checks": {
-    "gates": "in_progress",
-    "linux": "in_progress",
     "test-windows": "in_progress",
-    "trufflehog": "in_progress",
-    "windows": "in_progress"
+    "trufflehog": "success"
    },
-   "missing": [],
+   "missing": [
+    "windows",
+    "linux",
+    "gates"
+   ],
    "max_attempt": 1,
    "runs": [
     {
-     "id": 39379337705,
-     "name": "Secret Scan (trufflehog)",
-     "event": "push",
-     "status": "in_progress",
-     "conclusion": null,
-     "attempt": 1,
-     "url": "https://github.com/normiecore/Freenpipe/actions/runs/39379337705"
-    },
-    {
-     "id": 39379337706,
-     "name": "Freenpipe CI",
-     "event": "push",
-     "status": "in_progress",
-     "conclusion": null,
-     "attempt": 1,
-     "url": "https://github.com/normiecore/Freenpipe/actions/runs/39379337706"
-    },
-    {
-     "id": 39379337756,
+     "id": 39404095872,
      "name": "Windows CLI Integration Test",
      "event": "push",
      "status": "in_progress",
      "conclusion": null,
      "attempt": 1,
-     "url": "https://github.com/normiecore/Freenpipe/actions/runs/39379337756"
+     "url": "https://github.com/normiecore/Freenpipe/actions/runs/39404095872"
+    },
+    {
+     "id": 39404095973,
+     "name": "Secret Scan (trufflehog)",
+     "event": "push",
+     "status": "completed",
+     "conclusion": "success",
+     "attempt": 1,
+     "url": "https://github.com/normiecore/Freenpipe/actions/runs/39404095973"
+    },
+    {
+     "id": 39404095980,
+     "name": "Freenpipe CI",
+     "event": "push",
+     "status": "pending",
+     "conclusion": null,
+     "attempt": 1,
+     "url": "https://github.com/normiecore/Freenpipe/actions/runs/39404095980"
     }
    ]
   }
@@ -62,13 +63,13 @@
   ]
  },
  "summary": {
-  "merged": 15,
-  "in_review": 0,
-  "claimed": 0,
-  "ready": 8,
-  "blocked": 132,
+  "merged": 17,
+  "in_review": 1,
+  "claimed": 2,
+  "ready": 31,
+  "blocked": 104,
   "total": 155,
-  "percent_merged": 9.7
+  "percent_merged": 11.0
  },
  "waves": [
   {
@@ -86,10 +87,10 @@
    "wave": 1,
    "name": "Cross-cutting foundations: schema v2.7, settings schema, integration seams",
    "total": 5,
-   "merged": 2,
-   "in_review": 0,
+   "merged": 4,
+   "in_review": 1,
    "claimed": 0,
-   "ready": 3,
+   "ready": 0,
    "blocked": 0,
    "complete": false
   },
@@ -99,9 +100,9 @@
    "total": 27,
    "merged": 0,
    "in_review": 0,
-   "claimed": 0,
-   "ready": 5,
-   "blocked": 22,
+   "claimed": 2,
+   "ready": 25,
+   "blocked": 0,
    "complete": false
   },
   {
@@ -111,8 +112,8 @@
    "merged": 0,
    "in_review": 0,
    "claimed": 0,
-   "ready": 0,
-   "blocked": 31,
+   "ready": 6,
+   "blocked": 25,
    "complete": false
   },
   {
@@ -355,8 +356,8 @@
     "W0-12"
    ],
    "status": "merged",
-   "merge_commit": "93094cd083f433647bfcf8fddfac743f2460ea9e",
-   "merged_at": "2026-10-20T02:47:18Z"
+   "merge_commit": "0ca3a2be7e15644a7fd213604b82efa19f119eca",
+   "merged_at": "2026-10-20T08:25:08Z"
   },
   {
    "id": "W1-02",
@@ -366,7 +367,9 @@
    "depends_on": [
     "W0-12"
    ],
-   "status": "ready"
+   "status": "merged",
+   "merge_commit": "5d279d87511ac3104fd0f119035f1852f80ebe59",
+   "merged_at": "2026-10-20T09:17:11Z"
   },
   {
    "id": "W1-03",
@@ -376,7 +379,9 @@
    "depends_on": [
     "W0-12"
    ],
-   "status": "ready"
+   "status": "merged",
+   "merge_commit": "b3d3c3149083c2bfe741e92f44a54177dfed46a8",
+   "merged_at": "2026-10-20T09:54:25Z"
   },
   {
    "id": "W1-04",
@@ -386,7 +391,74 @@
    "depends_on": [
     "W0-12"
    ],
-   "status": "ready"
+   "branch": {
+    "name": "wp/W1-04",
+    "sha": "0e6d7ff2953a0a8d137e1fc59a824c46e226cf0d",
+    "claimed_by": null,
+    "claimed_at": null,
+    "last_commit_at": "2026-10-20T09:54:40Z",
+    "head_subject": "Merge origin/main into wp/W1-04",
+    "commits_ahead": 5,
+    "work_commits": 5
+   },
+   "status": "in_review",
+   "pr": {
+    "number": 16,
+    "url": "https://github.com/normiecore/Freenpipe/pull/16",
+    "head_sha": "0e6d7ff2953a0a8d137e1fc59a824c46e226cf0d",
+    "title": "W1-04: Enterprise and plan-gate no-op surface",
+    "created_at": "2026-10-20T09:28:37Z",
+    "updated_at": "2026-10-20T09:56:33Z",
+    "ci": {
+     "state": "pending",
+     "checks": {
+      "test-windows": "queued",
+      "trufflehog": "queued"
+     },
+     "missing": [
+      "windows",
+      "linux",
+      "gates"
+     ],
+     "max_attempt": 1,
+     "runs": [
+      {
+       "id": 39404354375,
+       "name": "Freenpipe CI",
+       "event": "pull_request",
+       "status": "pending",
+       "conclusion": null,
+       "attempt": 1,
+       "url": "https://github.com/normiecore/Freenpipe/actions/runs/39404354375"
+      },
+      {
+       "id": 39404354404,
+       "name": "Secret Scan (trufflehog)",
+       "event": "pull_request",
+       "status": "in_progress",
+       "conclusion": null,
+       "attempt": 1,
+       "url": "https://github.com/normiecore/Freenpipe/actions/runs/39404354404"
+      },
+      {
+       "id": 39404354462,
+       "name": "Windows CLI Integration Test",
+       "event": "pull_request",
+       "status": "queued",
+       "conclusion": null,
+       "attempt": 1,
+       "url": "https://github.com/normiecore/Freenpipe/actions/runs/39404354462"
+      }
+     ]
+    },
+    "review": {
+     "state": "pending",
+     "comment": null,
+     "reason": null
+    },
+    "mergeable": true,
+    "mergeable_state": "unstable"
+   }
   },
   {
    "id": "W1-05",
@@ -409,10 +481,7 @@
     "W1-01",
     "W1-03"
    ],
-   "unmet_deps": [
-    "W1-03"
-   ],
-   "status": "blocked"
+   "status": "ready"
   },
   {
    "id": "W2-02",
@@ -423,10 +492,7 @@
     "W1-01",
     "W1-03"
    ],
-   "unmet_deps": [
-    "W1-03"
-   ],
-   "status": "blocked"
+   "status": "ready"
   },
   {
    "id": "W2-03",
@@ -437,10 +503,7 @@
     "W1-01",
     "W1-03"
    ],
-   "unmet_deps": [
-    "W1-03"
-   ],
-   "status": "blocked"
+   "status": "ready"
   },
   {
    "id": "W2-04",
@@ -451,10 +514,7 @@
     "W1-01",
     "W1-03"
    ],
-   "unmet_deps": [
-    "W1-03"
-   ],
-   "status": "blocked"
+   "status": "ready"
   },
   {
    "id": "W2-05",
@@ -465,10 +525,7 @@
     "W1-01",
     "W1-03"
    ],
-   "unmet_deps": [
-    "W1-03"
-   ],
-   "status": "blocked"
+   "status": "ready"
   },
   {
    "id": "W2-06",
@@ -489,10 +546,7 @@
     "W1-01",
     "W1-03"
    ],
-   "unmet_deps": [
-    "W1-03"
-   ],
-   "status": "blocked"
+   "status": "ready"
   },
   {
    "id": "W2-08",
@@ -503,10 +557,7 @@
     "W1-01",
     "W1-03"
    ],
-   "unmet_deps": [
-    "W1-03"
-   ],
-   "status": "blocked"
+   "status": "ready"
   },
   {
    "id": "W2-09",
@@ -517,10 +568,7 @@
     "W1-01",
     "W1-03"
    ],
-   "unmet_deps": [
-    "W1-03"
-   ],
-   "status": "blocked"
+   "status": "ready"
   },
   {
    "id": "W2-10",
@@ -531,10 +579,7 @@
     "W1-01",
     "W1-03"
    ],
-   "unmet_deps": [
-    "W1-03"
-   ],
-   "status": "blocked"
+   "status": "ready"
   },
   {
    "id": "W2-11",
@@ -545,10 +590,7 @@
     "W1-01",
     "W1-03"
    ],
-   "unmet_deps": [
-    "W1-03"
-   ],
-   "status": "blocked"
+   "status": "ready"
   },
   {
    "id": "W2-12",
@@ -558,7 +600,18 @@
    "depends_on": [
     "W0-12"
    ],
-   "status": "ready"
+   "branch": {
+    "name": "wp/W2-12",
+    "sha": "eaceda5ae7a336bfc88a08a85c18860fd44d11c8",
+    "claimed_by": null,
+    "claimed_at": null,
+    "last_commit_at": "2026-10-20T09:54:18Z",
+    "head_subject": "wip(W2-12): grayscale thumbnails with fallible allocation in FrameComparer",
+    "commits_ahead": 1,
+    "work_commits": 1
+   },
+   "status": "claimed",
+   "stale": false
   },
   {
    "id": "W2-13",
@@ -568,10 +621,7 @@
    "depends_on": [
     "W1-03"
    ],
-   "unmet_deps": [
-    "W1-03"
-   ],
-   "status": "blocked"
+   "status": "ready"
   },
   {
    "id": "W2-14",
@@ -581,10 +631,7 @@
    "depends_on": [
     "W1-03"
    ],
-   "unmet_deps": [
-    "W1-03"
-   ],
-   "status": "blocked"
+   "status": "ready"
   },
   {
    "id": "W2-15",
@@ -595,10 +642,7 @@
     "W1-01",
     "W1-03"
    ],
-   "unmet_deps": [
-    "W1-03"
-   ],
-   "status": "blocked"
+   "status": "ready"
   },
   {
    "id": "W2-16",
@@ -608,7 +652,18 @@
    "depends_on": [
     "W1-01"
    ],
-   "status": "ready"
+   "branch": {
+    "name": "wp/W2-16",
+    "sha": "2811e7d6cfe30cad1e44085ec69223e4f2028198",
+    "claimed_by": null,
+    "claimed_at": null,
+    "last_commit_at": "2026-10-20T09:55:28Z",
+    "head_subject": "wip(W2-16): merge 404, open questions and smoke checks",
+    "commits_ahead": 4,
+    "work_commits": 4
+   },
+   "status": "claimed",
+   "stale": false
   },
   {
    "id": "W2-17",
@@ -628,10 +683,7 @@
    "depends_on": [
     "W1-02"
    ],
-   "unmet_deps": [
-    "W1-02"
-   ],
-   "status": "blocked"
+   "status": "ready"
   },
   {
    "id": "W2-19",
@@ -651,10 +703,7 @@
    "depends_on": [
     "W1-03"
    ],
-   "unmet_deps": [
-    "W1-03"
-   ],
-   "status": "blocked"
+   "status": "ready"
   },
   {
    "id": "W2-21",
@@ -664,10 +713,7 @@
    "depends_on": [
     "W1-03"
    ],
-   "unmet_deps": [
-    "W1-03"
-   ],
-   "status": "blocked"
+   "status": "ready"
   },
   {
    "id": "W2-22",
@@ -677,10 +723,7 @@
    "depends_on": [
     "W1-03"
    ],
-   "unmet_deps": [
-    "W1-03"
-   ],
-   "status": "blocked"
+   "status": "ready"
   },
   {
    "id": "W2-23",
@@ -690,10 +733,7 @@
    "depends_on": [
     "W1-03"
    ],
-   "unmet_deps": [
-    "W1-03"
-   ],
-   "status": "blocked"
+   "status": "ready"
   },
   {
    "id": "W2-24",
@@ -703,10 +743,7 @@
    "depends_on": [
     "W1-03"
    ],
-   "unmet_deps": [
-    "W1-03"
-   ],
-   "status": "blocked"
+   "status": "ready"
   },
   {
    "id": "W2-25",
@@ -716,10 +753,7 @@
    "depends_on": [
     "W1-02"
    ],
-   "unmet_deps": [
-    "W1-02"
-   ],
-   "status": "blocked"
+   "status": "ready"
   },
   {
    "id": "W2-26",
@@ -729,10 +763,7 @@
    "depends_on": [
     "W1-02"
    ],
-   "unmet_deps": [
-    "W1-02"
-   ],
-   "status": "blocked"
+   "status": "ready"
   },
   {
    "id": "W2-27",
@@ -742,10 +773,7 @@
    "depends_on": [
     "W1-03"
    ],
-   "unmet_deps": [
-    "W1-03"
-   ],
-   "status": "blocked"
+   "status": "ready"
   },
   {
    "id": "W3-01",
@@ -889,10 +917,7 @@
     "W1-01",
     "W1-02"
    ],
-   "unmet_deps": [
-    "W1-02"
-   ],
-   "status": "blocked"
+   "status": "ready"
   },
   {
    "id": "W3-11",
@@ -933,7 +958,6 @@
     "W2-11"
    ],
    "unmet_deps": [
-    "W1-02",
     "W2-11"
    ],
    "status": "blocked"
@@ -948,7 +972,6 @@
     "W2-13"
    ],
    "unmet_deps": [
-    "W1-02",
     "W2-13"
    ],
    "status": "blocked"
@@ -1002,10 +1025,7 @@
    "depends_on": [
     "W1-02"
    ],
-   "unmet_deps": [
-    "W1-02"
-   ],
-   "status": "blocked"
+   "status": "ready"
   },
   {
    "id": "W3-19",
@@ -1080,10 +1100,7 @@
    "depends_on": [
     "W1-03"
    ],
-   "unmet_deps": [
-    "W1-03"
-   ],
-   "status": "blocked"
+   "status": "ready"
   },
   {
    "id": "W3-25",
@@ -1093,10 +1110,7 @@
    "depends_on": [
     "W1-03"
    ],
-   "unmet_deps": [
-    "W1-03"
-   ],
-   "status": "blocked"
+   "status": "ready"
   },
   {
    "id": "W3-26",
@@ -1159,11 +1173,7 @@
     "W1-02",
     "W1-03"
    ],
-   "unmet_deps": [
-    "W1-02",
-    "W1-03"
-   ],
-   "status": "blocked"
+   "status": "ready"
   },
   {
    "id": "W3-31",
@@ -1173,10 +1183,7 @@
    "depends_on": [
     "W1-02"
    ],
-   "unmet_deps": [
-    "W1-02"
-   ],
-   "status": "blocked"
+   "status": "ready"
   },
   {
    "id": "W4-01",
@@ -1449,8 +1456,7 @@
     "W1-02"
    ],
    "unmet_deps": [
-    "W2-25",
-    "W1-02"
+    "W2-25"
    ],
    "status": "blocked"
   },

@@ -13,6 +13,7 @@ pub mod cli;
 pub mod cli_reminder;
 pub mod cloud_search;
 pub mod connections_api;
+pub mod connections_routes;
 pub mod core;
 pub mod crash_log;
 pub mod drm_detector;
