@@ -10547,6 +10547,7 @@ dependencies = [
  "freedesktop-icon-lookup",
  "futures",
  "futures-channel",
+ "glob",
  "gtk",
  "hmac 0.12.1",
  "hostname",

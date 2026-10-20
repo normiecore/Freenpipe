@@ -220,6 +220,7 @@ fn prune(dir: &Path, keep: usize) -> usize {
 
 /// How registering the helper went.
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg_attr(not(windows), allow(dead_code))] // only Windows registers
 pub enum Registration {
     /// WER will call the helper for fail-fast crashes.
     Enabled { dll: PathBuf },
