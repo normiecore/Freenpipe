@@ -17,7 +17,7 @@ This prompt and `buildMeetingSummarizeInstructions` in `apps/screenpipe-app-taur
 
 In the commands below, `<API>` is the Screenpipe API address given in your instructions above (normally `http://localhost:3030`). Send the `Authorization` header shown on every request.
 
-**1. Identify the meeting.**
+**1. Identify the meeting.** If you were already told which meeting to summarize, read that one with `<API>/meetings/<ID>` and go on to step 2. Otherwise list the latest meetings:
 
     curl -s -H "Authorization: Bearer $SCREENPIPE_LOCAL_API_KEY" "<API>/meetings?limit=5"
 
