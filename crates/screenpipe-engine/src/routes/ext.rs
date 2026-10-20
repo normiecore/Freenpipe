@@ -342,30 +342,14 @@ mod tests {
     fn feature_modules_do_not_collide_with_each_other() {
         let features = feature_routes();
         let mut spec = OpenAPI::default();
-        extend_spec(&mut spec, &features).expect("feature routes collide");
-        let total: usize = features.iter().map(|f| f.documented.path_count()).sum();
-        // Distinct paths can share a feature's path only method-wise, so the
-        // merged spec never holds more paths than the features declare.
-        assert!(spec.paths.paths.len() <= total);
-    }
-
-    #[test]
-    fn stubs_add_no_openapi_paths() {
-        // The seams are inert until a feature fills its module. When one
-        // does, list it here with its path count.
-        let filled: &[(&str, usize)] = &[];
-        for feature in feature_routes() {
-            let expected = filled
-                .iter()
-                .find(|(name, _)| *name == feature.name)
-                .map_or(0, |(_, n)| *n);
-            assert_eq!(
-                feature.documented.path_count(),
-                expected,
-                "{} documents an unexpected number of paths",
-                feature.name
-            );
-        }
+        let added = extend_spec(&mut spec, &features).expect("feature routes collide");
+        // Every documented feature path lands in the spec exactly once.
+        let distinct: std::collections::HashSet<String> =
+            features.iter().flat_map(|f| f.documented.paths()).collect();
+        assert_eq!(added, distinct.len());
+        assert_eq!(spec.paths.paths.len(), distinct.len());
+        // The merged router builds (axum panics on overlapping routes).
+        let _router = into_router(features);
     }
 
     #[test]
@@ -431,7 +415,11 @@ mod tests {
             RefOr::Item(PathItem::get(Operation::default())),
         );
         let before = serde_json::to_value(&core).unwrap();
-        let added = extend_spec(&mut core, &feature_routes()).unwrap();
+        let empty = vec![
+            probe_feature("a", DocumentedRoutes::empty()),
+            probe_feature("b", DocumentedRoutes::empty()),
+        ];
+        let added = extend_spec(&mut core, &empty).unwrap();
         assert_eq!(added, 0);
         assert_eq!(serde_json::to_value(&core).unwrap(), before);
     }
