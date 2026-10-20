@@ -76,8 +76,10 @@ dirs = "5.0"
 # Password input (no-echo for vault CLI)
 rpassword = "5"
 
-# Client http
-reqwest = { workspace = true }
+# Client http. `stream` is for routes/cloud_proxy.rs (`bytes_stream`); it used
+# to arrive only through the tinfoil SDK's reqwest features, which no longer
+# link by default (W1-05).
+reqwest = { workspace = true, features = ["stream"] }
 
 # Tinfoil enclave attestation: AMD SEV-SNP attestation + Sigstore code-provenance
 # verification + TLS cert pinning for a user-run privacy-filter enclave

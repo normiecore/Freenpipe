@@ -187,6 +187,9 @@ pub struct PrivacyFilter {
 }
 
 impl PrivacyFilter {
+    /// A filter that uses `target` as given, whatever this build supports
+    /// (tests exercise the enclave path through it).
+    #[cfg(test)]
     fn new(target: Option<TinfoilTarget>) -> Self {
         let backend = if target.is_some() {
             FilterBackend::Enclave
