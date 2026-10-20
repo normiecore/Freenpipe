@@ -13,6 +13,20 @@ use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::{Arc, RwLock};
 use tracing;
 
+/// Win32 monitor enumeration used on Windows (`EnumDisplayMonitors`). Its pure
+/// helpers compile on every OS so they are unit-tested everywhere.
+#[cfg_attr(not(target_os = "windows"), allow(dead_code))]
+pub(crate) mod windows;
+
+/// How long a new persistent WGC session may take to deliver its first frame.
+#[cfg(target_os = "windows")]
+const WGC_FIRST_FRAME_TIMEOUT: std::time::Duration = std::time::Duration::from_millis(500);
+
+/// How long a running persistent WGC session may take to produce a frame
+/// (it returns at once once it has delivered one).
+#[cfg(target_os = "windows")]
+const WGC_FRAME_TIMEOUT: std::time::Duration = std::time::Duration::from_millis(200);
+
 /// Cached monitor descriptions updated by the monitor watcher every 5s.
 /// Health check reads this instead of making a blocking system call.
 static CACHED_MONITOR_DESCRIPTIONS: Lazy<RwLock<Vec<String>>> =
@@ -247,6 +261,19 @@ impl SafeMonitor {
         }
     }
 
+    // Windows: create from the native (EnumDisplayMonitors) enumeration.
+    #[cfg(target_os = "windows")]
+    pub(crate) fn from_native(monitor: &self::windows::NativeMonitor) -> Self {
+        Self {
+            monitor_id: monitor.id,
+            monitor_data: Arc::new(monitor.monitor_data()),
+            cached_monitor_index: Arc::new(std::sync::Mutex::new(None)),
+            persistent_capture: Arc::new(std::sync::Mutex::new(None)),
+            persistent_capture_disabled: Arc::new(AtomicBool::new(false)),
+            persistent_capture_failures: Arc::new(AtomicU32::new(0)),
+        }
+    }
+
     /// Capture a screenshot using the cached monitor handle.
     ///
     /// Uses `tokio::task::spawn_blocking` instead of `std::thread::spawn` to reuse
@@ -407,77 +434,12 @@ impl SafeMonitor {
             let persistent_disabled = self.persistent_capture_disabled.clone();
             let persistent_failures = self.persistent_capture_failures.clone();
             let result = tokio::task::spawn_blocking(move || -> Result<DynamicImage> {
-                if persistent_disabled.load(Ordering::Relaxed) {
-                    return Self::per_frame_capture(monitor_id);
-                }
-
-                // Try existing persistent session
-                {
-                    let guard = persistent
-                        .lock()
-                        .map_err(|e| anyhow::anyhow!("persistent capture mutex poisoned: {}", e))?;
-                    if let Some(ref capture) = *guard {
-                        match capture.get_latest_image(std::time::Duration::from_millis(200)) {
-                            Ok(img) => {
-                                persistent_failures.store(0, Ordering::Relaxed);
-                                return Ok(img);
-                            }
-                            Err(e) => {
-                                tracing::debug!(
-                                    "persistent capture failed for monitor {}, will reinit: {}",
-                                    monitor_id,
-                                    e
-                                );
-                            }
-                        }
-                    }
-                }
-
-                // Drop broken session and try to create a new one
-                {
-                    let mut guard = persistent
-                        .lock()
-                        .map_err(|e| anyhow::anyhow!("persistent capture mutex poisoned: {}", e))?;
-                    if let Some(mut old) = guard.take() {
-                        old.stop();
-                    }
-                }
-
-                match crate::wgc_capture::PersistentCapture::new(monitor_id) {
-                    Ok(capture) => {
-                        // First frame — allow longer timeout for WGC to deliver
-                        match capture.get_latest_image(std::time::Duration::from_millis(500)) {
-                            Ok(img) => {
-                                let mut guard = persistent.lock().map_err(|e| {
-                                    anyhow::anyhow!("persistent capture mutex poisoned: {}", e)
-                                })?;
-                                *guard = Some(capture);
-                                persistent_failures.store(0, Ordering::Relaxed);
-                                return Ok(img);
-                            }
-                            Err(e) => {
-                                Self::record_persistent_init_failure(
-                                    monitor_id,
-                                    &persistent_disabled,
-                                    &persistent_failures,
-                                    &e.to_string(),
-                                );
-                                // capture dropped here, session cleaned up
-                            }
-                        }
-                    }
-                    Err(e) => {
-                        Self::record_persistent_init_failure(
-                            monitor_id,
-                            &persistent_disabled,
-                            &persistent_failures,
-                            &e.to_string(),
-                        );
-                    }
-                }
-
-                // Fallback: per-frame xcap capture (original behavior)
-                Self::per_frame_capture(monitor_id)
+                Self::capture_with_persistent_session(
+                    monitor_id,
+                    &persistent,
+                    &persistent_disabled,
+                    &persistent_failures,
+                )
             })
             .await
             .map_err(|e| anyhow::anyhow!("capture task panicked: {}", e))??;
@@ -495,6 +457,77 @@ impl SafeMonitor {
             .map_err(|e| anyhow::anyhow!("capture task panicked: {}", e))??;
             Ok(image)
         }
+    }
+
+    /// Windows capture: read the monitor's persistent WGC session, recreating
+    /// it when it died (monitor unplugged, device lost, display reconfigured).
+    /// After [`crate::wgc_capture::PERSISTENT_INIT_MAX_FAILURES`] failed
+    /// recreations in a row the monitor uses per-frame xcap capture for the rest
+    /// of the session.
+    ///
+    /// The session mutex is held for the whole call, so two callers can never
+    /// race to create two sessions for one monitor.
+    #[cfg(target_os = "windows")]
+    fn capture_with_persistent_session(
+        monitor_id: u32,
+        persistent: &std::sync::Mutex<Option<crate::wgc_capture::PersistentCapture>>,
+        persistent_disabled: &Arc<AtomicBool>,
+        persistent_failures: &Arc<AtomicU32>,
+    ) -> Result<DynamicImage> {
+        if persistent_disabled.load(Ordering::Relaxed) {
+            return Self::per_frame_capture(monitor_id);
+        }
+
+        // A panic while the lock was held must not disable capture for good.
+        let mut guard = persistent
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+
+        if let Some(capture) = guard.as_ref() {
+            match capture.get_latest_image(WGC_FRAME_TIMEOUT) {
+                Ok(img) => {
+                    persistent_failures.store(0, Ordering::Relaxed);
+                    return Ok(img);
+                }
+                Err(e) => {
+                    tracing::debug!(
+                        "persistent capture failed for monitor {}, will reinit: {:#}",
+                        monitor_id,
+                        e
+                    );
+                }
+            }
+        }
+
+        // Drop the broken session before creating a new one.
+        if let Some(mut old) = guard.take() {
+            old.stop();
+        }
+
+        let failure = match crate::wgc_capture::PersistentCapture::new(monitor_id) {
+            // First frame of a new session: allow WGC a longer delivery window.
+            Ok(capture) => match capture.get_latest_image(WGC_FIRST_FRAME_TIMEOUT) {
+                Ok(img) => {
+                    *guard = Some(capture);
+                    persistent_failures.store(0, Ordering::Relaxed);
+                    return Ok(img);
+                }
+                // `capture` is dropped here, which stops the session.
+                Err(e) => e,
+            },
+            Err(e) => e,
+        };
+        drop(guard);
+
+        Self::record_persistent_init_failure(
+            monitor_id,
+            persistent_disabled,
+            persistent_failures,
+            &format!("{:#}", failure),
+        );
+
+        // Fallback: per-frame xcap capture (original behavior)
+        Self::per_frame_capture(monitor_id)
     }
 
     /// Per-frame xcap capture fallback (no index caching).
@@ -620,11 +653,14 @@ impl SafeMonitor {
         // Stop persistent capture so next capture_image() lazy-inits a new session
         #[cfg(target_os = "windows")]
         {
-            if let Ok(mut guard) = self.persistent_capture.lock() {
-                if let Some(mut capture) = guard.take() {
-                    capture.stop();
-                }
+            let mut guard = self
+                .persistent_capture
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            if let Some(mut capture) = guard.take() {
+                capture.stop();
             }
+            drop(guard);
             self.persistent_capture_disabled
                 .store(false, Ordering::Relaxed);
             self.persistent_capture_failures.store(0, Ordering::Relaxed);
@@ -632,6 +668,18 @@ impl SafeMonitor {
 
         let monitor_id = self.monitor_id;
 
+        #[cfg(target_os = "windows")]
+        let refreshed = tokio::task::spawn_blocking(move || -> Result<MonitorData> {
+            self::windows::enumerate_monitors()?
+                .into_iter()
+                .find(|m| m.id == monitor_id)
+                .map(|m| m.monitor_data())
+                .ok_or_else(|| anyhow::anyhow!("Monitor {} not found during refresh", monitor_id))
+        })
+        .await
+        .map_err(|e| anyhow::anyhow!("refresh task panicked: {}", e))??;
+
+        #[cfg(not(target_os = "windows"))]
         let refreshed = tokio::task::spawn_blocking(move || -> Result<MonitorData> {
             let monitor = XcapMonitor::all()
                 .map_err(Error::from)?
@@ -715,17 +763,40 @@ impl SafeMonitor {
         }
         #[cfg(target_os = "windows")]
         {
-            if let Ok(mut guard) = self.persistent_capture.lock() {
-                if let Some(mut capture) = guard.take() {
-                    capture.stop();
-                    tracing::info!(
-                        "released persistent WGC session for monitor {}",
-                        self.monitor_id
-                    );
-                }
+            let mut guard = self
+                .persistent_capture
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            if let Some(mut capture) = guard.take() {
+                capture.stop();
+                tracing::info!(
+                    "released persistent WGC session for monitor {}",
+                    self.monitor_id
+                );
             }
         }
         // Linux: xcap captures per-frame, no persistent session to release.
+    }
+
+    /// Frames the monitor's persistent capture session has delivered so far,
+    /// or `None` when no session is running (or on platforms without one).
+    /// A count that stops moving while the screen changes means the stream
+    /// froze. Never blocks: a session busy capturing reports `None`.
+    pub fn capture_frame_sequence(&self) -> Option<u64> {
+        #[cfg(target_os = "windows")]
+        {
+            match self.persistent_capture.try_lock() {
+                Ok(guard) => guard.as_ref().map(|c| c.frame_sequence()),
+                Err(std::sync::TryLockError::Poisoned(poisoned)) => {
+                    poisoned.into_inner().as_ref().map(|c| c.frame_sequence())
+                }
+                Err(std::sync::TryLockError::WouldBlock) => None,
+            }
+        }
+        #[cfg(not(target_os = "windows"))]
+        {
+            None
+        }
     }
 
     #[cfg(target_os = "windows")]
@@ -735,23 +806,30 @@ impl SafeMonitor {
         persistent_failures: &Arc<AtomicU32>,
         reason: &str,
     ) {
+        use crate::wgc_capture::{
+            classify_init_failure, InitFailureOutcome, PERSISTENT_INIT_MAX_FAILURES,
+        };
         let failures = persistent_failures.fetch_add(1, Ordering::Relaxed) + 1;
-        if failures >= 3 {
-            if !persistent_disabled.swap(true, Ordering::Relaxed) {
-                tracing::warn!(
-                    "persistent capture disabled for monitor {} after {} init failures; falling back to per-frame for this session (last error: {})",
+        match classify_init_failure(failures) {
+            InitFailureOutcome::Disable { attempts } => {
+                if !persistent_disabled.swap(true, Ordering::Relaxed) {
+                    tracing::warn!(
+                        "persistent capture disabled for monitor {} after {} init failures; falling back to per-frame for this session (last error: {})",
+                        monitor_id,
+                        attempts,
+                        reason
+                    );
+                }
+            }
+            InitFailureOutcome::Retry { attempt } => {
+                tracing::info!(
+                    "persistent capture init failed for monitor {} (attempt {}/{}): {}",
                     monitor_id,
-                    failures,
+                    attempt,
+                    PERSISTENT_INIT_MAX_FAILURES,
                     reason
                 );
             }
-        } else {
-            tracing::debug!(
-                "persistent capture init failed for monitor {} (attempt {}/3): {}",
-                monitor_id,
-                failures,
-                reason
-            );
         }
     }
 
@@ -873,7 +951,25 @@ pub async fn list_monitors_detailed() -> std::result::Result<Vec<SafeMonitor>, M
 }
 
 /// List monitors with detailed error information (permission denied vs no monitors)
-#[cfg(not(target_os = "macos"))]
+#[cfg(target_os = "windows")]
+pub async fn list_monitors_detailed() -> std::result::Result<Vec<SafeMonitor>, MonitorListError> {
+    let result: std::result::Result<Vec<SafeMonitor>, MonitorListError> =
+        tokio::task::spawn_blocking(|| match self::windows::enumerate_monitors() {
+            Ok(monitors) if monitors.is_empty() => Err(MonitorListError::NoMonitorsFound),
+            Ok(monitors) => Ok(monitors.iter().map(SafeMonitor::from_native).collect()),
+            Err(e) => Err(MonitorListError::Other(e.to_string())),
+        })
+        .await
+        .unwrap_or(Err(MonitorListError::Other("Task panicked".to_string())));
+
+    if let Ok(monitors) = &result {
+        update_monitor_cache(monitors);
+    }
+    result
+}
+
+/// List monitors with detailed error information (permission denied vs no monitors)
+#[cfg(not(any(target_os = "macos", target_os = "windows")))]
 pub async fn list_monitors_detailed() -> std::result::Result<Vec<SafeMonitor>, MonitorListError> {
     let result: std::result::Result<Vec<SafeMonitor>, MonitorListError> =
         tokio::task::spawn_blocking(|| match XcapMonitor::all() {
@@ -923,7 +1019,19 @@ pub async fn get_default_monitor() -> Option<SafeMonitor> {
     .ok()?
 }
 
-#[cfg(not(target_os = "macos"))]
+#[cfg(target_os = "windows")]
+pub async fn get_default_monitor() -> Option<SafeMonitor> {
+    tokio::task::spawn_blocking(|| {
+        self::windows::enumerate_monitors()
+            .ok()?
+            .first()
+            .map(SafeMonitor::from_native)
+    })
+    .await
+    .ok()?
+}
+
+#[cfg(not(any(target_os = "macos", target_os = "windows")))]
 pub async fn get_default_monitor() -> Option<SafeMonitor> {
     tokio::task::spawn_blocking(|| {
         XcapMonitor::all()
@@ -993,7 +1101,34 @@ pub async fn get_monitor_by_id(id: u32) -> Option<SafeMonitor> {
     })
 }
 
-#[cfg(not(target_os = "macos"))]
+#[cfg(target_os = "windows")]
+pub async fn get_monitor_by_id(id: u32) -> Option<SafeMonitor> {
+    tokio::task::spawn_blocking(move || match self::windows::enumerate_monitors() {
+        Ok(monitors) => {
+            let monitor_ids: Vec<u32> = monitors.iter().map(|m| m.id).collect();
+            tracing::debug!(
+                "Found {} monitors with IDs: {:?}",
+                monitor_ids.len(),
+                monitor_ids
+            );
+            monitors
+                .iter()
+                .find(|m| m.id == id)
+                .map(SafeMonitor::from_native)
+        }
+        Err(e) => {
+            tracing::error!("Failed to list monitors: {}", e);
+            None
+        }
+    })
+    .await
+    .unwrap_or_else(|e| {
+        tracing::error!("Task to get monitor by ID {} panicked: {}", id, e);
+        None
+    })
+}
+
+#[cfg(not(any(target_os = "macos", target_os = "windows")))]
 pub async fn get_monitor_by_id(id: u32) -> Option<SafeMonitor> {
     tokio::task::spawn_blocking(move || match XcapMonitor::all() {
         Ok(monitors) => {
@@ -1045,7 +1180,12 @@ pub fn get_capture_backend() -> &'static str {
     }
 }
 
-#[cfg(not(target_os = "macos"))]
+#[cfg(target_os = "windows")]
+pub fn get_capture_backend() -> &'static str {
+    "wgc (Windows Graphics Capture)"
+}
+
+#[cfg(not(any(target_os = "macos", target_os = "windows")))]
 pub fn get_capture_backend() -> &'static str {
     "xcap"
 }
