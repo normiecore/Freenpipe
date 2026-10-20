@@ -957,6 +957,55 @@ async fn alias_lookup_is_unique_per_source_and_normalized_label() {
 }
 
 #[tokio::test]
+async fn control_characters_in_names_and_keys_are_client_errors() {
+    let (_dir, db) = open_db().await;
+    // Stripped, or rejected as invalid input: never a constraint failure (a
+    // 500) from the actor table's length check.
+    let stripped = db.create_semantic_actor("\0Ada").await.unwrap();
+    assert_eq!(stripped.name, "Ada");
+    let renamed = db
+        .rename_semantic_actor(stripped.id, "\u{1}Ada L.\0")
+        .await
+        .unwrap();
+    assert_eq!(renamed.name, "Ada L.");
+    for bad in ["\u{1}\u{2}", "\0", "\u{200B}", "\u{202A}\u{202C}"] {
+        assert!(
+            db.create_semantic_actor(bad)
+                .await
+                .unwrap_err()
+                .is_invalid_input(),
+            "{bad:?}"
+        );
+        assert!(
+            db.rename_semantic_actor(stripped.id, bad)
+                .await
+                .unwrap_err()
+                .is_invalid_input(),
+            "{bad:?}"
+        );
+    }
+    assert_eq!(count(&db, "SELECT COUNT(*) FROM semantic_actors").await, 1);
+    assert_eq!(
+        db.get_semantic_actor(stripped.id)
+            .await
+            .unwrap()
+            .unwrap()
+            .name,
+        "Ada L."
+    );
+
+    // A source key is an identifier: rejected before any write.
+    let mut nul_key = new_run("nul-key", vec![message("m", "nk", "body", Some("Ada"))]);
+    nul_key.actor_source_key = Some("\0mail:work".into());
+    assert!(db
+        .store_semantic_run(&nul_key)
+        .await
+        .unwrap_err()
+        .is_invalid_input());
+    assert_eq!(count(&db, "SELECT COUNT(*) FROM semantic_runs").await, 0);
+}
+
+#[tokio::test]
 async fn create_rename_and_search_actors() {
     let (_dir, db) = open_db().await;
     let created = db
@@ -975,32 +1024,6 @@ async fn create_rename_and_search_actors() {
         .unwrap_err()
         .is_invalid_input());
     assert!(db.create_semantic_actor(&"n".repeat(256)).await.is_ok());
-    // Control characters are a client error, never a constraint failure.
-    let stripped = db.create_semantic_actor("\0Ada").await.unwrap();
-    assert_eq!(stripped.name, "Ada");
-    for bad in ["\u{1}\u{2}", "\0", "\u{200B}"] {
-        assert!(
-            db.create_semantic_actor(bad)
-                .await
-                .unwrap_err()
-                .is_invalid_input(),
-            "{bad:?}"
-        );
-        assert!(
-            db.rename_semantic_actor(created.id, bad)
-                .await
-                .unwrap_err()
-                .is_invalid_input(),
-            "{bad:?}"
-        );
-    }
-    let mut nul_key = new_run("nul-key", vec![message("m", "nk", "body", Some("Ada"))]);
-    nul_key.actor_source_key = Some("\0mail:work".into());
-    assert!(db
-        .store_semantic_run(&nul_key)
-        .await
-        .unwrap_err()
-        .is_invalid_input());
 
     tokio::time::sleep(Duration::from_millis(5)).await;
     let renamed = db
