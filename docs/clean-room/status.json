@@ -1,48 +1,48 @@
 {
- "generated_at": "2026-10-20T01:13:12Z",
+ "generated_at": "2026-10-20T02:27:32Z",
  "generator": "python3 tools/plan/status.py --write",
  "main": {
   "ref": "origin/main",
-  "sha": "06383cc44ec47b00813f8a7870a807a6333de854",
-  "code_sha": "06383cc44ec47b00813f8a7870a807a6333de854",
+  "sha": "d482528f14aad3ebf55ad800963a90bf256be9e3",
+  "code_sha": "d482528f14aad3ebf55ad800963a90bf256be9e3",
   "ci": {
    "state": "pending",
    "checks": {
-    "gates": "success",
-    "linux": "in_progress",
+    "gates": "queued",
+    "linux": "queued",
     "test-windows": "in_progress",
-    "trufflehog": "success",
-    "windows": "in_progress"
+    "trufflehog": "queued",
+    "windows": "queued"
    },
    "missing": [],
    "max_attempt": 1,
    "runs": [
     {
-     "id": 39352113094,
-     "name": "Freenpipe CI",
+     "id": 39359003905,
+     "name": "Secret Scan (trufflehog)",
      "event": "push",
      "status": "in_progress",
      "conclusion": null,
      "attempt": 1,
-     "url": "https://github.com/normiecore/Freenpipe/actions/runs/39352113094"
+     "url": "https://github.com/normiecore/Freenpipe/actions/runs/39359003905"
     },
     {
-     "id": 39352113104,
-     "name": "Secret Scan (trufflehog)",
-     "event": "push",
-     "status": "completed",
-     "conclusion": "success",
-     "attempt": 1,
-     "url": "https://github.com/normiecore/Freenpipe/actions/runs/39352113104"
-    },
-    {
-     "id": 39352113132,
+     "id": 39359003949,
      "name": "Windows CLI Integration Test",
      "event": "push",
      "status": "in_progress",
      "conclusion": null,
      "attempt": 1,
-     "url": "https://github.com/normiecore/Freenpipe/actions/runs/39352113132"
+     "url": "https://github.com/normiecore/Freenpipe/actions/runs/39359003949"
+    },
+    {
+     "id": 39359003963,
+     "name": "Freenpipe CI",
+     "event": "push",
+     "status": "in_progress",
+     "conclusion": null,
+     "attempt": 1,
+     "url": "https://github.com/normiecore/Freenpipe/actions/runs/39359003963"
     }
    ]
   }
@@ -62,25 +62,25 @@
   ]
  },
  "summary": {
-  "merged": 12,
-  "in_review": 1,
+  "merged": 13,
+  "in_review": 0,
   "claimed": 0,
   "ready": 7,
   "blocked": 134,
   "total": 154,
-  "percent_merged": 7.8
+  "percent_merged": 8.4
  },
  "waves": [
   {
    "wave": 0,
    "name": "Foundation: build, ee/ stubs, de-cloud, rebrand",
    "total": 13,
-   "merged": 12,
-   "in_review": 1,
+   "merged": 13,
+   "in_review": 0,
    "claimed": 0,
    "ready": 0,
    "blocked": 0,
-   "complete": false
+   "complete": true
   },
   {
    "wave": 1,
@@ -335,73 +335,9 @@
    "depends_on": [
     "W0-11"
    ],
-   "branch": {
-    "name": "wp/W0-13",
-    "sha": "e8cf3e2aa8e31f0b39d3627724e8746f2fc22712",
-    "claimed_by": null,
-    "claimed_at": null,
-    "last_commit_at": "2026-10-19T23:15:47Z",
-    "head_subject": "wip(W0-13): run the third-party guard as the last gates step",
-    "commits_ahead": 6,
-    "work_commits": 6
-   },
-   "status": "in_review",
-   "pr": {
-    "number": 10,
-    "url": "https://github.com/normiecore/Freenpipe/pull/10",
-    "head_sha": "e8cf3e2aa8e31f0b39d3627724e8746f2fc22712",
-    "title": "W0-13: Vendor git dependencies into third_party/",
-    "created_at": "2026-10-20T00:31:42Z",
-    "updated_at": "2026-10-20T00:32:03Z",
-    "ci": {
-     "state": "pending",
-     "checks": {
-      "gates": "success",
-      "linux": "success",
-      "test-windows": "success",
-      "trufflehog": "success",
-      "windows": "in_progress"
-     },
-     "missing": [],
-     "max_attempt": 1,
-     "runs": [
-      {
-       "id": 39348178605,
-       "name": "Windows CLI Integration Test",
-       "event": "pull_request",
-       "status": "completed",
-       "conclusion": "success",
-       "attempt": 1,
-       "url": "https://github.com/normiecore/Freenpipe/actions/runs/39348178605"
-      },
-      {
-       "id": 39348178618,
-       "name": "Secret Scan (trufflehog)",
-       "event": "pull_request",
-       "status": "completed",
-       "conclusion": "success",
-       "attempt": 1,
-       "url": "https://github.com/normiecore/Freenpipe/actions/runs/39348178618"
-      },
-      {
-       "id": 39348178692,
-       "name": "Freenpipe CI",
-       "event": "pull_request",
-       "status": "in_progress",
-       "conclusion": null,
-       "attempt": 1,
-       "url": "https://github.com/normiecore/Freenpipe/actions/runs/39348178692"
-      }
-     ]
-    },
-    "review": {
-     "state": "pending",
-     "comment": null,
-     "reason": null
-    },
-    "mergeable": false,
-    "mergeable_state": "dirty"
-   }
+   "status": "merged",
+   "merge_commit": "d482528f14aad3ebf55ad800963a90bf256be9e3",
+   "merged_at": "2026-10-20T02:27:24Z"
   },
   {
    "id": "W1-01",

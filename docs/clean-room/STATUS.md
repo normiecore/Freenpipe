@@ -2,15 +2,15 @@
 
 > Generated file: the merger routine regenerates it with `python3 tools/plan/status.py --write`. Do not edit it by hand. The plan is [PLAN.md](PLAN.md); the process is [docs/dev/cloud-runbook.md](../dev/cloud-runbook.md).
 
-Generated 2026-10-20T01:13:12Z from `origin/main` (latest code commit `06383cc`). GitHub data: available (via gh).
+Generated 2026-10-20T02:27:32Z from `origin/main` (latest code commit `d482528`). GitHub data: available (via gh).
 
 ## Progress
 
-**12 of 154 work packages merged (7.8%)**: 1 in review, 0 claimed, 7 ready, 134 blocked.
+**13 of 154 work packages merged (8.4%)**: 0 in review, 0 claimed, 7 ready, 134 blocked.
 
 | Wave | Theme | Merged | In review | Claimed | Ready | Blocked | Progress |
 |---|---|---|---|---|---|---|---|
-| 0 | Foundation: build, ee/ stubs, de-cloud, rebrand | 12/13 | 1 | 0 | 0 | 0 | `#########-` 92% |
+| 0 | Foundation: build, ee/ stubs, de-cloud, rebrand | 13/13 | 0 | 0 | 0 | 0 | `##########` 100% |
 | 1 | Cross-cutting foundations: schema v2.7, settings schema, integration seams | 0/4 | 0 | 0 | 4 | 0 | `----------` 0% |
 | 2 | Engine data layer and core backends | 0/27 | 0 | 0 | 3 | 24 | `----------` 0% |
 | 3 | Feature backends (search, pipes, connections, capture, audio) | 0/31 | 0 | 0 | 0 | 31 | `----------` 0% |
@@ -19,15 +19,13 @@ Generated 2026-10-20T01:13:12Z from `origin/main` (latest code commit `06383cc`)
 | 6 | Agent/workflow UIs, piggyback, hybrid bulk | 0/21 | 0 | 0 | 0 | 21 | `----------` 0% |
 | 7 | Hybrid lifecycle, overlays, chat follow-ups | 0/9 | 0 | 0 | 0 | 9 | `----------` 0% |
 | 8 | Final UI pieces and surface audit | 0/3 | 0 | 0 | 0 | 3 | `----------` 0% |
-| all | | 12/154 | 1 | 0 | 7 | 134 | `#---------` 7.8% |
+| all | | 13/154 | 0 | 0 | 7 | 134 | `#---------` 8.4% |
 
-CI on main (merge gate on the latest non-status commit `06383cc`): **pending** (linux: in_progress; test-windows: in_progress; windows: in_progress)
+CI on main (merge gate on the latest non-status commit `d482528`): **pending** (gates: queued; linux: queued; test-windows: in_progress; trufflehog: queued; windows: queued)
 
 ## In review
 
-| WP | PR | Head | CI | Review | Mergeable | Worker |
-|---|---|---|---|---|---|---|
-| W0-13 | [#10](https://github.com/normiecore/Freenpipe/pull/10) | `e8cf3e2` | pending (windows: in_progress) | pending | conflict | - |
+None.
 
 ## Claimed
 
@@ -49,9 +47,11 @@ None.
 
 No wave integration has been recorded by the merger yet.
 
+Complete waves awaiting the integration checklist: 0.
+
 ## Board
 
-### Wave 0: Foundation: build, ee/ stubs, de-cloud, rebrand (12/13 merged)
+### Wave 0: Foundation: build, ee/ stubs, de-cloud, rebrand (13/13 merged)
 
 | WP | Size | Status | Title | Detail |
 |---|---|---|---|---|
@@ -67,7 +67,7 @@ No wave integration has been recorded by the merger yet.
 | W0-10 | M | merged | Logs and feedback upload replaced by a local diagnostics bundle | merge `7869d46` |
 | W0-11 | L | merged | SQLite toolchain upgrade (sqlx 0.9, libsqlite3-sys 0.37, rusqlite vtab) | merge `7b684de` |
 | W0-12 | M | merged | Rebrand user-visible identity to Freenpipe | merge `06383cc` |
-| W0-13 | M | in_review | Vendor git dependencies into third_party/ | PR #10: CI pending, review pending |
+| W0-13 | M | merged | Vendor git dependencies into third_party/ | merge `d482528` |
 
 ### Wave 1: Cross-cutting foundations: schema v2.7, settings schema, integration seams (0/4 merged)
 
