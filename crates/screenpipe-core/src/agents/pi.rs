@@ -1696,7 +1696,12 @@ impl AgentExecutor for PiExecutor {
         // app, which calls the same procedure at start.
         let install_dir = pi_runtime::install_dir();
         let result = tokio::task::spawn_blocking(move || {
-            pi_install::ensure_current(&install_dir, find_stock_bun_executable())
+            let result = pi_install::ensure_current(&install_dir, find_stock_bun_executable());
+            // Seed the isolated config now rather than on the first run.
+            if let Err(e) = pi_runtime::ensure_config_dir() {
+                warn!("pi config dir: {:#}", e);
+            }
+            result
         })
         .await
         .map_err(|e| anyhow!("pi install task failed: {e}"))?;
@@ -1780,7 +1785,6 @@ pub fn find_stock_bun_executable() -> Option<String> {
 
     paths.into_iter().find(|p| std::path::Path::new(p).exists())
 }
-
 
 /// Find the JS entrypoint for the locally-installed pi package.
 fn find_local_pi_entrypoint() -> Option<String> {
@@ -2110,7 +2114,10 @@ pub fn find_bash_executable() -> Option<String> {
             }
             return Some(candidate.to_string_lossy().to_string());
         }
-        warn!("Skipping bash at {}: it did not answer the startup probe", candidate.display());
+        warn!(
+            "Skipping bash at {}: it did not answer the startup probe",
+            candidate.display()
+        );
         if let Ok(mut rejected) = REJECTED.lock() {
             rejected.get_or_insert_with(HashSet::new).insert(candidate);
         }

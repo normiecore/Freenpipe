@@ -133,7 +133,10 @@ pub fn is_installed_version_current(install_dir: &Path) -> bool {
     match installed_version(install_dir) {
         Some(v) if v == PI_VERSION => true,
         Some(v) => {
-            info!("pi runtime: installed {} differs from pinned {}", v, PI_VERSION);
+            info!(
+                "pi runtime: installed {} differs from pinned {}",
+                v, PI_VERSION
+            );
             false
         }
         None => false,
@@ -263,7 +266,11 @@ pub fn seed_package_json(install_dir: &Path) -> Result<SeedOutcome> {
         Ok(bytes) => Some(bytes),
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => None,
         Err(e) => {
-            warn!("pi runtime: cannot read {}: {} — re-seeding", path.display(), e);
+            warn!(
+                "pi runtime: cannot read {}: {} — re-seeding",
+                path.display(),
+                e
+            );
             Some(Vec::new())
         }
     };
@@ -279,10 +286,7 @@ pub fn seed_package_json(install_dir: &Path) -> Result<SeedOutcome> {
             match parsed {
                 Some(pkg) => (pkg, SeedOutcome::Unchanged),
                 None => {
-                    warn!(
-                        "pi runtime: {} is corrupt — re-seeding it",
-                        path.display()
-                    );
+                    warn!("pi runtime: {} is corrupt — re-seeding it", path.display());
                     (expected_package_json(), SeedOutcome::Reseeded)
                 }
             }
@@ -501,8 +505,10 @@ pub fn seed_from_global_waiting(
                 Err(e) => failed.push(format!("{name}: {e}")),
             }
         }
-        match seed_settings_packages(&global.join("settings.json"), &config_dir.join("settings.json"))
-        {
+        match seed_settings_packages(
+            &global.join("settings.json"),
+            &config_dir.join("settings.json"),
+        ) {
             Ok(true) => copied.push("settings.json#packages".to_string()),
             Ok(false) => {}
             Err(e) => failed.push(format!("settings.json: {e}")),
@@ -888,7 +894,11 @@ mod tests {
         )
         .unwrap();
         std::fs::write(global.join("models.json"), r#"{"providers":{}}"#).unwrap();
-        std::fs::write(global.join("sessions").join("--proj--").join("a.jsonl"), "{}\n").unwrap();
+        std::fs::write(
+            global.join("sessions").join("--proj--").join("a.jsonl"),
+            "{}\n",
+        )
+        .unwrap();
 
         let config = dir.path().join("pi-config");
         let report = seed_from_global(&config, Some(&global)).unwrap();
@@ -925,11 +935,18 @@ mod tests {
         let config = dir.path().join("pi-config");
         std::fs::create_dir_all(config.join("sessions")).unwrap();
         std::fs::write(config.join("auth.json"), r#"{"local":1}"#).unwrap();
-        std::fs::write(config.join("settings.json"), r#"{"packages":[],"shellPath":"b"}"#).unwrap();
+        std::fs::write(
+            config.join("settings.json"),
+            r#"{"packages":[],"shellPath":"b"}"#,
+        )
+        .unwrap();
         std::fs::write(config.join("sessions").join("s.jsonl"), "local").unwrap();
 
         seed_from_global(&config, Some(&global)).unwrap();
-        assert_eq!(std::fs::read_to_string(config.join("auth.json")).unwrap(), r#"{"local":1}"#);
+        assert_eq!(
+            std::fs::read_to_string(config.join("auth.json")).unwrap(),
+            r#"{"local":1}"#
+        );
         assert_eq!(
             read_json_object(&config.join("settings.json")),
             json!({"packages": [], "shellPath": "b"})
@@ -1017,8 +1034,9 @@ mod tests {
 
     #[test]
     fn child_env_names_the_isolated_dir_and_turns_off_pi_network_extras() {
-        let env: std::collections::HashMap<_, _> =
-            child_env(Path::new("/d/pi-agent/pi-config")).into_iter().collect();
+        let env: std::collections::HashMap<_, _> = child_env(Path::new("/d/pi-agent/pi-config"))
+            .into_iter()
+            .collect();
         assert_eq!(env["PI_CODING_AGENT_DIR"], "/d/pi-agent/pi-config");
         assert_eq!(env["SCREENPIPE_PI_AGENT_DIR"], "/d/pi-agent/pi-config");
         assert_eq!(env["PI_SKIP_VERSION_CHECK"], "1");

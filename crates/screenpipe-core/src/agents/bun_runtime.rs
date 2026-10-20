@@ -76,7 +76,10 @@ pub struct BunFacts {
 /// Pick the bun build and say why.
 pub fn choose_bun_build(facts: BunFacts) -> (BunBuild, &'static str) {
     if !facts.windows_x64 {
-        return (BunBuild::Stock, "baseline builds are only used on Windows x64");
+        return (
+            BunBuild::Stock,
+            "baseline builds are only used on Windows x64",
+        );
     }
     if facts.forced {
         return (BunBuild::Baseline, "SCREENPIPE_FORCE_BASELINE_BUN is set");
@@ -233,7 +236,9 @@ pub fn ensure_baseline_bun(install_dir: &Path) -> Result<PathBuf> {
         return Ok(exe);
     }
     if !cfg!(all(windows, target_arch = "x86_64")) {
-        return Err(anyhow!("the baseline bun build is only used on Windows x64"));
+        return Err(anyhow!(
+            "the baseline bun build is only used on Windows x64"
+        ));
     }
     let _guard = BASELINE_LOCK.lock().unwrap_or_else(|p| p.into_inner());
     if exe.is_file() {
@@ -292,7 +297,9 @@ fn download_asset(url: &'static str) -> Result<Vec<u8>> {
         let response = client.get(url).send()?.error_for_status()?;
         if let Some(len) = response.content_length() {
             if len > MAX_ASSET_BYTES {
-                return Err(anyhow!("baseline bun asset is unexpectedly large ({len} bytes)"));
+                return Err(anyhow!(
+                    "baseline bun asset is unexpectedly large ({len} bytes)"
+                ));
             }
         }
         let bytes = response.bytes()?;
@@ -352,7 +359,9 @@ fn unpack_zip(zip: &Path, dest: &Path) -> Result<()> {
 
 #[cfg(not(windows))]
 fn unpack_zip(_zip: &Path, _dest: &Path) -> Result<()> {
-    Err(anyhow!("the baseline bun build is only used on Windows x64"))
+    Err(anyhow!(
+        "the baseline bun build is only used on Windows x64"
+    ))
 }
 
 #[cfg(test)]

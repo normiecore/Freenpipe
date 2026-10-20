@@ -547,13 +547,13 @@ fn should_retry_install_with_npm(stderr: &str) -> bool {
 /// shared procedure in `pi_install`, which also sets up the baseline bun
 /// where needed and applies the runtime patch).
 fn ensure_pi_runtime(install_dir: &Path, stock_bun: Option<String>) -> Result<(), String> {
-    match pi_install::ensure_current(install_dir, stock_bun) {
-        Ok(outcome) => {
-            info!("Pi runtime ready ({:?}) in {}", outcome, install_dir.display());
-            Ok(())
-        }
-        Err(e) => Err(e),
-    }
+    let outcome = pi_install::ensure_current(install_dir, stock_bun)?;
+    info!(
+        "Pi runtime ready ({:?}) in {}",
+        outcome,
+        install_dir.display()
+    );
+    Ok(())
 }
 
 /// Find the JS entrypoint for the locally-installed pi package.
@@ -2307,7 +2307,8 @@ pub async fn pi_install(app: AppHandle) -> Result<(), String> {
 
     let app_handle = app.clone();
     std::thread::spawn(move || {
-        match ensure_pi_runtime(&install_dir, Some(stock_bun)) {
+        let result = ensure_pi_runtime(&install_dir, Some(stock_bun));
+        match result {
             Ok(()) => {
                 info!("Pi installed successfully");
                 let _ = app_handle.emit("pi_installed", true);
@@ -2418,6 +2419,10 @@ pub fn ensure_pi_installed_background() {
                 if let Err(e) = ensure_pi_runtime(&install_dir, find_stock_bun_executable()) {
                     error!("Pi background install failed: {}", e);
                     set_pi_install_error(e);
+                }
+                // Seed the isolated Pi config now rather than on the first chat.
+                if let Err(e) = get_pi_config_dir() {
+                    warn!("{}", e);
                 }
             });
             if let Err(e) = result {

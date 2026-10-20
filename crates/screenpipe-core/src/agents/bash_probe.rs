@@ -25,8 +25,15 @@ pub const PROBE_TIMEOUT: Duration = Duration::from_secs(5);
 /// Whether `path` is the WSL launcher or an app-execution alias rather than
 /// a real bash.
 pub fn is_wsl_launcher(path: &Path) -> bool {
-    let lower = path.to_string_lossy().replace('/', "\\").to_ascii_lowercase();
-    let launcher_dirs = ["\\windows\\system32\\", "\\windows\\sysnative\\", "\\windows\\syswow64\\"];
+    let lower = path
+        .to_string_lossy()
+        .replace('/', "\\")
+        .to_ascii_lowercase();
+    let launcher_dirs = [
+        "\\windows\\system32\\",
+        "\\windows\\sysnative\\",
+        "\\windows\\syswow64\\",
+    ];
     if lower.ends_with("\\bash.exe") && launcher_dirs.iter().any(|d| lower.contains(d)) {
         return true;
     }
@@ -52,13 +59,25 @@ pub fn candidate_paths(
         }
     };
     if let Some(local) = local_app_data {
-        push(local.join("screenpipe").join("git-portable").join("bin").join("bash.exe"));
+        push(
+            local
+                .join("screenpipe")
+                .join("git-portable")
+                .join("bin")
+                .join("bash.exe"),
+        );
     }
     for dir in program_files_dirs {
         push(dir.join("Git").join("bin").join("bash.exe"));
     }
     if let Some(local) = local_app_data {
-        push(local.join("Programs").join("Git").join("bin").join("bash.exe"));
+        push(
+            local
+                .join("Programs")
+                .join("Git")
+                .join("bin")
+                .join("bash.exe"),
+        );
     }
     for line in where_output.lines() {
         let line = line.trim();
@@ -180,6 +199,8 @@ mod tests {
         assert!(probe_output_ok(PROBE_TOKEN.as_bytes()));
         assert!(probe_output_ok(format!("noise\n{PROBE_TOKEN}").as_bytes()));
         assert!(!probe_output_ok(b""));
-        assert!(!probe_output_ok(b"Windows Subsystem for Linux has no installed distributions."));
+        assert!(!probe_output_ok(
+            b"Windows Subsystem for Linux has no installed distributions."
+        ));
     }
 }

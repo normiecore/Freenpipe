@@ -158,8 +158,7 @@ pub fn install(install_dir: &Path, bun: &str) -> Result<(), String> {
     );
     let mut output = run(bun_add_command(install_dir, bun), "bun")?;
 
-    if !output.status.success() && bun_runtime::is_illegal_instruction_exit(output.status.code())
-    {
+    if !output.status.success() && bun_runtime::is_illegal_instruction_exit(output.status.code()) {
         bun_runtime::record_stock_bun_crash(install_dir);
         match bun_runtime::ensure_baseline_bun(install_dir) {
             Ok(baseline) => {
@@ -216,8 +215,11 @@ pub fn install(install_dir: &Path, bun: &str) -> Result<(), String> {
 
 /// Packages Pi needs at run time that bun on Windows has failed to hoist
 /// before; each must resolve from the agent's `dist` directory.
-pub const REQUIRED_DEPENDENCIES: &[&str] =
-    &[pi_runtime::PI_AI, pi_runtime::ANTHROPIC_SDK, pi_runtime::CROSS_SPAWN];
+pub const REQUIRED_DEPENDENCIES: &[&str] = &[
+    pi_runtime::PI_AI,
+    pi_runtime::ANTHROPIC_SDK,
+    pi_runtime::CROSS_SPAWN,
+];
 
 /// Where an install directory stands.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -307,7 +309,10 @@ static INSTALL_LOCK: Mutex<()> = Mutex::new(());
 /// Make the install at `install_dir` the pinned, patched release: set up the
 /// baseline bun where needed, install, upgrade or repair Pi, and apply the
 /// runtime patch. `stock_bun` is the bun the caller found. Blocking.
-pub fn ensure_current(install_dir: &Path, stock_bun: Option<String>) -> Result<EnsureOutcome, String> {
+pub fn ensure_current(
+    install_dir: &Path,
+    stock_bun: Option<String>,
+) -> Result<EnsureOutcome, String> {
     let _guard = INSTALL_LOCK.lock().unwrap_or_else(|p| p.into_inner());
     let bun = prepare_bun(install_dir, stock_bun);
     let mut state = install_state(install_dir);
@@ -329,7 +334,11 @@ pub fn ensure_current(install_dir: &Path, stock_bun: Option<String>) -> Result<E
     })?;
     let outcome = match &state {
         InstallState::Broken(why) => {
-            warn!("pi runtime: repairing the install in {}: {}", install_dir.display(), why);
+            warn!(
+                "pi runtime: repairing the install in {}: {}",
+                install_dir.display(),
+                why
+            );
             clear_install_artifacts(install_dir);
             EnsureOutcome::Repaired
         }
@@ -373,7 +382,9 @@ mod tests {
         ));
         assert!(should_retry_with_npm("eperm moving into cache dir"));
         assert!(!should_retry_with_npm("EPERM: open package.json"));
-        assert!(!should_retry_with_npm("404 Not Found @earendil-works/pi-ai"));
+        assert!(!should_retry_with_npm(
+            "404 Not Found @earendil-works/pi-ai"
+        ));
     }
 
     #[test]
@@ -481,7 +492,10 @@ mod tests {
             install_state(dir.path()),
             InstallState::Outdated(Some("0.75.4".into()))
         );
-        assert!(install_state(dir.path()).problem().unwrap().contains("0.84.1"));
+        assert!(install_state(dir.path())
+            .problem()
+            .unwrap()
+            .contains("0.84.1"));
 
         fake_install(dir.path(), pi_runtime::PI_VERSION, REQUIRED_DEPENDENCIES);
         assert_eq!(install_state(dir.path()), InstallState::Healthy);
@@ -491,7 +505,11 @@ mod tests {
     #[test]
     fn dependencies_nested_under_the_agent_resolve() {
         let dir = tempfile::tempdir().unwrap();
-        fake_install(dir.path(), pi_runtime::PI_VERSION, &[pi_runtime::PI_AI, pi_runtime::CROSS_SPAWN]);
+        fake_install(
+            dir.path(),
+            pi_runtime::PI_VERSION,
+            &[pi_runtime::PI_AI, pi_runtime::CROSS_SPAWN],
+        );
         let nested = pi_runtime::node_module_dir(
             &pi_runtime::package_dir(dir.path()),
             pi_runtime::ANTHROPIC_SDK,
@@ -513,7 +531,10 @@ mod tests {
     fn without_bun_a_missing_install_reports_why() {
         let dir = tempfile::tempdir().unwrap();
         let err = ensure_current(dir.path(), None).unwrap_err();
-        assert!(err.contains("not installed") && err.contains("bun"), "{err}");
+        assert!(
+            err.contains("not installed") && err.contains("bun"),
+            "{err}"
+        );
     }
 
     /// A real install from the npm registry into a fresh data dir: the

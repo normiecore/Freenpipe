@@ -117,13 +117,15 @@ pub fn parse(text: &str) -> Result<Patch> {
         let mut words = trimmed.split_whitespace();
         match words.next() {
             Some("target") => {
-                let (Some(pkg), Some(ver), None) = (words.next(), words.next(), words.next()) else {
+                let (Some(pkg), Some(ver), None) = (words.next(), words.next(), words.next())
+                else {
                     bail!("line {line_no}: expected `target <package> <version>`");
                 };
                 targets.push((pkg.to_string(), ver.to_string()));
             }
             Some("module") => {
-                let (Some(pkg), Some(path), None) = (words.next(), words.next(), words.next()) else {
+                let (Some(pkg), Some(path), None) = (words.next(), words.next(), words.next())
+                else {
                     bail!("line {line_no}: expected `module <package> <path>`");
                 };
                 if module.is_some() {
@@ -281,7 +283,12 @@ fn replace_once(text: &str, from: &str, to: &str, what: &str) -> Result<String> 
 pub fn patch_text(file: &FilePatch, stock: &str) -> Result<String> {
     let mut text = stock.to_string();
     for hunk in &file.hunks {
-        text = replace_once(&text, &hunk.find, &hunk.replace, &format!("hunk {}", hunk.id))?;
+        text = replace_once(
+            &text,
+            &hunk.find,
+            &hunk.replace,
+            &format!("hunk {}", hunk.id),
+        )?;
     }
     Ok(text)
 }
@@ -290,10 +297,18 @@ pub fn patch_text(file: &FilePatch, stock: &str) -> Result<String> {
 pub fn unpatch_text(file: &FilePatch, patched: &str) -> Result<String> {
     let mut text = patched.to_string();
     for hunk in file.hunks.iter().rev() {
-        text = replace_once(&text, &hunk.replace, &hunk.find, &format!("undo {}", hunk.id))?;
+        text = replace_once(
+            &text,
+            &hunk.replace,
+            &hunk.find,
+            &format!("undo {}", hunk.id),
+        )?;
     }
     if sha256_hex(text.as_bytes()) != file.stock_sha256 {
-        bail!("{}: undoing the patch did not give the stock file", file.path);
+        bail!(
+            "{}: undoing the patch did not give the stock file",
+            file.path
+        );
     }
     Ok(text)
 }
@@ -352,8 +367,8 @@ fn plan_files(install_dir: &Path, patch: &Patch, apply: bool) -> Result<Plan> {
         let dir = package_dir(install_dir, &file.package)
             .ok_or_else(|| anyhow!("{} is not installed", file.package))?;
         let path = dir.join(&file.path);
-        let content = std::fs::read_to_string(&path)
-            .with_context(|| format!("read {}", path.display()))?;
+        let content =
+            std::fs::read_to_string(&path).with_context(|| format!("read {}", path.display()))?;
         let new_content = match (file_state(file, &content), apply) {
             (FileState::Stock, true) => Some(patch_text(file, &content)?),
             (FileState::Patched, true) | (FileState::Stock, false) => None,
@@ -534,9 +549,10 @@ function f() {
     #[test]
     fn the_bundled_patch_parses_and_targets_0_84_1() {
         let patch = bundled().unwrap();
-        assert!(patch
-            .targets
-            .contains(&(pi_runtime::PI_CODING_AGENT.to_string(), "0.84.1".to_string())));
+        assert!(patch.targets.contains(&(
+            pi_runtime::PI_CODING_AGENT.to_string(),
+            "0.84.1".to_string()
+        )));
         assert!(patch
             .targets
             .contains(&(pi_runtime::PI_AI.to_string(), "0.84.1".to_string())));
@@ -570,7 +586,9 @@ function f() {
         assert!(parse(&no_marker).is_err());
         let unterminated = good.replace("@@@ end\nhunk two-v1", "hunk two-v1");
         assert!(parse(&unterminated).is_err());
-        let dup = good.replace("hunk two-v1", "hunk one-v1").replace("patch:two-v1", "patch:one-v1");
+        let dup = good
+            .replace("hunk two-v1", "hunk one-v1")
+            .replace("patch:two-v1", "patch:one-v1");
         assert!(parse(&dup).is_err());
         assert!(parse("target a 1\n").is_err());
         assert!(parse(&good.replace("target", "tarjet")).is_err());
@@ -584,7 +602,10 @@ function f() {
         let file = pi_runtime::package_dir(dir.path()).join("dist/a.js");
         let module = pi_runtime::package_dir(dir.path()).join("dist/core/compaction/fp.js");
 
-        assert_eq!(apply_in(dir.path(), &patch, "export {};\r\n").unwrap(), Outcome::Applied);
+        assert_eq!(
+            apply_in(dir.path(), &patch, "export {};\r\n").unwrap(),
+            Outcome::Applied
+        );
         let patched = std::fs::read_to_string(&file).unwrap();
         assert!(patched.contains("const a = 2; // freenpipe-patch:one-v1"));
         assert!(patched.contains("return a + 1;"));
@@ -653,8 +674,14 @@ function f() {
             FileState::Stale(_)
         ));
         let outcome = apply_in(dir.path(), &newer, "export const v = 3;\n").unwrap();
-        assert!(matches!(outcome, Outcome::Stale(ref why) if why.contains("two-v1")), "{outcome:?}");
-        assert!(matches!(remove_in(dir.path(), &newer).unwrap(), Outcome::Stale(_)));
+        assert!(
+            matches!(outcome, Outcome::Stale(ref why) if why.contains("two-v1")),
+            "{outcome:?}"
+        );
+        assert!(matches!(
+            remove_in(dir.path(), &newer).unwrap(),
+            Outcome::Stale(_)
+        ));
         // Nothing was touched: hooks and module still match each other.
         assert_eq!(std::fs::read_to_string(&file).unwrap(), applied);
         let module = pi_runtime::package_dir(dir.path()).join("dist/core/compaction/fp.js");
@@ -672,7 +699,10 @@ function f() {
     fn no_install_means_nothing_to_do() {
         let dir = tempfile::tempdir().unwrap();
         let patch = parse(&fixture_patch(STOCK)).unwrap();
-        assert_eq!(apply_in(dir.path(), &patch, "x").unwrap(), Outcome::NotInstalled);
+        assert_eq!(
+            apply_in(dir.path(), &patch, "x").unwrap(),
+            Outcome::NotInstalled
+        );
         assert_eq!(sync(dir.path()), Outcome::NotInstalled);
     }
 
@@ -680,10 +710,8 @@ function f() {
     fn nested_packages_are_found() {
         let dir = tempfile::tempdir().unwrap();
         install(dir.path(), "0.84.1", STOCK);
-        let nested = pi_runtime::node_module_dir(
-            &pi_runtime::package_dir(dir.path()),
-            pi_runtime::PI_AI,
-        );
+        let nested =
+            pi_runtime::node_module_dir(&pi_runtime::package_dir(dir.path()), pi_runtime::PI_AI);
         std::fs::create_dir_all(&nested).unwrap();
         std::fs::write(nested.join("package.json"), r#"{"version":"0.84.1"}"#).unwrap();
         assert_eq!(package_dir(dir.path(), pi_runtime::PI_AI), Some(nested));
@@ -709,7 +737,10 @@ function f() {
         );
         if std::env::var_os("FREENPIPE_PI_TEST_KEEP").is_none() {
             assert_eq!(remove_in(&dir, patch).unwrap(), Outcome::Removed);
-            assert_eq!(apply_in(&dir, patch, MODULE_SOURCE).unwrap(), Outcome::Applied);
+            assert_eq!(
+                apply_in(&dir, patch, MODULE_SOURCE).unwrap(),
+                Outcome::Applied
+            );
         }
     }
 
