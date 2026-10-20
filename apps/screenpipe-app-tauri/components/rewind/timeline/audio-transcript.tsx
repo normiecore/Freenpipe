@@ -431,6 +431,8 @@ export function AudioTranscript({
 						audio_chunk_id: chunkId,
 						new_speaker_name: firstChunkNewSpeakerName,
 						propagate_similar: false,
+						// Bulk relabel moves exactly the selected chunks.
+						scope: "chunk",
 					}),
 				}).catch((err) => console.error("bulk reassign error:", err));
 			}
@@ -936,6 +938,7 @@ export function AudioTranscript({
 										speakerId={firstAudio.speaker_id}
 										speakerName={firstAudio.speaker_name}
 										audioFilePath={firstAudio.audio_file_path}
+										scope="chunk"
 										onAssigned={(newId, newName) =>
 											handleBulkAssignToSelected(newId, newName)
 										}

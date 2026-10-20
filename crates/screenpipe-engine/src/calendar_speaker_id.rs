@@ -40,6 +40,18 @@ use tracing::{debug, info, warn};
 /// present on a device. Prevents naming from a single spurious detection.
 const MIN_TRANSCRIPTION_COUNT: i32 = 3;
 
+/// Freenpipe (W2-16, audio-009): automatic self-naming needs the lone
+/// microphone voice to show up in at least this many distinct audio chunks.
+const AUTO_SELF_MIN_CHUNKS: i64 = MIN_TRANSCRIPTION_COUNT as i64;
+
+/// How far back automatic self-naming looks for microphone evidence.
+const AUTO_SELF_LOOKBACK_HOURS: i64 = 24;
+
+/// Start of the evidence window for automatic self-naming at `now`.
+fn auto_self_window_start(now: DateTime<Utc>) -> DateTime<Utc> {
+    now - chrono::Duration::hours(AUTO_SELF_LOOKBACK_HOURS)
+}
+
 /// Context about the current meeting, derived from calendar events.
 #[derive(Debug, Clone)]
 pub struct MeetingContext {
@@ -569,13 +581,18 @@ async fn auto_name_input_speaker(db: Arc<screenpipe_db::DatabaseManager>, user_n
     tokio::time::sleep(tokio::time::Duration::from_secs(60)).await;
 
     let mut interval = tokio::time::interval(tokio::time::Duration::from_secs(120));
-    let min_transcriptions = 10; // need enough data to be confident
 
     loop {
         interval.tick().await;
 
+        // The query only answers when the last day of microphone audio holds
+        // exactly one voice, that voice is unnamed, never heard on output and
+        // seen outside meetings in enough chunks (see the DB doc comment).
         match db
-            .get_dominant_unnamed_input_speaker(min_transcriptions)
+            .get_dominant_unnamed_input_speaker(
+                AUTO_SELF_MIN_CHUNKS,
+                auto_self_window_start(Utc::now()),
+            )
             .await
         {
             Ok(Some(speaker_id)) => {
@@ -755,6 +772,16 @@ mod tests {
             user_name: user.map(|s| s.to_string()),
             meeting_title: title.map(|s| s.to_string()),
         }
+    }
+
+    #[test]
+    fn auto_self_naming_looks_back_one_day_and_needs_three_chunks() {
+        let now = chrono::DateTime::parse_from_rfc3339("2026-10-20T12:00:00Z")
+            .unwrap()
+            .with_timezone(&Utc);
+        let start = auto_self_window_start(now);
+        assert_eq!(start.to_rfc3339(), "2026-10-19T12:00:00+00:00");
+        assert_eq!(AUTO_SELF_MIN_CHUNKS, 3);
     }
 
     // ── names_match tests ─────────────────────────────────────────────

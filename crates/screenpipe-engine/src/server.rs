@@ -664,6 +664,11 @@ impl SCServer {
             // Vision/audio pipeline metrics (not in OpenAPI spec — external types)
             .route("/vision/metrics", get(vision_metrics_handler))
             .route("/audio/metrics", get(audio_metrics_handler))
+            // Speaker voice-sample WAV clips (binary body, not in OpenAPI spec)
+            .route(
+                "/speakers/sample/:audio_chunk_id",
+                get(crate::routes::speakers::get_speaker_sample_handler),
+            )
             // HD recording — bound sessions (meeting / timer / prewarm-pending),
             // no indefinite mode. Every session has a natural end condition.
             // GET    /capture/hd            → current snapshot
