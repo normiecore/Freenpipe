@@ -69,8 +69,10 @@ ffmpeg comes from the GyanD GitHub mirror. The files land in
 (`scripts/stage_bundled_runtime.js`, output in `src-tauri/bundled/`): the MCP
 server built from `packages/screenpipe-mcp` into one file, the two pyannote
 speaker models (from an LFS checkout, otherwise downloaded from this
-repository's LFS storage and checked against their SHA-256), and the
-`screenpipe` CLI. The CLI is only staged when you ask for it, because it
+repository's LFS storage and checked against their SHA-256), the Silero VAD
+model (`bundled/vad/`, downloaded from snakers4/silero-vad at a pinned
+commit), the Windows GPU runtime (`bundled/runtime/`, see section 5.1) and
+the `screenpipe` CLI. The CLI is only staged when you ask for it, because it
 needs a release build of the engine:
 
 ```bash
@@ -176,6 +178,69 @@ bun run bindings:generate  # regenerate lib/utils/tauri.ts after changing comman
 
 The two `bindings:*` scripts run a `cargo test` of the app crate in the dev
 profile, so the first run compiles the whole dependency graph once more.
+
+### 5.1 GPU builds: Vulkan whisper and DirectML
+
+The x64 release build enables two GPU paths (W2-19). Both fall back to CPU
+on their own, so a GPU build also runs on machines without a usable GPU.
+
+| Feature | What it does | Build needs | Runtime needs |
+|---|---|---|---|
+| `vulkan` | whisper.cpp on ggml-vulkan | Vulkan SDK, `VULKAN_SDK` set | `vulkan-1.dll` (load-time import) |
+| `directml` | Parakeet's ONNX sessions on a DirectX 12 GPU | nothing extra (`ort` is load-dynamic) | the DirectML build of `onnxruntime.dll`, and `DirectML.dll` |
+
+**Vulkan SDK.** Install the LunarG Vulkan SDK (the release uses 1.4.313.0)
+with its default components, then open a new shell so `VULKAN_SDK` is set
+and `%VULKAN_SDK%\Bin` (glslc) is on `PATH`:
+
+```bash
+echo "$VULKAN_SDK"; ls "$VULKAN_SDK/Lib/vulkan-1.lib"; glslc --version
+cargo build --profile release-dev -p screenpipe-engine --bin screenpipe --features vulkan,directml
+```
+
+The ggml-vulkan shader generator nests its build directories deeply; keep
+the checkout (or `CARGO_TARGET_DIR`) at a short path, or enable Windows long
+paths, if CMake reports paths over 260 characters. Linux and macOS builds
+never enable `vulkan`, so they need no SDK. (`vulkan-qwen3-ggml` is a
+separate opt-in feature for audiopipe's ggml Qwen3 engine; no release uses
+it.)
+
+**What the installer ships** (`src-tauri/bundled/runtime/`, mapped into the
+install root by `tauri.windows.conf.json`):
+
+- `onnxruntime.dll`, `onnxruntime_providers_shared.dll` and their licence
+  texts: ONNX Runtime 1.22.0 built with the DirectML provider, from the
+  `Microsoft.ML.OnnxRuntime.DirectML` NuGet package (MIT), pinned by
+  SHA-256. It contains the CPU provider too and loads `DirectML.dll` only when
+  DirectML is used. Without network access the script falls back to a CPU
+  build already unpacked under `src-tauri/onnxruntime-win-<arch>-<version>/`.
+- `vulkan-1.dll` and `VulkanRT-License.txt`, from the folder named by
+  `FREENPIPE_VULKAN_RUNTIME_DIR` (the release unpacks LunarG's
+  `vulkan-runtime-components.zip` there). A build with `vulkan` cannot start
+  without this DLL on a machine whose GPU driver installed no Vulkan runtime,
+  so set the variable for any installer you build with `vulkan`.
+- `DirectML.dll` only with `FREENPIPE_BUNDLE_DIRECTML=1`. It is Microsoft's
+  redistributable under Microsoft's own licence terms, so it stays out until
+  the release licence audit clears it (see
+  `docs/dev/bundled-runtime-licences.md`). Without it ONNX Runtime uses the
+  `DirectML.dll` in System32 (Windows 10 1903 and later); when that copy is
+  missing or too old, Parakeet runs on CPU.
+
+**Run-time switches and logs.**
+
+- `SCREENPIPE_DIRECTML`: unset or empty picks DirectML when an adapter
+  qualifies; `1`/`true` asks for it; any other value (`0`, `false`) forces CPU.
+  The engine logs the decision once, for example
+  `parakeet: DirectML adapter ordinal 0: <name> (<n> MiB dedicated video memory, UMA=false)`
+  or `parakeet: SCREENPIPE_DIRECTML explicitly disabled DirectML; using CPU`.
+- whisper logs `whisper context: GPU backend Vulkan (...)` or
+  `whisper context: GPU unavailable; using CPU fallback (...)` when it loads
+  a model.
+- `SCREENPIPE_WHISPER_GPU_FAULT=inference` (or `state`) makes GPU whisper
+  sessions fail on purpose, to exercise the CPU recovery: the log shows
+  `GPU inference failed`, then `CPU state installed` and
+  `CPU inference finished after GPU recovery`, and the transcript still
+  arrives.
 
 ## 6. Dev isolation
 

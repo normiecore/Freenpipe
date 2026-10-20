@@ -443,6 +443,13 @@ async function stageOnnxRuntime({ srcTauriDir, stageRoot, platform, arch, requir
 		for (const name of ['onnxruntime.dll', 'onnxruntime_providers_shared.dll']) {
 			await fs.copyFile(path.join(srcTauriDir, cpuDir, 'lib', name), path.join(destDir, name))
 		}
+		// The release zip carries the same licence texts at its top level.
+		for (const [name, dest] of [
+			['LICENSE', 'onnxruntime-LICENSE.txt'],
+			['ThirdPartyNotices.txt', 'onnxruntime-ThirdPartyNotices.txt'],
+		]) {
+			await fs.copyFile(path.join(srcTauriDir, cpuDir, name), path.join(destDir, dest)).catch(() => {})
+		}
 		console.warn(
 			`[bundled-runtime] DirectML build of ONNX Runtime not staged (${error.message}); using the CPU build in ${cpuDir}`,
 		)
