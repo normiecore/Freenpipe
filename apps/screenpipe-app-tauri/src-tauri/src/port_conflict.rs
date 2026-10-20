@@ -14,6 +14,7 @@
 //! | `OwnProcess` | this process (an engine generation still closing)       | wait       |
 //! | `Healthy`    | a screenpipe-family instance that answers on the port   | never kill |
 //! | `Unhealthy`  | another copy of *this executable* that does not answer  | terminate  |
+//! | `Unverified` | a copy of this executable sharing the port with others  | never kill |
 //! | `Foreign`    | anything else                                           | never kill |
 //!
 //! "This executable" means the same image path as `std::env::current_exe()`.
@@ -21,6 +22,11 @@
 //! can never be terminated. Before terminating, the holder must also fail a
 //! second probe and must still resolve to our executable and still listen on
 //! the port, which guards against a PID being reused in between.
+//!
+//! The HTTP probe reaches whichever socket accepts on `127.0.0.1:<port>`, so
+//! its answer describes a holder only when that holder is the only process
+//! listening. With several listeners nobody is classified from the probe;
+//! while this process is one of them, nothing is decided until it lets go.
 //!
 //! The decision logic is pure (`classify`, `plan`, the output parsers) and is
 //! unit-tested with `netstat` and `lsof` fixtures. The platform operations sit
@@ -43,6 +49,9 @@ const RELEASE_WAIT: Duration = Duration::from_secs(10);
 const RELEASE_POLL: Duration = Duration::from_millis(250);
 /// Classify, terminate and re-check rounds before giving up.
 const MAX_ROUNDS: usize = 3;
+/// How long one round waits for this process to stop listening (an engine
+/// generation that is still closing) before classifying the others.
+const SELF_RELEASE_WAIT: Duration = Duration::from_secs(10);
 /// The same conflict notification is not repeated more often than this.
 const NOTIFY_COOLDOWN: Duration = Duration::from_secs(600);
 
@@ -62,6 +71,10 @@ pub enum HolderClass {
     /// Another copy of this executable that gives no HTTP answer. The only
     /// class Freenpipe terminates.
     Unhealthy,
+    /// Another copy of this executable whose health could not be checked
+    /// because other processes listen on the same port: the probe may have
+    /// been answered by any of them. Never terminated.
+    Unverified,
     /// Anything else: another product, a dev server, a process whose image
     /// cannot be read, an unresponsive copy of a different executable.
     /// Never terminated.
@@ -74,6 +87,7 @@ impl HolderClass {
             HolderClass::OwnProcess => "self",
             HolderClass::Healthy => "healthy",
             HolderClass::Unhealthy => "unhealthy",
+            HolderClass::Unverified => "unverified",
             HolderClass::Foreign => "foreign",
         }
     }
@@ -135,7 +149,8 @@ impl HealthProbe {
 pub struct PortHolder {
     pub identity: ProcessIdentity,
     pub class: HolderClass,
-    /// Image name looks like screenpipe or Freenpipe. Only changes wording.
+    /// Image name looks like screenpipe or Freenpipe. Only changes the
+    /// wording of the notification (another screenpipe app vs some program).
     pub screenpipe_family: bool,
     /// Same executable as this process.
     pub own_executable: bool,
@@ -146,6 +161,10 @@ pub struct PortHolder {
 pub enum ConflictPlan {
     /// Nobody but this process listens.
     Clear,
+    /// This process still listens next to other processes. A probe could be
+    /// answered by either, so nobody is classified from it: wait for ours
+    /// to close, then look again.
+    WaitForSelf,
     /// Terminate these unhealthy copies of our executable, then re-check.
     Reclaim(Vec<u32>),
     /// Leave the port alone; this holder keeps us from binding.
@@ -246,24 +265,27 @@ pub fn is_screenpipe_family(identity: &ProcessIdentity) -> bool {
     name.contains("screenpipe") || name.contains("freenpipe")
 }
 
-/// Classify one listener from its identity and the port's probe result.
+/// Classify one listener from its identity and the probe result that
+/// belongs to it. `probe` is `None` when the port's probe cannot be
+/// attributed to this holder (several processes listen): then only its
+/// identity counts, and nothing is ever `Unhealthy` or `Healthy`.
 pub fn classify(
     identity: &ProcessIdentity,
     self_pid: u32,
     own_exe: Option<&Path>,
-    probe: HealthProbe,
+    probe: Option<HealthProbe>,
 ) -> PortHolder {
     let own_executable = is_own_executable(identity, own_exe);
     let screenpipe_family = own_executable || is_screenpipe_family(identity);
     let class = if identity.pid == self_pid {
         HolderClass::OwnProcess
     } else if own_executable {
-        if probe.answered() {
-            HolderClass::Healthy
-        } else {
-            HolderClass::Unhealthy
+        match probe {
+            Some(p) if p.answered() => HolderClass::Healthy,
+            Some(_) => HolderClass::Unhealthy,
+            None => HolderClass::Unverified,
         }
-    } else if probe == HealthProbe::ScreenpipeHealth {
+    } else if probe == Some(HealthProbe::ScreenpipeHealth) {
         HolderClass::Healthy
     } else {
         HolderClass::Foreign
@@ -276,16 +298,33 @@ pub fn classify(
     }
 }
 
-/// Decide what to do about a set of classified listeners. A healthy or
-/// foreign holder blocks the port, so nothing is terminated while one is
-/// present (terminating our own unhealthy copy would not free the port).
-/// Only `Unhealthy` holders ever appear in a `Reclaim` list.
+/// The holder a blocked port is reported against: a healthy one first (the
+/// message can name another running instance), then a foreign one, then an
+/// unverified copy of ours. `None` when no holder blocks.
+fn first_blocker(holders: &[PortHolder]) -> Option<&PortHolder> {
+    [
+        HolderClass::Healthy,
+        HolderClass::Foreign,
+        HolderClass::Unverified,
+    ]
+    .iter()
+    .find_map(|class| holders.iter().find(|h| h.class == *class))
+}
+
+/// Decide what to do about a set of classified listeners. While this
+/// process is one of several listeners nothing is decided (`WaitForSelf`).
+/// A healthy, foreign or unverified holder blocks the port, so nothing is
+/// terminated while one is present (terminating our own unhealthy copy
+/// would not free the port). Only `Unhealthy` holders ever appear in a
+/// `Reclaim` list.
 pub fn plan(holders: &[PortHolder]) -> ConflictPlan {
-    if let Some(h) = holders.iter().find(|h| h.class == HolderClass::Healthy) {
-        return ConflictPlan::Blocked(h.clone());
+    let ours = holders.iter().any(|h| h.class == HolderClass::OwnProcess);
+    let others = holders.iter().any(|h| h.class != HolderClass::OwnProcess);
+    if ours && others {
+        return ConflictPlan::WaitForSelf;
     }
-    if let Some(h) = holders.iter().find(|h| h.class == HolderClass::Foreign) {
-        return ConflictPlan::Blocked(h.clone());
+    if let Some(blocker) = first_blocker(holders) {
+        return ConflictPlan::Blocked(blocker.clone());
     }
     let kill: Vec<u32> = holders
         .iter()
@@ -389,6 +428,10 @@ pub(crate) trait PortOps {
     async fn sleep(&self, duration: Duration);
 }
 
+/// Classify every listener on `port`. The port is probed only when exactly
+/// one process listens and it is not this one: the probe reaches whichever
+/// socket accepts on `127.0.0.1:<port>`, so with several listeners its
+/// answer could belong to any of them and is never used to classify one.
 async fn classify_listeners<P: PortOps>(
     ops: &P,
     port: u16,
@@ -396,21 +439,10 @@ async fn classify_listeners<P: PortOps>(
     own_exe: Option<&Path>,
 ) -> Vec<PortHolder> {
     let pids = ops.listeners(port).await;
-    if pids.iter().all(|p| *p == self_pid) {
-        return pids
-            .into_iter()
-            .map(|pid| {
-                classify(
-                    &ProcessIdentity::unknown(pid),
-                    self_pid,
-                    own_exe,
-                    HealthProbe::NoAnswer,
-                )
-            })
-            .collect();
-    }
-    // One probe covers every holder: it reaches whoever accepts on the port.
-    let probe = ops.probe(port).await;
+    let probe = match pids.as_slice() {
+        [only] if *only != self_pid => Some(ops.probe(port).await),
+        _ => None,
+    };
     let mut holders = Vec::with_capacity(pids.len());
     for pid in pids {
         let identity = if pid == self_pid {
@@ -423,8 +455,21 @@ async fn classify_listeners<P: PortOps>(
     holders
 }
 
+/// Wait (up to `SELF_RELEASE_WAIT`) for this process to stop listening on
+/// `port`, which is what an engine generation that is still closing does.
+async fn wait_for_self_release<P: PortOps>(ops: &P, port: u16, self_pid: u32) {
+    let polls = (SELF_RELEASE_WAIT.as_millis() / RELEASE_POLL.as_millis()).max(1);
+    for _ in 0..polls {
+        if !ops.listeners(port).await.contains(&self_pid) {
+            return;
+        }
+        ops.sleep(RELEASE_POLL).await;
+    }
+}
+
 /// Classify the holders of `port` and terminate only unhealthy copies of our
-/// own executable. Healthy and foreign processes are never touched.
+/// own executable. Healthy, foreign and unverified processes are never
+/// touched.
 pub(crate) async fn resolve<P: PortOps>(
     ops: &P,
     port: u16,
@@ -460,6 +505,13 @@ pub(crate) async fn resolve<P: PortOps>(
                 };
             }
             ConflictPlan::Blocked(holder) => return ReclaimOutcome::Blocked(holder),
+            ConflictPlan::WaitForSelf => {
+                info!(
+                    "port {port}: this process still listens next to another; waiting for it to let go before classifying (round {round})"
+                );
+                wait_for_self_release(ops, port, self_pid).await;
+                continue;
+            }
             ConflictPlan::Reclaim(pids) => pids,
         };
         last_unhealthy = holders
@@ -468,10 +520,15 @@ pub(crate) async fn resolve<P: PortOps>(
             .map(|h| h.identity.clone())
             .collect();
 
-        // Confirm: a busy instance gets a second chance to answer.
+        // Confirm: a busy instance gets a second chance to answer. The whole
+        // classification is repeated, so a listener that appeared meanwhile
+        // makes the probe unattributable and nothing is terminated.
         ops.sleep(CONFIRM_PAUSE).await;
-        if ops.probe(port).await.answered() {
-            debug!("port {port}: holder answered the confirming probe (round {round})");
+        let confirm = classify_listeners(ops, port, self_pid, own_exe).await;
+        if plan(&confirm) != ConflictPlan::Reclaim(pids.clone()) {
+            debug!(
+                "port {port}: the holders changed or answered the confirming probe (round {round})"
+            );
             continue;
         }
 
@@ -524,6 +581,12 @@ pub(crate) async fn resolve<P: PortOps>(
         ConflictPlan::Clear if !terminated.is_empty() => ReclaimOutcome::Reclaimed { terminated },
         ConflictPlan::Clear => ReclaimOutcome::Free,
         ConflictPlan::Blocked(holder) => ReclaimOutcome::Blocked(holder),
+        // This process never let go. The others were classified without a
+        // probe (foreign or unverified), so report one and touch none.
+        ConflictPlan::WaitForSelf => match first_blocker(&holders) {
+            Some(holder) => ReclaimOutcome::Blocked(holder.clone()),
+            None => ReclaimOutcome::Free,
+        },
         ConflictPlan::Reclaim(pids) => ReclaimOutcome::ReclaimFailed {
             holders: if last_unhealthy.is_empty() {
                 holders
@@ -792,7 +855,11 @@ pub fn clear_engine_block() {
 
 /// Check `port` before binding it, terminate an unhealthy copy of ourselves
 /// if that is what holds it, and tell the user when something else does.
-pub async fn resolve_before_bind(port: u16, purpose: PortPurpose) -> ReclaimOutcome {
+pub async fn resolve_before_bind(
+    app: &tauri::AppHandle,
+    port: u16,
+    purpose: PortPurpose,
+) -> ReclaimOutcome {
     let own_exe = std::env::current_exe().ok();
     let outcome = resolve(&SystemPortOps, port, std::process::id(), own_exe.as_deref()).await;
     match &outcome {
@@ -818,7 +885,7 @@ pub async fn resolve_before_bind(port: u16, purpose: PortPurpose) -> ReclaimOutc
         let mut guard = LAST_ENGINE_BLOCK.lock().unwrap_or_else(|e| e.into_inner());
         *guard = (!outcome.port_available()).then(|| outcome.clone());
     }
-    notify(port, purpose, &outcome).await;
+    notify(app, port, purpose, &outcome).await;
     outcome
 }
 
@@ -828,6 +895,10 @@ pub fn describe_block(port: u16, outcome: &ReclaimOutcome) -> String {
         ReclaimOutcome::Free | ReclaimOutcome::Reclaimed { .. } => format!("port {port} is free"),
         ReclaimOutcome::Blocked(h) if h.class == HolderClass::Healthy => format!(
             "port {port} is served by another running instance ({})",
+            h.identity.describe()
+        ),
+        ReclaimOutcome::Blocked(h) if h.class == HolderClass::Unverified => format!(
+            "port {port} is shared by several processes, including another copy of Freenpipe ({})",
             h.identity.describe()
         ),
         ReclaimOutcome::Blocked(h) => {
@@ -852,6 +923,7 @@ fn notification_text(
         PortPurpose::EngineApi => "or change the API port under Settings > Recording",
         PortPurpose::ControlServer => "or set SCREENPIPE_FOCUS_PORT to a free port",
     };
+    let what = purpose.label();
     match outcome {
         ReclaimOutcome::Free => None,
         ReclaimOutcome::Reclaimed { terminated } => Some((
@@ -873,20 +945,41 @@ fn notification_text(
                 },
             ))
         }
+        ReclaimOutcome::Blocked(h) if h.class == HolderClass::Healthy && h.screenpipe_family => {
+            Some((
+                "Another screenpipe is running".to_string(),
+                format!(
+                    "{} already answers on port {port}, so Freenpipe cannot start its {what} there. Quit the other app, {setting_hint}.",
+                    h.identity.describe()
+                ),
+            ))
+        }
         ReclaimOutcome::Blocked(h) if h.class == HolderClass::Healthy => Some((
-            "Another screenpipe is running".to_string(),
+            format!("Port {port} is busy"),
             format!(
-                "{} already answers on port {port}, so Freenpipe cannot start its {} there. Quit the other app, {setting_hint}.",
-                h.identity.describe(),
-                purpose.label()
+                "{} answers on port {port} like a screenpipe server, so Freenpipe cannot start its {what} there. Quit that program, {setting_hint}.",
+                h.identity.describe()
+            ),
+        )),
+        ReclaimOutcome::Blocked(h) if h.class == HolderClass::Unverified => Some((
+            format!("Port {port} is shared"),
+            format!(
+                "Another copy of Freenpipe, {}, listens on local port {port} together with other programs, so Freenpipe could not check whether it still responds and left it running. Quit the copy you do not need from its tray icon or Task Manager, {setting_hint}.",
+                h.identity.describe()
+            ),
+        )),
+        ReclaimOutcome::Blocked(h) if h.screenpipe_family => Some((
+            "Another screenpipe app holds the port".to_string(),
+            format!(
+                "{} is listening on local port {port} but did not answer like a running screenpipe, so Freenpipe cannot start its {what} there. Freenpipe does not close other screenpipe apps: quit it from its tray icon or Task Manager, {setting_hint}.",
+                h.identity.describe()
             ),
         )),
         ReclaimOutcome::Blocked(h) => Some((
             format!("Port {port} is busy"),
             format!(
-                "{} is using local port {port}, which Freenpipe needs for its {}. Freenpipe does not close other programs: quit that one, {setting_hint}.",
-                h.identity.describe(),
-                purpose.label()
+                "{} is using local port {port}, which Freenpipe needs for its {what}. Freenpipe does not close other programs: quit that one, {setting_hint}.",
+                h.identity.describe()
             ),
         )),
         ReclaimOutcome::ReclaimFailed { .. } => Some((
@@ -896,6 +989,60 @@ fn notification_text(
             ),
         )),
     }
+}
+
+/// Whether this process's control server is bound, so in-app notification
+/// panels (which go through its `/notify` route) reach this process.
+static CONTROL_SERVER_BOUND: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+
+/// Marks the control server as bound for as long as it is held. The
+/// server's future owns it, so cancelling or ending the server clears it.
+pub(crate) struct ControlServerBound(());
+
+impl ControlServerBound {
+    pub(crate) fn mark() -> Self {
+        CONTROL_SERVER_BOUND.store(true, std::sync::atomic::Ordering::SeqCst);
+        Self(())
+    }
+}
+
+impl Drop for ControlServerBound {
+    fn drop(&mut self) {
+        CONTROL_SERVER_BOUND.store(false, std::sync::atomic::Ordering::SeqCst);
+    }
+}
+
+/// How a conflict notice reaches the user.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum NoticeRoute {
+    /// The in-app panel, through our own control server's `/notify`.
+    Panel,
+    /// The operating system's notification centre (no local port involved).
+    System,
+}
+
+/// The panel is posted to the control port, so it is used only when that
+/// port is ours. A control-server conflict means the port is someone
+/// else's: posting there would hand the message to the very process that
+/// holds it.
+fn notice_route(purpose: PortPurpose, control_server_bound: bool) -> NoticeRoute {
+    match purpose {
+        PortPurpose::ControlServer => NoticeRoute::System,
+        PortPurpose::EngineApi if control_server_bound => NoticeRoute::Panel,
+        PortPurpose::EngineApi => NoticeRoute::System,
+    }
+}
+
+fn show_system_notification(app: &tauri::AppHandle, title: String, body: String) {
+    use tauri_plugin_notification::NotificationExt;
+    let app = app.clone();
+    // Same as the update notices: the native call can block briefly.
+    std::thread::spawn(move || {
+        if let Err(e) = app.notification().builder().title(title).body(body).show() {
+            warn!("port conflict: could not show a system notification: {e}");
+        }
+    });
 }
 
 /// Ask the other instance's control server to show its window. Only done
@@ -939,7 +1086,7 @@ fn outcome_key(outcome: &ReclaimOutcome) -> &'static str {
     }
 }
 
-async fn notify(port: u16, purpose: PortPurpose, outcome: &ReclaimOutcome) {
+async fn notify(app: &tauri::AppHandle, port: u16, purpose: PortPurpose, outcome: &ReclaimOutcome) {
     if matches!(outcome, ReclaimOutcome::Free) {
         return;
     }
@@ -959,8 +1106,26 @@ async fn notify(port: u16, purpose: PortPurpose, outcome: &ReclaimOutcome) {
         }
         _ => None,
     };
-    if let Some((title, body)) = notification_text(port, purpose, outcome, focused) {
-        crate::notifications::client::send_typed(title, body, "system", Some(30_000));
+    let Some((title, body)) = notification_text(port, purpose, outcome, focused) else {
+        return;
+    };
+    let route = notice_route(
+        purpose,
+        CONTROL_SERVER_BOUND.load(std::sync::atomic::Ordering::SeqCst),
+    );
+    info!(
+        "{} port {port}: telling the user through the {}: {title}",
+        purpose.label(),
+        match route {
+            NoticeRoute::Panel => "notification panel",
+            NoticeRoute::System => "system notification centre",
+        }
+    );
+    match route {
+        NoticeRoute::Panel => {
+            crate::notifications::client::send_typed(title, body, "system", Some(30_000))
+        }
+        NoticeRoute::System => show_system_notification(app, title, body),
     }
 }
 
@@ -1080,7 +1245,7 @@ Active Connections
     #[test]
     fn classify_covers_self_healthy_unhealthy_foreign() {
         use HealthProbe::*;
-        let c = |id: &ProcessIdentity, probe| classify(id, SELF_PID, own(), probe).class;
+        let c = |id: &ProcessIdentity, probe| classify(id, SELF_PID, own(), Some(probe)).class;
 
         // Self, whatever the probe says.
         assert_eq!(
@@ -1104,7 +1269,7 @@ Active Connections
         assert_eq!(c(&vendor, ScreenpipeHealth), HolderClass::Healthy);
         assert_eq!(c(&vendor, OtherHttp), HolderClass::Foreign);
         assert_eq!(c(&vendor, NoAnswer), HolderClass::Foreign);
-        assert!(classify(&vendor, SELF_PID, own(), NoAnswer).screenpipe_family);
+        assert!(classify(&vendor, SELF_PID, own(), Some(NoAnswer)).screenpipe_family);
 
         // Unrelated program and unreadable image: foreign.
         let node = ident(6060, Some(NODE_EXE));
@@ -1117,7 +1282,23 @@ Active Connections
 
         // Without knowing our own path nothing is ever "ours".
         assert_eq!(
-            classify(&twin, SELF_PID, None, NoAnswer).class,
+            classify(&twin, SELF_PID, None, Some(NoAnswer)).class,
+            HolderClass::Foreign
+        );
+
+        // No probe that belongs to this holder: our copy is unverified (never
+        // killed, never "healthy"), anything else is foreign, even a vendor
+        // screenpipe that some listener's health document might suggest.
+        assert_eq!(
+            classify(&twin, SELF_PID, own(), None).class,
+            HolderClass::Unverified
+        );
+        assert_eq!(
+            classify(&vendor, SELF_PID, own(), None).class,
+            HolderClass::Foreign
+        );
+        assert_eq!(
+            classify(&node, SELF_PID, own(), None).class,
             HolderClass::Foreign
         );
     }
@@ -1137,12 +1318,22 @@ Active Connections
         assert_eq!(plan(&[]), ConflictPlan::Clear);
         assert_eq!(plan(&[holder(SELF_PID, OwnProcess)]), ConflictPlan::Clear);
         assert_eq!(
-            plan(&[
-                holder(SELF_PID, OwnProcess),
-                holder(1, Unhealthy),
-                holder(2, Unhealthy)
-            ]),
+            plan(&[holder(1, Unhealthy), holder(2, Unhealthy)]),
             ConflictPlan::Reclaim(vec![1, 2])
+        );
+        // While this process still listens next to others, nothing is
+        // decided, whatever the others look like.
+        for other in [Healthy, Unhealthy, Unverified, Foreign] {
+            assert_eq!(
+                plan(&[holder(SELF_PID, OwnProcess), holder(1, other)]),
+                ConflictPlan::WaitForSelf,
+                "{other:?}"
+            );
+        }
+        // An unverified copy of ours blocks like a foreign holder.
+        assert_eq!(
+            plan(&[holder(1, Unhealthy), holder(5, Unverified)]),
+            ConflictPlan::Blocked(holder(5, Unverified))
         );
         // A foreign or healthy holder blocks, and nothing is killed even if
         // an unhealthy copy of ours sits next to it.
@@ -1155,7 +1346,7 @@ Active Connections
             ConflictPlan::Blocked(holder(4, Healthy))
         );
         // Exhaustive: whatever the mix, a Reclaim list holds only unhealthy pids.
-        let classes = [OwnProcess, Healthy, Unhealthy, Foreign];
+        let classes = [OwnProcess, Healthy, Unhealthy, Unverified, Foreign];
         for a in classes {
             for b in classes {
                 for c in classes {
@@ -1193,8 +1384,13 @@ Active Connections
         netstat: RefCell<String>,
         identities: HashMap<u32, ProcessIdentity>,
         probes: RefCell<Vec<HealthProbe>>,
+        probe_calls: RefCell<usize>,
         terminated: RefCell<Vec<u32>>,
         kill_frees: bool,
+        /// After this many listener queries, this process stops listening
+        /// (an engine generation that finished closing).
+        self_leaves_after: Option<usize>,
+        listener_calls: RefCell<usize>,
     }
 
     impl FakeOs {
@@ -1203,18 +1399,40 @@ Active Connections
                 netstat: RefCell::new(netstat.to_string()),
                 identities: HashMap::new(),
                 probes: RefCell::new(probes),
+                probe_calls: RefCell::new(0),
                 terminated: RefCell::new(Vec::new()),
                 kill_frees: true,
+                self_leaves_after: None,
+                listener_calls: RefCell::new(0),
             }
         }
         fn with(mut self, id: ProcessIdentity) -> Self {
             self.identities.insert(id.pid, id);
             self
         }
+        fn drop_pid(&self, pid: u32) {
+            let suffix = format!(" {pid}");
+            let kept: Vec<String> = self
+                .netstat
+                .borrow()
+                .lines()
+                .filter(|l| !l.trim_end().ends_with(&suffix))
+                .map(String::from)
+                .collect();
+            *self.netstat.borrow_mut() = kept.join("\n");
+        }
     }
 
     impl PortOps for FakeOs {
         async fn listeners(&self, port: u16) -> Vec<u32> {
+            let calls = {
+                let mut c = self.listener_calls.borrow_mut();
+                *c += 1;
+                *c
+            };
+            if self.self_leaves_after.map_or(false, |n| calls > n) {
+                self.drop_pid(SELF_PID);
+            }
             parse_netstat_listeners(&self.netstat.borrow(), port)
         }
         async fn identify(&self, pid: u32) -> ProcessIdentity {
@@ -1224,6 +1442,7 @@ Active Connections
                 .unwrap_or_else(|| ProcessIdentity::unknown(pid))
         }
         async fn probe(&self, _port: u16) -> HealthProbe {
+            *self.probe_calls.borrow_mut() += 1;
             let mut p = self.probes.borrow_mut();
             if p.len() > 1 {
                 p.remove(0)
@@ -1234,15 +1453,7 @@ Active Connections
         async fn terminate(&self, pid: u32) -> bool {
             self.terminated.borrow_mut().push(pid);
             if self.kill_frees {
-                let suffix = format!(" {pid}");
-                let kept: Vec<String> = self
-                    .netstat
-                    .borrow()
-                    .lines()
-                    .filter(|l| !l.trim_end().ends_with(&suffix))
-                    .map(String::from)
-                    .collect();
-                *self.netstat.borrow_mut() = kept.join("\n");
+                self.drop_pid(pid);
             }
             true
         }
@@ -1432,6 +1643,131 @@ Active Connections
         );
     }
 
+    /// Our engine generation (SELF_PID) still listens on 3030 next to an
+    /// unresponsive twin (4242).
+    fn netstat_self_and_twin() -> String {
+        format!(
+            "{NETSTAT_ONE}  TCP    0.0.0.0:3030           0.0.0.0:0              LISTENING       {SELF_PID}\n"
+        )
+    }
+
+    #[test]
+    fn nothing_is_decided_while_this_process_still_listens() {
+        // Our closing generation never lets go: the twin is never probed on
+        // its own, so it is reported as unverified and left alone.
+        let os = FakeOs::new(&netstat_self_and_twin(), vec![HealthProbe::NoAnswer])
+            .with(ident(4242, Some(OWN_EXE)));
+        let outcome = block_on(resolve(&os, 3030, SELF_PID, own()));
+        assert!(
+            matches!(outcome, ReclaimOutcome::Blocked(ref h)
+                if h.identity.pid == 4242 && h.class == HolderClass::Unverified),
+            "{outcome:?}"
+        );
+        assert!(os.terminated.borrow().is_empty());
+        assert_eq!(*os.probe_calls.borrow(), 0, "a shared port is never probed");
+    }
+
+    #[test]
+    fn the_twin_is_judged_on_its_own_once_this_process_lets_go() {
+        let mut os = FakeOs::new(&netstat_self_and_twin(), vec![HealthProbe::NoAnswer])
+            .with(ident(4242, Some(OWN_EXE)));
+        os.self_leaves_after = Some(2);
+        let outcome = block_on(resolve(&os, 3030, SELF_PID, own()));
+        assert_eq!(
+            outcome,
+            ReclaimOutcome::Reclaimed {
+                terminated: vec![ident(4242, Some(OWN_EXE))]
+            }
+        );
+        assert_eq!(*os.terminated.borrow(), vec![4242]);
+    }
+
+    #[test]
+    fn our_answer_never_makes_a_vendor_screenpipe_look_healthy() {
+        // Whatever answers on 127.0.0.1 may be our own engine; the vendor
+        // copy next to it is not classified from that answer.
+        let os = FakeOs::new(
+            &netstat_self_and_twin(),
+            vec![HealthProbe::ScreenpipeHealth],
+        )
+        .with(ident(4242, Some(VENDOR_EXE)));
+        let outcome = block_on(resolve(&os, 3030, SELF_PID, own()));
+        assert!(
+            matches!(outcome, ReclaimOutcome::Blocked(ref h)
+                if h.identity.pid == 4242 && h.class == HolderClass::Foreign),
+            "{outcome:?}"
+        );
+        assert_eq!(*os.probe_calls.borrow(), 0);
+    }
+
+    #[test]
+    fn two_silent_copies_of_ours_are_never_terminated() {
+        // Two other copies on the same port: a silent probe could come from
+        // either (or from neither, if only one accepts on 127.0.0.1).
+        let netstat = format!(
+            "{NETSTAT_ONE}  TCP    0.0.0.0:3030           0.0.0.0:0              LISTENING       4343\n"
+        );
+        let os = FakeOs::new(&netstat, vec![HealthProbe::NoAnswer])
+            .with(ident(4242, Some(OWN_EXE)))
+            .with(ident(4343, Some(OWN_EXE)));
+        let outcome = block_on(resolve(&os, 3030, SELF_PID, own()));
+        assert!(
+            matches!(outcome, ReclaimOutcome::Blocked(ref h) if h.class == HolderClass::Unverified),
+            "{outcome:?}"
+        );
+        assert!(os.terminated.borrow().is_empty());
+        assert_eq!(*os.probe_calls.borrow(), 0);
+    }
+
+    #[test]
+    fn a_listener_that_appears_before_the_confirmation_stops_the_kill() {
+        // Round 1 sees only the silent twin; by the confirming look a node
+        // server listens too, so the second probe cannot be attributed.
+        struct Joining(FakeOs, RefCell<usize>);
+        impl PortOps for Joining {
+            async fn listeners(&self, port: u16) -> Vec<u32> {
+                *self.1.borrow_mut() += 1;
+                if *self.1.borrow() == 2 {
+                    let joined = format!(
+                        "{}\n  TCP    [::1]:3030             [::]:0                 LISTENING       6060",
+                        self.0.netstat.borrow()
+                    );
+                    *self.0.netstat.borrow_mut() = joined;
+                }
+                self.0.listeners(port).await
+            }
+            async fn identify(&self, pid: u32) -> ProcessIdentity {
+                self.0.identify(pid).await
+            }
+            async fn probe(&self, port: u16) -> HealthProbe {
+                self.0.probe(port).await
+            }
+            async fn terminate(&self, pid: u32) -> bool {
+                self.0.terminate(pid).await
+            }
+            async fn sleep(&self, d: Duration) {
+                self.0.sleep(d).await
+            }
+        }
+        let os = Joining(
+            FakeOs::new(NETSTAT_ONE, vec![HealthProbe::NoAnswer])
+                .with(ident(4242, Some(OWN_EXE)))
+                .with(ident(6060, Some(NODE_EXE))),
+            RefCell::new(0),
+        );
+        let outcome = block_on(resolve(&os, 3030, SELF_PID, own()));
+        assert!(os.0.terminated.borrow().is_empty());
+        assert!(
+            matches!(outcome, ReclaimOutcome::Blocked(ref h) if h.identity.pid == 6060),
+            "{outcome:?}"
+        );
+        assert_eq!(
+            *os.0.probe_calls.borrow(),
+            1,
+            "only the lone-holder look is probed"
+        );
+    }
+
     #[test]
     fn lsof_fixture_drives_the_same_decisions() {
         // On macOS and Linux the listener list comes from lsof; the decision
@@ -1451,7 +1787,7 @@ Active Connections
                 id,
                 SELF_PID,
                 Some(Path::new(own_unix)),
-                HealthProbe::NoAnswer,
+                Some(HealthProbe::NoAnswer),
             )
         })
         .collect();
@@ -1491,5 +1827,92 @@ Active Connections
             notification_text(3030, PortPurpose::EngineApi, &twin, Some(false)).unwrap();
         assert_ne!(focused, unfocused);
         assert!(describe_block(3030, &foreign).contains("node.exe"));
+    }
+
+    #[test]
+    fn another_screenpipe_app_gets_its_own_wording() {
+        let blocked = |id: ProcessIdentity, class, family| {
+            ReclaimOutcome::Blocked(PortHolder {
+                identity: id,
+                class,
+                screenpipe_family: family,
+                own_executable: false,
+            })
+        };
+        let text =
+            |o: &ReclaimOutcome| notification_text(3030, PortPurpose::EngineApi, o, None).unwrap();
+
+        // Unresponsive vendor screenpipe vs an unrelated program: both are
+        // left alone, but the user is told which kind of app it is.
+        let vendor_silent = text(&blocked(
+            ident(4243, Some(VENDOR_EXE)),
+            HolderClass::Foreign,
+            true,
+        ));
+        let node = text(&blocked(
+            ident(6060, Some(NODE_EXE)),
+            HolderClass::Foreign,
+            false,
+        ));
+        assert_ne!(vendor_silent.0, node.0);
+        assert!(vendor_silent.0.contains("screenpipe"));
+        assert!(vendor_silent.1.contains("screenpipe-app.exe (pid 4243)"));
+        assert!(!node.0.contains("screenpipe"));
+
+        // Something that answers like screenpipe but is not named like one.
+        let family = text(&blocked(
+            ident(4243, Some(VENDOR_EXE)),
+            HolderClass::Healthy,
+            true,
+        ));
+        let lookalike = text(&blocked(
+            ident(7000, Some(r"C:\tools\proxy.exe")),
+            HolderClass::Healthy,
+            false,
+        ));
+        assert_eq!(family.0, "Another screenpipe is running");
+        assert_ne!(family.0, lookalike.0);
+        assert!(lookalike.1.contains("proxy.exe (pid 7000)"));
+
+        // An unverified copy of ours.
+        let shared = ReclaimOutcome::Blocked(PortHolder {
+            identity: ident(4242, Some(OWN_EXE)),
+            class: HolderClass::Unverified,
+            screenpipe_family: true,
+            own_executable: true,
+        });
+        let (title, body) = text(&shared);
+        assert!(title.contains("3030"));
+        assert!(body.contains("freenpipe.exe (pid 4242)"));
+        assert!(describe_block(3030, &shared).contains("several processes"));
+    }
+
+    #[test]
+    fn control_port_conflicts_never_go_through_the_control_port() {
+        assert_eq!(
+            notice_route(PortPurpose::ControlServer, false),
+            NoticeRoute::System
+        );
+        assert_eq!(
+            notice_route(PortPurpose::ControlServer, true),
+            NoticeRoute::System
+        );
+        assert_eq!(
+            notice_route(PortPurpose::EngineApi, true),
+            NoticeRoute::Panel
+        );
+        // Our control server is not up (someone else may hold its port).
+        assert_eq!(
+            notice_route(PortPurpose::EngineApi, false),
+            NoticeRoute::System
+        );
+    }
+
+    #[test]
+    fn control_server_bound_flag_follows_the_guard() {
+        let guard = ControlServerBound::mark();
+        assert!(CONTROL_SERVER_BOUND.load(std::sync::atomic::Ordering::SeqCst));
+        drop(guard);
+        assert!(!CONTROL_SERVER_BOUND.load(std::sync::atomic::Ordering::SeqCst));
     }
 }

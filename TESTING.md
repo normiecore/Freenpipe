@@ -269,7 +269,7 @@ commits: `94531265`, `d794176a`, `9070639c`, `0378cab1`, `4a3313d3`, `7ffdd4f1`,
 - [ ] **update without tray** — user can update via dock menu "Check for updates" or Apple menu "Check for Updates..." (`d794176a`, `94531265`).
 - [ ] **update banner in main window** — when update available, banner appears at top of main window.
 - [ ] **source build update dialog** — source builds show "source build detected" dialog with link to pre-built version.
-- [ ] **port conflict on restart** — if old process is holding port 3030, new process kills it and starts cleanly (`0378cab1`, `4a3313d3`, `8c435a10`).
+- [ ] **port conflict on restart** — if an old copy of the same Freenpipe executable is holding port 3030 and does not answer `/health`, the new process classifies it, terminates only that unresponsive copy and starts cleanly. A copy that answers, the installed screenpipe or any other program on the port is never killed: the new process reports who holds the port and does not start the engine (`0378cab1`, `4a3313d3`, `8c435a10`).
 - [ ] **no orphaned processes** — after quit, `ps aux | grep screenpipe` shows nothing. `lsof -i :3030` shows nothing.
 - [ ] **rollback** — user can rollback to previous version via tray menu (`c7fbc3ea`).
 - [ ] **Zombie CPU drain prevention** — Verify that `lsof` calls have a 5-second timeout, preventing zombie CPU drain, especially on quit. Check logs for `lsof` timeouts if applicable.

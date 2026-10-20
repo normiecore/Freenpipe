@@ -102,10 +102,35 @@ pub fn set_boot_phase(phase: &str, message: Option<&str>) {
 
 pub fn set_boot_error(err: &str) {
     let mut guard = BOOT_PHASE.write().unwrap_or_else(|e| e.into_inner());
+    write_boot_error(&mut guard, err);
+}
+
+fn write_boot_error(guard: &mut BootPhaseSnapshot, err: &str) {
     guard.phase = "error".to_string();
     guard.error = Some(err.to_string());
     guard.since_epoch_secs = now_epoch();
     tracing::error!("boot phase → error: {}", err);
+}
+
+/// `ready`, `error` and `idle` end a boot; every other phase means a start
+/// is (or claims to be) under way.
+fn boot_phase_is_terminal(phase: &str) -> bool {
+    matches!(phase, "ready" | "error" | "idle")
+}
+
+/// Record a failed start as a boot error, unless the boot already reached a
+/// terminal phase (a capture failure after the server came up leaves
+/// `ready`, which stays). Start error paths that do not set their own error
+/// call this, so a failed start can never leave a phase such as `starting`
+/// behind; the engine watchdog stays idle while a boot looks in progress.
+/// Returns true when it wrote the error.
+pub fn fail_boot_if_pending(err: &str) -> bool {
+    let mut guard = BOOT_PHASE.write().unwrap_or_else(|e| e.into_inner());
+    if boot_phase_is_terminal(&guard.phase) {
+        return false;
+    }
+    write_boot_error(&mut guard, err);
+    true
 }
 
 pub fn get_boot_phase_snapshot() -> BootPhaseSnapshot {
@@ -811,9 +836,53 @@ fn is_slow_health_error(e: &anyhow::Error) -> bool {
     msg.contains("timeout") || msg.contains("parse")
 }
 
-/// Boot is between "starting" and "ready" (database migration, audio, pipes).
+/// A non-terminal boot phase older than this is treated as abandoned: the
+/// start that set it died without reporting. The same 30-minute ceiling a
+/// caller of `spawn_screenpipe` gives an in-flight start (a migration of a
+/// very large database takes minutes, not half an hour).
+const BOOT_PHASE_STALE_AFTER: Duration = Duration::from_secs(30 * 60);
+
+/// Pure rule behind [`boot_in_progress`]. A clock that went backwards reads
+/// as "just entered", so it never makes a live boot look stale.
+fn boot_phase_in_progress(
+    phase: &str,
+    since_epoch_secs: u64,
+    now_epoch_secs: u64,
+    stale_after: Duration,
+) -> bool {
+    !boot_phase_is_terminal(phase)
+        && now_epoch_secs.saturating_sub(since_epoch_secs) < stale_after.as_secs()
+}
+
+/// `since_epoch_secs` of the stale phase last logged, so it is logged once.
+static STALE_BOOT_PHASE_LOGGED: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// Boot is between "starting" and "ready" (database migration, audio, pipes)
+/// and has not been stuck there past [`BOOT_PHASE_STALE_AFTER`].
 fn boot_in_progress() -> bool {
-    !matches!(read_boot_phase().as_str(), "ready" | "error" | "idle")
+    let snap = get_boot_phase_snapshot();
+    if boot_phase_is_terminal(&snap.phase) {
+        return false;
+    }
+    let now = now_epoch();
+    if boot_phase_in_progress(
+        &snap.phase,
+        snap.since_epoch_secs,
+        now,
+        BOOT_PHASE_STALE_AFTER,
+    ) {
+        return true;
+    }
+    if STALE_BOOT_PHASE_LOGGED.swap(snap.since_epoch_secs, Ordering::SeqCst)
+        != snap.since_epoch_secs
+    {
+        warn!(
+            "boot phase '{}' unchanged for {} min; treating that start as abandoned",
+            snap.phase,
+            now.saturating_sub(snap.since_epoch_secs) / 60
+        );
+    }
+    false
 }
 
 /// After this long with a start flag set while the server answers and boot
@@ -2136,6 +2205,107 @@ mod tests {
 
         let result = wait_for_boot_ready(Duration::from_secs(5)).await;
         assert_eq!(result, BootReadiness::Ready);
+        set_boot_phase("idle", None);
+    }
+
+    #[test]
+    fn a_failed_start_always_leaves_a_terminal_phase() {
+        let _guard = BOOT_PHASE_TEST_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        // ServerCore::start failed after "starting" without its own error
+        // (the data-dir case): the phase becomes terminal and the watchdog
+        // stops reading the boot as in progress.
+        for phase in [
+            "starting",
+            "migrating_database",
+            "building_audio",
+            "starting_pipes",
+        ] {
+            set_boot_phase(phase, None);
+            assert!(boot_in_progress(), "{phase}");
+            assert!(fail_boot_if_pending("Failed to create data dir: denied"));
+            assert_eq!(boot_readiness(), BootReadiness::Errored, "{phase}");
+            assert!(!boot_in_progress(), "{phase}");
+            assert_eq!(
+                get_boot_phase_snapshot().error.as_deref(),
+                Some("Failed to create data dir: denied")
+            );
+        }
+        // A capture failure after the server came up keeps "ready", and an
+        // existing error or idle phase is left as it is.
+        set_boot_phase("ready", None);
+        assert!(!fail_boot_if_pending("Failed to start capture"));
+        assert_eq!(boot_readiness(), BootReadiness::Ready);
+        set_boot_error("first error");
+        assert!(!fail_boot_if_pending("second error"));
+        assert_eq!(
+            get_boot_phase_snapshot().error.as_deref(),
+            Some("first error")
+        );
+        set_boot_phase("idle", None);
+        assert!(!fail_boot_if_pending("ignored"));
+        assert_eq!(read_boot_phase(), "idle");
+    }
+
+    #[test]
+    fn a_non_terminal_phase_past_the_ceiling_is_stale() {
+        let ceiling = BOOT_PHASE_STALE_AFTER;
+        let entered = 1_000_000u64;
+        let at = |secs: u64| entered + secs;
+        // Within the ceiling: still in progress, however slow.
+        assert!(boot_phase_in_progress(
+            "migrating_database",
+            entered,
+            at(0),
+            ceiling
+        ));
+        assert!(boot_phase_in_progress(
+            "migrating_database",
+            entered,
+            at(ceiling.as_secs() - 1),
+            ceiling
+        ));
+        // Past it: abandoned, so the watchdog may act again.
+        assert!(!boot_phase_in_progress(
+            "starting",
+            entered,
+            at(ceiling.as_secs()),
+            ceiling
+        ));
+        assert!(!boot_phase_in_progress(
+            "building_audio",
+            entered,
+            at(86_400),
+            ceiling
+        ));
+        // Terminal phases are never in progress; a clock that went back
+        // never makes a live phase look stale.
+        for phase in ["ready", "error", "idle"] {
+            assert!(!boot_phase_in_progress(phase, entered, at(1), ceiling));
+        }
+        assert!(boot_phase_in_progress(
+            "starting",
+            entered,
+            entered - 500,
+            ceiling
+        ));
+        assert!(ceiling >= Duration::from_secs(30 * 60));
+    }
+
+    #[test]
+    fn boot_in_progress_ignores_a_phase_stuck_past_the_ceiling() {
+        let _guard = BOOT_PHASE_TEST_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        set_boot_phase("starting", None);
+        assert!(boot_in_progress());
+        // Pretend the phase was entered long ago by a start that died.
+        BOOT_PHASE
+            .write()
+            .unwrap_or_else(|e| e.into_inner())
+            .since_epoch_secs = now_epoch() - BOOT_PHASE_STALE_AFTER.as_secs() - 60;
+        assert!(!boot_in_progress());
         set_boot_phase("idle", None);
     }
 

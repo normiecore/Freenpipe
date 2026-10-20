@@ -120,8 +120,13 @@ impl ServerCore {
         // --- Database ---
         let local_data_dir = config.data_dir.clone();
         let data_path = local_data_dir.join("data");
-        std::fs::create_dir_all(&data_path)
-            .map_err(|e| format!("Failed to create data dir: {}", e))?;
+        std::fs::create_dir_all(&data_path).map_err(|e| {
+            // Every failure after "starting" must leave a terminal phase, or
+            // the engine watchdog reads the boot as still in progress.
+            let msg = format!("Failed to create data dir: {}", e);
+            crate::health::set_boot_error(&msg);
+            msg
+        })?;
 
         let db_path = format!("{}/db.sqlite", local_data_dir.to_string_lossy());
         crate::health::set_boot_phase(

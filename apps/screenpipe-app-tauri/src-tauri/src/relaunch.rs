@@ -20,8 +20,14 @@
 //!
 //! Quit requests that arrive while a teardown is already running, or while a
 //! protected database recovery holds the gate, are ignored.
+//!
+//! Tauri's own `app.restart()` (update install, rollback) also ends in
+//! `RunEvent::Exit`. The teardown runs there too, and Tauri is left to start
+//! the replacement unless the capture or engine step overran; in that case
+//! this module starts the replacement itself and force-exits.
 
 use crate::recording::RecordingState;
+use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Mutex;
@@ -103,6 +109,78 @@ fn mark_finished() {
 fn reopen_gate() {
     TEARDOWN_FINISHED.store(false, Ordering::SeqCst);
     TEARDOWN_STARTED.store(false, Ordering::SeqCst);
+}
+
+// ---------------------------------------------------------------------------
+// Pending Tauri restart (update install, rollback)
+// ---------------------------------------------------------------------------
+
+/// The process Tauri's `restart()` would start: the same binary with the
+/// same arguments.
+#[derive(Debug, Clone)]
+struct RestartTarget {
+    exe: PathBuf,
+    args: Vec<OsString>,
+}
+
+static RESTART_PENDING: AtomicBool = AtomicBool::new(false);
+static RESTART_TARGET: Mutex<Option<RestartTarget>> = Mutex::new(None);
+/// Set once a replacement for a pending restart was started by this module,
+/// so the exit path and the guard thread never start two.
+static RESTART_REPLACEMENT_STARTED: AtomicBool = AtomicBool::new(false);
+
+/// `RunEvent::ExitRequested`. Tauri's `app.restart()` asks to exit with
+/// `RESTART_EXIT_CODE` (and ignores `prevent_exit` for it). Remember that a
+/// restart is pending, and what it would start, so the exit path does not
+/// end the process before the replacement exists. Returns true for a
+/// restart request.
+pub fn on_exit_requested(app: &tauri::AppHandle, code: Option<i32>) -> bool {
+    if code != Some(tauri::RESTART_EXIT_CODE) {
+        return false;
+    }
+    RESTART_PENDING.store(true, Ordering::SeqCst);
+    let env = app.env();
+    match tauri::process::current_binary(&env) {
+        Ok(exe) => {
+            let args = env.args_os.iter().skip(1).cloned().collect();
+            *RESTART_TARGET.lock().unwrap_or_else(|e| e.into_inner()) =
+                Some(RestartTarget { exe, args });
+        }
+        Err(e) => warn!("app restart pending, but the current binary could not be resolved: {e}"),
+    }
+    info!("ExitRequested during app restart: letting it through");
+    true
+}
+
+fn restart_pending() -> bool {
+    RESTART_PENDING.load(Ordering::SeqCst)
+}
+
+/// Start the replacement a pending `app.restart()` would have started. Used
+/// only when this process is about to end itself instead of returning to
+/// Tauri. Runs at most once.
+fn spawn_pending_restart(context: &str) {
+    if RESTART_REPLACEMENT_STARTED.swap(true, Ordering::SeqCst) {
+        return;
+    }
+    let target = RESTART_TARGET
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .clone();
+    match target {
+        Some(t) => match spawn_detached(&t.exe, &t.args, &[]) {
+            Ok(child) => info!(
+                "pending app restart: replacement pid {} started from {} ({context})",
+                child.id(),
+                t.exe.display()
+            ),
+            Err(e) => error!(
+                "pending app restart: could not start {} ({context}): {e}",
+                t.exe.display()
+            ),
+        },
+        None => error!("pending app restart: no binary to start ({context})"),
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -353,6 +431,12 @@ fn arm_exit_guard(limit: Duration, code: i32) {
                     "teardown still running after {}s; forcing exit",
                     limit.as_secs()
                 );
+                // An update or rollback restart must not end with no app at
+                // all. (No tray cleanup here: that needs the main thread,
+                // which may be the one that is stuck.)
+                if restart_pending() {
+                    spawn_pending_restart("teardown guard");
+                }
                 hard_exit(code);
             }
         });
@@ -425,6 +509,46 @@ pub fn request_quit(app: tauri::AppHandle, source: &'static str) {
     });
 }
 
+/// Teardown steps whose overrun leaves capture or the audio pipeline half
+/// stopped. Returning to Tauri then would run C++ static destructors under
+/// live native work (the ggml Metal abort), so the process ends at once.
+const CRITICAL_STEPS: [&str; 2] = ["capture", "engine"];
+
+/// What `on_run_exit` does once the teardown is over.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ExitFollowUp {
+    /// Return to Tauri: it finishes its cleanup and, when `app.restart()`
+    /// is pending, starts the replacement.
+    Return,
+    /// End the process now.
+    ForceExit,
+    /// Start the replacement a pending restart would have started, then end
+    /// the process now.
+    ReplaceThenForceExit,
+}
+
+/// Pure decision behind `on_run_exit`. `report` is `None` when the teardown
+/// thread panicked, which counts as a critical overrun. A slow HTTP drain,
+/// pool close or Pi stop does not justify killing a pending restart: those
+/// are logged and Tauri is left to finish.
+pub fn exit_follow_up(report: Option<&TeardownReport>, restart_pending: bool) -> ExitFollowUp {
+    let (overran, critical) = match report {
+        None => (true, true),
+        Some(r) => (
+            r.overran,
+            r.steps
+                .iter()
+                .any(|s| s.outcome == StepOutcome::TimedOut && CRITICAL_STEPS.contains(&s.name)),
+        ),
+    };
+    match (overran, critical, restart_pending) {
+        (false, _, _) => ExitFollowUp::Return,
+        (true, _, false) => ExitFollowUp::ForceExit,
+        (true, true, true) => ExitFollowUp::ReplaceThenForceExit,
+        (true, false, true) => ExitFollowUp::Return,
+    }
+}
+
 /// `RunEvent::Exit`: run the teardown synchronously (the process ends right
 /// after this returns), unless a quit or relaunch already ran it.
 pub fn on_run_exit(app: &tauri::AppHandle) {
@@ -453,29 +577,45 @@ pub fn on_run_exit(app: &tauri::AppHandle) {
     arm_exit_guard(budget.overall + GUARD_MARGIN, 1);
     // A dedicated thread: Exit can fire from inside an async context, where
     // blocking on another future would panic.
-    let app = app.clone();
+    let worker_app = app.clone();
     let worker = std::thread::Builder::new()
         .name("exit-teardown".to_string())
         .spawn(move || {
-            let report =
-                tauri::async_runtime::block_on(async move { teardown(&app, "exit", budget).await });
+            let report = tauri::async_runtime::block_on(async move {
+                teardown(&worker_app, "exit", budget).await
+            });
             mark_finished();
             report
         });
-    match worker {
-        Ok(handle) => match handle.join() {
-            Ok(report) if report.overran => {
-                hard_exit(1);
-            }
-            Ok(_) => {}
-            Err(_) => {
-                error!("exit teardown thread panicked");
-                hard_exit(1);
-            }
-        },
+    let handle = match worker {
+        Ok(handle) => handle,
         Err(e) => {
             error!("could not start the exit teardown thread: {e}");
             mark_finished();
+            return;
+        }
+    };
+    let report = handle.join().ok();
+    if report.is_none() {
+        error!("exit teardown thread panicked");
+    }
+    let pending = restart_pending();
+    match exit_follow_up(report.as_ref(), pending) {
+        ExitFollowUp::Return => {
+            if report.as_ref().map_or(false, |r| r.overran) {
+                warn!("exit teardown overran outside capture and engine; letting Tauri finish the pending restart");
+            }
+        }
+        ExitFollowUp::ForceExit => hard_exit(1),
+        ExitFollowUp::ReplaceThenForceExit => {
+            warn!("exit teardown overran in capture or engine while an app restart is pending; starting the replacement before forcing exit");
+            // RunEvent::Exit runs on the main thread, so this is where
+            // Tauri itself would release the tray icon and window resources.
+            // The single-instance plugin already released its lock in its
+            // own Exit handler, which runs before this one.
+            app.cleanup_before_exit();
+            spawn_pending_restart("exit teardown overran");
+            hard_exit(1);
         }
     }
 }
@@ -514,15 +654,32 @@ fn home_window_visible(app: &tauri::AppHandle) -> bool {
         .unwrap_or(false)
 }
 
+static RELAUNCH_HOME_VISIBLE: std::sync::OnceLock<Option<bool>> = std::sync::OnceLock::new();
+
+/// The `SCREENPIPE_RELAUNCH_HOME_VISIBLE` this process was started with
+/// (`None` when it is not a safe-relaunch replacement). The first call reads
+/// the variable and removes it from the environment, so nothing this process
+/// starts later (Tauri's `restart()`, the update installer's relaunch, the
+/// CLI) inherits a stale relaunch flag. Later calls return the same answer.
+pub fn relaunch_home_visible() -> Option<bool> {
+    *RELAUNCH_HOME_VISIBLE.get_or_init(|| {
+        take_home_visible_flag(screenpipe_core::env::SCREENPIPE_RELAUNCH_HOME_VISIBLE)
+    })
+}
+
+/// Read a relaunch flag and remove it from the environment.
+fn take_home_visible_flag(key: &str) -> Option<bool> {
+    let raw = std::env::var(key).ok();
+    if raw.is_some() {
+        std::env::remove_var(key);
+    }
+    parse_home_visible(raw.as_deref())
+}
+
 /// Start-up half of the relaunch: called once the event loop is ready. When
 /// the previous instance had Home closed, close it here too.
 pub fn on_ready(app: &tauri::AppHandle) {
-    let flag = parse_home_visible(
-        std::env::var(screenpipe_core::env::SCREENPIPE_RELAUNCH_HOME_VISIBLE)
-            .ok()
-            .as_deref(),
-    );
-    match flag {
+    match relaunch_home_visible() {
         None => {}
         Some(true) => info!("startup_window_restore outcome=home_restored"),
         Some(false) => {
@@ -568,37 +725,132 @@ async fn stop_control_server(app: &tauri::AppHandle) {
     warn!("control server port {port} still busy before relaunch");
 }
 
+fn detached_command(
+    exe: &Path,
+    args: &[OsString],
+    env: &[(&'static str, String)],
+) -> std::process::Command {
+    let mut cmd = std::process::Command::new(exe);
+    cmd.args(args)
+        .envs(env.iter().map(|(k, v)| (*k, v.as_str())))
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null());
+    cmd
+}
+
 #[cfg(windows)]
-fn spawn_detached(exe: &Path, env: &[(&'static str, String)]) -> std::io::Result<u32> {
+fn spawn_detached(
+    exe: &Path,
+    args: &[OsString],
+    env: &[(&'static str, String)],
+) -> std::io::Result<std::process::Child> {
     use std::os::windows::process::CommandExt;
     const CREATE_NEW_PROCESS_GROUP: u32 = 0x0000_0200;
     const CREATE_BREAKAWAY_FROM_JOB: u32 = 0x0100_0000;
-    let build = |flags: u32| {
-        let mut cmd = std::process::Command::new(exe);
-        cmd.envs(env.iter().map(|(k, v)| (*k, v.as_str())))
-            .stdin(std::process::Stdio::null())
-            .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null())
-            .creation_flags(flags);
-        cmd
-    };
     // Leave our job object if we can, so a job that kills its members when
     // we exit does not take the replacement with us.
-    match build(CREATE_NEW_PROCESS_GROUP | CREATE_BREAKAWAY_FROM_JOB).spawn() {
-        Ok(child) => Ok(child.id()),
-        Err(_) => build(CREATE_NEW_PROCESS_GROUP).spawn().map(|c| c.id()),
+    match detached_command(exe, args, env)
+        .creation_flags(CREATE_NEW_PROCESS_GROUP | CREATE_BREAKAWAY_FROM_JOB)
+        .spawn()
+    {
+        Ok(child) => Ok(child),
+        Err(_) => detached_command(exe, args, env)
+            .creation_flags(CREATE_NEW_PROCESS_GROUP)
+            .spawn(),
     }
 }
 
 #[cfg(not(windows))]
-fn spawn_detached(exe: &Path, env: &[(&'static str, String)]) -> std::io::Result<u32> {
-    std::process::Command::new(exe)
-        .envs(env.iter().map(|(k, v)| (*k, v.as_str())))
-        .stdin(std::process::Stdio::null())
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .spawn()
-        .map(|c| c.id())
+fn spawn_detached(
+    exe: &Path,
+    args: &[OsString],
+    env: &[(&'static str, String)],
+) -> std::io::Result<std::process::Child> {
+    detached_command(exe, args, env).spawn()
+}
+
+/// How long to wait for the main thread to run a release step.
+const MAIN_THREAD_WAIT: Duration = Duration::from_secs(2);
+/// How long a just-started replacement is watched for an immediate exit.
+const REPLACEMENT_WATCH: Duration = Duration::from_secs(1);
+
+/// Run `f` on the event-loop thread and wait up to `limit` for it. False
+/// when the main thread did not get to it in time (it may still run later).
+async fn on_main_thread<F>(app: &tauri::AppHandle, limit: Duration, f: F) -> bool
+where
+    F: FnOnce() + Send + 'static,
+{
+    let (tx, rx) = tokio::sync::oneshot::channel();
+    if app
+        .run_on_main_thread(move || {
+            f();
+            let _ = tx.send(());
+        })
+        .is_err()
+    {
+        return false;
+    }
+    matches!(tokio::time::timeout(limit, rx).await, Ok(Ok(())))
+}
+
+static SINGLE_INSTANCE_RELEASED: AtomicBool = AtomicBool::new(false);
+
+/// Let go of the single-instance lock (the named mutex and its message
+/// window on Windows, the socket on macOS). The plugin only does this in its
+/// `RunEvent::Exit` handler, which a hard exit never reaches; a replacement
+/// that still finds the lock hands its arguments to us and quits. Runs at
+/// most once: closing the mutex handle twice could close a handle value the
+/// OS has since given to something else.
+fn release_single_instance_now(app: &tauri::AppHandle) {
+    if SINGLE_INSTANCE_RELEASED.swap(true, Ordering::SeqCst) {
+        return;
+    }
+    #[cfg(any(target_os = "macos", windows, target_os = "linux"))]
+    tauri_plugin_single_instance::destroy(app);
+    #[cfg(not(any(target_os = "macos", windows, target_os = "linux")))]
+    let _ = app;
+}
+
+/// What Tauri's own restart releases before it starts the new process (the
+/// tray icon, resource tables, and on Windows the windows themselves), plus
+/// the single-instance lock. Both must run on the main thread: it created
+/// the tray icon and owns the mutex. When the main thread does not answer,
+/// the lock is still released from here (closing the handle frees it), and
+/// the tray icon is left for the OS to drop when the process ends.
+async fn release_for_replacement(app: &tauri::AppHandle) {
+    let handle = app.clone();
+    let done = on_main_thread(app, MAIN_THREAD_WAIT, move || {
+        release_single_instance_now(&handle);
+        handle.cleanup_before_exit();
+    })
+    .await;
+    if !done {
+        warn!(
+            "main thread did not release the tray and single-instance lock within {}s; releasing the lock from this thread",
+            MAIN_THREAD_WAIT.as_secs()
+        );
+        release_single_instance_now(app);
+    }
+}
+
+/// True when a just-started replacement exited within `REPLACEMENT_WATCH`.
+/// That is what a replacement does when it still found our single-instance
+/// lock: it hands its arguments to us and quits at once.
+async fn exited_at_once(child: &mut std::process::Child) -> bool {
+    let deadline = Instant::now() + REPLACEMENT_WATCH;
+    loop {
+        match child.try_wait() {
+            Ok(Some(status)) => {
+                warn!("replacement pid {} exited at once ({status})", child.id());
+                return true;
+            }
+            Ok(None) if Instant::now() < deadline => {
+                tokio::time::sleep(Duration::from_millis(100)).await
+            }
+            _ => return false,
+        }
+    }
 }
 
 fn resolve_current_binary(app: &tauri::AppHandle) -> Result<PathBuf, String> {
@@ -643,13 +895,29 @@ pub async fn safe_relaunch(
 
     let base_dir = screenpipe_core::paths::default_screenpipe_data_dir();
     let env = relaunch_env(home_visible, &base_dir);
-    match spawn_detached(&exe, &env) {
-        Ok(pid) => {
+    // The single-instance lock and the tray icon are released only once the
+    // replacement exists: if it cannot be started, this instance keeps
+    // running and still needs both.
+    match spawn_detached(&exe, &[], &env) {
+        Ok(mut child) => {
             info!(
-                "safe relaunch: replacement pid {pid} started from {} (teardown {}ms)",
+                "safe relaunch: replacement pid {} started from {} (teardown {}ms)",
+                child.id(),
                 exe.display(),
                 report.elapsed.as_millis()
             );
+            release_for_replacement(&app).await;
+            if exited_at_once(&mut child).await {
+                // It reached its single-instance check before the lock was
+                // released and deferred to us. The lock is gone now.
+                match spawn_detached(&exe, &[], &env) {
+                    Ok(again) => info!("safe relaunch: replacement pid {} started", again.id()),
+                    Err(e) => error!(
+                        "safe relaunch: second start of {} failed: {e}",
+                        exe.display()
+                    ),
+                }
+            }
             mark_finished();
             hard_exit(0);
         }
@@ -816,5 +1084,75 @@ mod tests {
         assert_eq!(parse_home_visible(Some("0")), Some(false));
         assert_eq!(parse_home_visible(Some("maybe")), None);
         assert_eq!(parse_home_visible(None), None);
+    }
+
+    #[test]
+    fn relaunch_flag_is_removed_once_read() {
+        // A key of its own, so no other test sees the variable change.
+        let key = "FREENPIPE_TEST_W2_26_RELAUNCH_FLAG";
+        std::env::set_var(key, "false");
+        assert_eq!(take_home_visible_flag(key), Some(false));
+        assert!(std::env::var_os(key).is_none());
+        // Nothing left for a later restart to inherit.
+        assert_eq!(take_home_visible_flag(key), None);
+    }
+
+    fn report(steps: &[(&'static str, StepOutcome)]) -> TeardownReport {
+        TeardownReport {
+            steps: steps
+                .iter()
+                .map(|(name, outcome)| StepReport {
+                    name,
+                    outcome: *outcome,
+                    elapsed: Duration::ZERO,
+                })
+                .collect(),
+            elapsed: Duration::ZERO,
+            overran: steps.iter().any(|(_, o)| *o == StepOutcome::TimedOut),
+        }
+    }
+
+    #[test]
+    fn exit_follow_up_spares_a_pending_restart_unless_capture_or_engine_overran() {
+        use ExitFollowUp::*;
+        use StepOutcome::*;
+        let clean = report(&[
+            ("capture", Done),
+            ("engine", Done),
+            ("http_drain", Done),
+            ("sqlite_pools", Skipped),
+            ("pi", Done),
+        ]);
+        assert_eq!(exit_follow_up(Some(&clean), false), Return);
+        assert_eq!(exit_follow_up(Some(&clean), true), Return);
+
+        // Slow HTTP drain, pools or Pi: log and let Tauri restart.
+        for slow in ["http_drain", "sqlite_pools", "pi"] {
+            let r = report(&[("capture", Done), ("engine", Done), (slow, TimedOut)]);
+            assert_eq!(exit_follow_up(Some(&r), true), Return, "{slow}");
+            assert_eq!(exit_follow_up(Some(&r), false), ForceExit, "{slow}");
+        }
+
+        // Capture or engine still running: never return into C++ teardown,
+        // but start the replacement first when a restart is pending.
+        for critical in ["capture", "engine"] {
+            let r = report(&[(critical, TimedOut), ("http_drain", TimedOut)]);
+            assert_eq!(
+                exit_follow_up(Some(&r), true),
+                ReplaceThenForceExit,
+                "{critical}"
+            );
+            assert_eq!(exit_follow_up(Some(&r), false), ForceExit, "{critical}");
+        }
+
+        // A panicked teardown thread counts as a critical overrun.
+        assert_eq!(exit_follow_up(None, true), ReplaceThenForceExit);
+        assert_eq!(exit_follow_up(None, false), ForceExit);
+
+        // Overall budget blown without a timed-out step (scheduling delay).
+        let mut late = clean.clone();
+        late.overran = true;
+        assert_eq!(exit_follow_up(Some(&late), true), Return);
+        assert_eq!(exit_follow_up(Some(&late), false), ForceExit);
     }
 }

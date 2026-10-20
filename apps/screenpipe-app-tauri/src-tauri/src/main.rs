@@ -1669,12 +1669,17 @@ async fn main() {
                     // After a safe relaunch, keep Home closed if it was closed.
                     relaunch::on_ready(app_handle.app_handle());
                 }
-                tauri::RunEvent::ExitRequested { api, .. } => {
+                tauri::RunEvent::ExitRequested { api, code, .. } => {
                     // When the user clicks "quit screenpipe" in the tray menu,
                     // QUIT_REQUESTED is set to true — let the exit proceed.
                     // Otherwise, prevent auto-exit so the app stays alive in the
                     // tray when all windows are closed / destroyed.
-                    if tray::QUIT_REQUESTED.load(std::sync::atomic::Ordering::SeqCst) {
+                    // An app.restart() (update, rollback) always goes through;
+                    // the exit teardown then keeps its replacement alive.
+                    if relaunch::on_exit_requested(app_handle.app_handle(), code) {
+                        // Logged by on_exit_requested; prevent_exit is
+                        // ignored for restarts anyway.
+                    } else if tray::QUIT_REQUESTED.load(std::sync::atomic::Ordering::SeqCst) {
                         info!("ExitRequested event — quit was requested, allowing exit");
                     } else {
                         info!("ExitRequested event — preventing (app stays in tray)");

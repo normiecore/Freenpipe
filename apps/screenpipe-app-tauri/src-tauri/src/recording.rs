@@ -683,11 +683,15 @@ pub async fn spawn_screenpipe(
                     MAX_WAIT_SECS, phase.phase
                 );
                 state.is_starting.store(false, Ordering::SeqCst);
-                return Err(format!(
+                let msg = format!(
                     "Server start timed out after {} minutes. Current phase: {}",
                     MAX_WAIT_SECS / 60,
                     phase.phase
-                ));
+                );
+                // The wedged start never reported; end its phase so the
+                // engine watchdog does not wait on it forever.
+                crate::health::fail_boot_if_pending(&msg);
+                return Err(msg);
             }
             tokio::time::sleep(std::time::Duration::from_millis(POLL_MS)).await;
         }
@@ -749,6 +753,7 @@ pub async fn spawn_screenpipe(
     // this executable is ever terminated; a healthy or foreign holder (the
     // installed screenpipe, a dev server) is left alone and reported.
     let conflict = crate::port_conflict::resolve_before_bind(
+        &app,
         port,
         crate::port_conflict::PortPurpose::EngineApi,
     )
@@ -888,7 +893,7 @@ pub async fn spawn_screenpipe(
     let (result_tx, result_rx) = tokio::sync::oneshot::channel::<Result<(), String>>();
 
     // Spawn dedicated thread with its own runtime
-    std::thread::Builder::new()
+    if let Err(e) = std::thread::Builder::new()
         .name("screenpipe-server".to_string())
         .spawn(move || {
             let server_runtime = match tokio::runtime::Builder::new_multi_thread()
@@ -970,7 +975,15 @@ pub async fn spawn_screenpipe(
             server_runtime.shutdown_timeout(ENGINE_RUNTIME_SHUTDOWN);
             info!("engine generation runtime stopped");
         })
-        .map_err(|e| format!("Failed to spawn server thread: {}", e))?;
+    {
+        let msg = format!("Failed to spawn server thread: {}", e);
+        // Nothing is starting any more: leave a terminal phase and clear the
+        // start flags, or the watchdog reads this as a start in progress.
+        crate::health::set_boot_error(&msg);
+        state.is_starting.store(false, Ordering::SeqCst);
+        state.is_starting_capture.store(false, Ordering::SeqCst);
+        return Err(msg);
+    }
 
     match result_rx.await {
         Ok(Ok(())) => {
@@ -986,6 +999,10 @@ pub async fn spawn_screenpipe(
         Ok(Err(e)) => {
             state.is_starting.store(false, Ordering::SeqCst);
             state.is_starting_capture.store(false, Ordering::SeqCst);
+            // ServerCore::start sets its own error for most failures; this
+            // covers the rest. A capture failure after the server came up
+            // keeps "ready".
+            crate::health::fail_boot_if_pending(&e);
             if e.contains("no monitors matched") {
                 crate::health::set_recording_status(crate::health::RecordingStatus::Error);
             }
@@ -993,7 +1010,11 @@ pub async fn spawn_screenpipe(
         }
         Err(_) => {
             state.is_starting.store(false, Ordering::SeqCst);
-            Err("Server startup channel dropped unexpectedly".to_string())
+            state.is_starting_capture.store(false, Ordering::SeqCst);
+            let msg = "Server startup channel dropped unexpectedly".to_string();
+            // The engine thread ended (panicked) without reporting.
+            crate::health::fail_boot_if_pending(&msg);
+            Err(msg)
         }
     }
 }
@@ -1112,9 +1133,67 @@ pub(crate) enum RespawnError {
     Failed(String),
 }
 
+/// Time limits for one watchdog respawn, so a wedged step can never leave
+/// the watchdog waiting on its respawn forever.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct RespawnLimits {
+    /// Stopping what is left of the old engine. Its own steps are bounded
+    /// (audio 15 s, runtime 10 s); this catches a stop that hangs anyway.
+    pub stop: Duration,
+    /// Starting the new generation. Long, because a database migration on
+    /// a large install legitimately takes minutes; the same 30-minute
+    /// ceiling as a caller waiting on an in-flight start.
+    pub start: Duration,
+}
+
+impl Default for RespawnLimits {
+    fn default() -> Self {
+        Self {
+            stop: Duration::from_secs(45),
+            start: Duration::from_secs(30 * 60),
+        }
+    }
+}
+
+/// Start of the message of a respawn that ran out of time.
+const RESPAWN_TIMEOUT: &str = "respawn timed out: ";
+
+fn is_respawn_timeout(e: &RespawnError) -> bool {
+    matches!(e, RespawnError::Failed(msg) if msg.starts_with(RESPAWN_TIMEOUT))
+}
+
+/// Run a respawn's stop and start under `limits`. A stop that overruns is
+/// abandoned (the start is not attempted) and reported as `Failed`, so the
+/// watchdog backs off and tries again later instead of waiting forever.
+pub(crate) async fn bounded_respawn<Stop, Start, StartFut>(
+    stop: Stop,
+    start: Start,
+    limits: RespawnLimits,
+) -> Result<(), RespawnError>
+where
+    Stop: std::future::Future<Output = ()>,
+    Start: FnOnce() -> StartFut,
+    StartFut: std::future::Future<Output = Result<(), RespawnError>>,
+{
+    if tokio::time::timeout(limits.stop, stop).await.is_err() {
+        return Err(RespawnError::Failed(format!(
+            "{RESPAWN_TIMEOUT}stopping the old engine took longer than {}s",
+            limits.stop.as_secs()
+        )));
+    }
+    match tokio::time::timeout(limits.start, start()).await {
+        Ok(result) => result,
+        Err(_) => Err(RespawnError::Failed(format!(
+            "{RESPAWN_TIMEOUT}starting the engine took longer than {}s",
+            limits.start.as_secs()
+        ))),
+    }
+}
+
 /// Stop whatever is left of the engine and start a fresh generation. Used by
 /// the health watchdog; does not change the recording intent. Returns `Ok`
-/// without doing anything when another start is already under way.
+/// without doing anything when another start is already under way. Both
+/// halves are bounded by [`RespawnLimits`]; running out of time is `Failed`.
 pub(crate) async fn respawn_engine(app: &tauri::AppHandle) -> Result<(), RespawnError> {
     let Some(state) = app.try_state::<RecordingState>() else {
         return Err(RespawnError::Failed("recording state not ready".into()));
@@ -1124,14 +1203,30 @@ pub(crate) async fn respawn_engine(app: &tauri::AppHandle) -> Result<(), Respawn
         info!("engine respawn skipped: a start is already in progress");
         return Ok(());
     }
-    stop_engine(&state).await;
-    match spawn_screenpipe(state, app.clone(), None).await {
-        Ok(()) => Ok(()),
-        Err(e) => match crate::port_conflict::last_engine_block() {
-            Some(_) => Err(RespawnError::PortHeld(e)),
-            None => Err(RespawnError::Failed(e)),
+    let start_state = state.clone();
+    let start_app = app.clone();
+    let result = bounded_respawn(
+        stop_engine(&state),
+        move || async move {
+            spawn_screenpipe(start_state, start_app, None)
+                .await
+                .map_err(|e| match crate::port_conflict::last_engine_block() {
+                    Some(_) => RespawnError::PortHeld(e),
+                    None => RespawnError::Failed(e),
+                })
         },
+        RespawnLimits::default(),
+    )
+    .await;
+    if matches!(&result, Err(e) if is_respawn_timeout(e)) {
+        // The abandoned step may have left the start flags set. Nothing is
+        // starting any more, so clear them; otherwise the next attempt would
+        // read the empty server slot as a start in progress and skip itself.
+        state.is_starting.store(false, Ordering::SeqCst);
+        state.is_starting_capture.store(false, Ordering::SeqCst);
+        state.last_spawn_epoch.store(0, Ordering::SeqCst);
     }
+    result
 }
 
 /// Developer command: make the engine look crashed. Its runtime is stopped
@@ -1173,4 +1268,74 @@ pub async fn debug_kill_engine(
     } else {
         format!("engine on port {port} stopped; the watchdog should respawn it")
     })
+}
+
+#[cfg(test)]
+mod respawn_tests {
+    use super::*;
+    use std::sync::atomic::AtomicUsize;
+
+    fn short() -> RespawnLimits {
+        RespawnLimits {
+            stop: Duration::from_millis(50),
+            start: Duration::from_millis(50),
+        }
+    }
+
+    #[test]
+    fn default_limits_cover_a_long_migration_but_not_a_wedged_stop() {
+        let limits = RespawnLimits::default();
+        assert_eq!(limits.stop, Duration::from_secs(45));
+        assert!(limits.start >= Duration::from_secs(30 * 60));
+    }
+
+    #[tokio::test]
+    async fn a_stop_that_never_returns_fails_the_respawn_without_starting() {
+        let starts = AtomicUsize::new(0);
+        let begun = Instant::now();
+        let result = bounded_respawn(
+            std::future::pending::<()>(),
+            || async {
+                starts.fetch_add(1, Ordering::SeqCst);
+                Ok(())
+            },
+            short(),
+        )
+        .await;
+        assert!(begun.elapsed() < Duration::from_secs(5));
+        let err = result.expect_err("a wedged stop must not report success");
+        // Failed (not PortHeld), so the watchdog's backoff keeps scheduling.
+        assert!(matches!(err, RespawnError::Failed(_)), "{err:?}");
+        assert!(is_respawn_timeout(&err));
+        assert_eq!(starts.load(Ordering::SeqCst), 0);
+    }
+
+    #[tokio::test]
+    async fn a_start_that_never_returns_fails_the_respawn() {
+        let result = bounded_respawn(
+            async {},
+            || std::future::pending::<Result<(), RespawnError>>(),
+            short(),
+        )
+        .await;
+        let err = result.expect_err("a wedged start must not report success");
+        assert!(is_respawn_timeout(&err), "{err:?}");
+    }
+
+    #[tokio::test]
+    async fn start_results_pass_through_unchanged() {
+        assert_eq!(
+            bounded_respawn(async {}, || async { Ok(()) }, short()).await,
+            Ok(())
+        );
+        let held = bounded_respawn(
+            async {},
+            || async { Err(RespawnError::PortHeld("port 3035 held".into())) },
+            short(),
+        )
+        .await;
+        assert_eq!(held, Err(RespawnError::PortHeld("port 3035 held".into())));
+        let failed = RespawnError::Failed("no monitors".into());
+        assert!(!is_respawn_timeout(&failed));
+    }
 }

@@ -125,7 +125,9 @@ async fn handle_focus(
 }
 
 pub async fn run_server(app_handle: tauri::AppHandle, port: u16) {
-    let state = ServerState { app_handle };
+    let state = ServerState {
+        app_handle: app_handle.clone(),
+    };
 
     let cors = CorsLayer::new()
         .allow_origin("*".parse::<HeaderValue>().unwrap())
@@ -171,8 +173,10 @@ pub async fn run_server(app_handle: tauri::AppHandle, port: u16) {
 
     // Classify anything else listening on this port. Only an unresponsive
     // copy of this executable is terminated; any other holder is reported
-    // and left alone (see `port_conflict`).
+    // (as a system notification, never through this busy port) and left
+    // alone (see `port_conflict`).
     crate::port_conflict::resolve_before_bind(
+        &app_handle,
         port,
         crate::port_conflict::PortPurpose::ControlServer,
     )
@@ -189,6 +193,9 @@ pub async fn run_server(app_handle: tauri::AppHandle, port: u16) {
         match axum::Server::try_bind(&addr) {
             Ok(builder) => {
                 info!("Server listening on {}", addr);
+                // In-app notification panels reach this process only while
+                // it holds the port; cleared when the server stops.
+                let _bound = crate::port_conflict::ControlServerBound::mark();
                 if let Err(e) = builder.serve(app.into_make_service()).await {
                     error!("server error on {}: {}", addr, e);
                 }
