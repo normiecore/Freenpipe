@@ -16,7 +16,7 @@ pub mod monitor;
 pub mod wgc_capture;
 #[cfg(target_os = "macos")]
 pub use monitor::HdCapture;
-pub use monitor::MonitorListError;
+pub use monitor::{last_monitor_list_outcome, MonitorListError, MonitorListOutcome};
 pub mod metrics;
 pub mod ocr_cache;
 pub mod tesseract;
@@ -24,7 +24,9 @@ pub mod utils;
 #[cfg(target_os = "macos")]
 pub use apple::perform_ocr_apple;
 pub use core::RealtimeVisionEvent;
-pub use metrics::{MetricsSnapshot, PipelineMetrics};
+pub use metrics::{
+    CaptureLoopStage, CorruptFrameKind, LoopStageReport, MetricsSnapshot, PipelineMetrics,
+};
 pub use utils::OcrEngine;
 pub mod capture_screenshot_by_window;
 pub use custom_ocr::perform_ocr_custom;

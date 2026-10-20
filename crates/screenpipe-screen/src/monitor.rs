@@ -853,6 +853,77 @@ impl SafeMonitor {
 }
 
 /// Update the cached monitor descriptions from a successful monitor list.
+/// How the most recent monitor enumeration ended. `/health` uses it to tell
+/// "no display connected" and "permission denied" apart from a capture stall,
+/// without making a system call of its own.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MonitorListOutcome {
+    /// No enumeration has finished yet.
+    NotListed,
+    /// At least one monitor was found.
+    Listed,
+    /// The enumeration worked but found no usable monitor (lid closed,
+    /// display asleep, headless session).
+    NoMonitors,
+    /// The OS refused screen capture.
+    PermissionDenied,
+    /// The enumeration failed for another reason.
+    Failed,
+}
+
+static LAST_MONITOR_LIST_OUTCOME: std::sync::atomic::AtomicU8 =
+    std::sync::atomic::AtomicU8::new(0);
+
+impl MonitorListOutcome {
+    fn code(self) -> u8 {
+        match self {
+            Self::NotListed => 0,
+            Self::Listed => 1,
+            Self::NoMonitors => 2,
+            Self::PermissionDenied => 3,
+            Self::Failed => 4,
+        }
+    }
+
+    fn from_code(code: u8) -> Self {
+        match code {
+            1 => Self::Listed,
+            2 => Self::NoMonitors,
+            3 => Self::PermissionDenied,
+            4 => Self::Failed,
+            _ => Self::NotListed,
+        }
+    }
+
+    fn of<T>(result: &std::result::Result<Vec<T>, MonitorListError>) -> Self {
+        match result {
+            Ok(monitors) if monitors.is_empty() => Self::NoMonitors,
+            Ok(_) => Self::Listed,
+            Err(MonitorListError::NoMonitorsFound) => Self::NoMonitors,
+            Err(MonitorListError::PermissionDenied) => Self::PermissionDenied,
+            Err(MonitorListError::Other(_)) => Self::Failed,
+        }
+    }
+}
+
+/// Outcome of the most recent `list_monitors_detailed()` call.
+pub fn last_monitor_list_outcome() -> MonitorListOutcome {
+    MonitorListOutcome::from_code(
+        LAST_MONITOR_LIST_OUTCOME.load(std::sync::atomic::Ordering::Relaxed),
+    )
+}
+
+/// Refresh the description cache on success and remember how the listing ended.
+fn record_monitor_list_result(result: &std::result::Result<Vec<SafeMonitor>, MonitorListError>) {
+    if let Ok(monitors) = result {
+        update_monitor_cache(monitors);
+    }
+    LAST_MONITOR_LIST_OUTCOME.store(
+        MonitorListOutcome::of(result).code(),
+        std::sync::atomic::Ordering::Relaxed,
+    );
+}
+
 fn update_monitor_cache(monitors: &[SafeMonitor]) {
     let descriptions: Vec<String> = monitors
         .iter()
@@ -944,9 +1015,7 @@ pub async fn list_monitors_detailed() -> std::result::Result<Vec<SafeMonitor>, M
         .await
         .unwrap_or(Err(MonitorListError::Other("Task panicked".to_string())));
 
-    if let Ok(monitors) = &result {
-        update_monitor_cache(monitors);
-    }
+    record_monitor_list_result(&result);
     result
 }
 
@@ -962,9 +1031,7 @@ pub async fn list_monitors_detailed() -> std::result::Result<Vec<SafeMonitor>, M
         .await
         .unwrap_or(Err(MonitorListError::Other("Task panicked".to_string())));
 
-    if let Ok(monitors) = &result {
-        update_monitor_cache(monitors);
-    }
+    record_monitor_list_result(&result);
     result
 }
 
@@ -980,9 +1047,7 @@ pub async fn list_monitors_detailed() -> std::result::Result<Vec<SafeMonitor>, M
         .await
         .unwrap_or(Err(MonitorListError::Other("Task panicked".to_string())));
 
-    if let Ok(monitors) = &result {
-        update_monitor_cache(monitors);
-    }
+    record_monitor_list_result(&result);
     result
 }
 
@@ -1255,6 +1320,40 @@ impl SafeMonitor {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn monitor_list_outcome_classifies_every_result() {
+        type R = std::result::Result<Vec<u32>, MonitorListError>;
+        assert_eq!(
+            MonitorListOutcome::of(&R::Ok(vec![1])),
+            MonitorListOutcome::Listed
+        );
+        assert_eq!(
+            MonitorListOutcome::of(&R::Ok(vec![])),
+            MonitorListOutcome::NoMonitors
+        );
+        assert_eq!(
+            MonitorListOutcome::of(&R::Err(MonitorListError::NoMonitorsFound)),
+            MonitorListOutcome::NoMonitors
+        );
+        assert_eq!(
+            MonitorListOutcome::of(&R::Err(MonitorListError::PermissionDenied)),
+            MonitorListOutcome::PermissionDenied
+        );
+        assert_eq!(
+            MonitorListOutcome::of(&R::Err(MonitorListError::Other("x".into()))),
+            MonitorListOutcome::Failed
+        );
+        for outcome in [
+            MonitorListOutcome::NotListed,
+            MonitorListOutcome::Listed,
+            MonitorListOutcome::NoMonitors,
+            MonitorListOutcome::PermissionDenied,
+            MonitorListOutcome::Failed,
+        ] {
+            assert_eq!(MonitorListOutcome::from_code(outcome.code()), outcome);
+        }
+    }
 
     /// Create a SafeMonitor for testing without requiring real OS monitors
     fn make_test_monitor(

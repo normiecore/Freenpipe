@@ -18,6 +18,8 @@ pub struct AudioPipelineMetrics {
     pub chunks_channel_full: AtomicU64,
     /// Device stream timeouts (no audio data received for >30s)
     pub stream_timeouts: AtomicU64,
+    /// Unix timestamp (secs) of the most recent stream timeout (0 = none yet).
+    pub last_stream_timeout_ts: AtomicU64,
 
     // --- VAD stage ---
     /// Chunks that passed VAD (speech_ratio > threshold)
@@ -83,6 +85,7 @@ impl AudioPipelineMetrics {
             chunks_sent: AtomicU64::new(0),
             chunks_channel_full: AtomicU64::new(0),
             stream_timeouts: AtomicU64::new(0),
+            last_stream_timeout_ts: AtomicU64::new(0),
             vad_passed: AtomicU64::new(0),
             vad_rejected: AtomicU64::new(0),
             speech_ratio_sum_x1000: AtomicU64::new(0),
@@ -119,6 +122,11 @@ impl AudioPipelineMetrics {
 
     pub fn record_stream_timeout(&self) {
         self.stream_timeouts.fetch_add(1, Ordering::Relaxed);
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0);
+        self.last_stream_timeout_ts.store(now, Ordering::Relaxed);
     }
 
     // --- Consumer stage ---
@@ -264,6 +272,10 @@ impl AudioPipelineMetrics {
             chunks_sent,
             chunks_channel_full: self.chunks_channel_full.load(Ordering::Relaxed),
             stream_timeouts: self.stream_timeouts.load(Ordering::Relaxed),
+            last_stream_timeout_at: match self.last_stream_timeout_ts.load(Ordering::Relaxed) {
+                0 => None,
+                ts => Some(ts),
+            },
             // Consumer
             chunks_received: self.chunks_received.load(Ordering::Relaxed),
             process_errors: self.process_errors.load(Ordering::Relaxed),
@@ -325,6 +337,9 @@ pub struct AudioMetricsSnapshot {
     pub chunks_sent: u64,
     pub chunks_channel_full: u64,
     pub stream_timeouts: u64,
+    /// Unix timestamp (secs) of the last stream receive timeout; `null` when
+    /// no stream has timed out since the engine started.
+    pub last_stream_timeout_at: Option<u64>,
 
     // Consumer stage
     pub chunks_received: u64,
@@ -363,4 +378,145 @@ pub struct AudioMetricsSnapshot {
     pub last_db_write_ts: u64,
     /// Unix timestamp (secs) of most recent transcription attempt (heartbeat)
     pub last_transcription_attempt_ts: u64,
+}
+
+// --- Model / runtime component health ------------------------------------
+
+/// Audio runtime pieces whose initialisation can fail independently. Their
+/// states are reported on `/health` under `runtime`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum ModelComponent {
+    Transcription,
+    Vad,
+    SpeakerSegmentation,
+    SpeakerEmbedding,
+}
+
+impl ModelComponent {
+    pub const ALL: [ModelComponent; 4] = [
+        Self::Transcription,
+        Self::Vad,
+        Self::SpeakerSegmentation,
+        Self::SpeakerEmbedding,
+    ];
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Transcription => "transcription",
+            Self::Vad => "vad",
+            Self::SpeakerSegmentation => "speaker_segmentation",
+            Self::SpeakerEmbedding => "speaker_embedding",
+        }
+    }
+}
+
+/// Initialisation state of a [`ModelComponent`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ComponentState {
+    /// Loaded and usable.
+    Ok,
+    /// Loading returned an error or panicked.
+    InitFailed,
+    /// Loading did not finish within its watchdog deadline.
+    InitTimedOut,
+    /// The model file or runtime library is not installed.
+    Missing,
+    /// Not needed with the current settings (audio off, engine without it).
+    NotRequired,
+    /// Works, but on a fallback path (for example CPU after a GPU failure).
+    Degraded,
+    /// Nothing has been reported yet.
+    Unknown,
+}
+
+impl ComponentState {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Ok => "ok",
+            Self::InitFailed => "init_failed",
+            Self::InitTimedOut => "init_timed_out",
+            Self::Missing => "missing",
+            Self::NotRequired => "not_required",
+            Self::Degraded => "degraded",
+            Self::Unknown => "unknown",
+        }
+    }
+
+    /// True for states that mean the feature behind the component is not
+    /// working as configured.
+    pub fn is_problem(self) -> bool {
+        matches!(
+            self,
+            Self::InitFailed | Self::InitTimedOut | Self::Missing | Self::Degraded
+        )
+    }
+}
+
+static MODEL_COMPONENT_STATES: std::sync::LazyLock<RwLock<HashMap<ModelComponent, ComponentState>>> =
+    std::sync::LazyLock::new(|| RwLock::new(HashMap::new()));
+
+/// Publish the state of an audio model component. Model loaders (and their
+/// init watchdogs) call this after each load attempt; the last report wins.
+pub fn report_model_component(component: ModelComponent, state: ComponentState) {
+    if let Ok(mut states) = MODEL_COMPONENT_STATES.write() {
+        states.insert(component, state);
+    }
+}
+
+/// The last reported state of `component`, if any loader has reported one.
+pub fn model_component_state(component: ModelComponent) -> Option<ComponentState> {
+    MODEL_COMPONENT_STATES
+        .read()
+        .ok()
+        .and_then(|states| states.get(&component).copied())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn stream_timeout_records_when_it_happened() {
+        let m = AudioPipelineMetrics::new();
+        assert_eq!(m.snapshot().last_stream_timeout_at, None);
+        m.record_stream_timeout();
+        let s = m.snapshot();
+        assert_eq!(s.stream_timeouts, 1);
+        let at = s.last_stream_timeout_at.expect("timestamp after a timeout");
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+        assert!(at <= now && now - at < 5);
+    }
+
+    #[test]
+    fn snapshot_serialises_last_stream_timeout_at_next_to_the_counter() {
+        let text = serde_json::to_string(&AudioPipelineMetrics::new().snapshot()).unwrap();
+        let counter = text.find("\"stream_timeouts\":").unwrap();
+        let at = text.find("\"last_stream_timeout_at\":null").unwrap();
+        let next = text.find("\"chunks_received\":").unwrap();
+        assert!(counter < at && at < next);
+    }
+
+    #[test]
+    fn model_component_reports_round_trip() {
+        assert_eq!(
+            ModelComponent::ALL.map(|c| c.as_str()),
+            ["transcription", "vad", "speaker_segmentation", "speaker_embedding"]
+        );
+        report_model_component(ModelComponent::SpeakerEmbedding, ComponentState::InitTimedOut);
+        assert_eq!(
+            model_component_state(ModelComponent::SpeakerEmbedding),
+            Some(ComponentState::InitTimedOut)
+        );
+        report_model_component(ModelComponent::SpeakerEmbedding, ComponentState::Ok);
+        assert_eq!(
+            model_component_state(ModelComponent::SpeakerEmbedding),
+            Some(ComponentState::Ok)
+        );
+        assert!(ComponentState::InitFailed.is_problem());
+        assert!(!ComponentState::NotRequired.is_problem());
+        assert_eq!(ComponentState::InitTimedOut.as_str(), "init_timed_out");
+    }
 }

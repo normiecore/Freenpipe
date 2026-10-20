@@ -504,6 +504,8 @@ async fn execute_batch(
                         "write_queue: acquire connection error (attempt {}/{}), db_recovered={}, retrying: {}",
                         attempt, max_retries, recovered, e
                     );
+                    // The retry opens a fresh writer connection.
+                    crate::write_queue_health::record_writer_reopen();
                     last_error = Some(e);
                     tokio::time::sleep(Duration::from_millis(50 * attempt as u64)).await;
                     continue;
@@ -532,6 +534,7 @@ async fn execute_batch(
                     Err(rb_err) => {
                         warn!("write_queue: ROLLBACK failed ({}), detaching connection as last resort", rb_err);
                         let _raw = conn.detach();
+                        crate::write_queue_health::record_writer_reopen();
                     }
                 }
                 last_error = Some(e);
@@ -559,6 +562,7 @@ async fn execute_batch(
                     attempt, max_retries, recovered, e
                 );
                 let _raw = conn.detach();
+                crate::write_queue_health::record_writer_reopen();
                 if attempt < max_retries {
                     last_error = Some(e);
                     tokio::time::sleep(Duration::from_millis(50 * attempt as u64)).await;
@@ -613,9 +617,13 @@ async fn execute_batch(
 
     // COMMIT or ROLLBACK
     if any_fatal {
+        crate::write_queue_health::record_batch_failed(
+            crate::write_queue_health::BatchFailure::Fatal,
+        );
         if let Err(e) = sqlx::query("ROLLBACK").execute(&mut *conn).await {
             warn!("write_queue: ROLLBACK failed: {}, detaching connection", e);
             let _raw = conn.detach();
+            crate::write_queue_health::record_writer_reopen();
         }
         // All results become errors on rollback
         for result in results.iter_mut() {
@@ -638,12 +646,18 @@ async fn execute_batch(
         // until its lifetime ends.
         warn!("write_queue: detaching connection due to commit failure");
         let _raw = conn.detach();
+        crate::write_queue_health::record_batch_failed(
+            crate::write_queue_health::BatchFailure::Fatal,
+        );
+        crate::write_queue_health::record_writer_reopen();
         // All results become the commit error
         for pw in batch.drain(..) {
             let _ = pw.respond.send(Err(sqlx::Error::WorkerCrashed));
         }
         return;
     }
+
+    crate::write_queue_health::record_batch_committed();
 
     // Send results to callers
     for (pw, result) in batch.drain(..).zip(results.into_iter()) {
@@ -1456,6 +1470,11 @@ async fn insert_ui_event_row(
 }
 
 fn send_error_to_all(batch: &mut Vec<PendingWrite>, error: sqlx::Error) {
+    // Every whole-batch failure path ends here, so this is where the
+    // batch outcome is counted for /health.
+    crate::write_queue_health::record_batch_failed(
+        crate::write_queue_health::classify_batch_error(&error),
+    );
     let err_str = error.to_string();
     for pw in batch.drain(..) {
         let _ = pw.respond.send(Err(sqlx::Error::Protocol(err_str.clone())));
