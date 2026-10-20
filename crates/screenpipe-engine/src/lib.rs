@@ -43,6 +43,7 @@ pub mod pipes_api;
 pub mod power;
 pub mod privacy_filter;
 pub mod recording_config;
+pub mod recording_coverage;
 mod resource_monitor;
 pub mod retention;
 pub mod routes;

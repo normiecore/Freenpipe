@@ -46,7 +46,8 @@ symphonia = { version = "0.5.4", features = ["aac", "isomp4", "opt-simd"] }
 rubato = "0.15.0"
 # screenpipe/whisper-rs @ 97e4070, vendored in third_party/whisper-rs (audiopipe
 # points at the same copy, so there is one whisper-rs-sys in the graph).
-whisper-rs = { path = "../../third_party/whisper-rs", features = ["tracing_backend"] }
+# `raw-api` exposes the ggml backend-device calls the GPU probe uses.
+whisper-rs = { path = "../../third_party/whisper-rs", features = ["tracing_backend", "raw-api"] }
 
 # Log
 log = { workspace = true }
@@ -103,6 +104,8 @@ libpulse-simple-binding = { version = "2.28", optional = true }
 # broke systems without a system-installed libonnxruntime.so (see #2506).
 ort = { version = "=2.0.0-rc.10", features = ["download-binaries"] }
 
+# The DirectML adapter probe for Parakeet (transcription/parakeet_windows.rs)
+# uses DXGI, Direct3D 12 and LoadLibraryExW.
 # Windows COM API for querying the "Default Communications Device" role.
 # MS Teams/Zoom route audio to the eCommunications endpoint, which may
 # differ from the multimedia/console default that cpal returns.
@@ -116,11 +119,15 @@ windows = { version = "0.58", features = [
     "Wdk_System_SystemServices",
     "Win32_Devices_FunctionDiscovery",
     "Win32_Foundation",
+    "Win32_Graphics_Direct3D",
+    "Win32_Graphics_Direct3D12",
+    "Win32_Graphics_Dxgi",
     "Win32_Media_Audio",
     "Win32_Security",
     "Win32_System_Com",
     "Win32_System_Com_StructuredStorage",
     "Win32_System_Diagnostics_ToolHelp",
+    "Win32_System_LibraryLoader",
     "Win32_System_SystemInformation",
     "Win32_System_Threading",
     "Win32_System_Variant",
@@ -161,8 +168,16 @@ tracing-subscriber = "0.3.16"
 default = ["pulseaudio"]
 metal = ["whisper-rs/metal", "audiopipe?/metal", "audiopipe?/coreml"]
 cuda = ["whisper-rs/cuda"]
+# DirectML for the ONNX Parakeet engine (Windows; adapter choice, recycling
+# and CPU recovery in transcription/parakeet_windows.rs).
 directml = ["audiopipe?/directml"]
-vulkan = ["audiopipe?/vulkan-ggml"]
+# Whisper on ggml-vulkan. Building it needs the Vulkan SDK (VULKAN_SDK), and
+# the binary then imports vulkan-1.dll at load time, so Windows installers
+# ship the loader next to the exe. Linux and macOS builds leave it off.
+vulkan = ["whisper-rs/vulkan"]
+# Vulkan for audiopipe's ggml Qwen3 engine, which builds a second ggml next
+# to whisper's. Opt-in only; no release feature set enables it.
+vulkan-qwen3-ggml = ["audiopipe?/vulkan-ggml"]
 pulseaudio = ["dep:libpulse-binding", "dep:libpulse-simple-binding"]
 qwen3-asr = ["dep:audiopipe"]
 parakeet = ["dep:audiopipe"]

@@ -8,7 +8,8 @@
 //!
 //! 1. the path already loaded in this process;
 //! 2. a copy installed with the app (`models/pyannote/` under the install
-//!    root, see [`bundled_model_dirs`]) or in a directory named by
+//!    root, then the flat `models/` folder screenpipe's installer uses; see
+//!    [`bundled_model_dirs`]) or in a directory named by
 //!    `SCREENPIPE_PYANNOTE_DIR`; accepted only when its size matches the
 //!    pinned model, so a Git LFS pointer is never mistaken for a model;
 //! 3. the download cache, filled from the Freenpipe model mirror (the Git
@@ -26,6 +27,7 @@ use std::sync::{OnceLock, RwLock};
 use tokio::sync::Mutex;
 use tracing::{info, warn};
 
+use crate::models::download::ExpectedFile;
 use crate::models::ModelDownloader;
 use crate::speaker::create_session;
 
@@ -44,6 +46,11 @@ pub const MODEL_DIR_ENV: &str = "SCREENPIPE_PYANNOTE_DIR";
 
 /// Where installers put the models, relative to an install root.
 pub const BUNDLED_RELATIVE_DIR: &str = "models/pyannote";
+
+/// The flat layout screenpipe's Windows installer uses
+/// (`<install>/models/segmentation-3.0.onnx`), searched after
+/// [`BUNDLED_RELATIVE_DIR`].
+pub const FLAT_BUNDLED_RELATIVE_DIR: &str = "models";
 
 /// Identity of one model file. Size and SHA-256 are the ones recorded in the
 /// Git LFS pointers under `crates/screenpipe-audio/models/pyannote/`.
@@ -127,14 +134,25 @@ pub fn bundled_model_dirs() -> Vec<PathBuf> {
         dirs.push(dir);
     }
     if let Ok(exe) = std::env::current_exe() {
-        for root in screenpipe_core::agents::cli_runtime::install_roots(&exe) {
-            dirs.push(root.join(BUNDLED_RELATIVE_DIR));
-        }
+        dirs.extend(install_layout_dirs(
+            &screenpipe_core::agents::cli_runtime::install_roots(&exe),
+        ));
     }
     // Development builds can use the repository copy when Git LFS content is
     // checked out (pointer files are rejected by the size check).
     #[cfg(debug_assertions)]
     dirs.push(Path::new(env!("CARGO_MANIFEST_DIR")).join(BUNDLED_RELATIVE_DIR));
+    dirs
+}
+
+/// Model directories under each install root, in lookup order: Freenpipe's
+/// `models/pyannote/`, then the flat `models/` of screenpipe's installer.
+pub fn install_layout_dirs(roots: &[PathBuf]) -> Vec<PathBuf> {
+    let mut dirs = Vec::with_capacity(roots.len() * 2);
+    for root in roots {
+        dirs.push(root.join(BUNDLED_RELATIVE_DIR));
+        dirs.push(root.join(FLAT_BUNDLED_RELATIVE_DIR));
+    }
     dirs
 }
 
@@ -235,13 +253,20 @@ impl ModelLocator {
             }
         }
 
+        // The downloader rejects bytes that do not match the pin before they
+        // reach the cache; verify_download below also covers copies that were
+        // already in the cache.
         let downloader = ModelDownloader::new(
             self.url.clone(),
             self.spec.filename.to_string(),
             self.cache_dir.clone(),
             self.downloading_flag,
             self.model_path_lock,
-        );
+        )
+        .with_expected(ExpectedFile {
+            size: self.spec.size,
+            sha256: self.spec.sha256,
+        });
         let path = downloader.ensure_model_available().await?;
         if let Err(err) = verify_download(self.spec, &path).await {
             let _ = tokio::fs::remove_file(&path).await;
@@ -597,10 +622,34 @@ mod tests {
             .parent()
             .unwrap()
             .to_path_buf();
-        assert!(
-            dirs.contains(&exe_dir.join(BUNDLED_RELATIVE_DIR)),
-            "{dirs:?}"
-        );
+        let nested = dirs
+            .iter()
+            .position(|d| d == &exe_dir.join(BUNDLED_RELATIVE_DIR))
+            .unwrap_or_else(|| panic!("{dirs:?}"));
+        let flat = dirs
+            .iter()
+            .position(|d| d == &exe_dir.join(FLAT_BUNDLED_RELATIVE_DIR))
+            .unwrap_or_else(|| panic!("{dirs:?}"));
+        assert!(nested < flat, "{dirs:?}");
+    }
+
+    /// screenpipe's installer puts the models straight into `<install>/models/`;
+    /// such a copy next to the executable wins over the download cache.
+    #[test]
+    fn flat_install_layout_next_to_the_exe_wins_over_the_cache() {
+        let tmp = tempdir().unwrap();
+        let exe_dir = tmp.path().join("install");
+        let cache = tmp.path().join("cache");
+        write_model_sized(&cache, &SEGMENTATION_SPEC);
+        let flat = write_model_sized(&exe_dir.join(FLAT_BUNDLED_RELATIVE_DIR), &SEGMENTATION_SPEC);
+        let dirs = install_layout_dirs(&[exe_dir.clone(), tmp.path().join("Resources")]);
+        assert_eq!(dirs[0], exe_dir.join(BUNDLED_RELATIVE_DIR));
+        assert_eq!(dirs[1], exe_dir.join(FLAT_BUNDLED_RELATIVE_DIR));
+        assert_eq!(find_bundled_model(&SEGMENTATION_SPEC, &dirs), Some(flat.clone()));
+
+        // Freenpipe's own layout comes first when both exist.
+        let nested = write_model_sized(&exe_dir.join(BUNDLED_RELATIVE_DIR), &SEGMENTATION_SPEC);
+        assert_eq!(find_bundled_model(&SEGMENTATION_SPEC, &dirs), Some(nested));
     }
 
     /// The installed copy is returned without touching the network or the

@@ -4,18 +4,31 @@
 // Run from apps/screenpipe-app-tauri: bun test scripts/stage_bundled_runtime.test.js
 
 import { describe, expect, it } from 'bun:test'
-import { mkdtemp, readFile, rm } from 'fs/promises'
+import { mkdir, mkdtemp, readFile, rm, stat, writeFile } from 'fs/promises'
 import os from 'os'
 import path from 'path'
+import { deflateRawSync } from 'zlib'
 import {
 	assertCleanMcpBundle,
+	assertDllForArch,
 	buildMcpBundle,
 	DEFAULT_PYANNOTE_BASE_URL,
+	DIRECTML_PACKAGE,
 	isExpectedModel,
 	MODEL_NOTICE,
+	ORT_DIRECTML_PACKAGE,
+	PE_MACHINE,
+	peMachine,
+	pickVulkanRuntimeFiles,
 	PYANNOTE_MODELS,
 	pyannoteModelUrl,
+	readZipEntries,
 	sha256Hex,
+	SILERO_MODEL,
+	stageDirectMl,
+	stageVulkanLoader,
+	VULKAN_LOADER,
+	windowsArch,
 } from './stage_bundled_runtime.js'
 
 const repoRoot = path.resolve(import.meta.dir, '..', '..', '..')
@@ -143,4 +156,205 @@ describe('bundled MCP server', () => {
 		},
 		{ timeout: 180_000 },
 	)
+})
+
+describe('silero VAD model', () => {
+	it('matches the pin in the Rust VAD loader', async () => {
+		const rust = await readFile(path.join(repoRoot, 'crates/screenpipe-audio/src/vad/silero.rs'), 'utf8')
+		expect(rust).toContain(`"${SILERO_MODEL.filename}"`)
+		expect(rust).toContain(`"${SILERO_MODEL.url}"`)
+		expect(rust).toContain(`sha256: "${SILERO_MODEL.sha256}"`)
+		expect(rust.replaceAll('_', '')).toContain(`size: ${SILERO_MODEL.size}`)
+	})
+
+	it('is pinned to a commit of the original publisher', () => {
+		expect(SILERO_MODEL.url).toMatch(
+			/^https:\/\/raw\.githubusercontent\.com\/snakers4\/silero-vad\/[0-9a-f]{40}\/src\/silero_vad\/data\/silero_vad\.onnx$/,
+		)
+	})
+
+	it('ships an attribution notice naming the file, its source commit and hash', async () => {
+		const notice = await readFile(path.join(repoRoot, 'crates/screenpipe-audio/models/silero', MODEL_NOTICE), 'utf8')
+		const commit = SILERO_MODEL.url.split('/')[5]
+		expect(notice).toContain(SILERO_MODEL.filename)
+		expect(notice).toContain(SILERO_MODEL.sha256)
+		expect(notice).toContain(commit)
+		expect(notice).toContain('MIT')
+	})
+})
+
+/** Minimal zip writer (stored or deflated entries) for the reader tests. */
+function makeZip(entries) {
+	const parts = []
+	const central = []
+	let offset = 0
+	for (const e of entries) {
+		const name = Buffer.from(e.name)
+		const body = e.method === 8 ? deflateRawSync(e.data) : e.data
+		const local = Buffer.alloc(30)
+		local.writeUInt32LE(0x04034b50, 0)
+		local.writeUInt16LE(20, 4)
+		local.writeUInt16LE(e.method, 8)
+		local.writeUInt32LE(body.length, 18)
+		local.writeUInt32LE(e.data.length, 22)
+		local.writeUInt16LE(name.length, 26)
+		const dir = Buffer.alloc(46)
+		dir.writeUInt32LE(0x02014b50, 0)
+		dir.writeUInt16LE(e.method, 10)
+		dir.writeUInt32LE(body.length, 20)
+		dir.writeUInt32LE(e.data.length, 24)
+		dir.writeUInt16LE(name.length, 28)
+		dir.writeUInt32LE(offset, 42)
+		parts.push(local, name, body)
+		central.push(dir, name)
+		offset += 30 + name.length + body.length
+	}
+	const cd = Buffer.concat(central)
+	const end = Buffer.alloc(22)
+	end.writeUInt32LE(0x06054b50, 0)
+	end.writeUInt16LE(entries.length, 8)
+	end.writeUInt16LE(entries.length, 10)
+	end.writeUInt32LE(cd.length, 12)
+	end.writeUInt32LE(offset, 16)
+	return Buffer.concat([...parts, cd, end])
+}
+
+/** Smallest buffer peMachine() accepts as a PE image for `machine`. */
+function fakeDll(machine) {
+	const b = Buffer.alloc(0x100)
+	b.writeUInt16LE(0x5a4d, 0)
+	b.writeUInt32LE(0x80, 0x3c)
+	b.writeUInt32LE(0x00004550, 0x80)
+	b.writeUInt16LE(machine, 0x84)
+	return b
+}
+
+describe('Windows GPU runtime', () => {
+	it('reads stored and deflated zip entries and reports missing ones', () => {
+		const big = Buffer.from('x'.repeat(5000))
+		const zip = makeZip([
+			{ name: 'LICENSE', data: Buffer.from('MIT'), method: 0 },
+			{ name: 'runtimes/win-x64/native/onnxruntime.dll', data: big, method: 8 },
+		])
+		const got = readZipEntries(zip, ['LICENSE', 'runtimes/win-x64/native/onnxruntime.dll'])
+		expect(got.get('LICENSE').toString()).toBe('MIT')
+		expect(got.get('runtimes/win-x64/native/onnxruntime.dll').equals(big)).toBe(true)
+		expect(() => readZipEntries(zip, ['DirectML.dll'])).toThrow(/not in the archive/)
+		expect(() => readZipEntries(Buffer.from('not a zip at all, just text....'), ['x'])).toThrow(/not a zip/)
+		const odd = makeZip([{ name: 'a', data: Buffer.from('a'), method: 0 }])
+		odd.writeUInt16LE(14, odd.length - 22 - 47 + 10) // central entry method -> LZMA
+		expect(() => readZipEntries(odd, ['a'])).toThrow(/compression method 14/)
+	})
+
+	it('checks that a DLL is built for the target architecture', () => {
+		expect(peMachine(fakeDll(PE_MACHINE.x64))).toBe(0x8664)
+		expect(peMachine(Buffer.from('MZ but too short'))).toBe(null)
+		expect(() => assertDllForArch(fakeDll(PE_MACHINE.x64), 'x64', 'a.dll')).not.toThrow()
+		expect(() => assertDllForArch(fakeDll(PE_MACHINE.arm64), 'x64', 'a.dll')).toThrow(/not x64/)
+		expect(() => assertDllForArch(fakeDll(0x14c), 'arm64', 'a.dll')).toThrow(/not arm64/) // x86
+		expect(() => assertDllForArch(Buffer.alloc(0x100), 'x64', 'a.dll')).toThrow(/not a Windows PE/)
+	})
+
+	it('derives the architecture from the release target', () => {
+		expect(windowsArch('aarch64-pc-windows-msvc', 'x64')).toBe('arm64')
+		expect(windowsArch('x86_64-pc-windows-msvc', 'arm64')).toBe('x64')
+		expect(windowsArch(undefined, 'arm64')).toBe('arm64')
+		expect(windowsArch('', 'x64')).toBe('x64')
+	})
+
+	it('pins every runtime package by version, size and hash on nuget.org', () => {
+		for (const pkg of [ORT_DIRECTML_PACKAGE, DIRECTML_PACKAGE]) {
+			expect(pkg.url).toMatch(/^https:\/\/api\.nuget\.org\/v3-flatcontainer\/[a-z.]+\/\d+\.\d+\.\d+\/[a-z.]+\.\d+\.\d+\.\d+\.nupkg$/)
+			expect(pkg.sha256).toMatch(/^[0-9a-f]{64}$/)
+			expect(pkg.size).toBeGreaterThan(1_000_000)
+			for (const arch of ['x64', 'arm64']) {
+				const files = pkg.files(arch)
+				expect(files.some((f) => f.dll)).toBe(true)
+				// Every DLL travels with a licence text.
+				expect(files.some((f) => /licen[cs]e/i.test(f.dest))).toBe(true)
+			}
+		}
+		expect(ORT_DIRECTML_PACKAGE.files('x64').map((f) => f.dest)).toContain('onnxruntime_providers_shared.dll')
+	})
+
+	it('finds the Vulkan loader for the architecture and refuses one without a licence', () => {
+		const lunarLayout = [
+			'VulkanRT-1.4.313.0-Components/LICENSE.txt',
+			'VulkanRT-1.4.313.0-Components/x86/vulkan-1.dll',
+			'VulkanRT-1.4.313.0-Components/x64/vulkan-1.dll',
+			'VulkanRT-1.4.313.0-Components/ARM64/vulkan-1.dll',
+			'VulkanRT-1.4.313.0-Components/x64/vulkaninfo.exe',
+		]
+		expect(pickVulkanRuntimeFiles(lunarLayout, 'x64')).toEqual({
+			dll: 'VulkanRT-1.4.313.0-Components/x64/vulkan-1.dll',
+			licence: 'VulkanRT-1.4.313.0-Components/LICENSE.txt',
+		})
+		expect(pickVulkanRuntimeFiles(lunarLayout, 'arm64').dll).toBe('VulkanRT-1.4.313.0-Components/ARM64/vulkan-1.dll')
+		expect(pickVulkanRuntimeFiles(['vulkan-1.dll', 'docs/LICENSE.md', 'LICENSE'], 'x64')).toEqual({
+			dll: 'vulkan-1.dll',
+			licence: 'LICENSE',
+		})
+		expect(() => pickVulkanRuntimeFiles(['x86/vulkan-1.dll', 'LICENSE.txt'], 'x64')).toThrow(/for x64/)
+		expect(() => pickVulkanRuntimeFiles(['x64/vulkan-1.dll'], 'x64')).toThrow(/licence/)
+		expect(() => pickVulkanRuntimeFiles(['README.txt'], 'x64')).toThrow(/no vulkan-1.dll/)
+	})
+
+	it('stages the Vulkan loader with its licence under the install names', async () => {
+		const dir = await mkdtemp(path.join(os.tmpdir(), 'fp-vk-'))
+		const prev = process.env.FREENPIPE_VULKAN_RUNTIME_DIR
+		try {
+			const source = path.join(dir, 'source')
+			await mkdir(path.join(source, 'rt', 'x64'), { recursive: true })
+			await writeFile(path.join(source, 'rt', 'x64', 'vulkan-1.dll'), fakeDll(PE_MACHINE.x64))
+			await writeFile(path.join(source, 'rt', 'LICENSE.txt'), 'Apache License 2.0')
+			const stageRoot = path.join(dir, 'bundled')
+			await mkdir(path.join(stageRoot, 'runtime'), { recursive: true })
+			process.env.FREENPIPE_VULKAN_RUNTIME_DIR = source
+			await stageVulkanLoader({ stageRoot, platform: 'windows', arch: 'x64' })
+			const runtime = path.join(stageRoot, 'runtime')
+			expect((await readFile(path.join(runtime, VULKAN_LOADER.dll))).equals(fakeDll(PE_MACHINE.x64))).toBe(true)
+			expect(await readFile(path.join(runtime, VULKAN_LOADER.licence), 'utf8')).toBe('Apache License 2.0')
+			// An arm64 build must not pick up the x64 loader.
+			await expect(stageVulkanLoader({ stageRoot, platform: 'windows', arch: 'arm64' })).rejects.toThrow(/arm64/)
+			// Other platforms stage nothing.
+			await stageVulkanLoader({ stageRoot: path.join(dir, 'other'), platform: 'linux', arch: 'x64' })
+			expect(await stat(path.join(dir, 'other')).catch(() => null)).toBe(null)
+		} finally {
+			if (prev === undefined) delete process.env.FREENPIPE_VULKAN_RUNTIME_DIR
+			else process.env.FREENPIPE_VULKAN_RUNTIME_DIR = prev
+			await rm(dir, { recursive: true, force: true })
+		}
+	})
+
+	it('removes a stale DirectML.dll unless bundling it was asked for', async () => {
+		const dir = await mkdtemp(path.join(os.tmpdir(), 'fp-dml-'))
+		const prev = process.env.FREENPIPE_BUNDLE_DIRECTML
+		try {
+			const runtime = path.join(dir, 'runtime')
+			await mkdir(runtime, { recursive: true })
+			await writeFile(path.join(runtime, 'DirectML.dll'), fakeDll(PE_MACHINE.x64))
+			await writeFile(path.join(runtime, 'DirectML-License.txt'), 'terms')
+			await writeFile(path.join(runtime, 'onnxruntime.dll'), fakeDll(PE_MACHINE.x64))
+			delete process.env.FREENPIPE_BUNDLE_DIRECTML
+			await stageDirectMl({ stageRoot: dir, platform: 'windows', arch: 'x64' })
+			expect(await stat(path.join(runtime, 'DirectML.dll')).catch(() => null)).toBe(null)
+			expect(await stat(path.join(runtime, 'DirectML-License.txt')).catch(() => null)).toBe(null)
+			expect(await stat(path.join(runtime, 'onnxruntime.dll'))).toBeTruthy()
+		} finally {
+			if (prev === undefined) delete process.env.FREENPIPE_BUNDLE_DIRECTML
+			else process.env.FREENPIPE_BUNDLE_DIRECTML = prev
+			await rm(dir, { recursive: true, force: true })
+		}
+	})
+
+	it('maps the staged runtime into the install root and drops the old ONNX Runtime glob', async () => {
+		const conf = JSON.parse(await readFile(path.join(repoRoot, 'apps/screenpipe-app-tauri/src-tauri/tauri.windows.conf.json'), 'utf8'))
+		const resources = conf.bundle.resources
+		expect(resources['bundled\\runtime']).toBe('./')
+		expect(resources['bundled\\vad']).toBe('./vad/')
+		expect(resources['bundled\\models']).toBe('./models/')
+		// onnxruntime.dll comes from bundled/runtime only; a second mapping to
+		// the same install path would make the shipped build ambiguous.
+		expect(Object.keys(resources).filter((k) => k.toLowerCase().includes('onnxruntime'))).toEqual([])
+	})
 })

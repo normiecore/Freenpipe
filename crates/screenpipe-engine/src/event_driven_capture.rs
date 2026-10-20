@@ -22,6 +22,7 @@ use screenpipe_screen::frame_comparison::{FrameComparer, FrameComparisonConfig};
 use screenpipe_screen::monitor::{list_monitors, SafeMonitor};
 use screenpipe_screen::snapshot_writer::SnapshotWriter;
 use screenpipe_screen::utils::capture_monitor_image;
+use screenpipe_screen::CaptureLoopStage;
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
@@ -586,6 +587,12 @@ pub async fn event_driven_capture_loop(
         "event-driven capture started for monitor {} (device: {})",
         monitor_id, device_name
     );
+    // Publishes this loop's current stage for /health (loop_stage); the
+    // monitor is unregistered when the loop returns.
+    let loop_stage = vision_metrics.track_capture_loop(monitor_id);
+    // Carries the frame comparer's thumbnail failures into the shared
+    // metrics, where /health reports them.
+    let mut frame_diff_watch = screenpipe_screen::metrics::FrameDiffWatch::default();
 
     let mut visual_check_enabled = config.visual_check_interval_ms > 0;
     let mut visual_check_interval = Duration::from_millis(config.visual_check_interval_ms);
@@ -690,6 +697,8 @@ pub async fn event_driven_capture_loop(
         state.last_capture = Instant::now()
             .checked_sub(Duration::from_millis(500))
             .unwrap_or(Instant::now()); // allow capture
+        vision_metrics.record_capture_attempt();
+        loop_stage.enter(CaptureLoopStage::Capture);
         match capture_with_timeout(
             CAPTURE_OPERATION_TIMEOUT,
             do_capture(
@@ -737,9 +746,11 @@ pub async fn event_driven_capture_loop(
                 }
             }
             Ok(Err(e)) => {
+                vision_metrics.record_drop_error();
                 warn!("startup capture failed for monitor {}: {}", monitor_id, e);
             }
             Err(_timeout) => {
+                vision_metrics.record_drop_timeout();
                 warn!(
                     "startup capture timed out after {:?} for monitor {}; continuing with live capture loop",
                     CAPTURE_OPERATION_TIMEOUT, monitor_id
@@ -780,6 +791,11 @@ pub async fn event_driven_capture_loop(
         if stop_signal.load(Ordering::Relaxed) {
             info!("event-driven capture stopping for monitor {}", monitor_id);
             break;
+        }
+        vision_metrics.record_capture_loop_heartbeat();
+        loop_stage.enter(CaptureLoopStage::Heartbeat);
+        if let Some(ref comparer) = frame_comparer {
+            frame_diff_watch.observe(&vision_metrics, &comparer.stats());
         }
 
         // Focus-aware gating — always on. Skips or pauses capture on
@@ -834,6 +850,7 @@ pub async fn event_driven_capture_loop(
                     // seeded yet (Active path fills it), this snapshot pass
                     // is still correct — it just might include pixels from
                     // soon-to-be-excluded transient windows.
+                    loop_stage.enter(CaptureLoopStage::WarmWait);
                     let snap = capture_monitor_image(&monitor, &cached_excluded_ids).await;
                     match snap {
                         Ok((image, _)) => {
@@ -877,6 +894,7 @@ pub async fn event_driven_capture_loop(
                     // Block until focus returns. 5s backstop guards against
                     // stuck waiters if a focus event is ever missed.
                     let notify = focus_controller.notify_for(monitor_id);
+                    loop_stage.enter(CaptureLoopStage::ColdWait);
                     tokio::select! {
                         _ = notify.notified() => {}
                         _ = tokio::time::sleep(Duration::from_secs(5)) => {}
@@ -902,6 +920,7 @@ pub async fn event_driven_capture_loop(
             || crate::schedule_monitor::schedule_paused();
 
         if in_pause_state {
+            loop_stage.enter(CaptureLoopStage::PauseGate);
             if should_release_on_pause_entry(was_in_pause_state, in_pause_state) {
                 info!(
                     "monitor {}: entering pause state (locked={}, power_paused={}, drm={}, schedule={}); releasing capture stream",
@@ -1057,6 +1076,7 @@ pub async fn event_driven_capture_loop(
         } else if trigger_channel_closed {
             trigger = state.poll_activity(&activity_feed);
             if trigger.is_none() {
+                loop_stage.enter(CaptureLoopStage::TriggerWait);
                 tokio::time::sleep(poll_interval).await;
             }
         } else {
@@ -1072,6 +1092,7 @@ pub async fn event_driven_capture_loop(
             let mut lagged_force_manual = false;
             let mut closed_now = false;
 
+            loop_stage.enter(CaptureLoopStage::TriggerWait);
             match tokio::time::timeout(poll_interval, trigger_rx.recv()).await {
                 Ok(Ok(msg)) => drained.push(msg),
                 Ok(Err(broadcast::error::RecvError::Lagged(n))) => {
@@ -1190,6 +1211,7 @@ pub async fn event_driven_capture_loop(
                 cached_excluded_ids = fresh_ids;
             }
             if let Some(ref mut comparer) = frame_comparer {
+                loop_stage.enter(CaptureLoopStage::VisualProbe);
                 match capture_monitor_image(&monitor, &cached_excluded_ids).await {
                     Ok((image, _dur)) => {
                         let diff = comparer.compare(&image);
@@ -1288,6 +1310,7 @@ pub async fn event_driven_capture_loop(
                 // if the DB is truly stuck. 15s is generous — normal captures take
                 // 1-3s on debug builds. The semaphore serializes writes so they
                 // don't pile up, but each write still needs time.
+                loop_stage.enter(CaptureLoopStage::Capture);
                 let capture_result = capture_with_timeout(
                     CAPTURE_OPERATION_TIMEOUT,
                     do_capture(
@@ -1418,6 +1441,7 @@ pub async fn event_driven_capture_loop(
                     }
                     Ok(Err(e)) => {
                         consecutive_capture_errors += 1;
+                        vision_metrics.record_drop_error();
 
                         // Mark captured on failure to reset idle timer — without
                         // this, needs_idle_capture() fires every poll tick (50ms)
@@ -1468,6 +1492,7 @@ pub async fn event_driven_capture_loop(
                     }
                     Err(_timeout) => {
                         consecutive_capture_errors += 1;
+                        vision_metrics.record_drop_timeout();
                         state.mark_captured();
                         warn!(
                             "event capture timed out (trigger={}, monitor={}) — DB pool may be saturated",

@@ -26,6 +26,18 @@ pub async fn process_with_whisper(
     whisper_state: &mut WhisperState,
     vocabulary: &[VocabularyEntry],
 ) -> Result<String> {
+    run_whisper(audio, languages, whisper_state, vocabulary)
+}
+
+/// Blocking body of [`process_with_whisper`]. Every error it returns comes
+/// from a whisper.cpp call on `whisper_state` (mel, language detection or
+/// decoding), which is what lets the engine retry a failed GPU run on CPU.
+pub fn run_whisper(
+    audio: &[f32],
+    languages: Vec<Language>,
+    whisper_state: &mut WhisperState,
+    vocabulary: &[VocabularyEntry],
+) -> Result<String> {
     // Pre-check: if audio energy is too low, skip transcription entirely.
     // Whisper hallucinates on silence/near-silence (e.g. "Thank you.", "So, let's go.")
     // and its internal no_speech_prob is unreliable (reports 0.0 on pure silence).

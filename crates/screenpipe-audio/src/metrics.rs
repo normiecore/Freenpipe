@@ -18,6 +18,8 @@ pub struct AudioPipelineMetrics {
     pub chunks_channel_full: AtomicU64,
     /// Device stream timeouts (no audio data received for >30s)
     pub stream_timeouts: AtomicU64,
+    /// Unix timestamp (secs) of the most recent stream timeout (0 = none yet).
+    pub last_stream_timeout_ts: AtomicU64,
 
     // --- VAD stage ---
     /// Chunks that passed VAD (speech_ratio > threshold)
@@ -83,6 +85,7 @@ impl AudioPipelineMetrics {
             chunks_sent: AtomicU64::new(0),
             chunks_channel_full: AtomicU64::new(0),
             stream_timeouts: AtomicU64::new(0),
+            last_stream_timeout_ts: AtomicU64::new(0),
             vad_passed: AtomicU64::new(0),
             vad_rejected: AtomicU64::new(0),
             speech_ratio_sum_x1000: AtomicU64::new(0),
@@ -119,6 +122,11 @@ impl AudioPipelineMetrics {
 
     pub fn record_stream_timeout(&self) {
         self.stream_timeouts.fetch_add(1, Ordering::Relaxed);
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0);
+        self.last_stream_timeout_ts.store(now, Ordering::Relaxed);
     }
 
     // --- Consumer stage ---
@@ -264,6 +272,10 @@ impl AudioPipelineMetrics {
             chunks_sent,
             chunks_channel_full: self.chunks_channel_full.load(Ordering::Relaxed),
             stream_timeouts: self.stream_timeouts.load(Ordering::Relaxed),
+            last_stream_timeout_at: match self.last_stream_timeout_ts.load(Ordering::Relaxed) {
+                0 => None,
+                ts => Some(ts),
+            },
             // Consumer
             chunks_received: self.chunks_received.load(Ordering::Relaxed),
             process_errors: self.process_errors.load(Ordering::Relaxed),
@@ -325,6 +337,9 @@ pub struct AudioMetricsSnapshot {
     pub chunks_sent: u64,
     pub chunks_channel_full: u64,
     pub stream_timeouts: u64,
+    /// Unix timestamp (secs) of the last stream receive timeout; `null` when
+    /// no stream has timed out since the engine started.
+    pub last_stream_timeout_at: Option<u64>,
 
     // Consumer stage
     pub chunks_received: u64,
@@ -363,4 +378,232 @@ pub struct AudioMetricsSnapshot {
     pub last_db_write_ts: u64,
     /// Unix timestamp (secs) of most recent transcription attempt (heartbeat)
     pub last_transcription_attempt_ts: u64,
+}
+
+// --- Model / runtime component health ------------------------------------
+
+/// Audio runtime pieces whose initialisation can fail independently. Their
+/// states are reported on `/health` under `runtime`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum ModelComponent {
+    Transcription,
+    Vad,
+    SpeakerSegmentation,
+    SpeakerEmbedding,
+}
+
+impl ModelComponent {
+    pub const ALL: [ModelComponent; 4] = [
+        Self::Transcription,
+        Self::Vad,
+        Self::SpeakerSegmentation,
+        Self::SpeakerEmbedding,
+    ];
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Transcription => "transcription",
+            Self::Vad => "vad",
+            Self::SpeakerSegmentation => "speaker_segmentation",
+            Self::SpeakerEmbedding => "speaker_embedding",
+        }
+    }
+}
+
+/// Initialisation state of a [`ModelComponent`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ComponentState {
+    /// Loaded and usable.
+    Ok,
+    /// Loading returned an error or panicked.
+    InitFailed,
+    /// Loading did not finish within its watchdog deadline.
+    InitTimedOut,
+    /// The model file or runtime library is not installed.
+    Missing,
+    /// Not needed with the current settings (audio off, engine without it).
+    NotRequired,
+    /// Works, but on a fallback path (for example CPU after a GPU failure).
+    Degraded,
+    /// Nothing has been reported yet.
+    Unknown,
+}
+
+impl ComponentState {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Ok => "ok",
+            Self::InitFailed => "init_failed",
+            Self::InitTimedOut => "init_timed_out",
+            Self::Missing => "missing",
+            Self::NotRequired => "not_required",
+            Self::Degraded => "degraded",
+            Self::Unknown => "unknown",
+        }
+    }
+
+    /// True for states that mean the feature behind the component is not
+    /// working as configured.
+    pub fn is_problem(self) -> bool {
+        matches!(
+            self,
+            Self::InitFailed | Self::InitTimedOut | Self::Missing | Self::Degraded
+        )
+    }
+}
+
+static MODEL_COMPONENT_STATES: std::sync::LazyLock<
+    RwLock<HashMap<ModelComponent, ComponentState>>,
+> = std::sync::LazyLock::new(|| RwLock::new(HashMap::new()));
+
+/// Publish the state of an audio model component. Model loaders (and their
+/// init watchdogs) call this after each load attempt; the last report wins.
+pub fn report_model_component(component: ModelComponent, state: ComponentState) {
+    if let Ok(mut states) = MODEL_COMPONENT_STATES.write() {
+        states.insert(component, state);
+    }
+}
+
+/// The last reported state of `component`, if any loader has reported one.
+pub fn model_component_state(component: ModelComponent) -> Option<ComponentState> {
+    MODEL_COMPONENT_STATES
+        .read()
+        .ok()
+        .and_then(|states| states.get(&component).copied())
+}
+
+// --- System-audio (output) capture backend ---------------------------------
+
+/// How a system-audio (output) device stream is being recorded.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum OutputCaptureBackend {
+    /// The platform's own system-audio backend: the WASAPI loopback engine
+    /// on Windows, the process tap on macOS. Per-app exclusions apply.
+    Native,
+    /// The generic cpal stream, because the native backend failed to start
+    /// this stream.
+    FallbackAfterError,
+    /// The generic cpal stream, because the native backend failed several
+    /// times for this device recently and is skipped until that ages out.
+    FallbackAfterRepeatedErrors,
+}
+
+impl OutputCaptureBackend {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Native => "native",
+            Self::FallbackAfterError => "fallback_after_error",
+            Self::FallbackAfterRepeatedErrors => "fallback_after_repeated_errors",
+        }
+    }
+
+    /// True when the stream runs on the generic fallback rather than the
+    /// native backend.
+    pub fn is_fallback(self) -> bool {
+        !matches!(self, Self::Native)
+    }
+}
+
+/// Last backend reported per output device, keyed by the device's display
+/// name (`"<name> (output)"`, as the audio manager lists it).
+static OUTPUT_CAPTURE_BACKENDS: std::sync::LazyLock<RwLock<HashMap<String, OutputCaptureBackend>>> =
+    std::sync::LazyLock::new(|| RwLock::new(HashMap::new()));
+
+/// Record which backend a newly started output stream uses. Called by the
+/// stream builder each time it opens a system-audio stream; the last report
+/// per device wins.
+pub fn report_output_capture_backend(device: &str, backend: OutputCaptureBackend) {
+    if let Ok(mut map) = OUTPUT_CAPTURE_BACKENDS.write() {
+        map.insert(device.to_string(), backend);
+    }
+}
+
+/// The backend the latest stream for `device` was opened with, if any was
+/// reported. Entries are not removed when a device stops, so readers should
+/// only ask about devices that are recording.
+pub fn output_capture_backend(device: &str) -> Option<OutputCaptureBackend> {
+    OUTPUT_CAPTURE_BACKENDS
+        .read()
+        .ok()
+        .and_then(|map| map.get(device).copied())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn output_backend_reports_keep_the_latest_per_device() {
+        let device = "W2-13 test speakers (output)";
+        assert_eq!(output_capture_backend(device), None);
+        report_output_capture_backend(device, OutputCaptureBackend::FallbackAfterError);
+        assert_eq!(
+            output_capture_backend(device),
+            Some(OutputCaptureBackend::FallbackAfterError)
+        );
+        report_output_capture_backend(device, OutputCaptureBackend::Native);
+        assert_eq!(
+            output_capture_backend(device),
+            Some(OutputCaptureBackend::Native)
+        );
+        assert!(!OutputCaptureBackend::Native.is_fallback());
+        assert!(OutputCaptureBackend::FallbackAfterRepeatedErrors.is_fallback());
+        assert_eq!(
+            OutputCaptureBackend::FallbackAfterRepeatedErrors.as_str(),
+            "fallback_after_repeated_errors"
+        );
+    }
+
+    #[test]
+    fn stream_timeout_records_when_it_happened() {
+        let m = AudioPipelineMetrics::new();
+        assert_eq!(m.snapshot().last_stream_timeout_at, None);
+        m.record_stream_timeout();
+        let s = m.snapshot();
+        assert_eq!(s.stream_timeouts, 1);
+        let at = s.last_stream_timeout_at.expect("timestamp after a timeout");
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+        assert!(at <= now && now - at < 5);
+    }
+
+    #[test]
+    fn snapshot_serialises_last_stream_timeout_at_next_to_the_counter() {
+        let text = serde_json::to_string(&AudioPipelineMetrics::new().snapshot()).unwrap();
+        let counter = text.find("\"stream_timeouts\":").unwrap();
+        let at = text.find("\"last_stream_timeout_at\":null").unwrap();
+        let next = text.find("\"chunks_received\":").unwrap();
+        assert!(counter < at && at < next);
+    }
+
+    #[test]
+    fn model_component_reports_round_trip() {
+        assert_eq!(
+            ModelComponent::ALL.map(|c| c.as_str()),
+            [
+                "transcription",
+                "vad",
+                "speaker_segmentation",
+                "speaker_embedding"
+            ]
+        );
+        report_model_component(
+            ModelComponent::SpeakerEmbedding,
+            ComponentState::InitTimedOut,
+        );
+        assert_eq!(
+            model_component_state(ModelComponent::SpeakerEmbedding),
+            Some(ComponentState::InitTimedOut)
+        );
+        report_model_component(ModelComponent::SpeakerEmbedding, ComponentState::Ok);
+        assert_eq!(
+            model_component_state(ModelComponent::SpeakerEmbedding),
+            Some(ComponentState::Ok)
+        );
+        assert!(ComponentState::InitFailed.is_problem());
+        assert!(!ComponentState::NotRequired.is_problem());
+        assert_eq!(ComponentState::InitTimedOut.as_str(), "init_timed_out");
+    }
 }

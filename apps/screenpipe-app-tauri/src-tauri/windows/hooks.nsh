@@ -11,6 +11,25 @@
 !macroend
 
 !macro NSIS_HOOK_POSTUNINSTALL
+  ; Files the app can write inside its own install directory at run time:
+  ; crash dumps, and the frame index and model files an engine writes when it
+  ; runs with the install directory as its working directory. The uninstaller
+  ; removes only the files it installed, so these would keep the folders (and
+  ; the install directory) alive. Only named files are deleted and folders are
+  ; removed only when empty, in case the install directory is a shared one.
+  RMDir /r "$INSTDIR\crash-dumps"
+  Delete "$INSTDIR\frames\cache_index.bin"
+  RMDir "$INSTDIR\frames"
+  Delete "$INSTDIR\vad\silero_vad_v5.onnx"
+  Delete "$INSTDIR\vad\silero_vad_v5.onnx.downloading"
+  RMDir "$INSTDIR\vad"
+  Delete "$INSTDIR\models\segmentation-3.0.onnx"
+  Delete "$INSTDIR\models\segmentation-3.0.onnx.downloading"
+  Delete "$INSTDIR\models\wespeaker_en_voxceleb_CAM++.onnx"
+  Delete "$INSTDIR\models\wespeaker_en_voxceleb_CAM++.onnx.downloading"
+  RMDir "$INSTDIR\models\pyannote"
+  RMDir "$INSTDIR\models"
+  RMDir "$INSTDIR"
   ; Clean up the runtime-downloaded PortableGit (bash for AI chat). The folder
   ; keeps screenpipe's name on purpose (shared data layout, decision 1); the
   ; chat re-downloads it on demand.

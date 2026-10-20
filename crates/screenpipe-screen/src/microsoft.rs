@@ -43,7 +43,17 @@ pub async fn perform_ocr_windows(
 
     let bitmap = decoder.GetSoftwareBitmapAsync()?.get()?;
 
-    let (engine, recognizer_language) = create_windows_ocr_engine(languages)?;
+    let (engine, recognizer_language) = match create_windows_ocr_engine(languages) {
+        Ok(created) => {
+            crate::metrics::set_ocr_engine_available(true);
+            created
+        }
+        Err(e) => {
+            // Reported on /health as vision_reason=ocr_unavailable.
+            crate::metrics::set_ocr_engine_available(false);
+            return Err(e);
+        }
+    };
     tracing::debug!(
         "windows OCR using recognizer language: {}",
         recognizer_language

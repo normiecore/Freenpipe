@@ -310,9 +310,30 @@ async fn fresh_database_has_the_target_schema() {
     side.close().await.unwrap();
 }
 
+/// Register sqlite-vec for every new SQLite connection in this process, as
+/// `DatabaseManager::new` does. The raw pool below runs base migrations that
+/// call `vec_length`, so it must not depend on another test having opened a
+/// `DatabaseManager` first.
+fn register_sqlite_vec() {
+    static ONCE: std::sync::Once = std::sync::Once::new();
+    ONCE.call_once(|| unsafe {
+        type ExtensionInit = unsafe extern "C" fn(
+            *mut libsqlite3_sys::sqlite3,
+            *mut *mut std::os::raw::c_char,
+            *const libsqlite3_sys::sqlite3_api_routines,
+        ) -> std::os::raw::c_int;
+        libsqlite3_sys::sqlite3_auto_extension(Some(
+            std::mem::transmute::<*const (), ExtensionInit>(
+                sqlite_vec::sqlite3_vec_init as *const (),
+            ),
+        ));
+    });
+}
+
 /// A database at the base schema (upstream 892199f): the 89 base migrations
 /// with the checksums the base recorded.
 async fn create_base_schema_database(path: &Path) {
+    register_sqlite_vec();
     let base: Vec<_> = schema_migrations::migrator()
         .iter()
         .filter(|m| upstream_checksum(m.version).is_none())
