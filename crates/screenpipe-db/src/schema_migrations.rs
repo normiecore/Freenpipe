@@ -27,6 +27,8 @@
 use std::borrow::Cow;
 
 use sqlx::migrate::Migrator;
+use sqlx::SqlitePool;
+use tracing::debug;
 
 /// Newest migration of the base (upstream 892199f) schema.
 pub const BASE_SCHEMA_VERSION: i64 = 20260603120000;
@@ -39,6 +41,20 @@ pub const FRAMES_FTS_EXTERNAL_CONTENT_VERSION: i64 = 20260415000000;
 
 /// Folds `ocr_text` into `frames` and drops it (slow on big databases).
 pub const OCR_TEXT_RETIREMENT_VERSION: i64 = 20260613130000;
+
+/// Migrations that rewrite every frame row, each with the notice logged
+/// before it runs on a database that already holds frames.
+pub const SLOW_MIGRATION_NOTICES: &[(i64, &str)] = &[
+    (
+        FRAMES_FTS_EXTERNAL_CONTENT_VERSION,
+        "migrating frames_fts search index, this may take a few minutes on large databases...",
+    ),
+    (
+        OCR_TEXT_RETIREMENT_VERSION,
+        "moving OCR text and word boxes from the retired ocr_text table onto frames, \
+         this may take a few minutes on large databases...",
+    ),
+];
 
 /// A migration of the v2.7.104 schema as screenpipe records it in
 /// `_sqlx_migrations`.
@@ -224,6 +240,68 @@ pub fn migrator() -> Migrator {
     migrator
 }
 
+/// The notices of `SLOW_MIGRATION_NOTICES` that apply before `migrator` runs
+/// on `pool`: the migration is embedded, not applied yet, and there are frames
+/// for it to work through.
+pub async fn pending_slow_migration_notices(
+    pool: &SqlitePool,
+    migrator: &Migrator,
+) -> Vec<&'static str> {
+    let mut notices = Vec::new();
+    for (version, notice) in SLOW_MIGRATION_NOTICES {
+        if migrator.version_exists(*version) && pending_with_frames(pool, *version).await {
+            notices.push(*notice);
+        }
+    }
+    notices
+}
+
+/// True when `version` has not been applied yet and the database already
+/// holds frames. A database with frames but no migrations table (a very old
+/// schema) counts as pending. A query error, which includes a fresh database
+/// without a `frames` table, means no notice.
+async fn pending_with_frames(pool: &SqlitePool, version: i64) -> bool {
+    match sqlx::query_scalar::<_, i64>("SELECT 1 FROM frames LIMIT 1")
+        .fetch_optional(pool)
+        .await
+    {
+        Ok(Some(_)) => {}
+        Ok(None) => return false,
+        Err(e) => {
+            debug!("could not inspect existing frames before migrate: {}", e);
+            return false;
+        }
+    }
+
+    let has_migrations_table = match sqlx::query_scalar::<_, i64>(
+        "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = '_sqlx_migrations'",
+    )
+    .fetch_one(pool)
+    .await
+    {
+        Ok(count) => count > 0,
+        Err(e) => {
+            debug!("could not inspect _sqlx_migrations before migrate: {}", e);
+            return false;
+        }
+    };
+    if !has_migrations_table {
+        return true;
+    }
+
+    match sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM _sqlx_migrations WHERE version = ?")
+        .bind(version)
+        .fetch_one(pool)
+        .await
+    {
+        Ok(count) => count == 0,
+        Err(e) => {
+            debug!("could not inspect applied migrations before migrate: {}", e);
+            false
+        }
+    }
+}
+
 /// Decodes the checksum table's hex. The table is a compile-time constant
 /// checked by the tests below, so malformed input is a programming error.
 fn decode_hex(hex: &str) -> Vec<u8> {
@@ -283,6 +361,73 @@ mod tests {
                 upstream.version
             );
         }
+    }
+
+    async fn memory_pool() -> SqlitePool {
+        sqlx::sqlite::SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .unwrap()
+    }
+
+    async fn exec(pool: &SqlitePool, sql: &'static str) {
+        sqlx::raw_sql(sql).execute(pool).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn no_slow_migration_notice_for_a_fresh_database() {
+        let pool = memory_pool().await;
+        assert!(pending_slow_migration_notices(&pool, &migrator())
+            .await
+            .is_empty());
+    }
+
+    #[tokio::test]
+    async fn no_slow_migration_notice_without_frames() {
+        let pool = memory_pool().await;
+        exec(&pool, "CREATE TABLE frames (id INTEGER PRIMARY KEY)").await;
+        assert!(pending_slow_migration_notices(&pool, &migrator())
+            .await
+            .is_empty());
+    }
+
+    #[tokio::test]
+    async fn slow_migration_notices_follow_the_applied_versions() {
+        let pool = memory_pool().await;
+        exec(
+            &pool,
+            "CREATE TABLE frames (id INTEGER PRIMARY KEY); INSERT INTO frames (id) VALUES (1);",
+        )
+        .await;
+        let migrator = migrator();
+
+        // Frames but no bookkeeping table: a very old schema, both pending.
+        assert_eq!(
+            pending_slow_migration_notices(&pool, &migrator).await,
+            vec![SLOW_MIGRATION_NOTICES[0].1, SLOW_MIGRATION_NOTICES[1].1]
+        );
+
+        // A base-schema database: the FTS rebuild is done, the ocr_text fold is not.
+        exec(
+            &pool,
+            "CREATE TABLE _sqlx_migrations (version BIGINT PRIMARY KEY); \
+             INSERT INTO _sqlx_migrations (version) VALUES (20260415000000);",
+        )
+        .await;
+        let notices = pending_slow_migration_notices(&pool, &migrator).await;
+        assert_eq!(notices, vec![SLOW_MIGRATION_NOTICES[1].1]);
+        assert!(notices[0].contains("ocr_text"));
+
+        // Fully migrated: nothing to announce.
+        exec(
+            &pool,
+            "INSERT INTO _sqlx_migrations (version) VALUES (20260613130000);",
+        )
+        .await;
+        assert!(pending_slow_migration_notices(&pool, &migrator)
+            .await
+            .is_empty());
     }
 
     #[test]

@@ -48,20 +48,6 @@ const DEDUP_TIME_WINDOW_SECS: i64 = 45;
 /// Higher = stricter matching, lower = more aggressive deduplication.
 const DEDUP_SIMILARITY_THRESHOLD: f64 = 0.85;
 
-/// Migrations that rewrite every frame row, with the notice logged before they
-/// run (see `log_pending_slow_migrations`).
-const SLOW_MIGRATION_NOTICES: &[(i64, &str)] = &[
-    (
-        crate::schema_migrations::FRAMES_FTS_EXTERNAL_CONTENT_VERSION,
-        "migrating frames_fts search index, this may take a few minutes on large databases...",
-    ),
-    (
-        crate::schema_migrations::OCR_TEXT_RETIREMENT_VERSION,
-        "moving OCR text and word boxes from the retired ocr_text table onto frames, \
-         this may take a few minutes on large databases...",
-    ),
-];
-
 /// User explicitly stopped a meeting (stop button in UI / stop API).
 /// Auto-merge MUST NOT reopen these — a new detected meeting in the same
 /// app should get its own row, even within the 120s merge window.
@@ -495,64 +481,9 @@ impl DatabaseManager {
     /// Log a notice before migrations that rewrite every frame row, so a long
     /// pause on a big database reads as progress rather than a hang.
     async fn log_pending_slow_migrations(pool: &SqlitePool, migrator: &sqlx::migrate::Migrator) {
-        for (version, notice) in SLOW_MIGRATION_NOTICES {
-            if !migrator.version_exists(*version) {
-                continue;
-            }
-            if Self::migration_pending_with_frames(pool, *version).await {
-                info!("{}", notice);
-            }
-        }
-    }
-
-    /// True when `version` has not been applied yet and the database already
-    /// holds frames for it to work through. A database without a migrations
-    /// table but with frames (a very old schema) counts as pending. Any query
-    /// error, including a fresh database without a `frames` table, means no
-    /// notice.
-    async fn migration_pending_with_frames(pool: &SqlitePool, version: i64) -> bool {
-        let has_frames = match sqlx::query_scalar::<_, i64>("SELECT 1 FROM frames LIMIT 1")
-            .fetch_optional(pool)
-            .await
+        for notice in crate::schema_migrations::pending_slow_migration_notices(pool, migrator).await
         {
-            Ok(row) => row.is_some(),
-            Err(e) => {
-                debug!("could not inspect existing frames before migrate: {}", e);
-                return false;
-            }
-        };
-        if !has_frames {
-            return false;
-        }
-
-        let migration_table_exists = match sqlx::query_scalar::<_, i64>(
-            "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = '_sqlx_migrations'",
-        )
-        .fetch_one(pool)
-        .await
-        {
-            Ok(count) => count > 0,
-            Err(e) => {
-                debug!("could not inspect _sqlx_migrations before migrate: {}", e);
-                return false;
-            }
-        };
-        if !migration_table_exists {
-            return true;
-        }
-
-        match sqlx::query_scalar::<_, i64>(
-            "SELECT COUNT(*) FROM _sqlx_migrations WHERE version = ?",
-        )
-        .bind(version)
-        .fetch_one(pool)
-        .await
-        {
-            Ok(count) => count == 0,
-            Err(e) => {
-                debug!("could not inspect applied migrations before migrate: {}", e);
-                false
-            }
+            info!("{}", notice);
         }
     }
 

@@ -23,7 +23,7 @@ mod tests {
         let db = DatabaseManager::new("sqlite::memory:", Default::default())
             .await
             .unwrap();
-        sqlx::migrate!("./src/migrations")
+        screenpipe_db::schema_migrations::migrator()
             .run(&db.pool)
             .await
             .expect("migrations");

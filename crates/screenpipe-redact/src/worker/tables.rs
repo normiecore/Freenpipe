@@ -46,7 +46,9 @@ use sqlx::{Row, SqlitePool};
 #[serde(rename_all = "snake_case")]
 pub enum TargetTable {
     /// Searchable screen text (`frames.full_text`), stamped in
-    /// `frames.full_text_redacted_at`.
+    /// `frames.full_text_redacted_at`. Still accepts `ocr`, the name this
+    /// surface had while OCR text lived in a table of its own.
+    #[serde(alias = "ocr")]
     FullText,
     /// Speech-to-text (`audio_transcriptions.transcription`).
     AudioTranscription,
@@ -420,5 +422,15 @@ mod full_text_surface_tests {
         for t in ALL_TARGET_TABLES {
             assert_ne!(t.table(), "ocr_text", "{}", t.label());
         }
+    }
+
+    #[test]
+    fn legacy_ocr_name_still_selects_the_full_text_surface() {
+        use serde::de::{value::Error, Deserialize, IntoDeserializer};
+        let parse = |name: &str| TargetTable::deserialize(name.into_deserializer());
+        let legacy: Result<TargetTable, Error> = parse("ocr");
+        assert_eq!(legacy.unwrap(), TargetTable::FullText);
+        let current: Result<TargetTable, Error> = parse("full_text");
+        assert_eq!(current.unwrap(), TargetTable::FullText);
     }
 }

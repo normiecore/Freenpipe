@@ -20,7 +20,7 @@ mod tests {
             .unwrap();
 
         // Run all migrations with better error handling
-        match sqlx::migrate!("./src/migrations").run(&db.pool).await {
+        match screenpipe_db::schema_migrations::migrator().run(&db.pool).await {
             Ok(_) => {
                 tracing::debug!("Database migrations completed successfully");
             }

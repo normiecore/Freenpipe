@@ -26,7 +26,7 @@ async fn fresh_db() -> Arc<DatabaseManager> {
     let db = DatabaseManager::new("sqlite::memory:", Default::default())
         .await
         .unwrap();
-    sqlx::migrate!("../screenpipe-db/src/migrations")
+    screenpipe_db::schema_migrations::migrator()
         .run(&db.pool)
         .await
         .unwrap();

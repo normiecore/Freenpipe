@@ -23,7 +23,7 @@ mod query_plan_tests {
             .await
             .unwrap();
 
-        sqlx::migrate!("./src/migrations")
+        screenpipe_db::schema_migrations::migrator()
             .run(&db.pool)
             .await
             .expect("Failed to run migrations");
