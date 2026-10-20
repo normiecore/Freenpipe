@@ -9,6 +9,7 @@ pub mod text_similarity;
 mod types;
 mod video_db;
 pub mod write_queue;
+pub mod write_queue_health;
 
 // Per-feature `impl DatabaseManager` blocks; see ext/mod.rs.
 pub mod ext;

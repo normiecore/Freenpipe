@@ -416,6 +416,14 @@ impl SCServer {
             }
         });
 
+        // Health v2 inputs: the 5 s recording-coverage ticker (runs even with
+        // vision disabled; local counters only, never sent anywhere), a
+        // one-shot ffmpeg/ffprobe probe, and the power profile that
+        // `/health` reads for `vision_reason`.
+        crate::recording_coverage::start_coverage_ticker(self.vision_metrics.clone());
+        crate::routes::health::spawn_dependency_probe();
+        crate::routes::health::install_power_source(self.power_manager.clone());
+
         // Use pre-set hot frame cache or create a new one, then warm from DB.
         // Spawn warm_from_db in the background — the cache starts empty but fills
         // within seconds. This avoids blocking server start for 40+ seconds on large DBs.
