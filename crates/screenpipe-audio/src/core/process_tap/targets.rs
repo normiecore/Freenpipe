@@ -656,9 +656,11 @@ impl UntappableRoots {
             .collect()
     }
 
-    /// A tap on `pid` works: a later failure starts from the base delay.
+    /// A tap on `pid` works: a later failure starts from the base delay and is
+    /// reported again, since it is a new outage.
     pub fn note_tapped(&mut self, pid: u32) {
         self.failing.remove(&pid);
+        self.reported.remove(&pid);
     }
 
     /// Forgets roots that are no longer running, so a relaunched app (new
@@ -1161,12 +1163,13 @@ mod tests {
             assert!(!u.is_blocked(100, at));
         }
 
-        // A tap that works resets the delay but not the report.
+        // A tap that works resets the delay, and the next outage is reported again.
         u.note_tapped(100);
         assert!(!u.is_blocked(100, at));
         let again = u.mark(100, at);
-        assert!(!again.first);
+        assert!(again.first);
         assert_eq!(again.retry_in, secs(60));
+        assert!(!u.mark(100, at + secs(60)).first);
 
         // Other roots are independent.
         assert!(!u.is_blocked(200, at));
