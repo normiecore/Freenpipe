@@ -8683,9 +8683,12 @@ LIMIT ? OFFSET ?
         };
 
         if tables.contains(&"meeting_transcript_segments") {
-            outcome.old_segment_assignments =
-                Self::move_chunk_meeting_segments(&mut **tx.conn(), audio_chunk_id, target_speaker_id)
-                    .await?;
+            outcome.old_segment_assignments = Self::move_chunk_meeting_segments(
+                &mut **tx.conn(),
+                audio_chunk_id,
+                target_speaker_id,
+            )
+            .await?;
         }
 
         tx.commit().await?;

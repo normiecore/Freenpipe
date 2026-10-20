@@ -9,7 +9,7 @@ use axum::{
 };
 use oasgen::{oasgen, OaSchema};
 
-use screenpipe_db::{Speaker, SpeakerReassignScope};
+use screenpipe_db::{DatabaseManager, Speaker, SpeakerReassignScope};
 
 use super::search::{default_speaker_ids, from_comma_separated_array};
 use crate::server::AppState;
@@ -607,15 +607,21 @@ fn decode_chunk_audio(path: &std::path::Path) -> anyhow::Result<(Vec<f32>, u32)>
     }
 }
 
-async fn build_speaker_sample(
-    state: &AppState,
+/// Everything the sample route does short of HTTP: validate the window, look
+/// up the chunk, decode its file with `decode` (off the async runtime), cut
+/// the clip and encode it as WAV.
+async fn build_speaker_sample<D>(
+    db: &DatabaseManager,
     audio_chunk_id: i64,
     query: SpeakerSampleQuery,
-) -> Result<Vec<u8>, SampleError> {
+    decode: D,
+) -> Result<Vec<u8>, SampleError>
+where
+    D: FnOnce(&std::path::Path) -> anyhow::Result<(Vec<f32>, u32)> + Send + 'static,
+{
     let (start, end) = validate_sample_window(query.start, query.end)?;
 
-    let file_path = state
-        .db
+    let file_path = db
         .get_audio_chunk_file_path(audio_chunk_id)
         .await
         .map_err(|e| {
@@ -635,7 +641,7 @@ async fn build_speaker_sample(
         ));
     }
 
-    let (samples, sample_rate) = tokio::task::spawn_blocking(move || decode_chunk_audio(&path))
+    let (samples, sample_rate) = tokio::task::spawn_blocking(move || decode(&path))
         .await
         .map_err(|e| {
             SampleError::new(
@@ -661,7 +667,13 @@ pub(crate) async fn get_speaker_sample_handler(
     Path(audio_chunk_id): Path<i64>,
     Query(query): Query<SpeakerSampleQuery>,
 ) -> Response {
-    match build_speaker_sample(&state, audio_chunk_id, query).await {
+    sample_response(
+        build_speaker_sample(&state.db, audio_chunk_id, query, decode_chunk_audio).await,
+    )
+}
+
+fn sample_response(result: Result<Vec<u8>, SampleError>) -> Response {
+    match result {
         Ok(wav) => (
             StatusCode::OK,
             [
@@ -778,14 +790,8 @@ mod sample_tests {
         assert_eq!(u32::from_le_bytes(wav[4..8].try_into().unwrap()), 36 + 10);
         assert_eq!(u16::from_le_bytes(wav[20..22].try_into().unwrap()), 1); // PCM
         assert_eq!(u16::from_le_bytes(wav[22..24].try_into().unwrap()), 1); // mono
-        assert_eq!(
-            u32::from_le_bytes(wav[24..28].try_into().unwrap()),
-            16_000
-        );
-        assert_eq!(
-            u32::from_le_bytes(wav[28..32].try_into().unwrap()),
-            32_000
-        );
+        assert_eq!(u32::from_le_bytes(wav[24..28].try_into().unwrap()), 16_000);
+        assert_eq!(u32::from_le_bytes(wav[28..32].try_into().unwrap()), 32_000);
         assert_eq!(u16::from_le_bytes(wav[34..36].try_into().unwrap()), 16);
         assert_eq!(&wav[36..40], b"data");
         assert_eq!(u32::from_le_bytes(wav[40..44].try_into().unwrap()), 10);
@@ -815,6 +821,108 @@ mod sample_tests {
         .unwrap();
         assert_eq!(chunk.scope, SpeakerReassignScope::Chunk);
         assert!(!chunk.propagate_similar);
+    }
+
+    async fn db_with_chunk(path: &str) -> (DatabaseManager, i64) {
+        let db = DatabaseManager::new("sqlite::memory:", Default::default())
+            .await
+            .unwrap();
+        let chunk = db.insert_audio_chunk(path, None).await.unwrap();
+        (db, chunk)
+    }
+
+    fn header_u32(wav: &[u8], at: usize) -> u32 {
+        u32::from_le_bytes(wav[at..at + 4].try_into().unwrap())
+    }
+
+    #[tokio::test]
+    async fn sample_route_cuts_a_clip_from_a_chunk_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("mic_chunk.wav");
+        // Three seconds of a 440 Hz tone at 16 kHz, written as a real file.
+        let tone: Vec<f32> = (0..48_000)
+            .map(|i| (i as f32 * 440.0 * std::f32::consts::TAU / 16_000.0).sin() * 0.5)
+            .collect();
+        std::fs::write(&path, encode_wav_pcm16(&tone, 16_000)).unwrap();
+        let (db, chunk) = db_with_chunk(path.to_str().unwrap()).await;
+
+        // Decode with the built-in decoder so the test needs no ffmpeg.
+        let wav = build_speaker_sample(
+            &db,
+            chunk,
+            SpeakerSampleQuery {
+                start: Some(0.5),
+                end: Some(2.0),
+            },
+            |p: &std::path::Path| screenpipe_audio::pcm_decode(p),
+        )
+        .await
+        .unwrap();
+        assert_eq!(&wav[0..4], b"RIFF");
+        assert_eq!(header_u32(&wav, 24), 16_000);
+        assert_eq!(header_u32(&wav, 40), 24_000 * 2, "1.5 s of 16-bit mono");
+
+        let response = sample_response(Ok(wav));
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(response.headers()[header::CONTENT_TYPE], "audio/wav");
+        assert_eq!(
+            response.headers()[header::CACHE_CONTROL],
+            "private, max-age=3600"
+        );
+    }
+
+    #[tokio::test]
+    async fn sample_route_maps_failures_to_client_errors() {
+        let never_decode = |_: &std::path::Path| -> anyhow::Result<(Vec<f32>, u32)> {
+            panic!("decoder must not run for a rejected request")
+        };
+        let window = |start: f64, end: f64| SpeakerSampleQuery {
+            start: Some(start),
+            end: Some(end),
+        };
+
+        let (db, chunk) = db_with_chunk("/does/not/exist.mp4").await;
+        let bad_window = build_speaker_sample(&db, chunk, window(2.0, 2.0), never_decode)
+            .await
+            .unwrap_err();
+        assert_eq!(bad_window.status, StatusCode::BAD_REQUEST);
+        let missing_chunk = build_speaker_sample(&db, chunk + 100, window(0.0, 2.0), never_decode)
+            .await
+            .unwrap_err();
+        assert_eq!(missing_chunk.status, StatusCode::NOT_FOUND);
+        assert_eq!(missing_chunk.message, "audio chunk not found");
+        let missing_file = build_speaker_sample(&db, chunk, window(0.0, 2.0), never_decode)
+            .await
+            .unwrap_err();
+        assert_eq!(missing_file.status, StatusCode::UNPROCESSABLE_ENTITY);
+
+        let (db, cloud) = db_with_chunk("cloud://bucket/chunk.mp4").await;
+        let cloud_only = build_speaker_sample(&db, cloud, window(0.0, 2.0), never_decode)
+            .await
+            .unwrap_err();
+        assert_eq!(cloud_only.status, StatusCode::UNPROCESSABLE_ENTITY);
+
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("broken.mp4");
+        std::fs::write(&path, b"not audio").unwrap();
+        let (db, broken) = db_with_chunk(path.to_str().unwrap()).await;
+        let decode_failed =
+            build_speaker_sample(&db, broken, window(0.0, 2.0), |_: &std::path::Path| {
+                Err(anyhow::anyhow!("corrupt file"))
+            })
+            .await
+            .unwrap_err();
+        assert_eq!(decode_failed.status, StatusCode::INTERNAL_SERVER_ERROR);
+        let past_end =
+            build_speaker_sample(&db, broken, window(5.0, 6.0), |_: &std::path::Path| {
+                Ok((vec![0.0; 16_000], 16_000))
+            })
+            .await
+            .unwrap_err();
+        assert_eq!(past_end.status, StatusCode::UNPROCESSABLE_ENTITY);
+
+        let response = sample_response(Err(past_end));
+        assert_eq!(response.status(), StatusCode::UNPROCESSABLE_ENTITY);
     }
 
     #[test]
