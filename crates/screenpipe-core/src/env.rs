@@ -122,7 +122,10 @@ pub const SCREENPIPE_DEPLOYMENT_ID: &str = "SCREENPIPE_DEPLOYMENT_ID";
 // Capture, media and models
 // ---------------------------------------------------------------------------
 
-/// Set to a false value to turn DirectML acceleration off.
+/// DirectML for the ONNX Parakeet engine (Windows). Unset or empty:
+/// automatic, DirectML when an adapter qualifies and a `DirectML.dll` sits
+/// next to the executable. `1` or `true`: on, also with the System32
+/// `DirectML.dll`. Any other value: CPU.
 pub const SCREENPIPE_DIRECTML: &str = "SCREENPIPE_DIRECTML";
 /// Encoder for snapshot compaction: `software`, `hardware`, or a named ffmpeg
 /// encoder; anything else falls back to the default probe order.
