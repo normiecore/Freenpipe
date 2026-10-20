@@ -124,10 +124,10 @@ async fn simulated_split_search(pool: &sqlx::SqlitePool, query: &str) -> HashSet
     let rows = sqlx::query(
         "SELECT id AS frame_id, full_text AS text FROM frames WHERE LOWER(full_text) LIKE ?",
     )
-        .bind(&pattern)
-        .fetch_all(pool)
-        .await
-        .unwrap_or_default();
+    .bind(&pattern)
+    .fetch_all(pool)
+    .await
+    .unwrap_or_default();
 
     let query_lower = query.to_lowercase();
 

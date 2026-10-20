@@ -276,7 +276,10 @@ async fn stored_checksums_match_files_or_pinned_upstream_values() {
              migrated by an earlier sqlx would need a checksum repair"
         );
     }
-    assert_eq!(pinned, 28, "every v2.7.104 version carries a pinned checksum");
+    assert_eq!(
+        pinned, 28,
+        "every v2.7.104 version carries a pinned checksum"
+    );
 }
 
 /// The same guarantees, shown on the bare sqlx `Migrator` with migrations read

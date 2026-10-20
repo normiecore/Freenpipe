@@ -69,9 +69,7 @@ mod tests {
             .await
             .unwrap();
 
-        db.insert_ocr_text(frame_id, ocr_text, "[]")
-            .await
-            .unwrap();
+        db.insert_ocr_text(frame_id, ocr_text, "[]").await.unwrap();
 
         frame_id
     }

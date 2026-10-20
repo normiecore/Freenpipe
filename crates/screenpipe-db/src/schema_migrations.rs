@@ -51,8 +51,8 @@ pub const SLOW_MIGRATION_NOTICES: &[(i64, &str)] = &[
     ),
     (
         OCR_TEXT_RETIREMENT_VERSION,
-        "moving OCR text and word boxes from the retired ocr_text table onto frames, \
-         this may take a few minutes on large databases...",
+        "folding the retired ocr_text table (OCR text and word boxes) into frames; \
+         with a long capture history this step can run for several minutes...",
     ),
 ];
 

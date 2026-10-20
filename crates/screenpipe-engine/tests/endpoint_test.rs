@@ -525,13 +525,9 @@ mod tests {
             .unwrap();
 
         // insert ocr and audio data
-        db.insert_ocr_text(
-            frame_id1,
-            "old ocr text",
-            "",
-        )
-        .await
-        .unwrap();
+        db.insert_ocr_text(frame_id1, "old ocr text", "")
+            .await
+            .unwrap();
 
         let audio_transcription_id1 = db
             .insert_audio_transcription(
@@ -758,21 +754,13 @@ mod tests {
             .await
             .unwrap();
 
-        db.insert_ocr_text(
-            old_frame_id,
-            "old task: write documentation",
-            "",
-        )
-        .await
-        .unwrap();
+        db.insert_ocr_text(old_frame_id, "old task: write documentation", "")
+            .await
+            .unwrap();
 
-        db.insert_ocr_text(
-            recent_frame_id,
-            "current task: fix bug #123",
-            "",
-        )
-        .await
-        .unwrap();
+        db.insert_ocr_text(recent_frame_id, "current task: fix bug #123", "")
+            .await
+            .unwrap();
 
         // Search with 30-second window
         let results = db

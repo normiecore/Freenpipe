@@ -55,14 +55,9 @@ mod fts_contention_tests {
                 text: format!("Frame {} content: {}", i, &large_text),
                 text_json: String::new(),
             }];
-            db.insert_frames_with_ocr_batch(
-                "test_device",
-                Some(ts),
-                i as i64,
-                &windows,
-            )
-            .await
-            .unwrap();
+            db.insert_frames_with_ocr_batch("test_device", Some(ts), i as i64, &windows)
+                .await
+                .unwrap();
         }
     }
 

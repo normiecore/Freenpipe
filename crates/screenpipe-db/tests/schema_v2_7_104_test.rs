@@ -23,6 +23,7 @@ use sqlx::{ConnectOptions, Connection};
 
 /// Every migration version a v2.7.104 database records, in order: the 89 of
 /// the base schema plus the 28 that v2.7.104 adds (db.md, db-001).
+#[rustfmt::skip]
 const TARGET_VERSIONS: [i64; 117] = [
     20240703111257, 20240715121444, 20240716120000, 20240716120001, 20240716120002,
     20240716120003, 20240716120004, 20240805120005, 20240808120006, 20240808120007,
@@ -650,14 +651,30 @@ async fn ocr_output_is_stored_on_the_frame_row() {
 
     // Late OCR on frames that already exist.
     let late = db
-        .insert_frame("monitor_2", None, None, Some("Game"), Some("menu"), true, Some(1))
+        .insert_frame(
+            "monitor_2",
+            None,
+            None,
+            Some("Game"),
+            Some("menu"),
+            true,
+            Some(1),
+        )
         .await
         .unwrap();
     db.insert_ocr_text(late, "press start", &ocr_boxes("press"))
         .await
         .unwrap();
     let has_text = db
-        .insert_frame("monitor_2", None, None, Some("Docs"), Some("page"), true, Some(2))
+        .insert_frame(
+            "monitor_2",
+            None,
+            None,
+            Some("Docs"),
+            Some("page"),
+            true,
+            Some(2),
+        )
         .await
         .unwrap();
     let mut side = side_connection(&path).await;

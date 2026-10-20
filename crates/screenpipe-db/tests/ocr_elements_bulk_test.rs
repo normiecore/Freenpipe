@@ -115,12 +115,7 @@ mod tests {
             text_json: level0_blocks(40),
         }];
         let inserted = db
-            .insert_frames_with_ocr_batch(
-                "dev",
-                Some(Utc::now()),
-                0,
-                &windows,
-            )
+            .insert_frames_with_ocr_batch("dev", Some(Utc::now()), 0, &windows)
             .await
             .unwrap();
         let frame_id = inserted[0].0;
@@ -142,12 +137,7 @@ mod tests {
             text_json: level0_blocks(80),
         }];
         let inserted = db
-            .insert_frames_with_ocr_batch(
-                "dev",
-                Some(Utc::now()),
-                0,
-                &windows,
-            )
+            .insert_frames_with_ocr_batch("dev", Some(Utc::now()), 0, &windows)
             .await
             .unwrap();
         let frame_id = inserted[0].0;
@@ -170,12 +160,7 @@ mod tests {
             text_json: level0_blocks(200),
         }];
         let inserted = db
-            .insert_frames_with_ocr_batch(
-                "dev",
-                Some(Utc::now()),
-                0,
-                &windows,
-            )
+            .insert_frames_with_ocr_batch("dev", Some(Utc::now()), 0, &windows)
             .await
             .unwrap();
         let frame_id = inserted[0].0;
@@ -221,12 +206,7 @@ mod tests {
             text_json,
         }];
         let inserted = db
-            .insert_frames_with_ocr_batch(
-                "dev",
-                Some(Utc::now()),
-                0,
-                &windows,
-            )
+            .insert_frames_with_ocr_batch("dev", Some(Utc::now()), 0, &windows)
             .await
             .unwrap();
         let frame_id = inserted[0].0;

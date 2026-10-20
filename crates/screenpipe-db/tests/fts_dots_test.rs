@@ -50,13 +50,9 @@ mod tests {
             .await
             .unwrap();
 
-        db.insert_ocr_text(
-            frame_id,
-            "meeting notes",
-            "",
-        )
-        .await
-        .unwrap();
+        db.insert_ocr_text(frame_id, "meeting notes", "")
+            .await
+            .unwrap();
 
         // Search with app_name containing a dot — must NOT cause FTS5 syntax error
         let results = db
@@ -177,9 +173,7 @@ mod tests {
             .await
             .unwrap();
 
-        db.insert_ocr_text(frame_id, "rust code", "")
-            .await
-            .unwrap();
+        db.insert_ocr_text(frame_id, "rust code", "").await.unwrap();
 
         let results = db
             .search(
@@ -238,13 +232,9 @@ mod tests {
             .await
             .unwrap();
 
-        db.insert_ocr_text(
-            frame_id,
-            "meeting notes",
-            "",
-        )
-        .await
-        .unwrap();
+        db.insert_ocr_text(frame_id, "meeting notes", "")
+            .await
+            .unwrap();
 
         // count_search_results is called in parallel with search — must also handle dots
         let count = db
@@ -296,13 +286,9 @@ mod tests {
             .await
             .unwrap();
 
-        db.insert_ocr_text(
-            frame_id,
-            "meeting notes",
-            "",
-        )
-        .await
-        .unwrap();
+        db.insert_ocr_text(frame_id, "meeting notes", "")
+            .await
+            .unwrap();
 
         // ContentType::All exercises OCR + Accessibility + Audio paths
         let count = db
@@ -518,13 +504,9 @@ mod tests {
             .await
             .unwrap();
 
-        db.insert_ocr_text(
-            frame_id,
-            "Visit zoom.us for the meeting",
-            "",
-        )
-        .await
-        .unwrap();
+        db.insert_ocr_text(frame_id, "Visit zoom.us for the meeting", "")
+            .await
+            .unwrap();
 
         // Text query with dots — sanitize_fts5_query should handle this
         let results = db
@@ -592,9 +574,7 @@ mod tests {
                 .await
                 .unwrap();
 
-            db.insert_ocr_text(frame_id, "test text", "")
-                .await
-                .unwrap();
+            db.insert_ocr_text(frame_id, "test text", "").await.unwrap();
 
             let result = db
                 .search(

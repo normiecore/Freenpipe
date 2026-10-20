@@ -51,14 +51,9 @@ mod query_plan_tests {
                 text: format!("OCR text for frame {}", i),
                 text_json: String::new(),
             }];
-            db.insert_frames_with_ocr_batch(
-                "test_device",
-                Some(ts),
-                i as i64,
-                &windows,
-            )
-            .await
-            .unwrap();
+            db.insert_frames_with_ocr_batch("test_device", Some(ts), i as i64, &windows)
+                .await
+                .unwrap();
         }
     }
 
@@ -449,12 +444,7 @@ mod query_plan_tests {
             .collect();
 
         let results = db
-            .insert_frames_with_ocr_batch(
-                "test_device",
-                Some(Utc::now()),
-                0,
-                &windows,
-            )
+            .insert_frames_with_ocr_batch("test_device", Some(Utc::now()), 0, &windows)
             .await
             .unwrap();
 
@@ -501,14 +491,9 @@ mod query_plan_tests {
                 text: "test".to_string(),
                 text_json: String::new(),
             }];
-            db.insert_frames_with_ocr_batch(
-                "test_device",
-                Some(Utc::now()),
-                999,
-                &windows,
-            )
-            .await
-            .unwrap();
+            db.insert_frames_with_ocr_batch("test_device", Some(Utc::now()), 999, &windows)
+                .await
+                .unwrap();
         })
         .await;
 

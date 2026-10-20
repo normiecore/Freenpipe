@@ -20,7 +20,10 @@ mod tests {
             .unwrap();
 
         // Run all migrations with better error handling
-        match screenpipe_db::schema_migrations::migrator().run(&db.pool).await {
+        match screenpipe_db::schema_migrations::migrator()
+            .run(&db.pool)
+            .await
+        {
             Ok(_) => {
                 tracing::debug!("Database migrations completed successfully");
             }
@@ -52,13 +55,9 @@ mod tests {
             )
             .await
             .unwrap();
-        db.insert_ocr_text(
-            frame_id,
-            "Hello, world!",
-            "",
-        )
-        .await
-        .unwrap();
+        db.insert_ocr_text(frame_id, "Hello, world!", "")
+            .await
+            .unwrap();
 
         let results = db
             .search(
@@ -107,9 +106,7 @@ mod tests {
                 .insert_frame("test_device", None, None, Some(app), Some(""), false, None)
                 .await
                 .unwrap();
-            db.insert_ocr_text(id, text, "")
-                .await
-                .unwrap();
+            db.insert_ocr_text(id, text, "").await.unwrap();
             id
         }
 
@@ -258,9 +255,7 @@ mod tests {
             .insert_frame("dev", None, None, Some("app"), Some(""), false, None)
             .await
             .unwrap();
-        db.insert_ocr_text(f, "frame text", "")
-            .await
-            .unwrap();
+        db.insert_ocr_text(f, "frame text", "").await.unwrap();
         db.add_tags(f, TagContentType::Vision, vec!["person:ada".to_string()])
             .await
             .unwrap();
@@ -270,9 +265,7 @@ mod tests {
             .insert_frame("dev", None, None, Some("app2"), Some(""), false, None)
             .await
             .unwrap();
-        db.insert_ocr_text(f_adam, "near miss", "")
-            .await
-            .unwrap();
+        db.insert_ocr_text(f_adam, "near miss", "").await.unwrap();
         db.add_tags(
             f_adam,
             TagContentType::Vision,
@@ -695,13 +688,9 @@ mod tests {
             .unwrap();
         println!("Inserted frame data: {:?}", frame_data);
 
-        db.insert_ocr_text(
-            frame_id,
-            "Hello from OCR",
-            "",
-        )
-        .await
-        .unwrap();
+        db.insert_ocr_text(frame_id, "Hello from OCR", "")
+            .await
+            .unwrap();
 
         // Verify that frames_fts was populated
         let fts_data: Option<(i64, String, String, String)> = sqlx::query_as(
@@ -818,13 +807,9 @@ mod tests {
             )
             .await
             .unwrap();
-        db.insert_ocr_text(
-            frame_id1,
-            "Hello from OCR 1",
-            "",
-        )
-        .await
-        .unwrap();
+        db.insert_ocr_text(frame_id1, "Hello from OCR 1", "")
+            .await
+            .unwrap();
 
         // Insert first audio data
         let audio_chunk_id = db.insert_audio_chunk("test_audio.mp4", None).await.unwrap();
@@ -866,13 +851,9 @@ mod tests {
             )
             .await
             .unwrap();
-        db.insert_ocr_text(
-            frame_id2,
-            "Hello from OCR 2",
-            "",
-        )
-        .await
-        .unwrap();
+        db.insert_ocr_text(frame_id2, "Hello from OCR 2", "")
+            .await
+            .unwrap();
 
         let raw_ocr_text: Vec<(Option<String>, i64)> =
             sqlx::query_as("SELECT full_text, id FROM frames")
@@ -1134,13 +1115,9 @@ mod tests {
             )
             .await
             .unwrap();
-        db.insert_ocr_text(
-            frame_id1,
-            "Hello from OCR 1",
-            "",
-        )
-        .await
-        .unwrap();
+        db.insert_ocr_text(frame_id1, "Hello from OCR 1", "")
+            .await
+            .unwrap();
 
         // Insert first audio data
         let audio_chunk_id = db.insert_audio_chunk("test_audio.mp4", None).await.unwrap();
@@ -1180,13 +1157,9 @@ mod tests {
             )
             .await
             .unwrap();
-        db.insert_ocr_text(
-            frame_id2,
-            "Hello from OCR 2",
-            "",
-        )
-        .await
-        .unwrap();
+        db.insert_ocr_text(frame_id2, "Hello from OCR 2", "")
+            .await
+            .unwrap();
 
         let audio_chunk_id2 = db
             .insert_audio_chunk("test_audio2.mp4", None)
@@ -1728,13 +1701,9 @@ mod tests {
             )
             .await
             .unwrap();
-        db.insert_ocr_text(
-            frame_id1,
-            "Hello from frame 1",
-            "",
-        )
-        .await
-        .unwrap();
+        db.insert_ocr_text(frame_id1, "Hello from frame 1", "")
+            .await
+            .unwrap();
 
         // Insert second frame with OCR
         let frame_id2 = db
@@ -1749,13 +1718,9 @@ mod tests {
             )
             .await
             .unwrap();
-        db.insert_ocr_text(
-            frame_id2,
-            "Hello from frame 2",
-            "",
-        )
-        .await
-        .unwrap();
+        db.insert_ocr_text(frame_id2, "Hello from frame 2", "")
+            .await
+            .unwrap();
 
         // Test searching OCR with frame_name filter
         let results = db
@@ -1895,13 +1860,9 @@ mod tests {
             )
             .await
             .unwrap();
-        db.insert_ocr_text(
-            frame_id,
-            "Hello from OCR",
-            "",
-        )
-        .await
-        .unwrap();
+        db.insert_ocr_text(frame_id, "Hello from OCR", "")
+            .await
+            .unwrap();
 
         // Insert Audio data
         let audio_chunk_id = db.insert_audio_chunk("test_audio.mp4", None).await.unwrap();
