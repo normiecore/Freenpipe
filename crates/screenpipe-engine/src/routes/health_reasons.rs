@@ -411,6 +411,12 @@ pub struct ReasonInputs<'a> {
     pub write_queue_degraded: bool,
     pub write_queue_consecutive_fatal: u64,
     pub write_queue_consecutive_contention: u64,
+    /// Recording output devices whose stream runs on the generic fallback
+    /// because the native system-audio backend failed.
+    pub audio_fallback_outputs: &'a [String],
+    /// Frame-diff thumbnails that could not be allocated in the recent
+    /// window (memory pressure); 0 when there were none.
+    pub recent_frame_diff_failures: u64,
 }
 
 const REMEDY_SCREEN_PERMISSION: &str =
@@ -497,6 +503,18 @@ pub fn unhealthy_reasons(i: &ReasonInputs<'_>) -> Vec<UnhealthyReason> {
             Some(REMEDY_DISK),
         ));
     }
+    if i.recent_frame_diff_failures > 0 {
+        out.push(UnhealthyReason::new(
+            "vision_change_detection_degraded",
+            "vision",
+            SEVERITY_WARNING,
+            format!(
+                "change detection skipped {} frame(s) recently because memory could not be allocated; screen changes made without keyboard or mouse input may be missed",
+                i.recent_frame_diff_failures
+            ),
+            Some("close memory-heavy applications or restart recording"),
+        ));
+    }
     if i.vision_reason == "ocr_unavailable" {
         out.push(UnhealthyReason::new(
             "vision_ocr_unavailable",
@@ -562,6 +580,19 @@ pub fn unhealthy_reasons(i: &ReasonInputs<'_>) -> Vec<UnhealthyReason> {
                 count
             ),
             None,
+        ));
+    }
+
+    if !i.audio_fallback_outputs.is_empty() {
+        out.push(UnhealthyReason::new(
+            "audio_loopback_fallback",
+            "audio",
+            SEVERITY_WARNING,
+            format!(
+                "system audio from {} is recorded through the generic fallback stream because the native capture backend failed; per-app audio exclusions do not apply to it",
+                i.audio_fallback_outputs.join(", ")
+            ),
+            Some("the native backend is tried again automatically; restart recording to retry it now"),
         ));
     }
 
@@ -785,6 +816,8 @@ mod tests {
             write_queue_degraded: false,
             write_queue_consecutive_fatal: 0,
             write_queue_consecutive_contention: 0,
+            audio_fallback_outputs: &[],
+            recent_frame_diff_failures: 0,
         }
     }
 
@@ -890,6 +923,25 @@ mod tests {
         let db = unhealthy_reasons(&i).pop().unwrap();
         assert_eq!(db.component, "database");
         assert!(db.message.contains('2'));
+    }
+
+    #[test]
+    fn capture_path_fallbacks_are_warnings() {
+        let outputs = ["Speakers (output)".to_string()];
+        let mut i = healthy_reasons();
+        i.audio_fallback_outputs = &outputs;
+        i.recent_frame_diff_failures = 3;
+        let reasons = unhealthy_reasons(&i);
+        assert_eq!(
+            reasons.iter().map(|r| r.code.as_str()).collect::<Vec<_>>(),
+            vec![
+                "vision_change_detection_degraded",
+                "audio_loopback_fallback"
+            ]
+        );
+        assert!(reasons.iter().all(|r| r.severity == "warning"));
+        assert!(reasons[0].message.contains('3'));
+        assert!(reasons[1].message.contains("Speakers (output)"));
     }
 
     #[test]

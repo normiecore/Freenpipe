@@ -964,8 +964,10 @@ fn log_vision_stall(
         }
     };
     let (rs, ri, ws, wi) = state.db.pool_stats();
+    let (diff_thumbnail_failures, diff_empty_frames) =
+        state.vision_metrics.frame_diff_problem_totals();
     warn!(
-        "health_check: vision stalled ({}): {} | last frame saved {}, capture heartbeat {} | lifetime: attempts={}, persisted={}, dedup={}, silent_loss={} | since last saved frame: attempts={}, timed_out={}, errors={}, skipped={}, unaccounted={} | pool: read={}/{} idle, write={}/{} idle ({})",
+        "health_check: vision stalled ({}): {} | last frame saved {}, capture heartbeat {} | lifetime: attempts={}, persisted={}, dedup={}, silent_loss={} | since last saved frame: attempts={}, timed_out={}, errors={}, skipped={}, unaccounted={} | change detection: thumbnail_failures={}, empty_frames={} | pool: read={}/{} idle, write={}/{} idle ({})",
         cause.as_str(),
         cause.describe(),
         age(snap.last_db_write_ts),
@@ -979,6 +981,8 @@ fn log_vision_stall(
         since.frames_dropped_error,
         since.frames_skipped,
         screenpipe_screen::metrics::silent_loss(since),
+        diff_thumbnail_failures,
+        diff_empty_frames,
         ri,
         rs,
         wi,
@@ -1550,6 +1554,22 @@ async fn health_check_inner(state: &Arc<AppState>) -> HealthCheckResponse {
             .then(|| now_ts.saturating_sub(audio_snap.last_db_write_ts)),
     });
 
+    // System-audio streams that run on the generic fallback because the
+    // native backend (Windows loopback engine, macOS process tap) failed.
+    let audio_fallback_outputs: Vec<String> = if state.audio_disabled {
+        Vec::new()
+    } else {
+        audio_devices
+            .iter()
+            .filter(|d| d.device_type == screenpipe_audio::core::device::DeviceType::Output)
+            .map(|d| d.to_string())
+            .filter(|name| {
+                screenpipe_audio::metrics::output_capture_backend(name)
+                    .is_some_and(|b| b.is_fallback())
+            })
+            .collect()
+    };
+
     let unhealthy_reasons = health_reasons::unhealthy_reasons(&ReasonInputs {
         frame_status: frame_state,
         vision_reason,
@@ -1567,6 +1587,12 @@ async fn health_check_inner(state: &Arc<AppState>) -> HealthCheckResponse {
         write_queue_degraded: write_queue.degraded,
         write_queue_consecutive_fatal: write_queue.consecutive_fatal,
         write_queue_consecutive_contention: write_queue.consecutive_contention,
+        audio_fallback_outputs: &audio_fallback_outputs,
+        recent_frame_diff_failures: if state.vision_disabled {
+            0
+        } else {
+            state.vision_metrics.recent_frame_diff_failures(now_ts)
+        },
     });
 
     let phase = health_reasons::startup_phase(

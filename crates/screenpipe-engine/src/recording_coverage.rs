@@ -254,6 +254,10 @@ impl Drop for TickerGuard {
 /// process; a second call just points it at the new metrics. Must be called
 /// inside a tokio runtime.
 pub fn start_coverage_ticker(vision: Arc<PipelineMetrics>) {
+    start_ticker_every(vision, TICK_INTERVAL);
+}
+
+fn start_ticker_every(vision: Arc<PipelineMetrics>, period: Duration) {
     if let Ok(mut source) = VISION_SOURCE.lock() {
         *source = Some(vision);
     }
@@ -265,21 +269,22 @@ pub fn start_coverage_ticker(vision: Arc<PipelineMetrics>) {
     }
     tokio::spawn(async move {
         let _guard = TickerGuard;
-        run_ticker().await;
+        run_ticker(period).await;
     });
 }
 
-async fn run_ticker() {
-    let mut interval = tokio::time::interval(TICK_INTERVAL);
+async fn run_ticker(period: Duration) {
+    let mut interval = tokio::time::interval(period);
     // The first tick of a tokio interval fires immediately; consume it so the
-    // clock starts from a real tick.
+    // clock starts from a real tick. Elapsed time is read from tokio's clock
+    // (the monotonic clock at runtime, a controllable one in tests).
     interval.tick().await;
-    let mut clock = TickClock::new(Instant::now());
+    let mut clock = TickClock::new(tokio::time::Instant::now().into_std());
     let mut ticks: u64 = 0;
     loop {
         interval.tick().await;
         ticks = ticks.wrapping_add(1);
-        let Some(secs) = clock.tick(Instant::now()) else {
+        let Some(secs) = clock.tick(tokio::time::Instant::now().into_std()) else {
             continue;
         };
         let vision = VISION_SOURCE.lock().ok().and_then(|s| s.clone());
@@ -449,6 +454,30 @@ mod tests {
         assert!(positions.windows(2).all(|w| w[0] < w[1]), "{}", text);
         let value: serde_json::Value = serde_json::from_str(&text).unwrap();
         assert_eq!(value.as_object().unwrap().len(), order.len());
+    }
+
+    #[tokio::test]
+    async fn ticker_credits_whole_seconds_per_tick_and_runs_once() {
+        let before = snapshot();
+        let vision = Arc::new(PipelineMetrics::new());
+        // A short period keeps the test quick; each tick is ~1.05 s apart,
+        // which credits one whole second.
+        let period = Duration::from_millis(1_050);
+        start_ticker_every(vision.clone(), period);
+        // A second start only re-points the running ticker.
+        start_ticker_every(vision, period);
+        tokio::time::sleep(Duration::from_millis(3_400)).await;
+        let after = snapshot();
+        // Ticks at 1.05, 2.1 and 3.15 s credit 1 s each (timer jitter may
+        // cost one); a duplicate ticker would double that. Another test adds
+        // to `active_paused` directly, so that bucket only counts towards the
+        // lower bound.
+        let unpaused =
+            |s: &CoverageSnapshot| s.recording_secs + s.active_stalled_secs + s.idle_secs;
+        let gained =
+            (after.active_secs + after.idle_secs) - (before.active_secs + before.idle_secs);
+        assert!(gained >= 2, "gained {} ({:?})", gained, after);
+        assert!(unpaused(&after) - unpaused(&before) <= 3, "{:?}", after);
     }
 
     #[test]

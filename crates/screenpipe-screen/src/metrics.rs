@@ -7,6 +7,8 @@ use std::sync::atomic::{AtomicU64, AtomicU8, Ordering};
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
+use crate::frame_comparison::FrameComparisonStats;
+
 /// Rolling window to track recent DB write latencies.
 /// Keeps the last N samples so early spikes don't permanently inflate the average.
 const LATENCY_WINDOW_SIZE: usize = 200;
@@ -141,6 +143,9 @@ pub struct PipelineMetrics {
     /// deduplicated), so a stall can be explained by what happened since.
     landing_mark: LandingMark,
 
+    /// Frames the change detector could not process, over all loops.
+    frame_diff_problems: FrameDiffProblems,
+
     // --- Rolling window for DB latency ---
     /// Recent DB write latencies in microseconds (rolling window, not lifetime accumulator).
     /// Prevents early spikes from permanently inflating the average.
@@ -182,6 +187,7 @@ impl PipelineMetrics {
             frames_corrupt_green: AtomicU64::new(0),
             loop_stages: LoopStageTracker::new(),
             landing_mark: LandingMark::default(),
+            frame_diff_problems: FrameDiffProblems::default(),
             db_latency_window: Mutex::new(RollingLatencyWindow::new()),
         }
     }
@@ -623,6 +629,103 @@ impl LandingMark {
             frames_dropped_timeout: self.frames_dropped_timeout.load(Ordering::Relaxed),
             frames_dropped_error: self.frames_dropped_error.load(Ordering::Relaxed),
             frames_skipped: self.frames_skipped.load(Ordering::Relaxed),
+        }
+    }
+}
+
+// --- Change-detection (frame diff) problems --------------------------------
+
+/// A thumbnail failure counts as recent for this long after the last one.
+pub const FRAME_DIFF_RECENT_SECS: u64 = 300;
+
+/// Frames the frame comparer had to report as "unchanged" because it could
+/// not build a thumbnail, summed over every capture loop.
+#[derive(Debug, Default)]
+struct FrameDiffProblems {
+    /// Thumbnail buffers that could not be allocated (memory pressure).
+    thumbnail_failures: AtomicU64,
+    /// Frames with no usable size (zero width or height).
+    degenerate_frames: AtomicU64,
+    /// Thumbnail failures in the current burst; a burst ends after
+    /// [`FRAME_DIFF_RECENT_SECS`] without one.
+    recent_thumbnail_failures: AtomicU64,
+    last_thumbnail_failure_ts: AtomicU64,
+}
+
+impl PipelineMetrics {
+    /// Add frame-comparer problems seen by one loop since its last report.
+    pub fn record_frame_diff_problems(&self, thumbnail_failures: u64, degenerate_frames: u64) {
+        self.record_frame_diff_problems_at(thumbnail_failures, degenerate_frames, unix_now_secs());
+    }
+
+    fn record_frame_diff_problems_at(
+        &self,
+        thumbnail_failures: u64,
+        degenerate_frames: u64,
+        now: u64,
+    ) {
+        let p = &self.frame_diff_problems;
+        p.degenerate_frames
+            .fetch_add(degenerate_frames, Ordering::Relaxed);
+        if thumbnail_failures == 0 {
+            return;
+        }
+        p.thumbnail_failures
+            .fetch_add(thumbnail_failures, Ordering::Relaxed);
+        let last = p.last_thumbnail_failure_ts.swap(now, Ordering::Relaxed);
+        if now.saturating_sub(last) >= FRAME_DIFF_RECENT_SECS {
+            p.recent_thumbnail_failures
+                .store(thumbnail_failures, Ordering::Relaxed);
+        } else {
+            p.recent_thumbnail_failures
+                .fetch_add(thumbnail_failures, Ordering::Relaxed);
+        }
+    }
+
+    /// Lifetime `(thumbnail_failures, degenerate_frames)` of change detection.
+    pub fn frame_diff_problem_totals(&self) -> (u64, u64) {
+        let p = &self.frame_diff_problems;
+        (
+            p.thumbnail_failures.load(Ordering::Relaxed),
+            p.degenerate_frames.load(Ordering::Relaxed),
+        )
+    }
+
+    /// Thumbnail failures of the current burst, or 0 when the last one is
+    /// older than [`FRAME_DIFF_RECENT_SECS`].
+    pub fn recent_frame_diff_failures(&self, now: u64) -> u64 {
+        let p = &self.frame_diff_problems;
+        let last = p.last_thumbnail_failure_ts.load(Ordering::Relaxed);
+        if last == 0 || now.saturating_sub(last) >= FRAME_DIFF_RECENT_SECS {
+            0
+        } else {
+            p.recent_thumbnail_failures.load(Ordering::Relaxed)
+        }
+    }
+}
+
+/// Carries one capture loop's frame-comparer counters into
+/// [`PipelineMetrics`] as deltas, so several loops add up. Keep one per
+/// loop and call [`FrameDiffWatch::observe`] once per pass.
+#[derive(Debug, Default, Clone, Copy)]
+pub struct FrameDiffWatch {
+    thumbnail_failures: u64,
+    degenerate_frames: u64,
+}
+
+impl FrameDiffWatch {
+    pub fn observe(&mut self, metrics: &PipelineMetrics, stats: &FrameComparisonStats) {
+        // A comparer whose counters went down was replaced; start over.
+        let thumbnails = stats
+            .thumbnail_failures
+            .saturating_sub(self.thumbnail_failures);
+        let degenerate = stats
+            .degenerate_frames
+            .saturating_sub(self.degenerate_frames);
+        self.thumbnail_failures = stats.thumbnail_failures;
+        self.degenerate_frames = stats.degenerate_frames;
+        if thumbnails > 0 || degenerate > 0 {
+            metrics.record_frame_diff_problems(thumbnails, degenerate);
         }
     }
 }
@@ -1352,6 +1455,50 @@ mod tests {
         assert_eq!(sentences.len(), all.len());
         let names: std::collections::HashSet<_> = all.iter().map(|c| c.as_str()).collect();
         assert_eq!(names.len(), 4);
+    }
+
+    fn comparer_stats(thumbnail_failures: u64, degenerate_frames: u64) -> FrameComparisonStats {
+        FrameComparisonStats {
+            total_comparisons: 0,
+            hash_hits: 0,
+            hash_hit_rate: 0.0,
+            thumbnail_failures,
+            degenerate_frames,
+        }
+    }
+
+    #[test]
+    fn frame_diff_watch_adds_deltas_from_each_loop() {
+        let m = PipelineMetrics::new();
+        let mut a = FrameDiffWatch::default();
+        let mut b = FrameDiffWatch::default();
+        a.observe(&m, &comparer_stats(2, 1));
+        a.observe(&m, &comparer_stats(2, 1)); // unchanged: nothing added
+        b.observe(&m, &comparer_stats(1, 0));
+        a.observe(&m, &comparer_stats(3, 1));
+        assert_eq!(m.frame_diff_problem_totals(), (4, 1));
+        // A replaced comparer starts again from zero.
+        a.observe(&m, &comparer_stats(0, 0));
+        a.observe(&m, &comparer_stats(1, 0));
+        assert_eq!(m.frame_diff_problem_totals(), (5, 1));
+    }
+
+    #[test]
+    fn recent_frame_diff_failures_reset_after_a_quiet_window() {
+        let m = PipelineMetrics::new();
+        let t0 = 1_000_000;
+        assert_eq!(m.recent_frame_diff_failures(t0), 0);
+        m.record_frame_diff_problems_at(0, 4, t0);
+        assert_eq!(m.recent_frame_diff_failures(t0), 0, "empty frames only");
+        m.record_frame_diff_problems_at(2, 0, t0);
+        m.record_frame_diff_problems_at(1, 0, t0 + 10);
+        assert_eq!(m.recent_frame_diff_failures(t0 + 20), 3);
+        assert_eq!(m.recent_frame_diff_failures(t0 + 10 + 299), 3);
+        assert_eq!(m.recent_frame_diff_failures(t0 + 10 + 300), 0);
+        // A new burst after the quiet window starts its own count.
+        m.record_frame_diff_problems_at(1, 0, t0 + 1000);
+        assert_eq!(m.recent_frame_diff_failures(t0 + 1001), 1);
+        assert_eq!(m.frame_diff_problem_totals(), (4, 4));
     }
 
     #[test]

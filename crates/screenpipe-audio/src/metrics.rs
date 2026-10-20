@@ -472,9 +472,87 @@ pub fn model_component_state(component: ModelComponent) -> Option<ComponentState
         .and_then(|states| states.get(&component).copied())
 }
 
+// --- System-audio (output) capture backend ---------------------------------
+
+/// How a system-audio (output) device stream is being recorded.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum OutputCaptureBackend {
+    /// The platform's own system-audio backend: the WASAPI loopback engine
+    /// on Windows, the process tap on macOS. Per-app exclusions apply.
+    Native,
+    /// The generic cpal stream, because the native backend failed to start
+    /// this stream.
+    FallbackAfterError,
+    /// The generic cpal stream, because the native backend failed several
+    /// times for this device recently and is skipped until that ages out.
+    FallbackAfterRepeatedErrors,
+}
+
+impl OutputCaptureBackend {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Native => "native",
+            Self::FallbackAfterError => "fallback_after_error",
+            Self::FallbackAfterRepeatedErrors => "fallback_after_repeated_errors",
+        }
+    }
+
+    /// True when the stream runs on the generic fallback rather than the
+    /// native backend.
+    pub fn is_fallback(self) -> bool {
+        !matches!(self, Self::Native)
+    }
+}
+
+/// Last backend reported per output device, keyed by the device's display
+/// name (`"<name> (output)"`, as the audio manager lists it).
+static OUTPUT_CAPTURE_BACKENDS: std::sync::LazyLock<RwLock<HashMap<String, OutputCaptureBackend>>> =
+    std::sync::LazyLock::new(|| RwLock::new(HashMap::new()));
+
+/// Record which backend a newly started output stream uses. Called by the
+/// stream builder each time it opens a system-audio stream; the last report
+/// per device wins.
+pub fn report_output_capture_backend(device: &str, backend: OutputCaptureBackend) {
+    if let Ok(mut map) = OUTPUT_CAPTURE_BACKENDS.write() {
+        map.insert(device.to_string(), backend);
+    }
+}
+
+/// The backend the latest stream for `device` was opened with, if any was
+/// reported. Entries are not removed when a device stops, so readers should
+/// only ask about devices that are recording.
+pub fn output_capture_backend(device: &str) -> Option<OutputCaptureBackend> {
+    OUTPUT_CAPTURE_BACKENDS
+        .read()
+        .ok()
+        .and_then(|map| map.get(device).copied())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn output_backend_reports_keep_the_latest_per_device() {
+        let device = "W2-13 test speakers (output)";
+        assert_eq!(output_capture_backend(device), None);
+        report_output_capture_backend(device, OutputCaptureBackend::FallbackAfterError);
+        assert_eq!(
+            output_capture_backend(device),
+            Some(OutputCaptureBackend::FallbackAfterError)
+        );
+        report_output_capture_backend(device, OutputCaptureBackend::Native);
+        assert_eq!(
+            output_capture_backend(device),
+            Some(OutputCaptureBackend::Native)
+        );
+        assert!(!OutputCaptureBackend::Native.is_fallback());
+        assert!(OutputCaptureBackend::FallbackAfterRepeatedErrors.is_fallback());
+        assert_eq!(
+            OutputCaptureBackend::FallbackAfterRepeatedErrors.as_str(),
+            "fallback_after_repeated_errors"
+        );
+    }
 
     #[test]
     fn stream_timeout_records_when_it_happened() {

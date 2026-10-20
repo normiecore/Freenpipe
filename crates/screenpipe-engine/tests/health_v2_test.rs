@@ -52,6 +52,84 @@ async fn get_text(router: Router, uri: &str) -> (StatusCode, String) {
     (status, String::from_utf8(bytes.to_vec()).unwrap())
 }
 
+/// `/health` top-level fields in the shipped serialisation order.
+const HEALTH_FIELDS: [&str; 36] = [
+    "status",
+    "status_code",
+    "dependencies",
+    "runtime",
+    "startup",
+    "unhealthy_reasons",
+    "last_frame_timestamp",
+    "last_audio_timestamp",
+    "frame_status",
+    "vision_reason",
+    "loop_stage",
+    "loop_stage_age_secs",
+    "audio_capture_mode",
+    "audio_status",
+    "message",
+    "verbose_instructions",
+    "device_status_details",
+    "capture_status",
+    "monitors",
+    "pipeline",
+    "audio_pipeline",
+    "accessibility",
+    "ui_recorder",
+    "recording_coverage",
+    "pool_stats",
+    "write_queue_degraded",
+    "write_queue_consecutive_fatal",
+    "write_queue_consecutive_contention",
+    "write_pool_reopens",
+    "persistent_failure_signals",
+    "vision_db_write_stalled",
+    "audio_db_write_stalled",
+    "drm_content_paused",
+    "schedule_paused",
+    "hostname",
+    "version",
+];
+
+/// `/vision/metrics` fields in the shipped serialisation order.
+const VISION_METRICS_FIELDS: [&str; 34] = [
+    "uptime_secs",
+    "frames_captured",
+    "frames_skipped",
+    "ocr_completed",
+    "ocr_cache_hits",
+    "ocr_cache_misses",
+    "ocr_empty",
+    "avg_ocr_latency_ms",
+    "ocr_gate_skips",
+    "ocr_gate_crop_ocr",
+    "ocr_gate_detects",
+    "avg_ocr_gate_detect_latency_ms",
+    "frames_video_written",
+    "frames_db_written",
+    "frames_dropped",
+    "frames_dropped_timeout",
+    "frames_dropped_error",
+    "silent_loss",
+    "silent_loss_rate",
+    "avg_db_latency_ms",
+    "frame_drop_rate",
+    "capture_fps_actual",
+    "time_to_first_frame_ms",
+    "ocr_queue_depth",
+    "video_queue_depth",
+    "pipeline_stall_count",
+    "last_db_write_ts",
+    "last_capture_attempt_ts",
+    "last_capture_loop_heartbeat_ts",
+    "capture_loop_heartbeats",
+    "capture_attempts",
+    "dedup_skips",
+    "frames_corrupt_black",
+    "frames_corrupt_green",
+];
+
 /// Assert that `keys` appear in `text` as JSON keys in this order. Each key
 /// is searched after the previous one, so repeated names in nested objects
 /// do not confuse the check.
@@ -72,36 +150,41 @@ async fn health_reports_v2_fields_and_ordered_recording_coverage() {
     assert_eq!(status, StatusCode::OK);
     let value: serde_json::Value = serde_json::from_str(&text).unwrap();
 
-    // Top-level order of the fields this WP adds, relative to the base ones.
-    assert_key_order(
-        &text,
-        &[
-            "status",
-            "status_code",
-            "dependencies",
-            "runtime",
-            "startup",
-            "unhealthy_reasons",
-            "last_frame_timestamp",
-            "frame_status",
-            "vision_reason",
-            "loop_stage",
-            "loop_stage_age_secs",
-            "audio_capture_mode",
-            "audio_status",
-            "message",
-            "capture_status",
-            "recording_coverage",
-            "pool_stats",
-            "write_queue_degraded",
-            "write_queue_consecutive_fatal",
-            "write_queue_consecutive_contention",
-            "write_pool_reopens",
-            "persistent_failure_signals",
-            "vision_db_write_stalled",
-            "schedule_paused",
-        ],
+    // Every top-level field present appears in the shipped serialisation
+    // order (fields that are skipped when empty may be absent).
+    let present: Vec<&str> = HEALTH_FIELDS
+        .iter()
+        .copied()
+        .filter(|k| value.get(*k).is_some())
+        .collect();
+    for always in [
+        "status",
+        "dependencies",
+        "runtime",
+        "startup",
+        "unhealthy_reasons",
+        "vision_reason",
+        "loop_stage",
+        "loop_stage_age_secs",
+        "audio_capture_mode",
+        "capture_status",
+        "recording_coverage",
+        "pool_stats",
+        "write_queue_degraded",
+        "write_queue_consecutive_fatal",
+        "write_queue_consecutive_contention",
+        "write_pool_reopens",
+        "persistent_failure_signals",
+    ] {
+        assert!(present.contains(&always), "{} missing in {}", always, text);
+    }
+    assert_eq!(
+        value.as_object().unwrap().len(),
+        present.len(),
+        "unexpected top-level field in {}",
+        text
     );
+    assert_key_order(&text, &present);
 
     // recording_coverage carries its six fields in the shipped order.
     let coverage_at = text.find("\"recording_coverage\":").unwrap();
@@ -148,28 +231,11 @@ async fn vision_metrics_include_silent_loss_and_loop_heartbeats() {
     let (status, text) = get_text(test_router().await, "/vision/metrics").await;
     assert_eq!(status, StatusCode::OK);
     let value: serde_json::Value = serde_json::from_str(&text).unwrap();
-    assert_eq!(value.as_object().unwrap().len(), 34);
-    assert_key_order(
-        &text,
-        &[
-            "ocr_cache_misses",
-            "ocr_empty",
-            "avg_ocr_latency_ms",
-            "frames_dropped",
-            "frames_dropped_timeout",
-            "frames_dropped_error",
-            "silent_loss",
-            "silent_loss_rate",
-            "avg_db_latency_ms",
-            "last_capture_attempt_ts",
-            "last_capture_loop_heartbeat_ts",
-            "capture_loop_heartbeats",
-            "capture_attempts",
-            "dedup_skips",
-            "frames_corrupt_black",
-            "frames_corrupt_green",
-        ],
+    assert_eq!(
+        value.as_object().unwrap().len(),
+        VISION_METRICS_FIELDS.len()
     );
+    assert_key_order(&text, &VISION_METRICS_FIELDS);
     assert_eq!(value["silent_loss"], 0);
     assert_eq!(value["capture_loop_heartbeats"], 0);
 }

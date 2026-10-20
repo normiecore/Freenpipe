@@ -590,6 +590,9 @@ pub async fn event_driven_capture_loop(
     // Publishes this loop's current stage for /health (loop_stage); the
     // monitor is unregistered when the loop returns.
     let loop_stage = vision_metrics.track_capture_loop(monitor_id);
+    // Carries the frame comparer's thumbnail failures into the shared
+    // metrics, where /health reports them.
+    let mut frame_diff_watch = screenpipe_screen::metrics::FrameDiffWatch::default();
 
     let mut visual_check_enabled = config.visual_check_interval_ms > 0;
     let mut visual_check_interval = Duration::from_millis(config.visual_check_interval_ms);
@@ -791,6 +794,9 @@ pub async fn event_driven_capture_loop(
         }
         vision_metrics.record_capture_loop_heartbeat();
         loop_stage.enter(CaptureLoopStage::Heartbeat);
+        if let Some(ref comparer) = frame_comparer {
+            frame_diff_watch.observe(&vision_metrics, &comparer.stats());
+        }
 
         // Focus-aware gating — always on. Skips or pauses capture on
         // non-focused monitors. If focus resolution fails on this platform
