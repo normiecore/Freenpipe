@@ -1666,6 +1666,8 @@ async fn main() {
             match event {
                 tauri::RunEvent::Ready { .. } => {
                     debug!("Ready event");
+                    // After a safe relaunch, keep Home closed if it was closed.
+                    relaunch::on_ready(app_handle.app_handle());
                 }
                 tauri::RunEvent::ExitRequested { api, .. } => {
                     // When the user clicks "quit screenpipe" in the tray menu,
@@ -1681,39 +1683,14 @@ async fn main() {
                 }
 
                 tauri::RunEvent::Exit => {
-                    info!("App exiting — running cleanup");
-
-                    // Shut down embedded server (incl. audio manager / ggml Metal cleanup)
-                    // MUST happen synchronously before exit() runs C++ static destructors,
-                    // otherwise the ggml Metal device destructor hits a freed resource → SIGABRT.
-                    //
-                    // Run on a dedicated thread to avoid "Cannot start a runtime from within
-                    // a runtime" panic when the Exit event fires from a tokio async context.
-                    let app_handle_shutdown = app_handle.app_handle().clone();
-                    let _ = std::thread::spawn(move || {
-                        tauri::async_runtime::block_on(async move {
-                            if let Some(recording_state) =
-                                app_handle_shutdown.try_state::<recording::RecordingState>()
-                            {
-                                // Stop capture first (self-contained), then server
-                                if let Some(session) = recording_state.capture.lock().await.take() {
-                                    session.stop().await;
-                                }
-                                if let Some(server) = recording_state.server.lock().await.take() {
-                                    server.shutdown().await;
-                                }
-                            }
-                        })
-                    })
-                    .join();
-
-                    // Cleanup Pi sidecar
-                    let app_handle_pi = app_handle.app_handle().clone();
-                    tauri::async_runtime::spawn(async move {
-                        if let Some(pi_state) = app_handle_pi.try_state::<pi::PiState>() {
-                            pi::cleanup_pi(&pi_state).await;
-                        }
-                    });
+                    // One bounded teardown shared with tray quit and safe
+                    // relaunch: capture, engine (scheduler + audio), HTTP
+                    // drain, SQLite pools, Pi. It must finish before exit()
+                    // runs C++ static destructors (the ggml Metal device
+                    // destructor aborts on freed resources), and it ends the
+                    // process itself if it overruns its budget. Skipped when
+                    // a quit or relaunch already ran it.
+                    relaunch::on_run_exit(app_handle.app_handle());
                 }
 
                 tauri::RunEvent::WindowEvent {
