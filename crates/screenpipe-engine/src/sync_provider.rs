@@ -67,7 +67,7 @@ pub struct OcrRecord {
     pub frame_sync_id: String,
     pub text: String,
     pub focused: bool,
-    /// App name from the source machine (added to avoid empty ocr_text.app_name on import)
+    /// App name from the source machine (fills an empty frames.app_name on import)
     #[serde(default)]
     pub app_name: Option<String>,
     /// Window name from the source machine
@@ -188,13 +188,17 @@ impl ScreenpipeSyncProvider {
         let time_start = frames.first().map(|f| f.1.clone()).unwrap();
         let time_end = frames.last().map(|f| f.1.clone()).unwrap();
 
-        // Get OCR for these frames (include app_name/window_name for cross-machine sync)
+        // OCR text for these frames lives on the frame row (ocr_text was
+        // retired). Frames whose text came from the accessibility tree are
+        // shipped by the accessibility blob instead, so they are left out here.
         type OcrRow = (i64, String, bool, Option<String>, Option<String>);
         let ocr_results: Vec<OcrRow> = sqlx::query_as(
             r#"
-            SELECT frame_id, text, focused, app_name, window_name
-            FROM ocr_text
-            WHERE frame_id IN (SELECT value FROM json_each(?))
+            SELECT id, full_text, COALESCE(focused, 0), app_name, window_name
+            FROM frames
+            WHERE id IN (SELECT value FROM json_each(?))
+              AND full_text IS NOT NULL AND full_text != ''
+              AND COALESCE(text_source, '') != 'accessibility'
             "#,
         )
         .bind(serde_json::to_string(&frame_ids).unwrap())
@@ -546,13 +550,15 @@ impl ScreenpipeSyncProvider {
         // Import OCR
         for ocr in &chunk.ocr_records {
             if let Some(&frame_id) = frame_id_map.get(&ocr.frame_sync_id) {
-                // Check if already exists (read-only, uses read pool)
-                let exists: Option<(i64,)> =
-                    sqlx::query_as("SELECT 1 FROM ocr_text WHERE sync_id = ?")
-                        .bind(&ocr.sync_id)
-                        .fetch_optional(pool)
-                        .await
-                        .map_err(|e| SyncError::Database(format!("failed to check OCR: {}", e)))?;
+                // Already imported when the frame row has its text (read-only,
+                // uses read pool).
+                let exists: Option<(i64,)> = sqlx::query_as(
+                    "SELECT 1 FROM frames WHERE id = ? AND full_text IS NOT NULL AND full_text != ''",
+                )
+                .bind(frame_id)
+                .fetch_optional(pool)
+                .await
+                .map_err(|e| SyncError::Database(format!("failed to check OCR: {}", e)))?;
 
                 if exists.is_some() {
                     skipped += 1;
@@ -573,14 +579,7 @@ impl ScreenpipeSyncProvider {
                     .or_else(|| frame_rec.and_then(|f| f.window_name.as_deref()));
 
                 self.db
-                    .sync_insert_ocr(
-                        frame_id,
-                        &ocr.text,
-                        ocr.focused,
-                        app_name,
-                        window_name,
-                        &ocr.sync_id,
-                    )
+                    .sync_insert_ocr(frame_id, &ocr.text, ocr.focused, app_name, window_name)
                     .await
                     .map_err(|e| SyncError::Database(format!("failed to insert OCR: {}", e)))?;
 

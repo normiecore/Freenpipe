@@ -45,8 +45,8 @@
 //!   text. Hash-cached per-string so repeated UI chrome is free on
 //!   the second pass.
 //! - [`worker`] — text reconciliation loop. Polls the DB for
-//!   un-redacted rows on the four text-bearing tables (`ocr_text`,
-//!   `audio_transcriptions`, `accessibility`, `ui_events`).
+//!   un-redacted rows on the text-bearing surfaces (`frames.full_text`,
+//!   `audio_transcriptions`, `frames.accessibility_text`, `ui_events`).
 //!
 //! ### Image
 //!

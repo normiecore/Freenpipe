@@ -54,6 +54,7 @@ pub struct AudioChunkInfo {
 
 /// Data for a single window result to be batch-inserted with its frame.
 /// Used by `insert_frames_with_ocr_batch` to reduce write lock contention.
+/// `text` becomes the frame's `full_text` and `text_json` its `text_json`.
 #[derive(Debug, Clone)]
 pub struct FrameWindowData {
     pub app_name: Option<String>,
@@ -131,6 +132,8 @@ pub struct OCRResult {
     pub file_path: String,
     pub offset_index: i64,
     pub app_name: String,
+    /// Kept for API compatibility and always empty: the OCR engine is no longer
+    /// recorded per frame since the `ocr_text` table was retired.
     pub ocr_engine: String,
     pub window_name: String,
     pub tags: Vec<String>,
