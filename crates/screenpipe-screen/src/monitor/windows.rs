@@ -219,8 +219,12 @@ mod system {
 
     /// The monitor with `id`, for opening a persistent capture session.
     pub(crate) fn find_monitor(id: u32) -> Result<NativeMonitor> {
-        select_monitor(enumerate_monitors()?, id)
-            .ok_or_else(|| anyhow!("monitor {} requested for persistent capture was not found", id))
+        select_monitor(enumerate_monitors()?, id).ok_or_else(|| {
+            anyhow!(
+                "monitor {} requested for persistent capture was not found",
+                id
+            )
+        })
     }
 }
 
@@ -323,7 +327,10 @@ mod tests {
         );
         let data = m.monitor_data();
         assert_eq!(data.name, r"\\.\DISPLAY3");
-        assert_eq!((data.width, data.height, data.x, data.y), (1920, 1080, 0, 0));
+        assert_eq!(
+            (data.width, data.height, data.x, data.y),
+            (1920, 1080, 0, 0)
+        );
         assert!(data.is_primary);
     }
 

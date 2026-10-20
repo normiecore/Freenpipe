@@ -225,7 +225,9 @@ pub fn bgra_to_rgba(
 /// Lock a mutex, recovering the data if a previous holder panicked. A capture
 /// slot must keep working after a panic in an unrelated frame callback.
 pub(crate) fn lock_recover<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
-    mutex.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+    mutex
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
 }
 
 /// Why [`FrameSlot::wait_latest`] returned without a frame.
@@ -364,10 +366,10 @@ mod native {
         D3D_DRIVER_TYPE, D3D_DRIVER_TYPE_HARDWARE, D3D_DRIVER_TYPE_WARP,
     };
     use windows::Win32::Graphics::Direct3D11::{
-        D3D11CreateDevice, ID3D11Device, ID3D11DeviceContext, ID3D11Multithread,
-        ID3D11Texture2D, D3D11_CPU_ACCESS_READ, D3D11_CREATE_DEVICE_BGRA_SUPPORT,
-        D3D11_MAPPED_SUBRESOURCE, D3D11_MAP_READ, D3D11_SDK_VERSION, D3D11_TEXTURE2D_DESC,
-        D3D11_USAGE_DEFAULT, D3D11_USAGE_STAGING,
+        D3D11CreateDevice, ID3D11Device, ID3D11DeviceContext, ID3D11Multithread, ID3D11Texture2D,
+        D3D11_CPU_ACCESS_READ, D3D11_CREATE_DEVICE_BGRA_SUPPORT, D3D11_MAPPED_SUBRESOURCE,
+        D3D11_MAP_READ, D3D11_SDK_VERSION, D3D11_TEXTURE2D_DESC, D3D11_USAGE_DEFAULT,
+        D3D11_USAGE_STAGING,
     };
     use windows::Win32::Graphics::Dxgi::Common::{DXGI_FORMAT_B8G8R8A8_UNORM, DXGI_SAMPLE_DESC};
     use windows::Win32::Graphics::Dxgi::{IDXGIAdapter, IDXGIDevice};
@@ -553,7 +555,9 @@ mod native {
                 cache.last_hardware_attempt = Some(Instant::now());
                 match D3DDevice::create_with(D3D_DRIVER_TYPE_HARDWARE, DeviceKind::Hardware) {
                     Ok(hardware) => {
-                        info!("hardware D3D11 device is available again; new WGC sessions leave WARP");
+                        info!(
+                            "hardware D3D11 device is available again; new WGC sessions leave WARP"
+                        );
                         let hardware = Arc::new(hardware);
                         cache.device = Some(hardware.clone());
                         return Ok(hardware);
@@ -571,7 +575,10 @@ mod native {
         if device.kind == DeviceKind::Warp {
             cache.last_hardware_attempt = Some(Instant::now());
         }
-        info!("created {} D3D11 device for WGC capture", device.kind.label());
+        info!(
+            "created {} D3D11 device for WGC capture",
+            device.kind.label()
+        );
         cache.device = Some(device.clone());
         Ok(device)
     }
@@ -579,7 +586,11 @@ mod native {
     /// Drop `device` from the cache so the next session creates a new one.
     fn forget_device(device: &Arc<D3DDevice>) {
         let mut cache = lock_recover(&DEVICE_CACHE);
-        if cache.device.as_ref().is_some_and(|d| Arc::ptr_eq(d, device)) {
+        if cache
+            .device
+            .as_ref()
+            .is_some_and(|d| Arc::ptr_eq(d, device))
+        {
             cache.device = None;
         }
     }
@@ -644,8 +655,13 @@ mod native {
                     );
                     // Give the buffer back before the pool reallocates.
                     drop(frame);
-                    pool.Recreate(&self.device.winrt, PIXEL_FORMAT, FRAME_POOL_BUFFERS, content)
-                        .context("Direct3D11CaptureFramePool.Recreate failed")?;
+                    pool.Recreate(
+                        &self.device.winrt,
+                        PIXEL_FORMAT,
+                        FRAME_POOL_BUFFERS,
+                        content,
+                    )
+                    .context("Direct3D11CaptureFramePool.Recreate failed")?;
                     *pool_size = (content.Width, content.Height);
                     return Ok(());
                 }
@@ -775,17 +791,16 @@ mod native {
             };
 
             let frame_shared = shared.clone();
-            let frame_handler =
-                TypedEventHandler::<Direct3D11CaptureFramePool, IInspectable>::new(
-                    move |pool, _| {
-                        if let Some(pool) = pool.as_ref() {
-                            if let Err(e) = frame_shared.on_frame_arrived(pool) {
-                                frame_shared.on_callback_error(e);
-                            }
+            let frame_handler = TypedEventHandler::<Direct3D11CaptureFramePool, IInspectable>::new(
+                move |pool, _| {
+                    if let Some(pool) = pool.as_ref() {
+                        if let Err(e) = frame_shared.on_frame_arrived(pool) {
+                            frame_shared.on_callback_error(e);
                         }
-                        Ok(())
-                    },
-                );
+                    }
+                    Ok(())
+                },
+            );
             capture.frame_token = Some(
                 capture
                     .pool
@@ -794,15 +809,16 @@ mod native {
             );
 
             let closed_shared = shared;
-            let closed_handler =
-                TypedEventHandler::<GraphicsCaptureItem, IInspectable>::new(move |_, _| {
+            let closed_handler = TypedEventHandler::<GraphicsCaptureItem, IInspectable>::new(
+                move |_, _| {
                     info!(
                         "WGC capture item for monitor {} closed (monitor unplugged or session invalidated)",
                         closed_shared.monitor_id
                     );
                     closed_shared.slot.close("capture item closed");
                     Ok(())
-                });
+                },
+            );
             capture.closed_token = Some(
                 capture
                     .item
@@ -874,9 +890,7 @@ mod native {
                     Ok(image)
                 }
                 Err(e) => {
-                    let hresult = e
-                        .downcast_ref::<windows::core::Error>()
-                        .map(|w| w.code().0);
+                    let hresult = e.downcast_ref::<windows::core::Error>().map(|w| w.code().0);
                     match self.shared.close_if_device_lost(hresult) {
                         Some(reason) => Err(e.context(reason)),
                         None => Err(e),
@@ -922,9 +936,8 @@ mod native {
                     Some(len) if !mapped.pData.is_null() => {
                         // SAFETY: Map succeeded, so pData points at `height`
                         // rows of `RowPitch` bytes that stay valid until Unmap.
-                        let bytes = unsafe {
-                            std::slice::from_raw_parts(mapped.pData as *const u8, len)
-                        };
+                        let bytes =
+                            unsafe { std::slice::from_raw_parts(mapped.pData as *const u8, len) };
                         bgra_to_rgba(bytes, pitch, width, height).map_err(anyhow::Error::from)
                     }
                     _ => Err(anyhow!("mapped WGC staging texture is empty")),

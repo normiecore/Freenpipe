@@ -82,9 +82,7 @@ mod windows_smoke {
             let mut value = || args.next().ok_or_else(|| format!("{} needs a value", arg));
             match arg.as_str() {
                 "--frames" => {
-                    options.frames = value()?
-                        .parse()
-                        .map_err(|e| format!("--frames: {}", e))?
+                    options.frames = value()?.parse().map_err(|e| format!("--frames: {}", e))?
                 }
                 "--interval-ms" => {
                     options.interval = Duration::from_millis(
@@ -95,7 +93,9 @@ mod windows_smoke {
                 }
                 "--out" => options.out = PathBuf::from(value()?),
                 "-h" | "--help" => {
-                    return Err("usage: wgc_smoke [--frames N] [--interval-ms MS] [--out DIR]".into())
+                    return Err(
+                        "usage: wgc_smoke [--frames N] [--interval-ms MS] [--out DIR]".into(),
+                    )
                 }
                 other => return Err(format!("unknown argument {}", other)),
             }
@@ -187,9 +187,17 @@ mod windows_smoke {
                 }
             };
             let lit = lit_fraction(&image);
-            let path = options.out.join(format!("monitor-{}-frame-{:02}.jpg", id, n));
+            let path = options
+                .out
+                .join(format!("monitor-{}-frame-{:02}.jpg", id, n));
             if let Err(e) = save_jpeg(&image, &path) {
-                println!("monitor {} frame {}: writing {} failed: {}", id, n, path.display(), e);
+                println!(
+                    "monitor {} frame {}: writing {} failed: {}",
+                    id,
+                    n,
+                    path.display(),
+                    e
+                );
                 continue;
             }
             let ok = lit >= MIN_LIT_FRACTION;
@@ -236,7 +244,10 @@ mod windows_smoke {
             return ExitCode::FAILURE;
         }
 
-        let runtime = match tokio::runtime::Builder::new_current_thread().enable_all().build() {
+        let runtime = match tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+        {
             Ok(rt) => rt,
             Err(e) => {
                 eprintln!("tokio runtime: {}", e);

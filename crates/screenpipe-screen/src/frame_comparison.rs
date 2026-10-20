@@ -877,7 +877,10 @@ mod tests {
             ..Default::default()
         };
         let mut comparer = FrameComparer::new(config);
-        assert_eq!(comparer.compare(&create_solid_image(400, 400, 10, 10, 10)), 1.0);
+        assert_eq!(
+            comparer.compare(&create_solid_image(400, 400, 10, 10, 10)),
+            1.0
+        );
 
         comparer.allocator = fail_above_small;
         assert_eq!(
