@@ -1,15 +1,15 @@
 {
- "generated_at": "2026-10-20T21:52:03Z",
+ "generated_at": "2026-10-20T21:58:08Z",
  "generator": "python3 tools/plan/status.py --write",
  "main": {
   "ref": "origin/main",
-  "sha": "66e92687ff3747088c03e9b97d51b1a8f61ca9a7",
-  "code_sha": "66e92687ff3747088c03e9b97d51b1a8f61ca9a7",
+  "sha": "09b9976df2dfd287c54e0a411ff0781d5e1d1c86",
+  "code_sha": "09b9976df2dfd287c54e0a411ff0781d5e1d1c86",
   "ci": {
    "state": "pending",
    "checks": {
-    "test-windows": "in_progress",
-    "trufflehog": "in_progress"
+    "test-windows": "queued",
+    "trufflehog": "queued"
    },
    "missing": [
     "windows",
@@ -19,31 +19,31 @@
    "max_attempt": 1,
    "runs": [
     {
-     "id": 39503776418,
+     "id": 39504550889,
+     "name": "Windows CLI Integration Test",
+     "event": "push",
+     "status": "queued",
+     "conclusion": null,
+     "attempt": 1,
+     "url": "https://github.com/normiecore/Freenpipe/actions/runs/39504550889"
+    },
+    {
+     "id": 39504550900,
      "name": "Freenpipe CI",
      "event": "push",
      "status": "pending",
      "conclusion": null,
      "attempt": 1,
-     "url": "https://github.com/normiecore/Freenpipe/actions/runs/39503776418"
+     "url": "https://github.com/normiecore/Freenpipe/actions/runs/39504550900"
     },
     {
-     "id": 39503776443,
-     "name": "Windows CLI Integration Test",
-     "event": "push",
-     "status": "in_progress",
-     "conclusion": null,
-     "attempt": 1,
-     "url": "https://github.com/normiecore/Freenpipe/actions/runs/39503776443"
-    },
-    {
-     "id": 39503776518,
+     "id": 39504550967,
      "name": "Secret Scan (trufflehog)",
      "event": "push",
-     "status": "in_progress",
+     "status": "queued",
      "conclusion": null,
      "attempt": 1,
-     "url": "https://github.com/normiecore/Freenpipe/actions/runs/39503776518"
+     "url": "https://github.com/normiecore/Freenpipe/actions/runs/39504550967"
     }
    ]
   }
@@ -63,13 +63,13 @@
   ]
  },
  "summary": {
-  "merged": 27,
-  "in_review": 2,
+  "merged": 28,
+  "in_review": 1,
   "claimed": 4,
-  "ready": 26,
-  "blocked": 96,
+  "ready": 28,
+  "blocked": 94,
   "total": 155,
-  "percent_merged": 17.4
+  "percent_merged": 18.1
  },
  "waves": [
   {
@@ -98,8 +98,8 @@
    "wave": 2,
    "name": "Engine data layer and core backends",
    "total": 27,
-   "merged": 9,
-   "in_review": 2,
+   "merged": 10,
+   "in_review": 1,
    "claimed": 3,
    "ready": 13,
    "blocked": 0,
@@ -112,8 +112,8 @@
    "merged": 0,
    "in_review": 0,
    "claimed": 1,
-   "ready": 12,
-   "blocked": 18,
+   "ready": 13,
+   "blocked": 17,
    "complete": false
   },
   {
@@ -123,8 +123,8 @@
    "merged": 0,
    "in_review": 0,
    "claimed": 0,
-   "ready": 1,
-   "blocked": 21,
+   "ready": 2,
+   "blocked": 20,
    "complete": false
   },
   {
@@ -584,13 +584,13 @@
    ],
    "branch": {
     "name": "wp/W2-10",
-    "sha": "4d605dfd69974babf59b6c5cec519e4f55e73be3",
+    "sha": "cf4f12d64176cc6c6fc93c4997d2e017aa1b1e96",
     "claimed_by": null,
     "claimed_at": null,
-    "last_commit_at": "2026-10-20T21:39:55Z",
-    "head_subject": "wip(W2-10): static SQL literal in the routes test helper",
-    "commits_ahead": 3,
-    "work_commits": 3
+    "last_commit_at": "2026-10-20T21:52:32Z",
+    "head_subject": "fix(W2-10): compaction binds every frame of its batch",
+    "commits_ahead": 4,
+    "work_commits": 4
    },
    "status": "claimed",
    "stale": false
@@ -750,73 +750,9 @@
    "depends_on": [
     "W1-03"
    ],
-   "branch": {
-    "name": "wp/W2-23",
-    "sha": "9392d492faee4fcef2fc62750682019191459f7c",
-    "claimed_by": null,
-    "claimed_at": null,
-    "last_commit_at": "2026-10-20T20:38:18Z",
-    "head_subject": "docs(W2-23): record the real-install check of the stale and foreign rebuilds",
-    "commits_ahead": 11,
-    "work_commits": 11
-   },
-   "status": "in_review",
-   "pr": {
-    "number": 27,
-    "url": "https://github.com/normiecore/Freenpipe/pull/27",
-    "head_sha": "9392d492faee4fcef2fc62750682019191459f7c",
-    "title": "W2-23: Pi runtime 0.84.1, isolated config, baseline bun, compaction patch",
-    "created_at": "2026-10-20T21:04:35Z",
-    "updated_at": "2026-10-20T21:05:02Z",
-    "ci": {
-     "state": "pending",
-     "checks": {
-      "gates": "success",
-      "linux": "success",
-      "test-windows": "success",
-      "trufflehog": "success",
-      "windows": "in_progress"
-     },
-     "missing": [],
-     "max_attempt": 1,
-     "runs": [
-      {
-       "id": 39497393239,
-       "name": "Secret Scan (trufflehog)",
-       "event": "pull_request",
-       "status": "completed",
-       "conclusion": "success",
-       "attempt": 1,
-       "url": "https://github.com/normiecore/Freenpipe/actions/runs/39497393239"
-      },
-      {
-       "id": 39497393316,
-       "name": "Windows CLI Integration Test",
-       "event": "pull_request",
-       "status": "completed",
-       "conclusion": "success",
-       "attempt": 1,
-       "url": "https://github.com/normiecore/Freenpipe/actions/runs/39497393316"
-      },
-      {
-       "id": 39497393332,
-       "name": "Freenpipe CI",
-       "event": "pull_request",
-       "status": "in_progress",
-       "conclusion": null,
-       "attempt": 1,
-       "url": "https://github.com/normiecore/Freenpipe/actions/runs/39497393332"
-      }
-     ]
-    },
-    "review": {
-     "state": "pending",
-     "comment": null,
-     "reason": null
-    },
-    "mergeable": null,
-    "mergeable_state": "unknown"
-   }
+   "status": "merged",
+   "merge_commit": "1d22b9eb9acd4a306d850d13259d22af7096faf0",
+   "merged_at": "2026-10-20T21:57:29Z"
   },
   {
    "id": "W2-24",
@@ -1161,10 +1097,7 @@
    "depends_on": [
     "W2-23"
    ],
-   "unmet_deps": [
-    "W2-23"
-   ],
-   "status": "blocked"
+   "status": "ready"
   },
   {
    "id": "W3-24",
@@ -1303,7 +1236,6 @@
     "W2-27"
    ],
    "unmet_deps": [
-    "W2-23",
     "W2-27"
    ],
    "status": "blocked"
@@ -1326,10 +1258,7 @@
    "depends_on": [
     "W2-23"
    ],
-   "unmet_deps": [
-    "W2-23"
-   ],
-   "status": "blocked"
+   "status": "ready"
   },
   {
    "id": "W4-06",
@@ -1341,7 +1270,6 @@
     "W3-23"
    ],
    "unmet_deps": [
-    "W2-23",
     "W3-23"
    ],
    "status": "blocked"
