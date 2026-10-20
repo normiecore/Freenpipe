@@ -505,6 +505,56 @@ mod tests {
             result[0].frame_data[0].audio_entries[0].transcription,
             "hello"
         );
+        assert!(!result[0].frame_data[0].audio_entries[0].is_live);
+    }
+
+    /// Live meeting rows warmed into the cache keep their flag and their
+    /// per-segment negative ids on the way back out.
+    #[tokio::test]
+    async fn live_meeting_audio_keeps_is_live() {
+        let cache = HotFrameCache::new();
+        let now = Utc::now();
+        cache
+            .push_frame(HotFrame {
+                frame_id: 1,
+                timestamp: now,
+                device_name: "monitor_0".into(),
+                app_name: "Zoom".into(),
+                window_name: "Meeting".into(),
+                ocr_text_preview: "".into(),
+                snapshot_path: "/tmp/test.jpg".into(),
+                browser_url: None,
+                capture_trigger: "idle".into(),
+                offset_index: 0,
+                fps: 0.033,
+                machine_id: None,
+            })
+            .await;
+        for (id, offset) in [(-3_i64, 1), (-4, 2)] {
+            cache
+                .push_audio(HotAudio {
+                    audio_chunk_id: id,
+                    timestamp: now + chrono::Duration::seconds(offset),
+                    transcription: format!("live {id}").into(),
+                    device_name: "System Audio".into(),
+                    is_input: false,
+                    audio_file_path: "".into(),
+                    duration_secs: 0.0,
+                    start_time: None,
+                    end_time: None,
+                    speaker_id: None,
+                    speaker_name: Some("speaker 1".into()),
+                    is_live: true,
+                })
+                .await;
+        }
+
+        let entries = cache.find_audio_near(now).await;
+        assert_eq!(entries.len(), 2);
+        assert!(entries.iter().all(|a| a.is_live));
+        let mut ids: Vec<i64> = entries.iter().map(|a| a.audio_chunk_id).collect();
+        ids.sort();
+        assert_eq!(ids, vec![-4, -3]);
     }
 
     #[tokio::test]
