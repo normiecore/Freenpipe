@@ -59,6 +59,7 @@ fn make_audio(id: i64, frame_ts: chrono::DateTime<Utc>) -> HotAudio {
         end_time: Some(30.0),
         speaker_id: Some(1),
         speaker_name: Some("Speaker 1".into()),
+        is_live: false,
     }
 }
 
