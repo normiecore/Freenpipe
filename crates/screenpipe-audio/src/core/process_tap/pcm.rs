@@ -75,10 +75,12 @@ impl SampleLayout {
             (FORMAT_TAG_PCM, 2) => SampleEncoding::I16,
             (FORMAT_TAG_PCM, 3) => SampleEncoding::I24Packed,
             (FORMAT_TAG_PCM, 4) => SampleEncoding::I32,
-            _ => return Err(format!(
+            _ => {
+                return Err(format!(
                 "unsupported audio format: tag {:#06x}, {} bits, block align {} for {} channels",
                 tag, desc.bits_per_sample, desc.block_align, desc.channels
-            )),
+            ))
+            }
         };
         if desc.block_align as usize != container_bytes * desc.channels as usize {
             return Err(format!(

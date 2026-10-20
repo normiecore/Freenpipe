@@ -413,9 +413,10 @@ pub fn choose_exclusion(
 /// The target the system-audio stream should be on.
 ///
 /// Per-process exclusion is used only when the build supports it and the
-/// chosen root has not already failed to activate; every other case is the
-/// plain default-endpoint loopback, so capture never goes silent because of
-/// an exclusion.
+/// chosen root is not in `untappable` (roots waiting out a retry delay after
+/// a failed activation, see [`UntappableRoots::blocked`]); every other case
+/// is the plain default-endpoint loopback, so capture never goes silent
+/// because of an exclusion.
 pub fn desired_system_target(
     support: ProcessLoopbackSupport,
     exclusion: Option<&ExclusionChoice>,
@@ -570,33 +571,114 @@ impl DefaultEndpointFollow {
     }
 }
 
-/// Remembers per-process roots that could not be tapped so each is logged
-/// once and not retried while that root is running.
-#[derive(Debug, Default)]
+/// Delay before a root whose tap failed is tried again.
+pub const UNTAPPABLE_RETRY_BASE: Duration = Duration::from_secs(60);
+/// Longest delay between tries while a root keeps failing.
+pub const UNTAPPABLE_RETRY_MAX: Duration = Duration::from_secs(15 * 60);
+
+/// What [`UntappableRoots::mark`] recorded.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct UntappableMark {
+    /// First failure of this root while it runs: the caller warns once.
+    /// Later failures are only worth a debug line.
+    pub first: bool,
+    /// How long the root is skipped before the next try.
+    pub retry_in: Duration,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct RetryBackoff {
+    failures: u32,
+    retry_at: Instant,
+}
+
+/// Per-process roots whose tap failed.
+///
+/// Most failures are passing conditions (the audio service is slow after
+/// wake, an endpoint is being swapped), and an exclusion that is off records
+/// audio the user asked to leave out, so a failed root is only skipped until
+/// its retry time: [`UNTAPPABLE_RETRY_BASE`] after the first failure,
+/// doubling up to [`UNTAPPABLE_RETRY_MAX`] while it keeps failing. A tap on
+/// the root that works resets the delay. Each root is reported once while it
+/// runs; an exited root is forgotten, so a relaunched app starts afresh.
+#[derive(Debug)]
 pub struct UntappableRoots {
-    roots: HashSet<u32>,
+    base: Duration,
+    max: Duration,
+    failing: HashMap<u32, RetryBackoff>,
+    reported: HashSet<u32>,
+}
+
+impl Default for UntappableRoots {
+    fn default() -> Self {
+        Self::new(UNTAPPABLE_RETRY_BASE, UNTAPPABLE_RETRY_MAX)
+    }
 }
 
 impl UntappableRoots {
-    /// Marks `pid`; returns `true` the first time (the caller logs then).
-    pub fn mark(&mut self, pid: u32) -> bool {
-        self.roots.insert(pid)
+    pub fn new(base: Duration, max: Duration) -> Self {
+        Self {
+            base,
+            max: max.max(base),
+            failing: HashMap::new(),
+            reported: HashSet::new(),
+        }
     }
 
-    pub fn set(&self) -> &HashSet<u32> {
-        &self.roots
+    /// Records a failed tap on `pid` at `now` and schedules the next try.
+    pub fn mark(&mut self, pid: u32, now: Instant) -> UntappableMark {
+        let entry = self.failing.entry(pid).or_insert(RetryBackoff {
+            failures: 0,
+            retry_at: now,
+        });
+        entry.failures = entry.failures.saturating_add(1);
+        let retry_in = retry_delay(self.base, self.max, entry.failures);
+        entry.retry_at = now + retry_in;
+        UntappableMark {
+            first: self.reported.insert(pid),
+            retry_in,
+        }
+    }
+
+    /// Whether `pid` is still waiting out its retry delay at `now`.
+    pub fn is_blocked(&self, pid: u32, now: Instant) -> bool {
+        self.failing
+            .get(&pid)
+            .is_some_and(|backoff| now < backoff.retry_at)
+    }
+
+    /// The roots that must not be tried at `now`.
+    pub fn blocked(&self, now: Instant) -> HashSet<u32> {
+        self.failing
+            .iter()
+            .filter(|(_, backoff)| now < backoff.retry_at)
+            .map(|(pid, _)| *pid)
+            .collect()
+    }
+
+    /// A tap on `pid` works: a later failure starts from the base delay.
+    pub fn note_tapped(&mut self, pid: u32) {
+        self.failing.remove(&pid);
     }
 
     /// Forgets roots that are no longer running, so a relaunched app (new
     /// pid) gets a fresh attempt.
     pub fn retain_running(&mut self, snapshot: &ProcessSnapshot) {
-        self.roots.retain(|pid| snapshot.contains(*pid));
+        self.failing.retain(|pid, _| snapshot.contains(*pid));
+        self.reported.retain(|pid| snapshot.contains(*pid));
     }
 }
 
-/// Counts engine failures per device in a sliding window. After
-/// `max_failures` the caller stops using the engine for that device for the
-/// rest of the session and uses the cpal loopback instead.
+/// `base` after the first failure, doubled per further failure, capped.
+fn retry_delay(base: Duration, max: Duration, failures: u32) -> Duration {
+    let doublings = failures.saturating_sub(1).min(16);
+    base.saturating_mul(1u32 << doublings).min(max)
+}
+
+/// Counts engine failures per device in a sliding window. While a device
+/// has `max_failures` inside the window the caller skips the engine for it
+/// and uses the cpal loopback; once enough of them are older than the window
+/// the engine is allowed again.
 #[derive(Debug)]
 pub struct FailureWindow {
     window: Duration,
@@ -1047,14 +1129,88 @@ mod tests {
     }
 
     #[test]
-    fn untappable_roots_log_once_and_expire() {
+    fn untappable_roots_retry_with_backoff() {
+        let t = Instant::now();
+        let secs = Duration::from_secs;
         let mut u = UntappableRoots::default();
-        assert!(u.mark(100));
-        assert!(!u.mark(100));
-        assert!(u.set().contains(&100));
+        assert!(!u.is_blocked(100, t));
+
+        // First failure: reported, skipped for a minute.
+        let first = u.mark(100, t);
+        assert_eq!(
+            first,
+            UntappableMark {
+                first: true,
+                retry_in: secs(60)
+            }
+        );
+        assert!(u.is_blocked(100, t + secs(59)));
+        assert!(u.blocked(t + secs(59)).contains(&100));
+        // The mark expires: the exclusion is tried again.
+        assert!(!u.is_blocked(100, t + secs(60)));
+        assert!(u.blocked(t + secs(60)).is_empty());
+
+        // Each further failure doubles the delay, quietly, up to 15 min.
+        let mut at = t + secs(60);
+        for expected in [120, 240, 480, 900, 900] {
+            let mark = u.mark(100, at);
+            assert!(!mark.first);
+            assert_eq!(mark.retry_in, secs(expected));
+            assert!(u.is_blocked(100, at + secs(expected) - secs(1)));
+            at += secs(expected);
+            assert!(!u.is_blocked(100, at));
+        }
+
+        // A tap that works resets the delay but not the report.
+        u.note_tapped(100);
+        assert!(!u.is_blocked(100, at));
+        let again = u.mark(100, at);
+        assert!(!again.first);
+        assert_eq!(again.retry_in, secs(60));
+
+        // Other roots are independent.
+        assert!(!u.is_blocked(200, at));
+        assert!(u.mark(200, at).first);
+    }
+
+    #[test]
+    fn untappable_roots_forget_exited_processes() {
+        let t = Instant::now();
+        let mut u = UntappableRoots::new(Duration::from_secs(10), Duration::from_secs(40));
+        assert!(u.mark(100, t).first);
+        assert!(u.mark(200, t).first);
         u.retain_running(&ProcessSnapshot::new(vec![p(200, 1, "x.exe")]));
-        assert!(!u.set().contains(&100));
-        assert!(u.mark(100));
+        // 100 exited: not blocked, and a new failure is reported again.
+        assert!(!u.is_blocked(100, t));
+        assert!(u.is_blocked(200, t));
+        let fresh = u.mark(100, t);
+        assert!(fresh.first);
+        assert_eq!(fresh.retry_in, Duration::from_secs(10));
+        // 200 kept its count: second failure, doubled delay.
+        assert_eq!(u.mark(200, t).retry_in, Duration::from_secs(20));
+        assert_eq!(u.mark(200, t).retry_in, Duration::from_secs(40));
+        assert_eq!(u.mark(200, t).retry_in, Duration::from_secs(40));
+    }
+
+    #[test]
+    fn untappable_roots_feed_the_system_target() {
+        let t = Instant::now();
+        let choice = ExclusionChoice {
+            exe_name: "chrome.exe".to_string(),
+            root_pid: 100,
+            uncovered_roots: vec![],
+        };
+        let ok = ProcessLoopbackSupport::Available { build: 22631 };
+        let mut u = UntappableRoots::default();
+        u.mark(100, t);
+        assert_eq!(
+            desired_system_target(ok, Some(&choice), &u.blocked(t + Duration::from_secs(30))),
+            LoopbackTarget::DefaultRenderEndpoint
+        );
+        assert_eq!(
+            desired_system_target(ok, Some(&choice), &u.blocked(t + Duration::from_secs(60))),
+            LoopbackTarget::ExcludeProcessTree { pid: 100 }
+        );
     }
 
     #[test]

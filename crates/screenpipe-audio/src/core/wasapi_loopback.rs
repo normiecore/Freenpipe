@@ -29,13 +29,16 @@
 //!
 //! Every timeout and failure keeps audio flowing: a per-process activation
 //! that fails or times out falls back to the plain default-endpoint loopback
-//! (each untappable root is logged once), a broken client is rebuilt with
-//! backoff, and a stream that cannot start in time makes the caller fall back
-//! to the cpal loopback. After repeated failures on one device the engine
-//! steps aside for that device for the rest of the session.
+//! (each untappable root is logged once and tried again after a backoff of
+//! 60 s doubling to 15 min, so a passing failure does not switch an exclusion
+//! off for good), a broken client is rebuilt with backoff, and a stream that
+//! cannot start in time makes the caller fall back to the cpal loopback.
+//! After repeated failures on one device the engine steps aside for that
+//! device until those failures are older than the 15-minute window.
 
 use std::collections::HashSet;
 use std::ffi::c_void;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
@@ -184,24 +187,31 @@ fn record_engine_failure(device: &str) {
     }
 }
 
-/// Whether the engine should open `device`. After repeated failures on a
-/// device within the window, the cpal loopback is used for it instead.
+/// Whether the engine should open `device`. While a device has
+/// [`MAX_ENGINE_FAILURES`] failures inside [`FAILURE_WINDOW`], the cpal
+/// loopback is used for it instead; once they age out of the window the
+/// engine is tried again. Each such period is logged once.
 pub fn engine_allowed_for(device: &str) -> bool {
-    static LOGGED: OnceLock<Mutex<HashSet<String>>> = OnceLock::new();
+    static SKIPPING: OnceLock<Mutex<HashSet<String>>> = OnceLock::new();
     let exhausted = failure_registry()
         .lock()
         .map(|reg| reg.is_exhausted(device, Instant::now()))
         .unwrap_or(false);
-    if exhausted {
-        let logged = LOGGED.get_or_init(|| Mutex::new(HashSet::new()));
-        if logged
-            .lock()
-            .map(|mut set| set.insert(device.to_string()))
-            .unwrap_or(false)
-        {
-            warn!(
-                "{ENGINE_LABEL}: loopback engine failed {MAX_ENGINE_FAILURES} times for '{device}'; \
-                 using the cpal loopback for it from now on"
+    let skipping = SKIPPING.get_or_init(|| Mutex::new(HashSet::new()));
+    if let Ok(mut set) = skipping.lock() {
+        let window_min = FAILURE_WINDOW.as_secs() / 60;
+        if exhausted {
+            if set.insert(device.to_string()) {
+                warn!(
+                    "{ENGINE_LABEL}: loopback engine failed {MAX_ENGINE_FAILURES} times within \
+                     {window_min} min for '{device}'; using the cpal loopback for it until those \
+                     failures are more than {window_min} min old"
+                );
+            }
+        } else if set.remove(device) {
+            info!(
+                "{ENGINE_LABEL}: earlier engine failures for '{device}' are more than \
+                 {window_min} min old; using the loopback engine for it again"
             );
         }
     }
@@ -223,6 +233,25 @@ pub async fn spawn_loopback_capture(
     tx: broadcast::Sender<Vec<f32>>,
     is_disconnected: Arc<AtomicBool>,
 ) -> Result<(AudioStreamConfig, tokio::task::JoinHandle<()>)> {
+    spawn_capture(
+        request,
+        device_label,
+        tx,
+        is_disconnected,
+        exclusions::config_path(),
+    )
+    .await
+}
+
+/// [`spawn_loopback_capture`] with the exclusion file location passed in,
+/// so tests never read the user's real `audio-exclusions.json`.
+async fn spawn_capture(
+    request: CaptureRequest,
+    device_label: String,
+    tx: broadcast::Sender<Vec<f32>>,
+    is_disconnected: Arc<AtomicBool>,
+    exclusions_path: PathBuf,
+) -> Result<(AudioStreamConfig, tokio::task::JoinHandle<()>)> {
     let (started_tx, started_rx) = tokio::sync::oneshot::channel();
     let abandoned = Arc::new(AtomicBool::new(false));
     let ctx = ThreadContext {
@@ -231,6 +260,7 @@ pub async fn spawn_loopback_capture(
         tx,
         is_disconnected,
         abandoned: abandoned.clone(),
+        exclusions_path,
     };
     let handle = tokio::task::spawn_blocking(move || run_capture_thread(ctx, started_tx));
 
@@ -264,6 +294,8 @@ struct ThreadContext {
     tx: broadcast::Sender<Vec<f32>>,
     is_disconnected: Arc<AtomicBool>,
     abandoned: Arc<AtomicBool>,
+    /// Where `audio-exclusions.json` is read from.
+    exclusions_path: PathBuf,
 }
 
 fn run_capture_thread(
@@ -443,6 +475,18 @@ pub fn snapshot_processes() -> Result<ProcessSnapshot> {
             }
         }
         Ok(ProcessSnapshot::new(rows))
+    }
+}
+
+/// Whether `pid` is in the process list. A snapshot that fails counts as
+/// running, so a passing ToolHelp error never ends a capture.
+fn process_is_running(pid: u32) -> bool {
+    match snapshot_processes() {
+        Ok(snapshot) => snapshot.contains(pid),
+        Err(e) => {
+            debug!("{e:#}; assuming pid {pid} still runs");
+            true
+        }
     }
 }
 
@@ -918,13 +962,45 @@ struct ExclusionState {
 }
 
 impl ExclusionState {
-    fn new() -> Self {
+    fn new(path: &Path) -> Self {
         Self {
-            file: ExclusionFile::new(exclusions::config_path()),
+            file: ExclusionFile::new(path.to_path_buf()),
             untappable: UntappableRoots::default(),
             choice: None,
             logged_unsupported: false,
             logged_uncovered: HashSet::new(),
+        }
+    }
+
+    /// The target the system-audio stream should be on right now; a root
+    /// still waiting out its retry delay is not tried.
+    fn desired_target(&self, support: ProcessLoopbackSupport) -> LoopbackTarget {
+        let blocked = self.untappable.blocked(Instant::now());
+        desired_system_target(support, self.choice.as_ref(), &blocked)
+    }
+
+    /// Records a failed exclude tap on `pid`: the root waits out its retry
+    /// delay, and only its first failure while it runs is a warning.
+    fn note_untappable(&mut self, pid: u32, e: &anyhow::Error) {
+        let mark = self.untappable.mark(pid, Instant::now());
+        let exe = self
+            .choice
+            .as_ref()
+            .filter(|c| c.root_pid == pid)
+            .map(|c| c.exe_name.clone())
+            .unwrap_or_else(|| "excluded app".to_string());
+        if mark.first {
+            warn!(
+                "{ENGINE_LABEL}: {exe} (process tree {pid}) cannot be excluded: {e:#}; \
+                 capturing the whole system mix and trying again in {}s",
+                mark.retry_in.as_secs()
+            );
+        } else {
+            debug!(
+                "{ENGINE_LABEL}: {exe} (process tree {pid}) still cannot be excluded: {e:#}; \
+                 next try in {}s",
+                mark.retry_in.as_secs()
+            );
         }
     }
 }
@@ -935,6 +1011,11 @@ struct Engine {
     /// The device a named output request is bound to. `None` for the
     /// `default` sentinel and meeting taps, which follow the default instead.
     own_device: Option<OwnDevice>,
+    /// The process-tree root a meeting tap was opened for. The stream ends
+    /// when this process exits, also while it runs on the whole-output
+    /// fallback or its client is being rebuilt.
+    tap_root: Option<u32>,
+    exclusions_path: PathBuf,
     label: String,
     support: ProcessLoopbackSupport,
     output_rate: u32,
@@ -958,7 +1039,7 @@ impl Engine {
         let support = process_loopback_support();
         let (role, own_device) = resolve_role(&enumerator, &ctx.request);
         let mut exclusions = match role {
-            CaptureRole::SystemDefault => Some(ExclusionState::new()),
+            CaptureRole::SystemDefault => Some(ExclusionState::new(&ctx.exclusions_path)),
             _ => None,
         };
 
@@ -970,22 +1051,26 @@ impl Engine {
                     .as_mut()
                     .expect("system stream has exclusion state");
                 evaluate_exclusions(state, support, &ctx.label);
-                desired_system_target(support, state.choice.as_ref(), state.untappable.set())
+                state.desired_target(support)
             }
             CaptureRole::NamedEndpoint(name) => LoopbackTarget::Endpoint { name: name.clone() },
             CaptureRole::ProcessTree(pids) => initial_process_tree_target(support, pids),
         };
+        let tap_root = match (&role, &first) {
+            (CaptureRole::ProcessTree(_), LoopbackTarget::ProcessTree { pid }) => Some(*pid),
+            _ => None,
+        };
         let client = match open_target(&enumerator, &first, None, own_device.as_ref()) {
             Ok(client) => client,
             Err(e) if first.is_per_process() => {
-                if let (Some(state), Some(pid)) = (exclusions.as_mut(), first.watched_pid()) {
-                    state.untappable.mark(pid);
+                match (exclusions.as_mut(), first.watched_pid()) {
+                    (Some(state), Some(pid)) => state.note_untappable(pid, &e),
+                    _ => warn!(
+                        "{ENGINE_LABEL}: {first} could not be tapped for {} ({e:#}); \
+                         capturing the whole default output instead",
+                        ctx.label
+                    ),
                 }
-                warn!(
-                    "{ENGINE_LABEL}: {first} could not be tapped for {} ({e:#}); \
-                     capturing the whole default output instead",
-                    ctx.label
-                );
                 open_target(
                     &enumerator,
                     &LoopbackTarget::DefaultRenderEndpoint,
@@ -1006,6 +1091,8 @@ impl Engine {
             enumerator,
             role,
             own_device,
+            tap_root,
+            exclusions_path: ctx.exclusions_path.clone(),
             label: ctx.label.clone(),
             support,
             output_rate,
@@ -1056,6 +1143,9 @@ impl Engine {
             }
             if now.duration_since(self.last_exclusion_poll) >= EXCLUSION_POLL {
                 self.last_exclusion_poll = now;
+                if !self.poll_tap_root(ctx) {
+                    break;
+                }
                 self.poll_exclusions(now);
             }
             if self.broken.is_some() && now >= self.next_retry && !self.repair(ctx) {
@@ -1093,24 +1183,44 @@ impl Engine {
         }
         let target = self.client.target.clone();
         self.client.watch = None;
-        match (&self.role, &target) {
-            (CaptureRole::ProcessTree(_), LoopbackTarget::ProcessTree { .. }) => {
-                info!(
-                    "{ENGINE_LABEL}: loopback target {target} for {} exited; stopping the tap",
-                    self.label
-                );
-                ctx.is_disconnected.store(true, Ordering::Relaxed);
-                false
-            }
-            _ => {
-                info!(
-                    "{ENGINE_LABEL}: excluded process tree {target} exited; re-checking exclusions"
-                );
-                // Look again on the next pass instead of waiting for the poll.
-                self.last_exclusion_poll = Instant::now() - EXCLUSION_POLL;
-                true
-            }
+        let tapped_pid = match (&self.role, &target) {
+            (CaptureRole::ProcessTree(_), LoopbackTarget::ProcessTree { pid }) => Some(*pid),
+            _ => None,
+        };
+        if let Some(pid) = tapped_pid {
+            return self.stop_tap(ctx, pid);
         }
+        info!("{ENGINE_LABEL}: excluded process tree {target} exited; re-checking exclusions");
+        // Look again on the next pass instead of waiting for the poll.
+        self.last_exclusion_poll = Instant::now() - EXCLUSION_POLL;
+        true
+    }
+
+    /// A meeting tap ends when its tree root exits. The client's process
+    /// handle reports that at once (see [`Self::check_target_exit`]); without
+    /// one (`OpenProcess` failed, or the tap fell back to the whole output)
+    /// the process list is checked on the exclusion poll. Returns `false`
+    /// when the stream should end.
+    fn poll_tap_root(&mut self, ctx: &ThreadContext) -> bool {
+        let Some(pid) = self.tap_root else {
+            return true;
+        };
+        let watched = self.client.watch.as_ref().is_some_and(|w| w.pid == pid);
+        if watched || process_is_running(pid) {
+            return true;
+        }
+        self.stop_tap(ctx, pid)
+    }
+
+    /// Ends a meeting tap whose tree root `pid` exited. Always `false`.
+    fn stop_tap(&mut self, ctx: &ThreadContext, pid: u32) -> bool {
+        info!(
+            "{ENGINE_LABEL}: tapped process tree {pid} for {} exited; stopping the tap \
+             (was capturing {})",
+            self.label, self.client.target
+        );
+        ctx.is_disconnected.store(true, Ordering::Relaxed);
+        false
     }
 
     fn poll_default_endpoint(&mut self, now: Instant) {
@@ -1184,13 +1294,9 @@ impl Engine {
                      {} is now the default output and the audio exclusion list applies to it",
                     self.label
                 );
-                let mut state = ExclusionState::new();
+                let mut state = ExclusionState::new(&self.exclusions_path);
                 evaluate_exclusions(&mut state, self.support, &self.label);
-                let next = desired_system_target(
-                    self.support,
-                    state.choice.as_ref(),
-                    state.untappable.set(),
-                );
+                let next = state.desired_target(self.support);
                 self.role = CaptureRole::SystemDefault;
                 self.exclusions = Some(state);
                 self.debounce.note_switch(now);
@@ -1263,7 +1369,7 @@ impl Engine {
         let Some(state) = self.exclusions.as_mut() else {
             if !self.logged_named_exclusions {
                 if let CaptureRole::NamedEndpoint(name) = &self.role {
-                    let mut file = ExclusionFile::new(exclusions::config_path());
+                    let mut file = ExclusionFile::new(self.exclusions_path.clone());
                     file.poll();
                     if !file.exe_names().is_empty() {
                         info!(
@@ -1277,8 +1383,7 @@ impl Engine {
             return;
         };
         evaluate_exclusions(state, self.support, &self.label);
-        let desired =
-            desired_system_target(self.support, state.choice.as_ref(), state.untappable.set());
+        let desired = state.desired_target(self.support);
         if self.broken.is_some() {
             // repair() picks the desired target itself.
             return;
@@ -1322,14 +1427,27 @@ impl Engine {
 
     /// Replaces a broken client. Returns `false` when the stream gives up.
     fn repair(&mut self, ctx: &ThreadContext) -> bool {
+        // A meeting tap whose tree exited while the client was broken ends
+        // here; re-activating it would fail and fall back to recording the
+        // whole output under the tap's name.
+        if let (CaptureRole::ProcessTree(_), Some(pid)) = (&self.role, self.tap_root) {
+            if !process_is_running(pid) {
+                return self.stop_tap(ctx, pid);
+            }
+        }
         let target = match &self.role {
             CaptureRole::SystemDefault => self
                 .exclusions
                 .as_ref()
-                .map(|s| desired_system_target(self.support, s.choice.as_ref(), s.untappable.set()))
+                .map(|s| s.desired_target(self.support))
                 .unwrap_or(LoopbackTarget::DefaultRenderEndpoint),
             CaptureRole::NamedEndpoint(name) => LoopbackTarget::Endpoint { name: name.clone() },
-            CaptureRole::ProcessTree(_) => self.client.target.clone(),
+            // Back to the tree when there is one: a tap on the whole-output
+            // fallback gets another try at isolating it.
+            CaptureRole::ProcessTree(_) => match self.tap_root {
+                Some(pid) => LoopbackTarget::ProcessTree { pid },
+                None => self.client.target.clone(),
+            },
         };
         let reason = self.broken.clone().unwrap_or_default();
         self.switch_to(target, &reason);
@@ -1362,6 +1480,12 @@ impl Engine {
             self.follow
                 .set_current(default_render_endpoint_id(&self.enumerator));
         }
+        if let (LoopbackTarget::ExcludeProcessTree { pid }, Some(state)) =
+            (&client.target, self.exclusions.as_mut())
+        {
+            // The exclusion works (again): a later failure waits the base delay.
+            state.untappable.note_tapped(*pid);
+        }
         info!(
             "{ENGINE_LABEL}: {} now captures {} (was {})",
             self.label, client.target, self.client.target
@@ -1377,20 +1501,7 @@ impl Engine {
             return;
         };
         match self.exclusions.as_mut() {
-            Some(state) => {
-                if state.untappable.mark(pid) {
-                    let exe = state
-                        .choice
-                        .as_ref()
-                        .filter(|c| c.root_pid == pid)
-                        .map(|c| c.exe_name.clone())
-                        .unwrap_or_else(|| "excluded app".to_string());
-                    warn!(
-                        "{ENGINE_LABEL}: {exe} (process tree {pid}) cannot be excluded: {e:#}; \
-                         capturing the whole system mix while it runs"
-                    );
-                }
-            }
+            Some(state) => state.note_untappable(pid, e),
             None => warn!(
                 "{ENGINE_LABEL}: {target} could not be tapped for {} ({e:#}); \
                  capturing the whole default output instead",
@@ -1675,19 +1786,23 @@ mod tests {
         assert!(engine_allowed_for("another-test-device"));
     }
 
-    /// Needs an active render endpoint; CI runners usually have none.
+    /// Needs an active render endpoint; CI runners usually have none. The
+    /// exclusion file is a temp path, so a run by hand never reads the
+    /// user's real `~/.screenpipe/audio-exclusions.json`.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     #[ignore = "needs an audio output device"]
     async fn default_endpoint_loopback_starts_and_stops() {
+        let dir = tempfile::tempdir().expect("temp dir");
         let (tx, _rx) = broadcast::channel(16);
         let disconnected = Arc::new(AtomicBool::new(false));
-        let (config, handle) = spawn_loopback_capture(
+        let (config, handle) = spawn_capture(
             CaptureRequest::OutputDevice {
                 name: "default".to_string(),
             },
             "default (output)".to_string(),
             tx,
             disconnected.clone(),
+            dir.path().join("audio-exclusions.json"),
         )
         .await
         .expect("loopback start");
