@@ -6,6 +6,7 @@ import { describe, expect, it } from "vitest";
 import type { MeetingRecord } from "./meeting-format";
 import {
   buildEnrichedSummarizePrompt,
+  buildMeetingSummarizeInstructions,
   extractImageDataUrlsFromMarkdown,
   type MeetingContext,
 } from "./meeting-context";
@@ -48,5 +49,24 @@ describe("meeting-context image notes", () => {
     expect(prompt).not.toContain(PNG);
     expect(prompt).toContain("[attached image 1: diagram]");
     expect(prompt).toContain("1 image from the user's notes");
+  });
+});
+
+describe("meeting summarize instructions", () => {
+  it("saves through the summary endpoint instead of rewriting the note", () => {
+    const text = buildMeetingSummarizeInstructions(7);
+
+    expect(text).toContain('-X POST "http://localhost:3030/meetings/7/summary"');
+    expect(text).toContain('"summary"');
+    expect(text).toContain("## Summary");
+    expect(text).not.toContain("PATCH");
+    expect(text).not.toContain("<EXISTING_NOTE>");
+  });
+
+  it("asks the follow-up question after saving only when requested", () => {
+    expect(buildMeetingSummarizeInstructions(7)).not.toContain("after saving");
+    expect(
+      buildMeetingSummarizeInstructions(7, { followUpAsk: true }),
+    ).toContain("after saving");
   });
 });

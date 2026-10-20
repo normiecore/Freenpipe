@@ -21,6 +21,14 @@ pub fn find_ffmpeg_path() -> Option<PathBuf> {
     FFMPEG_PATH.as_ref().map(|p| p.clone())
 }
 
+/// The ffmpeg path if the lookup has already run, without running it.
+/// `None` = not looked up yet; `Some(None)` = looked up and not found.
+/// Unlike [`find_ffmpeg_path`] this never searches the disk or downloads
+/// ffmpeg, so status readers (e.g. `/health`) can call it freely.
+pub fn resolved_ffmpeg_path() -> Option<Option<PathBuf>> {
+    Lazy::get(&FFMPEG_PATH).cloned()
+}
+
 /// Create a `std::process::Command` for ffmpeg with `CREATE_NO_WINDOW` on Windows.
 pub fn ffmpeg_cmd(path: impl AsRef<std::ffi::OsStr>) -> std::process::Command {
     #[cfg(not(windows))]

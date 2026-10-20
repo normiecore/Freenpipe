@@ -105,9 +105,10 @@ jobs:
         with:
           arch: x64
 
-      # tauri.windows.conf.json bundles onnxruntime*\lib\onnxruntime.dll, so the
-      # app build script needs it; ort is load-dynamic on Windows x64 and finds
-      # it at test time through ORT_DYLIB_PATH (System32 can hold an older one).
+      # ort is load-dynamic on Windows x64 and finds this build at test time
+      # through ORT_DYLIB_PATH (System32 can hold an older one). The app bundle
+      # takes ONNX Runtime from src-tauri/bundled/runtime, which pre_build.js
+      # fills with the DirectML build; this CPU build is its offline fallback.
       - name: ONNX Runtime ${{ env.ORT_VERSION }} (CPU)
         shell: pwsh
         run: |

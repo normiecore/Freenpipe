@@ -193,12 +193,20 @@ impl AudioStream {
                     // The native backends stop on `is_disconnected`; they
                     // have no cpal control channel.
                     drop(stream_control_rx);
+                    crate::metrics::report_output_capture_backend(
+                        &device.to_string(),
+                        crate::metrics::OutputCaptureBackend::Native,
+                    );
                     (config, thread)
                 }
                 Some(Err(e)) => {
                     warn!(
                         "{} failed for {}, falling back to the cpal stream: {:#}",
                         NATIVE_BACKEND_NAME, device, e
+                    );
+                    crate::metrics::report_output_capture_backend(
+                        &device.to_string(),
+                        crate::metrics::OutputCaptureBackend::FallbackAfterError,
                     );
                     Self::start_cpal_stream(
                         &device,
@@ -279,9 +287,14 @@ impl AudioStream {
         #[cfg(target_os = "windows")]
         {
             use super::device::DeviceType;
-            if device.device_type != DeviceType::Output
-                || !super::wasapi_loopback::engine_allowed_for(&device.name)
-            {
+            if device.device_type != DeviceType::Output {
+                return None;
+            }
+            if !super::wasapi_loopback::engine_allowed_for(&device.name) {
+                crate::metrics::report_output_capture_backend(
+                    &device.to_string(),
+                    crate::metrics::OutputCaptureBackend::FallbackAfterRepeatedErrors,
+                );
                 return None;
             }
             Some(

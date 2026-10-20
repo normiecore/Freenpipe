@@ -25,7 +25,8 @@ STATE = os.environ.get("FP_STATE", os.path.expanduser("~/.cache/freenpipe"))
 WT_ROOT = os.path.join(STATE, "wt")
 CFG_DIR = os.path.join(STATE, "cargo-wt")
 REAL = os.environ.get("FP_REAL_CARGO", os.path.expanduser("~/.cargo/bin/cargo"))
-SKIP_DIRS = {".git", "target", "third_party", "node_modules", ".next", "out", "dist"}
+# third_party/ is scanned too: a WP that patches a vendored crate needs its own build of it.
+SKIP_DIRS = {".git", "target", "node_modules", ".next", "out", "dist"}
 DEFAULT_CGU = 256
 MAX_SLOTS = 128
 REFRESH_SECONDS = 60

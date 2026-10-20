@@ -9812,9 +9812,10 @@ LIMIT ? OFFSET ?
         }
         if query.is_some() {
             sql.push_str(
-                " AND (LOWER(IFNULL(title, '')) LIKE ? \
-                 OR LOWER(IFNULL(attendees, '')) LIKE ? \
-                 OR LOWER(IFNULL(note, '')) LIKE ?)",
+                " AND (LOWER(IFNULL(title, '')) LIKE ? ESCAPE '\\' \
+                 OR LOWER(IFNULL(attendees, '')) LIKE ? ESCAPE '\\' \
+                 OR LOWER(IFNULL(note, '')) LIKE ? ESCAPE '\\' \
+                 OR LOWER(IFNULL(meeting_app, '')) LIKE ? ESCAPE '\\')",
             );
         }
         sql.push_str(" ORDER BY meeting_start DESC LIMIT ? OFFSET ?");
@@ -9830,8 +9831,19 @@ LIMIT ? OFFSET ?
                 q = q.bind(et);
             }
             if let Some(qs) = query {
-                let pattern = format!("%{}%", qs.to_lowercase());
-                q = q.bind(pattern.clone()).bind(pattern.clone()).bind(pattern);
+                // Literal substring: `%`, `_` and `\` typed by the user match
+                // themselves rather than acting as LIKE wildcards.
+                let escaped = qs
+                    .to_lowercase()
+                    .replace('\\', "\\\\")
+                    .replace('%', "\\%")
+                    .replace('_', "\\_");
+                let pattern = format!("%{}%", escaped);
+                q = q
+                    .bind(pattern.clone())
+                    .bind(pattern.clone())
+                    .bind(pattern.clone())
+                    .bind(pattern);
             }
             q = q.bind(limit).bind(offset);
 
@@ -10433,6 +10445,8 @@ LIMIT ? OFFSET ?
                     NULL AS audio_transcription_id,
                     NULL AS audio_chunk_id,
                     NULL AS audio_file_path,
+                    -- Live rows have no chunk to seek into.
+                    NULL AS audio_start_time_secs,
                     mts.speaker_id AS speaker_id,
                     -- Prefer the resolved global speaker's name; fall back to the
                     -- free-text Deepgram label until backfilled / if the speaker is
@@ -10464,6 +10478,8 @@ LIMIT ? OFFSET ?
                     at.id AS audio_transcription_id,
                     at.audio_chunk_id AS audio_chunk_id,
                     ac.file_path AS audio_file_path,
+                    -- Offset of this row inside its chunk's audio file.
+                    at.start_time AS audio_start_time_secs,
                     at.speaker_id AS speaker_id,
                     s.name AS speaker_name,
                     NULL AS session_speaker_id,
@@ -10816,7 +10832,8 @@ LIMIT ? OFFSET ?
     }
 
     /// Find the most recent ended meeting in `app` whose `meeting_end` is
-    /// within `within_secs` and that did NOT end via explicit user stop.
+    /// within `within_secs` and that did NOT end via explicit user stop or a
+    /// room change.
     ///
     /// The `end_reason != 'explicit_stop'` filter is the load-bearing piece
     /// of the meeting-merge fix: when a user clicks stop in the meeting note
@@ -10826,6 +10843,10 @@ LIMIT ? OFFSET ?
     /// "DUPLICATE: X" sync notifications. The detector loop also tracks
     /// `last_explicit_stop_id` in memory as defense-in-depth, but this SQL
     /// filter is the durable guarantee that survives restarts.
+    ///
+    /// `room_changed` rows are excluded for the same reason: the user chose to
+    /// start a new note because the audio session moved to a different call,
+    /// so that call must never be merged back into the old meeting.
     pub async fn find_recent_meeting_for_app(
         &self,
         app: &str,
@@ -10841,13 +10862,14 @@ LIMIT ? OFFSET ?
              WHERE meeting_app = ?1 \
                AND meeting_end IS NOT NULL \
                AND meeting_end >= ?2 \
-               AND (end_reason IS NULL OR end_reason != ?3) \
+               AND (end_reason IS NULL OR end_reason NOT IN (?3, ?4)) \
              ORDER BY meeting_end DESC \
              LIMIT 1",
         )
         .bind(app)
         .bind(&cutoff)
         .bind(MEETING_END_REASON_EXPLICIT_STOP)
+        .bind(crate::ext::meetings_v2::MEETING_END_REASON_ROOM_CHANGED)
         .fetch_optional(&self.pool)
         .await?;
         Ok(meeting)
