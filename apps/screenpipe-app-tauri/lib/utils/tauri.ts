@@ -6,6 +6,14 @@
 
 export const commands = {
 /**
+ * Re-applies a managed policy's window and tray visibility, then reports
+ * whether the app UI ended up hidden. Freenpipe has no policy, so nothing
+ * changes and the answer is always false.
+ */
+async applyEnterpriseUiVisibility() : Promise<boolean> {
+    return await TAURI_INVOKE("apply_enterprise_ui_visibility");
+},
+/**
  * Frontend-callable gate. Returns one of `"proceed"`, `"errored"`, or
  * `"pending"` — frontend toasts on the latter two. Kept for callers that
  * only need the gate; the update banner uses `restart_for_update`.
@@ -546,6 +554,12 @@ async getE2eSeedFlags() : Promise<string[]> {
     return await TAURI_INVOKE("get_e2e_seed_flags");
 },
 /**
+ * Identity of this computer for a managed deployment. Always empty.
+ */
+async getEnterpriseHostIdentity() : Promise<EnterpriseHostIdentity> {
+    return await TAURI_INVOKE("get_enterprise_host_identity");
+},
+/**
  * How this install is updated. Freenpipe always reports an unmanaged,
  * self-updating install.
  */
@@ -805,6 +819,14 @@ async isEnterpriseBuildCmd() : Promise<boolean> {
     return await TAURI_INVOKE("is_enterprise_build_cmd");
 },
 /**
+ * Whether reads of older history are refused on this install. Answered by
+ * the engine's history-access policy, which never limits history, so this
+ * is always false.
+ */
+async isHistoryAccessRestricted() : Promise<boolean> {
+    return await TAURI_INVOKE("is_history_access_restricted");
+},
+/**
  * Check if click-through is currently enabled (Windows only)
  */
 async isOverlayClickThrough() : Promise<boolean> {
@@ -846,6 +868,13 @@ async listImportedSkills() : Promise<Result<ImportedSkill[], string>> {
     if(e instanceof Error) throw e;
     else return { status: "error", error: e  as any };
 }
+},
+/**
+ * Skills an organisation manages on this machine. Freenpipe has no
+ * organisations, so the list is always empty.
+ */
+async listManagedTeamSkills() : Promise<ManagedTeamSkill[]> {
+    return await TAURI_INVOKE("list_managed_team_skills");
 },
 async livetextAnalyze(imagePath: string, frameId: string, x: number, y: number, w: number, h: number) : Promise<Result<string, string>> {
     try {
@@ -1806,6 +1835,18 @@ async searchNavigateToTimeline(timestamp: string, frameId: number | null, search
 }
 },
 /**
+ * Turns the managed activity upload on or off. Freenpipe has no upload
+ * worker, so the switch is ignored and nothing leaves the machine.
+ */
+async setActivitySyncEnabled(enabled: boolean) : Promise<Result<null, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("set_activity_sync_enabled", { enabled }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
  * Persist a user-supplied API auth key to the secret store.
  * The running server keeps its in-memory key until restart.
  */
@@ -1913,6 +1954,20 @@ async setEnhancedAiSuggestions(enabled: boolean, token: string) : Promise<Result
  */
 async setEnterprisePolicy(hiddenSections: string[]) : Promise<void> {
     await TAURI_INVOKE("set_enterprise_policy", { hiddenSections });
+},
+/**
+ * Accepts an admin console's verdict on whether this seat may record,
+ * together with the credential it checked. Recording in Freenpipe is
+ * controlled only by the user, so the verdict changes nothing, and the
+ * credential is dropped without being stored or logged.
+ */
+async setEnterpriseRecordingAuthorized(authorized: boolean, credentialType: string | null, credential: string | null) : Promise<Result<null, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("set_enterprise_recording_authorized", { authorized, credentialType, credential }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
 },
 async setNativeTheme(theme: string) : Promise<Result<null, string>> {
     try {
@@ -2109,6 +2164,20 @@ async stopScreenpipe() : Promise<Result<null, string>> {
 async suspendGlobalShortcuts() : Promise<Result<null, string>> {
     try {
     return { status: "ok", data: await TAURI_INVOKE("suspend_global_shortcuts") };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
+ * Accepts an organisation's skill list and whether skills missing from it
+ * should be removed. Freenpipe installs nothing from a policy and removes
+ * nothing, so the request is ignored. The entries are taken as plain JSON
+ * so a payload in any shape is accepted rather than failing to parse.
+ */
+async syncManagedTeamSkills(skills: JsonValue[], pruneUnlisted: boolean) : Promise<Result<null, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("sync_managed_team_skills", { skills, pruneUnlisted }) };
 } catch (e) {
     if(e instanceof Error) throw e;
     else return { status: "error", error: e  as any };
@@ -2357,6 +2426,14 @@ alias?: string | null }
 export type E2eAgentStreamResult = { emitted_deltas: number; emit_ms: number }
 export type EmbeddedLLM = { enabled: boolean; model: string; port: number }
 /**
+ * Hashed identifiers an admin console would use to tell seats apart.
+ *
+ * Both fields are always `null` in Freenpipe: it never derives a stable
+ * machine or OS-user identifier, hashed or not, because nothing it runs
+ * needs to recognise this computer from the outside.
+ */
+export type EnterpriseHostIdentity = { machine_id_hash: string | null; os_user_id_hash: string | null }
+/**
  * Install and update-management facts. The field names match what older
  * builds persisted in settings (`enterpriseInstallMetadata`).
  */
@@ -2429,6 +2506,14 @@ path: string }
 export type JsonValue = null | boolean | number | string | JsonValue[] | { [key in string]: JsonValue }
 export type KeychainStatus = { state: string }
 export type LogFile = { name: string; path: string; modified_at: number }
+/**
+ * A skill an organisation installed on this machine and keeps in sync.
+ */
+export type ManagedTeamSkill = {
+/**
+ * Folder name of the skill, as the skills commands list it.
+ */
+name: string }
 /**
  * Absolute paths of the MCP server and CLI that ship with the app.
  */
