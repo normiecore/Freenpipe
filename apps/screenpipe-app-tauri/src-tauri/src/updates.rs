@@ -225,13 +225,11 @@ pub fn releases_page_url(app: &tauri::AppHandle) -> String {
 }
 
 fn current_channel(app: &tauri::AppHandle) -> UpdateChannel {
-    let setting = SettingsStore::get(app).ok().flatten().and_then(|settings| {
-        settings
-            .extra
-            .get("updateChannel")
-            .and_then(|v| v.as_str())
-            .map(str::to_string)
-    });
+    // `updateChannel` is a typed settings field (settings schema v2).
+    let setting = SettingsStore::get(app)
+        .ok()
+        .flatten()
+        .map(|settings| settings.update_channel);
     UpdateChannel::from_setting(setting.as_deref())
 }
 
