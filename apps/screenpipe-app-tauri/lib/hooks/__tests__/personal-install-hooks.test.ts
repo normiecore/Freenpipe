@@ -36,7 +36,13 @@ describe("useEnterprisePolicy", () => {
     expect(p.policy.hiddenSections).toEqual([]);
     expect(p.policy.lockedSettings).toEqual({});
     expect(p.policy.managedPipes).toEqual([]);
+    expect(p.policy.managedSkills).toEqual([]);
+    expect(p.policy.recordingAllowed).toBe(true);
+    expect(p.policy.requireAccountLogin).toBe(false);
     expect(p.policy.aiPresetPolicy.managed_presets).toEqual([]);
+    expect(p.isManagedDeployment).toBe(false);
+    expect(p.historyAccessRestricted).toBe(false);
+    expect(p.isPipeManaged("daily-summary")).toBe(false);
 
     const res = await p.submitLicenseKey("ENT-0000-0000-0000-0000");
     expect(res).toEqual({ ok: false, error: ENTERPRISE_UNAVAILABLE_MESSAGE });
@@ -47,6 +53,7 @@ describe("useEnterprisePolicy", () => {
     const a = useEnterprisePolicy();
     const b = useEnterprisePolicy();
     expect(a.isSectionHidden).toBe(b.isSectionHidden);
+    expect(a.isPipeManaged).toBe(b.isPipeManaged);
     expect(a.getManagedValue).toBe(b.getManagedValue);
     expect(a.policy).toBe(b.policy);
   });
