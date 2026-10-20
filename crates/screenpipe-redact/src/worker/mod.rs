@@ -48,8 +48,8 @@ pub struct WorkerConfig {
     pub idle_between_batches: Duration,
     /// Sleep when the queue IS empty (poll interval).
     pub poll_interval: Duration,
-    /// Tables to reconcile. Default: all five (ocr, audio, accessibility,
-    /// ui_events:keyboard, ui_events:clipboard).
+    /// Tables to reconcile. Default: all five (frames:full_text, audio,
+    /// frames:accessibility_text, ui_events:keyboard, ui_events:clipboard).
     pub tables: Vec<TargetTable>,
 }
 

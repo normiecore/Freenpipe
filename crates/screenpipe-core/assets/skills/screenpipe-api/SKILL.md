@@ -206,7 +206,7 @@ curl -X POST http://localhost:3030/raw_sql \
 | Table | Key Columns | Time Column |
 |-------|-------------|-------------|
 | `frames` | `app_name`, `window_name`, `browser_url`, `focused` | `timestamp` |
-| `ocr_text` | `text`, `app_name`, `window_name` | join via `frame_id` |
+| `frames` (screen text) | `full_text` (accessibility or OCR text), `text_json` (OCR word boxes), `text_source` | `timestamp` |
 | `elements` | `source`, `role`, `text`, `bounds_*` | join via `frame_id` |
 | `audio_transcriptions` | `transcription`, `device`, `speaker_id`, `is_input_device` | `timestamp` |
 | `audio_chunks` | `file_path` | `timestamp` |

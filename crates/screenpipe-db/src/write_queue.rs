@@ -116,9 +116,9 @@ pub(crate) enum WriteOp {
         accessibility_tree_json: Option<String>,
         content_hash: Option<i64>,
         simhash: Option<i64>,
-        ocr_text: Option<String>,
-        ocr_text_json: Option<String>,
-        ocr_engine: Option<String>,
+        /// OCR word boxes (serialized `Vec<OcrTextBlock>`), stored as
+        /// `frames.text_json`. The OCR text itself is part of `full_text`.
+        text_json: Option<String>,
         /// Pre-computed full_text for FTS indexing
         full_text: Option<String>,
         /// When Some, this frame references another frame's elements (dedup).
@@ -189,14 +189,13 @@ pub(crate) enum WriteOp {
         browser_url: Option<String>,
         device_name: String,
     },
-    /// Insert a synced OCR text row from cloud sync import.
+    /// Fold a synced OCR record into its (already imported) frame row.
     SyncInsertOcr {
         frame_id: i64,
         text: String,
         focused: bool,
         app_name: String,
         window_name: Option<String>,
-        sync_id: String,
     },
     /// Insert a synced transcription (audio_chunk + audio_transcription) from cloud sync import.
     SyncInsertTranscription {
@@ -266,7 +265,6 @@ pub(crate) enum WriteOp {
         device_name: String,
         timestamp: chrono::DateTime<chrono::Utc>,
         offset_index: i64,
-        ocr_engine_str: String,
         /// Each entry: (app_name, window_name, browser_url, focused, text, text_json)
         windows: Vec<FrameBatchWindow>,
     },
@@ -868,25 +866,25 @@ async fn execute_single_write(
             accessibility_tree_json,
             content_hash,
             simhash,
-            ocr_text,
-            ocr_text_json,
-            ocr_engine,
+            text_json,
             full_text,
             elements_ref_frame_id,
         } => {
+            // OCR output has no table of its own: the text is folded into
+            // full_text by the caller and the word boxes land in text_json.
             let id = sqlx::query(
                 r#"INSERT INTO frames (
                     video_chunk_id, offset_index, timestamp, name,
                     browser_url, app_name, window_name, focused, device_name,
                     snapshot_path, capture_trigger, accessibility_text, text_source,
                     accessibility_tree_json, content_hash, simhash, full_text,
-                    elements_ref_frame_id, document_path
+                    elements_ref_frame_id, document_path, text_json
                 ) VALUES (
                     NULL, 0, ?1, ?2,
                     ?3, ?4, ?5, ?6, ?7,
                     ?8, ?9, ?10, ?11,
                     ?12, ?13, ?14, ?15,
-                    ?16, ?17
+                    ?16, ?17, ?18
                 )"#,
             )
             .bind(timestamp)
@@ -914,37 +912,11 @@ async fn execute_single_write(
             .bind(full_text.as_deref())
             .bind(elements_ref_frame_id)
             .bind(document_path.as_deref())
+            .bind(text_json.as_deref())
             .execute(&mut **conn)
             .await?
             .last_insert_rowid();
-
-            // Insert OCR text in same transaction (always — needed for search)
             // Element inserts are deferred to a separate transaction (see caller).
-            // Duplicate app_name/window_name/focused from the frame onto the OCR
-            // row so queries like `SELECT ... FROM ocr_text WHERE app_name='Obsidian'`
-            // actually return results. Without these binds the columns fall back
-            // to their schema defaults ('' / NULL / false), making OCR data
-            // effectively untagged even though the parent frame has the metadata.
-            if let (Some(text), Some(text_json), Some(engine)) = (
-                ocr_text.as_deref(),
-                ocr_text_json.as_deref(),
-                ocr_engine.as_deref(),
-            ) {
-                let text_length = text.len() as i64;
-                sqlx::query(
-                    "INSERT INTO ocr_text (frame_id, text, text_json, ocr_engine, text_length, app_name, window_name, focused) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
-                )
-                .bind(id)
-                .bind(text)
-                .bind(text_json)
-                .bind(engine)
-                .bind(text_length)
-                .bind(app_name.as_deref().unwrap_or(""))
-                .bind(window_name.as_deref())
-                .bind(focused)
-                .execute(&mut **conn)
-                .await?;
-            }
 
             if let Some(ref_id) = elements_ref_frame_id {
                 debug!(
@@ -1123,20 +1095,23 @@ async fn execute_single_write(
             focused,
             app_name,
             window_name,
-            sync_id,
         } => {
-            let now = Utc::now().to_rfc3339();
+            // The synced frame row was created first (SyncInsertFrame); its
+            // OCR text becomes the frame's searchable text. A frame that
+            // already has text keeps it, so re-importing a chunk is a no-op.
             sqlx::query(
-                r#"INSERT INTO ocr_text (frame_id, text, focused, app_name, window_name, sync_id, synced_at)
-                VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)"#,
+                r#"UPDATE frames
+                SET full_text = ?2,
+                    focused = ?3,
+                    app_name = CASE WHEN app_name IS NULL OR app_name = '' THEN ?4 ELSE app_name END,
+                    window_name = COALESCE(window_name, ?5)
+                WHERE id = ?1 AND (full_text IS NULL OR full_text = '')"#,
             )
             .bind(frame_id)
             .bind(text.as_str())
             .bind(focused)
             .bind(app_name.as_str())
             .bind(window_name.as_deref())
-            .bind(sync_id.as_str())
-            .bind(now.as_str())
             .execute(&mut **conn)
             .await?;
             Ok(WriteResult::Id(*frame_id))
@@ -1288,19 +1263,26 @@ async fn execute_single_write(
             device_name,
             timestamp,
             offset_index,
-            ocr_engine_str,
             windows,
         } => {
             let mut results = Vec::with_capacity(windows.len());
             for (idx, window) in windows.iter().enumerate() {
+                // OCR text is the frame's searchable text and its word boxes
+                // stay on the frame row (text_json); both only when OCR found
+                // something.
                 let full_text = if window.text.is_empty() {
                     None
                 } else {
                     Some(window.text.as_str())
                 };
+                let text_json = if window.text.is_empty() || window.text_json.is_empty() {
+                    None
+                } else {
+                    Some(window.text_json.as_str())
+                };
 
                 let frame_id = sqlx::query(
-                    "INSERT INTO frames (video_chunk_id, offset_index, timestamp, name, browser_url, app_name, window_name, focused, device_name, full_text) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
+                    "INSERT INTO frames (video_chunk_id, offset_index, timestamp, name, browser_url, app_name, window_name, focused, device_name, full_text, text_json) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
                 )
                 .bind(video_chunk_id)
                 .bind(offset_index)
@@ -1312,35 +1294,15 @@ async fn execute_single_write(
                 .bind(window.focused)
                 .bind(device_name.as_str())
                 .bind(full_text)
+                .bind(text_json)
                 .execute(&mut **conn)
                 .await?
                 .last_insert_rowid();
 
-                // Insert OCR text — duplicate app/window/focused from frame so
-                // OCR rows are filterable (see handler above for rationale).
-                let text_length = window.text.len() as i64;
-                sqlx::query(
-                    "INSERT INTO ocr_text (frame_id, text, text_json, ocr_engine, text_length, app_name, window_name, focused) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
-                )
-                .bind(frame_id)
-                .bind(&window.text)
-                .bind(&window.text_json)
-                .bind(ocr_engine_str.as_str())
-                .bind(text_length)
-                .bind(window.app_name.as_deref().unwrap_or(""))
-                .bind(window.window_name.as_deref())
-                .bind(window.focused)
-                .execute(&mut **conn)
-                .await?;
-
                 // Dual-write: insert OCR elements into unified elements table
-                if !window.text_json.is_empty() {
-                    crate::db::DatabaseManager::insert_ocr_elements(
-                        conn,
-                        frame_id,
-                        &window.text_json,
-                    )
-                    .await;
+                if let Some(text_json) = text_json {
+                    crate::db::DatabaseManager::insert_ocr_elements(conn, frame_id, text_json)
+                        .await;
                 }
 
                 results.push((frame_id, idx));
@@ -1799,21 +1761,8 @@ mod tests {
                 simhash INTEGER,
                 full_text TEXT,
                 elements_ref_frame_id INTEGER DEFAULT NULL,
-                document_path TEXT
-            )",
-        )
-        .execute(&pool)
-        .await
-        .unwrap();
-
-        sqlx::query(
-            "CREATE TABLE IF NOT EXISTS ocr_text (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                frame_id INTEGER NOT NULL,
-                text TEXT NOT NULL,
-                text_json TEXT NOT NULL DEFAULT '',
-                ocr_engine TEXT NOT NULL DEFAULT '',
-                text_length INTEGER DEFAULT 0
+                document_path TEXT,
+                text_json TEXT DEFAULT NULL
             )",
         )
         .execute(&pool)
@@ -2069,9 +2018,7 @@ mod tests {
                 accessibility_tree_json: None,
                 content_hash: Some(12345),
                 simhash: Some(67890),
-                ocr_text: None,
-                ocr_text_json: None,
-                ocr_engine: None,
+                text_json: None,
                 full_text: Some("page content".to_string()),
                 elements_ref_frame_id: None,
             })
