@@ -315,6 +315,33 @@ pub fn overrun_outcome(own_limit: Duration, budget_left: Duration) -> StepOutcom
     }
 }
 
+/// The warning for a step that did not finish in time, saying which limit
+/// ended it; `None` for a step that finished. `limit` is the time the step
+/// was actually given (its own limit clipped to the budget left).
+fn step_overrun_message(
+    name: &str,
+    outcome: StepOutcome,
+    limit: Duration,
+    own_limit: Duration,
+) -> Option<String> {
+    match outcome {
+        StepOutcome::Done | StepOutcome::Skipped => None,
+        StepOutcome::TimedOut => Some(format!(
+            "teardown step {name} hit its own {}ms limit; moving on",
+            own_limit.as_millis()
+        )),
+        StepOutcome::OutOfBudget if limit.is_zero() => Some(format!(
+            "teardown step {name} not run: the overall budget was already used up (its own limit is {}ms)",
+            own_limit.as_millis()
+        )),
+        StepOutcome::OutOfBudget => Some(format!(
+            "teardown step {name} cut off by the overall budget after {}ms (its own limit is {}ms)",
+            limit.as_millis(),
+            own_limit.as_millis()
+        )),
+    }
+}
+
 /// Run `fut` under the step limit and record the result.
 async fn run_step<F>(
     report: &mut TeardownReport,
@@ -335,17 +362,9 @@ async fn run_step<F>(
     };
     let elapsed = started.elapsed();
     let outcome = finished.unwrap_or_else(|| overrun_outcome(own_limit, budget_left));
-    match outcome {
-        StepOutcome::TimedOut => warn!(
-            "teardown step {name} hit its own {}ms limit; moving on",
-            own_limit.as_millis()
-        ),
-        StepOutcome::OutOfBudget => warn!(
-            "teardown step {name} cut off by the overall budget ({}ms of its own {}ms limit were left)",
-            limit.as_millis(),
-            own_limit.as_millis()
-        ),
-        StepOutcome::Done | StepOutcome::Skipped => debug!(
+    match step_overrun_message(name, outcome, limit, own_limit) {
+        Some(line) => warn!("{line}"),
+        None => debug!(
             "teardown step {name}: {outcome:?} in {}ms",
             elapsed.as_millis()
         ),
@@ -465,32 +484,51 @@ async fn teardown(app: &tauri::AppHandle, reason: &str, budget: TeardownBudget) 
     report
 }
 
-/// The teardown's closing log line. A step that used up its own limit and
-/// a teardown that ran out of its overall budget read differently, so the
-/// log says which limit was hit.
+/// Log the teardown's closing line (see [`teardown_result_line`]).
 fn log_teardown_result(report: &TeardownReport, overall: Duration) {
-    if report.budget_exhausted {
-        warn!(
-            "pre-exit teardown ran out of its {}s overall budget after {}ms (cut off: {}; over their own limit: {}): {}",
-            overall.as_secs(),
-            report.elapsed.as_millis(),
-            report.names_with(StepOutcome::OutOfBudget),
-            report.names_with(StepOutcome::TimedOut),
-            report.summary()
-        );
-    } else if report.overran {
-        warn!(
-            "pre-exit teardown finished in {}ms; over their own limit: {}: {}",
-            report.elapsed.as_millis(),
-            report.names_with(StepOutcome::TimedOut),
-            report.summary()
-        );
+    let (late, line) = teardown_result_line(report, overall);
+    if late {
+        warn!("{line}");
     } else {
-        info!(
-            "pre-exit teardown finished in {}ms: {}",
-            report.elapsed.as_millis(),
-            report.summary()
-        );
+        info!("{line}");
+    }
+}
+
+/// The teardown's closing log line, and whether it is a warning. A step
+/// that used up its own limit and a teardown that ran out of its overall
+/// budget read differently, so the log says which limit was hit.
+fn teardown_result_line(report: &TeardownReport, overall: Duration) -> (bool, String) {
+    if report.budget_exhausted {
+        (
+            true,
+            format!(
+                "pre-exit teardown ran out of its {}s overall budget after {}ms (cut off: {}; over their own limit: {}): {}",
+                overall.as_secs(),
+                report.elapsed.as_millis(),
+                report.names_with(StepOutcome::OutOfBudget),
+                report.names_with(StepOutcome::TimedOut),
+                report.summary()
+            ),
+        )
+    } else if report.overran {
+        (
+            true,
+            format!(
+                "pre-exit teardown finished in {}ms within its overall budget (over their own limit: {}): {}",
+                report.elapsed.as_millis(),
+                report.names_with(StepOutcome::TimedOut),
+                report.summary()
+            ),
+        )
+    } else {
+        (
+            false,
+            format!(
+                "pre-exit teardown finished in {}ms: {}",
+                report.elapsed.as_millis(),
+                report.summary()
+            ),
+        )
     }
 }
 
@@ -1089,6 +1127,19 @@ pub async fn safe_relaunch(
     crate::tray::QUIT_REQUESTED.store(true, Ordering::SeqCst);
     let budget = TeardownBudget::default();
     let report = teardown(&app, reason, budget).await;
+    match TeardownSeverity::of(Some(&report)) {
+        TeardownSeverity::Clean => {}
+        TeardownSeverity::SlowCleanup => warn!(
+            "safe relaunch: cleanup ran late ({}); capture and engine are stopped, relaunching",
+            report.overrun_names()
+        ),
+        // This process ends right after the replacement starts, which takes
+        // whatever is still running with it.
+        TeardownSeverity::Critical => warn!(
+            "safe relaunch: capture or engine did not stop in time ({}); relaunching anyway",
+            report.overrun_names()
+        ),
+    }
     stop_control_server(&app).await;
 
     let base_dir = screenpipe_core::paths::default_screenpipe_data_dir();
@@ -1292,11 +1343,94 @@ mod tests {
         assert_eq!(overrun_outcome(s(3), s(3)), StepOutcome::TimedOut);
         // Less budget left than the step's own limit: the budget ended it.
         assert_eq!(overrun_outcome(s(17), s(5)), StepOutcome::OutOfBudget);
-        assert_eq!(overrun_outcome(s(3), Duration::ZERO), StepOutcome::OutOfBudget);
+        assert_eq!(
+            overrun_outcome(s(3), Duration::ZERO),
+            StepOutcome::OutOfBudget
+        );
         assert!(StepOutcome::TimedOut.is_overrun());
         assert!(StepOutcome::OutOfBudget.is_overrun());
         assert!(!StepOutcome::Done.is_overrun());
         assert!(!StepOutcome::Skipped.is_overrun());
+    }
+
+    #[test]
+    fn step_warnings_say_which_limit_ended_the_step() {
+        let ms = Duration::from_millis;
+        assert_eq!(
+            step_overrun_message("http_drain", StepOutcome::TimedOut, ms(3000), ms(3000))
+                .as_deref(),
+            Some("teardown step http_drain hit its own 3000ms limit; moving on")
+        );
+        assert_eq!(
+            step_overrun_message("engine", StepOutcome::OutOfBudget, ms(1500), ms(17000)).as_deref(),
+            Some("teardown step engine cut off by the overall budget after 1500ms (its own limit is 17000ms)")
+        );
+        assert_eq!(
+            step_overrun_message("pi", StepOutcome::OutOfBudget, Duration::ZERO, ms(3000)).as_deref(),
+            Some("teardown step pi not run: the overall budget was already used up (its own limit is 3000ms)")
+        );
+        assert_eq!(
+            step_overrun_message("capture", StepOutcome::Done, ms(6000), ms(6000)),
+            None
+        );
+        assert_eq!(
+            step_overrun_message("pi", StepOutcome::Skipped, ms(3000), ms(3000)),
+            None
+        );
+    }
+
+    #[test]
+    fn the_closing_line_tells_a_step_limit_from_the_overall_budget() {
+        use StepOutcome::*;
+        let overall = Duration::from_secs(25);
+
+        let clean = report(&[("capture", Done), ("engine", Done), ("pi", Skipped)]);
+        let (late, line) = teardown_result_line(&clean, overall);
+        assert!(!late);
+        assert!(
+            line.starts_with("pre-exit teardown finished in 0ms: capture=Done/"),
+            "{line}"
+        );
+
+        let step_late = report(&[
+            ("capture", Done),
+            ("engine", Done),
+            ("http_drain", TimedOut),
+        ]);
+        let (late, line) = teardown_result_line(&step_late, overall);
+        assert!(late);
+        assert!(
+            line.starts_with(
+                "pre-exit teardown finished in 0ms within its overall budget (over their own limit: http_drain): "
+            ),
+            "{line}"
+        );
+        assert!(!line.contains("overall budget after"), "{line}");
+
+        let budget_out = report(&[
+            ("capture", Done),
+            ("engine", OutOfBudget),
+            ("http_drain", OutOfBudget),
+            ("pi", TimedOut),
+        ]);
+        let (late, line) = teardown_result_line(&budget_out, overall);
+        assert!(late);
+        assert!(
+            line.starts_with(
+                "pre-exit teardown ran out of its 25s overall budget after 0ms (cut off: engine,http_drain; over their own limit: pi): "
+            ),
+            "{line}"
+        );
+
+        // Slack past the budget with every step on time.
+        let mut slack = clean.clone();
+        slack.overran = true;
+        slack.budget_exhausted = true;
+        let (_, line) = teardown_result_line(&slack, overall);
+        assert!(
+            line.contains("(cut off: none; over their own limit: none)"),
+            "{line}"
+        );
     }
 
     #[test]
@@ -1381,13 +1515,21 @@ mod tests {
         for slow in ["http_drain", "sqlite_pools", "pi"] {
             for how in [TimedOut, OutOfBudget] {
                 let r = report(&[("capture", Done), ("engine", Done), (slow, how)]);
-                assert_eq!(TeardownSeverity::of(Some(&r)), SlowCleanup, "{slow} {how:?}");
+                assert_eq!(
+                    TeardownSeverity::of(Some(&r)),
+                    SlowCleanup,
+                    "{slow} {how:?}"
+                );
             }
         }
         for critical in ["capture", "engine"] {
             for how in [TimedOut, OutOfBudget] {
                 let r = report(&[(critical, how), ("pi", Done)]);
-                assert_eq!(TeardownSeverity::of(Some(&r)), Critical, "{critical} {how:?}");
+                assert_eq!(
+                    TeardownSeverity::of(Some(&r)),
+                    Critical,
+                    "{critical} {how:?}"
+                );
             }
         }
         // A panicked teardown thread.
@@ -1415,7 +1557,10 @@ mod tests {
         assert_eq!(exit, QuitExit::Normal);
         assert_eq!(exit.status(), 0);
         let clean = report(&[("capture", Done), ("engine", Done)]);
-        assert_eq!(quit_exit(TeardownSeverity::of(Some(&clean))), QuitExit::Normal);
+        assert_eq!(
+            quit_exit(TeardownSeverity::of(Some(&clean))),
+            QuitExit::Normal
+        );
         for (critical, how) in [("capture", TimedOut), ("engine", OutOfBudget)] {
             let r = report(&[(critical, how), ("http_drain", Done)]);
             let exit = quit_exit(TeardownSeverity::of(Some(&r)));

@@ -754,7 +754,9 @@ pub(crate) async fn start_engine(
                     }
                     drop(capture_guard);
                     // Start capture on existing server
-                    return start_capture_internal(&state, &app).await.map_err(StartError::from);
+                    return start_capture_internal(&state, &app)
+                        .await
+                        .map_err(StartError::from);
                 }
                 _ => {
                     warn!("Server exists but not responding, will do full restart");
@@ -1308,8 +1310,8 @@ pub async fn debug_kill_engine(
         .ok_or_else(|| "the engine is not running".to_string())?;
     let port = core.port;
     ENGINE_RETIRED.notify_waiters();
-    // The engine thread notices the empty slot (at once, or on its next 5 s
-    // poll for the boot generation) and drops its runtime.
+    // The engine thread (the boot one included) wakes on the notification,
+    // sees the empty slot and stops its runtime.
     let deadline = Instant::now() + Duration::from_secs(20);
     while crate::port_conflict::port_in_use(port).await && Instant::now() < deadline {
         tokio::time::sleep(Duration::from_millis(250)).await;
@@ -1390,5 +1392,30 @@ mod respawn_tests {
         assert_eq!(held, Err(RespawnError::PortHeld("port 3035 held".into())));
         let failed = RespawnError::Failed("no monitors".into());
         assert!(!is_respawn_timeout(&failed));
+    }
+
+    #[test]
+    fn a_respawn_is_port_held_only_when_its_own_start_says_so() {
+        // The classification travels with the start's own error; there is
+        // no shared "last block" an earlier attempt could leave behind.
+        assert_eq!(
+            RespawnError::from(StartError::PortHeld("port 3035 held".into())),
+            RespawnError::PortHeld("port 3035 held".into())
+        );
+        assert_eq!(
+            RespawnError::from(StartError::Other("no monitors matched".into())),
+            RespawnError::Failed("no monitors matched".into())
+        );
+        // A plain String error inside the start (`?`, `.into()`) is never
+        // PortHeld.
+        assert_eq!(
+            StartError::from("Server startup channel dropped".to_string()),
+            StartError::Other("Server startup channel dropped".into())
+        );
+        // The Tauri command still gets just the message.
+        assert_eq!(
+            StartError::PortHeld("held".into()).into_message(),
+            "held".to_string()
+        );
     }
 }
