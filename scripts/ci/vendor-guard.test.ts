@@ -139,6 +139,12 @@ const COMMERCE_ALLOWED: { path: string; rules: string[]; reason: string }[] = [
     reason: "reads trial onboarding steps that screenpipe stored and treats them as complete",
   },
   {
+    path: "apps/screenpipe-app-tauri/src-tauri/testdata/screenpipe-v2-store.json",
+    rules: ["remote-control-policy"],
+    reason:
+      "synthetic store as screenpipe writes it; the store tests check the key round-trips without being read (W1-02)",
+  },
+  {
     path: "apps/screenpipe-app-tauri/lib/account-deep-link.ts",
     rules: ["purchase-deep-link"],
     reason: "recognises vendor purchase deep links so they can be dropped",
@@ -164,14 +170,7 @@ const INTEROP_FOLLOWERS = /^ (pipe|skill|cloud)\b/;
  * Legitimate brand-copy hits: `contains` must appear on the line. Keep these
  * to interop text with a reason.
  */
-const BRAND_ALLOWED: { path: string; contains: string; reason: string }[] = [
-  {
-    path: "apps/screenpipe-app-tauri/components/rewind/ai-presets-selector.tsx",
-    contains: "because screenpipe paths often contain",
-    reason:
-      "default preset prompt; must stay identical to the copies in store.rs and use-settings.tsx so stored presets keep matching it",
-  },
-];
+const BRAND_ALLOWED: { path: string; contains: string; reason: string }[] = [];
 
 /**
  * Columns where a line calls the product "screenpipe": a standalone word

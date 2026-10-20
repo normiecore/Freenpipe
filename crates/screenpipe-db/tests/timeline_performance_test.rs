@@ -5,8 +5,7 @@
 #[cfg(test)]
 mod timeline_performance_tests {
     use chrono::{Duration, Utc};
-    use screenpipe_db::{AudioDevice, DatabaseManager, DeviceType, OcrEngine};
-    use std::sync::Arc;
+    use screenpipe_db::{AudioDevice, DatabaseManager, DeviceType};
     use std::time::Instant;
 
     async fn setup_test_db() -> DatabaseManager {
@@ -18,7 +17,7 @@ mod timeline_performance_tests {
             .await
             .unwrap();
 
-        sqlx::migrate!("./src/migrations")
+        screenpipe_db::schema_migrations::migrator()
             .run(&db.pool)
             .await
             .expect("Failed to run migrations");
@@ -75,9 +74,7 @@ mod timeline_performance_tests {
                 i, i % 100, i % 50, i % 20, i % 100, "x".repeat(500)
             );
 
-            db.insert_ocr_text(frame_id, &ocr_text, "", Arc::new(OcrEngine::Tesseract))
-                .await
-                .unwrap();
+            db.insert_ocr_text(frame_id, &ocr_text, "").await.unwrap();
         }
     }
 
@@ -409,7 +406,7 @@ mod timeline_performance_tests {
             .await
             .unwrap();
 
-        sqlx::migrate!("./src/migrations")
+        screenpipe_db::schema_migrations::migrator()
             .run(&db.pool)
             .await
             .expect("Failed to run migrations");
@@ -594,14 +591,9 @@ mod timeline_performance_tests {
                 .await
                 .unwrap();
 
-            db.insert_ocr_text(
-                frame_id,
-                &format!("OCR text for frame {}", i),
-                "",
-                Arc::new(OcrEngine::Tesseract),
-            )
-            .await
-            .unwrap();
+            db.insert_ocr_text(frame_id, &format!("OCR text for frame {}", i), "")
+                .await
+                .unwrap();
         }
 
         // Insert an audio transcription that spans 6 seconds (should cover ~3 frames)
@@ -715,14 +707,9 @@ mod timeline_performance_tests {
                 .await
                 .unwrap();
 
-            db.insert_ocr_text(
-                frame_id,
-                &format!("OCR text for frame {}", i),
-                "",
-                Arc::new(OcrEngine::Tesseract),
-            )
-            .await
-            .unwrap();
+            db.insert_ocr_text(frame_id, &format!("OCR text for frame {}", i), "")
+                .await
+                .unwrap();
         }
 
         // Insert audio that's AFTER all frames (should fall back to closest frame)

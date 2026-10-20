@@ -1,5 +1,5 @@
 use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criterion};
-use screenpipe_db::{DatabaseManager, OcrEngine};
+use screenpipe_db::DatabaseManager;
 use std::time::Duration;
 use tokio::runtime::Runtime;
 
@@ -35,9 +35,8 @@ fn bench_insert_ocr_text(c: &mut Criterion) {
                 let text = black_box(i);
                 let text_json =
                     black_box(format!("{{\"text\": \"{}\"}}", text.replace("\"", "\\\"")));
-                let ocr_engine = black_box(OcrEngine::AppleNative);
 
-                db.insert_ocr_text(frame_id, text, &text_json, std::sync::Arc::new(ocr_engine))
+                db.insert_ocr_text(frame_id, text, &text_json)
                     .await
                     .unwrap();
             })

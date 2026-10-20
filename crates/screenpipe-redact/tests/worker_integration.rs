@@ -32,21 +32,18 @@ async fn setup_db() -> sqlx::SqlitePool {
     // overwrites the source in place; no sibling text_redacted column.
     sqlx::query(
         r#"
-        CREATE TABLE ocr_text (
-            frame_id INTEGER PRIMARY KEY,
-            text TEXT NOT NULL,
-            redacted_at INTEGER
-        );
         CREATE TABLE audio_transcriptions (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             transcription TEXT NOT NULL,
             redacted_at INTEGER
         );
-        -- Accessibility text moved to `frames.accessibility_text` after
-        -- the 2026-03-12 consolidation; only the prefixed timestamp
-        -- survives the destructive-only refactor.
+        -- Searchable text (frames.full_text, which absorbed the retired
+        -- ocr_text table) and accessibility text both live on `frames`,
+        -- each with its own prefixed "is processed" timestamp.
         CREATE TABLE frames (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
+            full_text TEXT,
+            full_text_redacted_at INTEGER,
             accessibility_text TEXT,
             accessibility_redacted_at INTEGER
         );
@@ -67,12 +64,10 @@ async fn setup_db() -> sqlx::SqlitePool {
 
 /// Seed each target with a row containing PII the regex catches.
 async fn seed(pool: &sqlx::SqlitePool) {
-    sqlx::query(
-        "INSERT INTO ocr_text (frame_id, text) VALUES (1, 'Hi alice@example.com — meeting at 3pm')",
-    )
-    .execute(pool)
-    .await
-    .unwrap();
+    sqlx::query("INSERT INTO frames (full_text) VALUES ('Hi alice@example.com — meeting at 3pm')")
+        .execute(pool)
+        .await
+        .unwrap();
     sqlx::query("INSERT INTO audio_transcriptions (transcription) VALUES ('the api key is sk-proj-AbCdEf123456GhIjKlMnOp tomorrow')")
         .execute(pool).await.unwrap();
     sqlx::query(
@@ -135,7 +130,7 @@ async fn worker_redacts_all_five_targets() {
     // Every seeded row should now have its source column overwritten
     // with the redacted version + redacted_at stamped.
     for target in [
-        TargetTable::Ocr,
+        TargetTable::FullText,
         TargetTable::AudioTranscription,
         TargetTable::Accessibility,
         TargetTable::UiEventsKeyboard,
@@ -187,11 +182,13 @@ async fn worker_redacts_all_five_targets() {
 async fn worker_skips_already_redacted_rows() {
     let pool = setup_db().await;
     // Frame 1 is already processed — source already redacted, redacted_at set.
-    sqlx::query("INSERT INTO ocr_text (frame_id, text, redacted_at) VALUES (1, '[EMAIL]', 1)")
-        .execute(&pool)
-        .await
-        .unwrap();
-    sqlx::query("INSERT INTO ocr_text (frame_id, text) VALUES (2, 'bob@example.com')")
+    sqlx::query(
+        "INSERT INTO frames (id, full_text, full_text_redacted_at) VALUES (1, '[EMAIL]', 1)",
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+    sqlx::query("INSERT INTO frames (id, full_text) VALUES (2, 'bob@example.com')")
         .execute(&pool)
         .await
         .unwrap();
@@ -219,18 +216,16 @@ async fn worker_skips_already_redacted_rows() {
 #[tokio::test]
 async fn worker_overwrites_source_columns_destructively() {
     let pool = setup_db().await;
-    sqlx::query(
-        "INSERT INTO ocr_text (frame_id, text) VALUES (1, 'alice@example.com is the email')",
-    )
-    .execute(&pool)
-    .await
-    .unwrap();
+    sqlx::query("INSERT INTO frames (id, full_text) VALUES (1, 'alice@example.com is the email')")
+        .execute(&pool)
+        .await
+        .unwrap();
 
     let redactor = Arc::new(RegexRedactor::new()) as Arc<dyn Redactor>;
     let cfg = WorkerConfig {
         idle_between_batches: Duration::from_millis(1),
         poll_interval: Duration::from_millis(20),
-        tables: vec![TargetTable::Ocr],
+        tables: vec![TargetTable::FullText],
         ..Default::default()
     };
     let worker = Worker::new(pool.clone(), redactor, cfg);
@@ -239,7 +234,7 @@ async fn worker_overwrites_source_columns_destructively() {
     wait_for_redactions(&worker, 1).await;
     handle.abort();
 
-    let row = sqlx::query("SELECT text, redacted_at FROM ocr_text WHERE frame_id = 1")
+    let row = sqlx::query("SELECT full_text, full_text_redacted_at FROM frames WHERE id = 1")
         .fetch_one(&pool)
         .await
         .unwrap();

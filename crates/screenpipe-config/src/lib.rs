@@ -20,14 +20,19 @@
 //! or a TOML config file. Both paths produce the same type that the
 //! engine consumes.
 
+mod choices;
 mod defaults;
+pub mod lenient;
 mod persistence;
 mod recording;
 pub mod screen_lock;
+mod url_rules;
 
+pub use choices::*;
 pub use defaults::*;
 pub use persistence::*;
 pub use recording::*;
+pub use url_rules::*;
 pub use screen_lock::{
     record_while_locked, screen_is_locked, set_record_while_locked, set_screen_locked,
     should_pause_audio_for_lock,
