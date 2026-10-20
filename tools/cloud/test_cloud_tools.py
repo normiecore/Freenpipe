@@ -159,7 +159,9 @@ class ClaimFlow(unittest.TestCase):
         p = self.sb.fp(self.b, "publish-status")
         self.assertEqual(p.returncode, 0, p.stdout + p.stderr)
         subj = git(self.sb.origin, "log", "-1", "--format=%s", "main").stdout.strip()
-        self.assertTrue(subj.startswith("status: 1/154 merged, 0 in review, 1 claimed"), subj)
+        with open(os.path.join(ROOT, "docs/clean-room/plan_wps.json")) as f:
+            total = len(json.load(f)["wps"])
+        self.assertTrue(subj.startswith(f"status: 1/{total} merged, 0 in review, 1 claimed"), subj)
         self.assertTrue(subj.endswith("[skip ci]"), subj)
         md = git(self.sb.origin, "show", "main:docs/clean-room/STATUS.md").stdout
         self.assertIn("| W0-02 | worker-1 |", md)

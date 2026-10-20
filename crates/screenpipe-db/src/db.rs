@@ -475,6 +475,10 @@ impl DatabaseManager {
         // upgraded across that migration boundary may have skipped it.
         Self::ensure_memories_sync_columns(pool).await?;
 
+        // Freenpipe (W2-16, db-011): recreate the speaker tables if a damaged
+        // database lost them.
+        Self::ensure_speaker_tables(pool).await?;
+
         Ok(())
     }
 
@@ -2281,29 +2285,55 @@ impl DatabaseManager {
         Ok(rows)
     }
 
-    /// Get the dominant unnamed speaker on input devices.
-    /// Returns the speaker_id with the most transcriptions on input that has no name set.
-    /// Requires at least `min_count` transcriptions to be considered reliable.
+    /// Find the microphone owner's voice so it can be named after the user.
+    ///
+    /// Freenpipe (W2-16, audio-009): this only answers when the evidence is
+    /// unambiguous. Every input-device row with a speaker since `since` must
+    /// belong to one single speaker id (named or not), and that speaker must
+    /// be unnamed, not a hallucination, and never heard on an output device.
+    /// Only rows that are not live-engine mirrors, last at least two seconds
+    /// and fall outside every recorded meeting count as evidence, and they
+    /// must cover at least `min_chunks` distinct audio chunks.
     pub async fn get_dominant_unnamed_input_speaker(
         &self,
-        min_count: i32,
+        min_chunks: i64,
+        since: DateTime<Utc>,
     ) -> Result<Option<i64>, SqlxError> {
         let result = sqlx::query_scalar::<_, i64>(
             r#"
-            SELECT at.speaker_id
-            FROM audio_transcriptions at
-            INNER JOIN speakers s ON at.speaker_id = s.id
-            WHERE at.is_input_device = 1
-                AND at.speaker_id IS NOT NULL
-                AND (s.name IS NULL OR s.name = '')
-                AND (s.hallucination IS NULL OR s.hallucination = 0)
-            GROUP BY at.speaker_id
-            HAVING COUNT(*) >= ?1
-            ORDER BY COUNT(*) DESC
+            WITH recent_input AS (
+                SELECT speaker_id, audio_chunk_id, timestamp, start_time, end_time,
+                       transcription_engine
+                FROM audio_transcriptions
+                WHERE is_input_device = 1
+                  AND speaker_id IS NOT NULL
+                  AND timestamp >= ?2
+            )
+            SELECT ri.speaker_id
+            FROM recent_input ri
+            INNER JOIN speakers s ON s.id = ri.speaker_id
+            WHERE (SELECT COUNT(DISTINCT speaker_id) FROM recent_input) = 1
+              AND (s.name IS NULL OR TRIM(s.name) = '')
+              AND COALESCE(s.hallucination, 0) = 0
+              AND ri.transcription_engine != 'live'
+              AND ri.end_time - ri.start_time >= 2.0
+              AND NOT EXISTS (
+                  SELECT 1 FROM audio_transcriptions heard_out
+                  WHERE heard_out.speaker_id = ri.speaker_id
+                    AND heard_out.is_input_device = 0
+              )
+              AND NOT EXISTS (
+                  SELECT 1 FROM meetings m
+                  WHERE julianday(ri.timestamp) >= julianday(m.meeting_start)
+                    AND julianday(ri.timestamp) <= julianday(COALESCE(m.meeting_end, 'now'))
+              )
+            GROUP BY ri.speaker_id
+            HAVING COUNT(DISTINCT ri.audio_chunk_id) >= ?1
             LIMIT 1
             "#,
         )
-        .bind(min_count)
+        .bind(min_chunks)
+        .bind(since)
         .fetch_optional(&self.pool)
         .await?;
 
@@ -5928,10 +5958,14 @@ impl DatabaseManager {
         offset: u32,
         speaker_ids: Option<Vec<i64>>,
     ) -> Result<Vec<Speaker>, sqlx::Error> {
+        // Samples carry `audio_chunk_id` so the UI can stream them through
+        // `/speakers/sample/:audio_chunk_id`; chunks without a playable local
+        // file (cloud, empty or "." paths) never become samples.
         let base_query = r#"
             WITH RecentAudioPaths AS (
                 SELECT DISTINCT
                     s.id as speaker_id,
+                    ac.id as audio_chunk_id,
                     ac.file_path,
                     at.transcription,
                     at.start_time,
@@ -5943,6 +5977,7 @@ impl DatabaseManager {
                 WHERE (s.name = '' OR s.name IS NULL)
                 AND s.hallucination = 0
                 AND ac.file_path NOT LIKE 'cloud://%'
+                AND TRIM(COALESCE(ac.file_path, '')) NOT IN ('', '.')
                 "#;
 
         let speaker_filter = match &speaker_ids {
@@ -5957,10 +5992,13 @@ impl DatabaseManager {
             r#"{}
                 {}
                 AND at.timestamp IN (
-                    SELECT timestamp
+                    SELECT at2.timestamp
                     FROM audio_transcriptions at2
+                    JOIN audio_chunks ac2 ON ac2.id = at2.audio_chunk_id
                     WHERE at2.speaker_id = s.id
-                    ORDER BY timestamp DESC
+                    AND ac2.file_path NOT LIKE 'cloud://%'
+                    AND TRIM(COALESCE(ac2.file_path, '')) NOT IN ('', '.')
+                    ORDER BY at2.timestamp DESC
                     LIMIT 3
                 )
             )
@@ -5972,6 +6010,7 @@ impl DatabaseManager {
                     THEN json_object('audio_samples', json_group_array(
                         DISTINCT json_object(
                             'path', rap.file_path,
+                            'audio_chunk_id', rap.audio_chunk_id,
                             'transcript', rap.transcription,
                             'start_time', rap.start_time,
                             'end_time', rap.end_time,
@@ -5983,6 +6022,7 @@ impl DatabaseManager {
                         json_object('audio_samples', json_group_array(
                             DISTINCT json_object(
                                 'path', rap.file_path,
+                                'audio_chunk_id', rap.audio_chunk_id,
                                 'transcript', rap.transcription,
                                 'start_time', rap.start_time,
                                 'end_time', rap.end_time,
@@ -6018,54 +6058,303 @@ impl DatabaseManager {
         Ok(res)
     }
 
+    // ===== Freenpipe (W2-16): speaker reference integrity =====
+    //
+    // A speaker id can be referenced from five tables. Merging or absorbing a
+    // speaker repoints all of them, and a speakers row is only removed once
+    // none of them points at it any more (audio-004, db-011).
+
+    /// Startup self-heal for the speaker tables (db-011). Migrations create
+    /// `speakers` and `speaker_embeddings`, but a database repaired by hand or
+    /// restored from a partial copy can come back without them, and then
+    /// every transcription insert that names a speaker fails. Missing tables
+    /// are recreated empty with the v2.7.104 columns and their lookup index;
+    /// tables that exist are left alone.
+    pub async fn ensure_speaker_tables(pool: &SqlitePool) -> Result<(), sqlx::Error> {
+        async fn table_exists(pool: &SqlitePool, table: &str) -> Result<bool, sqlx::Error> {
+            sqlx::query_scalar(
+                "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?1)",
+            )
+            .bind(table)
+            .fetch_one(pool)
+            .await
+        }
+
+        if !table_exists(pool, "speakers").await? {
+            warn!("speakers table is missing; recreating it");
+            sqlx::query(
+                "CREATE TABLE IF NOT EXISTS speakers (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    name TEXT,
+                    metadata JSON,
+                    hallucination BOOLEAN DEFAULT FALSE,
+                    centroid FLOAT[512],
+                    embedding_count INTEGER DEFAULT 0
+                )",
+            )
+            .execute(pool)
+            .await?;
+            sqlx::query(
+                "CREATE INDEX IF NOT EXISTS idx_speakers_hallucination_name \
+                 ON speakers(hallucination, name COLLATE NOCASE)",
+            )
+            .execute(pool)
+            .await?;
+        }
+
+        if !table_exists(pool, "speaker_embeddings").await? {
+            warn!("speaker_embeddings table is missing; recreating it");
+            sqlx::query(
+                "CREATE TABLE IF NOT EXISTS speaker_embeddings (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    embedding FLOAT[512] NOT NULL
+                    check(
+                      typeof(embedding) == 'blob'
+                      and vec_length(embedding) == 512
+                    ),
+                    speaker_id INTEGER REFERENCES speakers(id)
+                )",
+            )
+            .execute(pool)
+            .await?;
+            sqlx::query(
+                "CREATE INDEX IF NOT EXISTS idx_speaker_embeddings_speaker_id \
+                 ON speaker_embeddings(speaker_id)",
+            )
+            .execute(pool)
+            .await?;
+        }
+
+        Ok(())
+    }
+
+    /// Every table with a `speaker_id` column that points at `speakers.id`.
+    pub const SPEAKER_REFERENCE_TABLES: [&'static str; 5] = [
+        "audio_transcriptions",
+        "meeting_transcript_segments",
+        "speaker_embeddings",
+        "diarization_segments",
+        "speaker_identity_evidence",
+    ];
+
+    /// The subset of [`Self::SPEAKER_REFERENCE_TABLES`] present in this
+    /// database, in list order. Every migrated database has all five; the
+    /// check keeps a damaged or partially migrated file from failing a merge.
+    async fn present_speaker_reference_tables(
+        conn: &mut sqlx::SqliteConnection,
+    ) -> Result<Vec<&'static str>, sqlx::Error> {
+        let present: Vec<String> = sqlx::query_scalar(
+            "SELECT name FROM sqlite_master WHERE type = 'table' \
+             AND name IN (?1, ?2, ?3, ?4, ?5)",
+        )
+        .bind(Self::SPEAKER_REFERENCE_TABLES[0])
+        .bind(Self::SPEAKER_REFERENCE_TABLES[1])
+        .bind(Self::SPEAKER_REFERENCE_TABLES[2])
+        .bind(Self::SPEAKER_REFERENCE_TABLES[3])
+        .bind(Self::SPEAKER_REFERENCE_TABLES[4])
+        .fetch_all(&mut *conn)
+        .await?;
+        Ok(Self::SPEAKER_REFERENCE_TABLES
+            .iter()
+            .copied()
+            .filter(|table| present.iter().any(|name| name == table))
+            .collect())
+    }
+
+    /// Point every reference to `from_speaker_id` at `to_speaker_id`.
+    /// Returns the number of rows changed per table, in `tables` order.
+    async fn repoint_speaker_references(
+        conn: &mut sqlx::SqliteConnection,
+        tables: &[&'static str],
+        from_speaker_id: i64,
+        to_speaker_id: i64,
+    ) -> Result<Vec<(&'static str, u64)>, sqlx::Error> {
+        let mut changed = Vec::with_capacity(tables.len());
+        for table in tables {
+            let sql = format!("UPDATE {table} SET speaker_id = ?1 WHERE speaker_id = ?2");
+            let rows = sqlx::query(sqlx::AssertSqlSafe(sql))
+                .bind(to_speaker_id)
+                .bind(from_speaker_id)
+                .execute(&mut *conn)
+                .await?
+                .rows_affected();
+            changed.push((*table, rows));
+        }
+        Ok(changed)
+    }
+
+    /// The first table that still references `speaker_id`, with its row count.
+    async fn first_speaker_reference(
+        conn: &mut sqlx::SqliteConnection,
+        tables: &[&'static str],
+        speaker_id: i64,
+    ) -> Result<Option<(&'static str, i64)>, sqlx::Error> {
+        for table in tables {
+            let sql = format!("SELECT COUNT(*) FROM {table} WHERE speaker_id = ?1");
+            let count: i64 = sqlx::query_scalar(sqlx::AssertSqlSafe(sql))
+                .bind(speaker_id)
+                .fetch_one(&mut *conn)
+                .await?;
+            if count > 0 {
+                return Ok(Some((*table, count)));
+            }
+        }
+        Ok(None)
+    }
+
+    /// Delete the `speakers` row only when no referencing table still points
+    /// at it. Returns `None` when the row was deleted (or did not exist), or
+    /// the table and row count that kept it.
+    async fn delete_speaker_row_if_unreferenced(
+        conn: &mut sqlx::SqliteConnection,
+        tables: &[&'static str],
+        speaker_id: i64,
+    ) -> Result<Option<(&'static str, i64)>, sqlx::Error> {
+        if let Some(kept_by) = Self::first_speaker_reference(conn, tables, speaker_id).await? {
+            return Ok(Some(kept_by));
+        }
+        sqlx::query("DELETE FROM speakers WHERE id = ?1")
+            .bind(speaker_id)
+            .execute(&mut *conn)
+            .await?;
+        Ok(None)
+    }
+
+    /// Absorb `from_speaker_id` into `to_speaker_id` inside the caller's
+    /// transaction: repoint all five tables, then drop the absorbed row if
+    /// nothing references it. Returns the per-table repoint counts.
+    async fn absorb_speaker_in_tx(
+        conn: &mut sqlx::SqliteConnection,
+        tables: &[&'static str],
+        from_speaker_id: i64,
+        to_speaker_id: i64,
+    ) -> Result<Vec<(&'static str, u64)>, sqlx::Error> {
+        let changed =
+            Self::repoint_speaker_references(conn, tables, from_speaker_id, to_speaker_id).await?;
+        if let Some((table, count)) =
+            Self::delete_speaker_row_if_unreferenced(conn, tables, from_speaker_id).await?
+        {
+            warn!(
+                "speaker merge: keeping speaker {} after absorbing it into {}: {} still has {} row(s) pointing at it",
+                from_speaker_id, to_speaker_id, table, count
+            );
+        }
+        Ok(changed)
+    }
+
+    /// Merge `speaker_to_merge_id` into `speaker_to_keep_id`.
+    ///
+    /// Every table that references the merged speaker is repointed in one
+    /// IMMEDIATE transaction; the merged `speakers` row is deleted only when
+    /// no reference remains.
     pub async fn merge_speakers(
         &self,
         speaker_to_keep_id: i64,
         speaker_to_merge_id: i64,
     ) -> Result<Speaker, sqlx::Error> {
+        if speaker_to_keep_id == speaker_to_merge_id {
+            // Merging a speaker into itself is a no-op (the old code deleted it).
+            return self.get_speaker_by_id(speaker_to_keep_id).await;
+        }
+
         let mut tx = self.begin_immediate_with_retry().await?;
 
-        // for each audio transcription of the speaker to merge, update the speaker_id to the speaker to keep
-        sqlx::query("UPDATE audio_transcriptions SET speaker_id = ? WHERE speaker_id = ?")
-            .bind(speaker_to_keep_id)
-            .bind(speaker_to_merge_id)
-            .execute(&mut **tx.conn())
-            .await?;
+        let keep_exists: bool =
+            sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM speakers WHERE id = ?1)")
+                .bind(speaker_to_keep_id)
+                .fetch_one(&mut **tx.conn())
+                .await?;
+        if !keep_exists {
+            // Repointing at a missing id would orphan every moved row.
+            return Err(sqlx::Error::RowNotFound);
+        }
 
-        // update speaker_embeddings
-        sqlx::query("UPDATE speaker_embeddings SET speaker_id = ? WHERE speaker_id = ?")
-            .bind(speaker_to_keep_id)
-            .bind(speaker_to_merge_id)
-            .execute(&mut **tx.conn())
-            .await?;
-
-        // delete the speaker to merge
-        sqlx::query("DELETE FROM speakers WHERE id = ?")
-            .bind(speaker_to_merge_id)
-            .execute(&mut **tx.conn())
-            .await?;
+        let tables = Self::present_speaker_reference_tables(&mut **tx.conn()).await?;
+        let changed = Self::absorb_speaker_in_tx(
+            &mut **tx.conn(),
+            &tables,
+            speaker_to_merge_id,
+            speaker_to_keep_id,
+        )
+        .await?;
 
         tx.commit().await?;
+
+        debug!(
+            "merged speaker {} into {}: {:?}",
+            speaker_to_merge_id, speaker_to_keep_id, changed
+        );
 
         self.get_speaker_by_id(speaker_to_keep_id).await
     }
 
+    /// Search named speakers by name prefix (all of them, with samples).
+    /// Kept for existing callers; see [`Self::search_speakers_paged`].
     pub async fn search_speakers(&self, name_prefix: &str) -> Result<Vec<Speaker>, sqlx::Error> {
-        // Group by name so duplicate names (e.g. multiple "Louis" rows from
-        // separate voice embeddings) appear as a single entry in the dropdown.
-        // Pick the lowest id per name so reassignment targets a stable speaker.
-        // Include recent audio samples so the UI can display voice clips.
+        self.search_speakers_paged(name_prefix, None, 0, true).await
+    }
+
+    /// Search named speakers by case-insensitive name prefix.
+    ///
+    /// Speakers sharing a name (several voice clusters labelled "Louis") come
+    /// back as one entry carrying the lowest id, so a reassignment always
+    /// targets a stable row. Results are ordered by name without regard to
+    /// case and paginated with `limit` (`None` = no limit) and `offset`.
+    ///
+    /// With `include_samples` the metadata carries up to three recent
+    /// playable `audio_samples`. Without it, the query skips every join and
+    /// returns `metadata = "{}"`, which keeps autocomplete cheap (it is
+    /// served by `idx_speakers_hallucination_name`).
+    pub async fn search_speakers_paged(
+        &self,
+        name_prefix: &str,
+        limit: Option<u32>,
+        offset: u32,
+        include_samples: bool,
+    ) -> Result<Vec<Speaker>, sqlx::Error> {
+        let pattern = Self::like_prefix_pattern(name_prefix);
+        // SQLite treats a negative LIMIT as "no limit".
+        let limit: i64 = limit.map(i64::from).unwrap_or(-1);
+        let offset = i64::from(offset);
+
+        if !include_samples {
+            return sqlx::query_as::<_, Speaker>(
+                r#"
+                SELECT MIN(id) AS id, name, '{}' AS metadata
+                FROM speakers
+                WHERE name LIKE ?1 ESCAPE '\'
+                  AND hallucination = 0
+                  AND name IS NOT NULL
+                  AND name != ''
+                GROUP BY name
+                ORDER BY name COLLATE NOCASE, name
+                LIMIT ?2 OFFSET ?3
+                "#,
+            )
+            .bind(pattern)
+            .bind(limit)
+            .bind(offset)
+            .fetch_all(&self.pool)
+            .await;
+        }
+
         sqlx::query_as::<_, Speaker>(
             r#"
             WITH NamedSpeakers AS (
                 SELECT MIN(id) as id, name
                 FROM speakers
-                WHERE name LIKE ? || '%' AND hallucination = 0 AND name IS NOT NULL AND name != ''
+                WHERE name LIKE ?1 ESCAPE '\'
+                  AND hallucination = 0
+                  AND name IS NOT NULL
+                  AND name != ''
                 GROUP BY name
+                ORDER BY name COLLATE NOCASE, name
+                LIMIT ?2 OFFSET ?3
             ),
             RecentAudioPaths AS (
                 SELECT DISTINCT
                     ns.id as speaker_id,
+                    ac.id as audio_chunk_id,
                     ac.file_path,
                     at2.transcription,
                     at2.start_time,
@@ -6077,11 +6366,15 @@ impl DatabaseManager {
                 )
                 JOIN audio_chunks ac ON at2.audio_chunk_id = ac.id
                 WHERE ac.file_path NOT LIKE 'cloud://%'
-                AND at2.timestamp IN (
-                    SELECT at3.timestamp
+                AND TRIM(COALESCE(ac.file_path, '')) NOT IN ('', '.')
+                AND at2.id IN (
+                    SELECT at3.id
                     FROM audio_transcriptions at3
                     JOIN speakers s3 ON at3.speaker_id = s3.id
+                    JOIN audio_chunks ac3 ON at3.audio_chunk_id = ac3.id
                     WHERE s3.name = ns.name AND s3.hallucination = 0
+                    AND ac3.file_path NOT LIKE 'cloud://%'
+                    AND TRIM(COALESCE(ac3.file_path, '')) NOT IN ('', '.')
                     ORDER BY at3.timestamp DESC
                     LIMIT 3
                 )
@@ -6094,6 +6387,7 @@ impl DatabaseManager {
                     ELSE json_object('audio_samples', json_group_array(
                         DISTINCT json_object(
                             'path', rap.file_path,
+                            'audio_chunk_id', rap.audio_chunk_id,
                             'transcript', rap.transcription,
                             'start_time', rap.start_time,
                             'end_time', rap.end_time,
@@ -6105,12 +6399,43 @@ impl DatabaseManager {
             JOIN speakers s ON s.id = ns.id
             LEFT JOIN RecentAudioPaths rap ON ns.id = rap.speaker_id
             GROUP BY ns.id, ns.name
-            ORDER BY ns.name
+            ORDER BY ns.name COLLATE NOCASE, ns.name
             "#,
         )
-        .bind(name_prefix)
+        .bind(pattern)
+        .bind(limit)
+        .bind(offset)
         .fetch_all(&self.pool)
         .await
+    }
+
+    /// Build a pattern for `LIKE ?1 ESCAPE '\'` that matches names starting with
+    /// `prefix` literally: `%`, `_` and the escape character typed by the
+    /// user match themselves instead of acting as wildcards.
+    pub fn like_prefix_pattern(prefix: &str) -> String {
+        let mut pattern = String::with_capacity(prefix.len() + 1);
+        for ch in prefix.chars() {
+            if matches!(ch, '\\' | '%' | '_') {
+                pattern.push('\\');
+            }
+            pattern.push(ch);
+        }
+        pattern.push('%');
+        pattern
+    }
+
+    /// File path of an audio chunk, or `None` when the chunk does not exist.
+    /// Used by `/speakers/sample/:audio_chunk_id`.
+    pub async fn get_audio_chunk_file_path(
+        &self,
+        audio_chunk_id: i64,
+    ) -> Result<Option<String>, sqlx::Error> {
+        let row: Option<(Option<String>,)> =
+            sqlx::query_as("SELECT file_path FROM audio_chunks WHERE id = ?1")
+                .bind(audio_chunk_id)
+                .fetch_optional(&self.pool)
+                .await?;
+        Ok(row.map(|(path,)| path.unwrap_or_default()))
     }
 
     pub async fn delete_speaker(&self, id: i64) -> Result<(), sqlx::Error> {
@@ -6124,8 +6449,13 @@ impl DatabaseManager {
         .fetch_all(&mut **tx.conn())
         .await?;
 
-        // Delete in FK-safe order: transcriptions first (they reference chunks), then chunks
-        let operations = [
+        // Freenpipe (W2-16): rows in the other three speaker-referencing
+        // tables outlive the speaker. Live meeting segments and diarization
+        // segments drop the link (they fall back to their provider label);
+        // identity evidence about this voice goes with it. This mirrors the
+        // ON DELETE actions of the diarization tables and leaves no orphan ids.
+        let present_tables = Self::present_speaker_reference_tables(&mut **tx.conn()).await?;
+        let mut operations: Vec<(&str, &str)> = vec![
             (
                 "DELETE FROM audio_transcriptions WHERE speaker_id = ?",
                 "audio transcriptions",
@@ -6134,9 +6464,28 @@ impl DatabaseManager {
                 "DELETE FROM speaker_embeddings WHERE speaker_id = ?",
                 "speaker embeddings",
             ),
-            ("DELETE FROM speakers WHERE id = ?", "speaker"),
         ];
+        if present_tables.contains(&"meeting_transcript_segments") {
+            operations.push((
+                "UPDATE meeting_transcript_segments SET speaker_id = NULL WHERE speaker_id = ?",
+                "meeting transcript segment links",
+            ));
+        }
+        if present_tables.contains(&"diarization_segments") {
+            operations.push((
+                "UPDATE diarization_segments SET speaker_id = NULL WHERE speaker_id = ?",
+                "diarization segment links",
+            ));
+        }
+        if present_tables.contains(&"speaker_identity_evidence") {
+            operations.push((
+                "DELETE FROM speaker_identity_evidence WHERE speaker_id = ?",
+                "speaker identity evidence",
+            ));
+        }
+        operations.push(("DELETE FROM speakers WHERE id = ?", "speaker"));
 
+        // Delete in FK-safe order: transcriptions first (they reference chunks), then chunks
         for (query, operation) in operations {
             if let Err(e) = sqlx::query(query).bind(id).execute(&mut **tx.conn()).await {
                 error!("Failed to delete {} for speaker {}: {}", operation, id, e);
@@ -7183,6 +7532,7 @@ impl DatabaseManager {
             WITH RecentAudioPaths AS (
                 SELECT DISTINCT
                     s.id as speaker_id,
+                    ac.id as audio_chunk_id,
                     ac.file_path,
                     at.transcription,
                     at.start_time,
@@ -7193,11 +7543,15 @@ impl DatabaseManager {
                 JOIN audio_chunks ac ON at.audio_chunk_id = ac.id
                 AND s.hallucination = 0
                 AND ac.file_path NOT LIKE 'cloud://%'
+                AND TRIM(COALESCE(ac.file_path, '')) NOT IN ('', '.')
                 AND at.timestamp IN (
-                    SELECT timestamp
+                    SELECT at2.timestamp
                     FROM audio_transcriptions at2
+                    JOIN audio_chunks ac2 ON ac2.id = at2.audio_chunk_id
                     WHERE at2.speaker_id = s.id
-                    ORDER BY timestamp DESC
+                    AND ac2.file_path NOT LIKE 'cloud://%'
+                    AND TRIM(COALESCE(ac2.file_path, '')) NOT IN ('', '.')
+                    ORDER BY at2.timestamp DESC
                     LIMIT 3
                 )
             ),
@@ -7211,6 +7565,7 @@ impl DatabaseManager {
                     WHEN s.metadata = '' OR s.metadata IS NULL OR json_valid(s.metadata) = 0
                     THEN json_object('audio_samples', json_group_array(DISTINCT json_object(
                         'path', rap.file_path,
+                        'audio_chunk_id', rap.audio_chunk_id,
                         'transcript', rap.transcription,
                         'start_time', rap.start_time,
                         'end_time', rap.end_time,
@@ -7220,6 +7575,7 @@ impl DatabaseManager {
                         json(s.metadata),
                         json_object('audio_samples', json_group_array(DISTINCT json_object(
                             'path', rap.file_path,
+                            'audio_chunk_id', rap.audio_chunk_id,
                             'transcript', rap.transcription,
                             'start_time', rap.start_time,
                             'end_time', rap.end_time,
@@ -8132,121 +8488,238 @@ LIMIT ? OFFSET ?
         Ok(results)
     }
 
-    /// Reassign a speaker: move transcriptions and embeddings to a new or existing speaker.
-    /// Phase 1 (instant): reassigns just this one audio chunk.
-    /// Phase 2-3 (propagation): finds similar speakers using majority-vote — only absorbs
-    /// a speaker if >50% of its embeddings match the target. This prevents one similar
-    /// embedding from stealing all transcriptions from an unrelated speaker.
-    /// Returns (new_speaker_id, transcriptions_updated, embeddings_moved, old_assignments)
-    /// old_assignments can be used to undo the operation.
+    /// Reassign a chunk's speaker with the pre-v2 behaviour (scope `chunk`).
+    ///
+    /// Returns `(new_speaker_id, transcriptions_updated, embeddings_moved,
+    /// old_assignments)`; the assignments feed [`Self::undo_speaker_reassign`].
+    /// New callers should use [`Self::reassign_speaker_scoped`].
     pub async fn reassign_speaker(
         &self,
         audio_chunk_id: i64,
         new_speaker_name: &str,
         propagate_similar: bool,
     ) -> Result<(i64, u64, u64, Vec<(i64, i64)>), sqlx::Error> {
-        // old_assignments: Vec<(audio_transcription_id, old_speaker_id)> for undo
-        let mut old_assignments: Vec<(i64, i64)> = Vec::new();
-
-        // Phase 1: Short IMMEDIATE write transaction – reassign just this chunk.
-        let (current_speaker_id, target_speaker_id, transcriptions_updated, mut embeddings_moved) = {
-            let mut tx = self.begin_immediate_with_retry().await?;
-
-            // 1. Get the current speaker_id for this audio chunk
-            let current_speaker_id: Option<i64> = sqlx::query_scalar(
-                "SELECT speaker_id FROM audio_transcriptions WHERE audio_chunk_id = ? LIMIT 1",
+        let outcome = self
+            .reassign_speaker_scoped(
+                audio_chunk_id,
+                new_speaker_name,
+                propagate_similar,
+                crate::SpeakerReassignScope::Chunk,
             )
-            .bind(audio_chunk_id)
-            .fetch_optional(&mut **tx.conn())
+            .await?;
+        Ok((
+            outcome.new_speaker_id,
+            outcome.transcriptions_updated,
+            outcome.embeddings_moved,
+            outcome.old_assignments,
+        ))
+    }
+
+    /// Give the speaker of an audio chunk a name (Freenpipe W2-16, audio-006).
+    ///
+    /// 1. The name is trimmed; an empty name fails with
+    ///    `sqlx::Error::InvalidArgument`.
+    /// 2. The target is the named, non-hallucination speaker whose trimmed
+    ///    name matches without regard to case, preferring the one with the
+    ///    most stored embeddings.
+    /// 3. [`crate::SpeakerReassignScope::Auto`]: when the chunk's current
+    ///    speaker is unnamed, not flagged as a hallucination, and no target
+    ///    exists, that speaker is renamed in place, which labels the whole
+    ///    voice cluster. Only the name changes, so renaming it back
+    ///    (`previous_speaker_name`) undoes it. A voice flagged as a
+    ///    hallucination keeps its flag and takes the chunk path instead, so
+    ///    one relabel never turns a whole junk cluster into a named person.
+    /// 4. Otherwise the chunk's transcriptions and one embedding move to the
+    ///    target, which is created when missing. With `propagate_similar`,
+    ///    speakers whose embeddings mostly match the target are absorbed into
+    ///    it, repointing all five speaker-referencing tables.
+    /// 5. In both cases, live meeting segments that carry the same text as one
+    ///    of the chunk's transcriptions, captured within two seconds of it,
+    ///    move to the target as well.
+    ///
+    /// Fails with `RowNotFound` when the chunk has no transcriptions.
+    pub async fn reassign_speaker_scoped(
+        &self,
+        audio_chunk_id: i64,
+        new_speaker_name: &str,
+        propagate_similar: bool,
+        scope: crate::SpeakerReassignScope,
+    ) -> Result<crate::SpeakerReassignOutcome, sqlx::Error> {
+        let name = new_speaker_name.trim();
+        if name.is_empty() {
+            return Err(sqlx::Error::InvalidArgument(
+                "speaker name cannot be empty".to_string(),
+            ));
+        }
+
+        let mut outcome = crate::SpeakerReassignOutcome {
+            new_speaker_name: name.to_string(),
+            ..Default::default()
+        };
+
+        // Phase 1: the chunk itself, in one IMMEDIATE transaction.
+        let mut tx = self.begin_immediate_with_retry().await?;
+        let tables = Self::present_speaker_reference_tables(&mut **tx.conn()).await?;
+
+        // The chunk's current speaker comes from its first row that has one;
+        // `Some(None)` is a chunk whose rows have no speaker yet.
+        let current: Option<Option<i64>> = sqlx::query_scalar(
+            "SELECT speaker_id FROM audio_transcriptions WHERE audio_chunk_id = ?1 \
+             ORDER BY (speaker_id IS NULL), id LIMIT 1",
+        )
+        .bind(audio_chunk_id)
+        .fetch_optional(&mut **tx.conn())
+        .await?;
+        let current_speaker_id = match current {
+            Some(speaker_id) => speaker_id,
+            None => return Err(sqlx::Error::RowNotFound),
+        };
+
+        let existing_target: Option<(i64, String)> = sqlx::query_as(
+            "SELECT s.id, s.name FROM speakers s \
+             LEFT JOIN speaker_embeddings se ON se.speaker_id = s.id \
+             WHERE s.name IS NOT NULL AND TRIM(s.name) <> '' \
+               AND LOWER(TRIM(s.name)) = LOWER(?1) \
+               AND COALESCE(s.hallucination, 0) = 0 \
+             GROUP BY s.id \
+             ORDER BY COUNT(se.id) DESC, s.id ASC \
+             LIMIT 1",
+        )
+        .bind(name)
+        .fetch_optional(&mut **tx.conn())
+        .await?;
+
+        // Only an unnamed voice that is not flagged as a hallucination can be
+        // renamed in place; the rename would otherwise drop the flag, and
+        // renaming back could not restore it.
+        let unnamed_current = match current_speaker_id {
+            Some(speaker_id) => {
+                let unnamed: i64 = sqlx::query_scalar(
+                    "SELECT COUNT(*) FROM speakers \
+                     WHERE id = ?1 AND (name IS NULL OR TRIM(name) = '') \
+                       AND COALESCE(hallucination, 0) = 0",
+                )
+                .bind(speaker_id)
+                .fetch_one(&mut **tx.conn())
+                .await?;
+                (unnamed > 0).then_some(speaker_id)
+            }
+            None => None,
+        };
+
+        let rename_in_place = match (scope, &existing_target, unnamed_current) {
+            (crate::SpeakerReassignScope::Auto, None, Some(speaker_id)) => Some(speaker_id),
+            _ => None,
+        };
+
+        let target_speaker_id = if let Some(speaker_id) = rename_in_place {
+            let previous_name: Option<String> =
+                sqlx::query_scalar("SELECT name FROM speakers WHERE id = ?1")
+                    .bind(speaker_id)
+                    .fetch_one(&mut **tx.conn())
+                    .await?;
+            sqlx::query("UPDATE speakers SET name = ?1 WHERE id = ?2")
+                .bind(name)
+                .bind(speaker_id)
+                .execute(&mut **tx.conn())
+                .await?;
+            let rows: i64 = sqlx::query_scalar(
+                "SELECT COUNT(*) FROM audio_transcriptions WHERE speaker_id = ?1",
+            )
+            .bind(speaker_id)
+            .fetch_one(&mut **tx.conn())
             .await?;
 
-            let current_speaker_id = match current_speaker_id {
-                Some(id) => id,
-                None => return Err(sqlx::Error::RowNotFound),
-            };
-
-            // 2. Find or create the target speaker (pick the one with most embeddings
-            //    to act as canonical when duplicates exist)
-            let target_speaker: Speaker = match sqlx::query_as::<_, Speaker>(
-                "SELECT s.id, s.name, s.metadata FROM speakers s \
-                 LEFT JOIN speaker_embeddings se ON se.speaker_id = s.id \
-                 WHERE s.name = ? AND s.hallucination = 0 \
-                 GROUP BY s.id ORDER BY COUNT(se.id) DESC LIMIT 1",
-            )
-            .bind(new_speaker_name)
-            .fetch_optional(&mut **tx.conn())
-            .await?
-            {
-                Some(speaker) => speaker,
-                None => {
-                    let id = sqlx::query("INSERT INTO speakers (name) VALUES (?)")
-                        .bind(new_speaker_name)
-                        .execute(&mut **tx.conn())
-                        .await?
-                        .last_insert_rowid();
-
-                    Speaker {
-                        id,
-                        name: new_speaker_name.to_string(),
-                        metadata: String::new(),
-                    }
+            outcome.renamed_whole_speaker = true;
+            outcome.previous_speaker_name = Some(previous_name.unwrap_or_default());
+            outcome.transcriptions_updated = u64::try_from(rows).unwrap_or(0);
+            speaker_id
+        } else {
+            let target_speaker_id = match &existing_target {
+                Some((speaker_id, stored_name)) => {
+                    outcome.new_speaker_name = stored_name.clone();
+                    *speaker_id
                 }
+                None => sqlx::query("INSERT INTO speakers (name) VALUES (?1)")
+                    .bind(name)
+                    .execute(&mut **tx.conn())
+                    .await?
+                    .last_insert_rowid(),
             };
 
-            // Record old assignments for undo
-            let affected_rows: Vec<(i64, i64)> = sqlx::query_as(
-                "SELECT id, speaker_id FROM audio_transcriptions WHERE audio_chunk_id = ?",
+            let previous_rows: Vec<(i64, Option<i64>)> = sqlx::query_as(
+                "SELECT id, speaker_id FROM audio_transcriptions WHERE audio_chunk_id = ?1",
             )
             .bind(audio_chunk_id)
             .fetch_all(&mut **tx.conn())
             .await?;
-            old_assignments.extend(affected_rows);
+            outcome.old_assignments.extend(
+                previous_rows
+                    .into_iter()
+                    .map(|(row_id, speaker_id)| (row_id, speaker_id.unwrap_or(0))),
+            );
 
-            // 3. Update the transcription's speaker_id
-            let transcriptions_updated = sqlx::query(
-                "UPDATE audio_transcriptions SET speaker_id = ? WHERE audio_chunk_id = ?",
+            outcome.transcriptions_updated = sqlx::query(
+                "UPDATE audio_transcriptions SET speaker_id = ?1 WHERE audio_chunk_id = ?2",
             )
-            .bind(target_speaker.id)
+            .bind(target_speaker_id)
             .bind(audio_chunk_id)
             .execute(&mut **tx.conn())
             .await?
             .rows_affected();
 
-            // 4. Move one embedding from old speaker to new speaker
-            let embedding_id: Option<i64> = sqlx::query_scalar(
-                "SELECT id FROM speaker_embeddings WHERE speaker_id = ? LIMIT 1",
-            )
-            .bind(current_speaker_id)
-            .fetch_optional(&mut **tx.conn())
-            .await?;
-
-            let mut embeddings_moved = 0u64;
-            if let Some(emb_id) = embedding_id {
-                sqlx::query("UPDATE speaker_embeddings SET speaker_id = ? WHERE id = ?")
-                    .bind(target_speaker.id)
-                    .bind(emb_id)
-                    .execute(&mut **tx.conn())
-                    .await?;
-                embeddings_moved = 1;
+            // Move one embedding along with the chunk so the target learns
+            // this voice sample.
+            if let Some(source_id) = current_speaker_id.filter(|id| *id != target_speaker_id) {
+                let embedding_id: Option<i64> = sqlx::query_scalar(
+                    "SELECT id FROM speaker_embeddings WHERE speaker_id = ?1 ORDER BY id LIMIT 1",
+                )
+                .bind(source_id)
+                .fetch_optional(&mut **tx.conn())
+                .await?;
+                if let Some(embedding_id) = embedding_id {
+                    sqlx::query("UPDATE speaker_embeddings SET speaker_id = ?1 WHERE id = ?2")
+                        .bind(target_speaker_id)
+                        .bind(embedding_id)
+                        .execute(&mut **tx.conn())
+                        .await?;
+                    outcome.embeddings_moved = 1;
+                }
             }
-
-            tx.commit().await?;
-            (
-                current_speaker_id,
-                target_speaker.id,
-                transcriptions_updated,
-                embeddings_moved,
-            )
+            target_speaker_id
         };
 
-        // Phase 2: Majority-vote propagation — only absorb speakers where >50% of
-        //          their embeddings are similar to target. This prevents one similar
-        //          embedding from stealing all transcriptions from an unrelated speaker.
+        if tables.contains(&"meeting_transcript_segments") {
+            outcome.old_segment_assignments = Self::move_chunk_meeting_segments(
+                &mut **tx.conn(),
+                audio_chunk_id,
+                target_speaker_id,
+            )
+            .await?;
+        }
+
+        tx.commit().await?;
+        outcome.new_speaker_id = target_speaker_id;
+
+        if outcome.renamed_whole_speaker {
+            info!(
+                "speaker reassign: renamed speaker {} to '{}' ({} transcriptions, {} meeting segments)",
+                target_speaker_id,
+                name,
+                outcome.transcriptions_updated,
+                outcome.old_segment_assignments.len()
+            );
+            return Ok(outcome);
+        }
+
+        // Phase 2: majority-vote propagation. Only absorb a speaker when more
+        // than half of its embeddings sit within the threshold of one of the
+        // target's, so a single look-alike sample cannot pull in an unrelated
+        // voice.
         if propagate_similar {
             let threshold = 0.55;
-            let min_absorption_ratio = 0.5; // >50% of embeddings must match
+            let min_absorption_ratio = 0.5;
 
-            // Read-only: for each other speaker, count matching vs total embeddings
             let speaker_match_stats: Vec<(i64, i64, i64)> = sqlx::query_as(
                 r#"
                 SELECT
@@ -8268,7 +8741,6 @@ LIMIT ? OFFSET ?
             .fetch_all(&self.pool)
             .await?;
 
-            // Filter to speakers where majority of embeddings match
             let speakers_to_absorb: Vec<i64> = speaker_match_stats
                 .iter()
                 .filter(|(_, matching, total)| {
@@ -8282,77 +8754,101 @@ LIMIT ? OFFSET ?
                     "speaker reassign: absorbing {} speakers into {} ({})",
                     speakers_to_absorb.len(),
                     target_speaker_id,
-                    new_speaker_name
+                    outcome.new_speaker_name
                 );
 
-                // Phase 3: Absorb qualifying speakers in a write transaction
+                // Phase 3: absorb them, recording every moved row for undo.
                 let mut tx = self.begin_immediate_with_retry().await?;
-
-                for old_speaker_id in &speakers_to_absorb {
-                    // Record old assignments for undo before moving
-                    let affected: Vec<(i64, i64)> = sqlx::query_as(
-                        "SELECT id, speaker_id FROM audio_transcriptions WHERE speaker_id = ?",
+                for absorbed_id in &speakers_to_absorb {
+                    let moved_rows: Vec<(i64, i64)> = sqlx::query_as(
+                        "SELECT id, speaker_id FROM audio_transcriptions WHERE speaker_id = ?1",
                     )
-                    .bind(old_speaker_id)
+                    .bind(absorbed_id)
                     .fetch_all(&mut **tx.conn())
                     .await?;
-                    old_assignments.extend(affected);
+                    outcome.old_assignments.extend(moved_rows);
 
-                    // Move ALL embeddings from this speaker to target
-                    let moved = sqlx::query(
-                        "UPDATE speaker_embeddings SET speaker_id = ? WHERE speaker_id = ?",
-                    )
-                    .bind(target_speaker_id)
-                    .bind(old_speaker_id)
-                    .execute(&mut **tx.conn())
-                    .await?
-                    .rows_affected();
-                    embeddings_moved += moved;
-
-                    // Move ALL transcriptions from this speaker to target
-                    sqlx::query(
-                        "UPDATE audio_transcriptions SET speaker_id = ? WHERE speaker_id = ?",
-                    )
-                    .bind(target_speaker_id)
-                    .bind(old_speaker_id)
-                    .execute(&mut **tx.conn())
-                    .await?;
-
-                    // Delete the now-empty speaker
-                    sqlx::query("DELETE FROM speakers WHERE id = ?")
-                        .bind(old_speaker_id)
-                        .execute(&mut **tx.conn())
+                    if tables.contains(&"meeting_transcript_segments") {
+                        let moved_segments: Vec<(i64, i64)> = sqlx::query_as(
+                            "SELECT id, speaker_id FROM meeting_transcript_segments \
+                             WHERE speaker_id = ?1",
+                        )
+                        .bind(absorbed_id)
+                        .fetch_all(&mut **tx.conn())
                         .await?;
+                        outcome.old_segment_assignments.extend(moved_segments);
+                    }
+
+                    let changed = Self::absorb_speaker_in_tx(
+                        &mut **tx.conn(),
+                        &tables,
+                        *absorbed_id,
+                        target_speaker_id,
+                    )
+                    .await?;
+                    outcome.embeddings_moved += changed
+                        .iter()
+                        .filter(|(table, _)| *table == "speaker_embeddings")
+                        .map(|(_, rows)| *rows)
+                        .sum::<u64>();
                 }
-
                 tx.commit().await?;
             }
         }
 
-        // Phase 4: Clean up – if original speaker has no embeddings left, delete it
-        if current_speaker_id != target_speaker_id {
-            let remaining: i64 =
-                sqlx::query_scalar("SELECT COUNT(*) FROM speaker_embeddings WHERE speaker_id = ?")
-                    .bind(current_speaker_id)
-                    .fetch_one(&self.pool)
-                    .await?;
-
-            if remaining == 0 {
-                let mut tx = self.begin_immediate_with_retry().await?;
-                sqlx::query("DELETE FROM speakers WHERE id = ?")
-                    .bind(current_speaker_id)
-                    .execute(&mut **tx.conn())
-                    .await?;
-                tx.commit().await?;
+        // Phase 4: drop the chunk's previous speaker if nothing refers to it
+        // any more. It stays while other chunks, embeddings or meeting
+        // segments still point at it.
+        if let Some(previous_id) = current_speaker_id.filter(|id| *id != target_speaker_id) {
+            let mut tx = self.begin_immediate_with_retry().await?;
+            if let Some((table, count)) =
+                Self::delete_speaker_row_if_unreferenced(&mut **tx.conn(), &tables, previous_id)
+                    .await?
+            {
+                debug!(
+                    "speaker reassign: keeping previous speaker {}: {} still has {} row(s)",
+                    previous_id, table, count
+                );
             }
+            tx.commit().await?;
         }
 
-        Ok((
-            target_speaker_id,
-            transcriptions_updated,
-            embeddings_moved,
-            old_assignments,
-        ))
+        Ok(outcome)
+    }
+
+    /// Move the live meeting segments that mirror an audio chunk's
+    /// transcriptions (same text, captured within two seconds) to
+    /// `target_speaker_id`. Returns `(segment id, previous speaker id or 0)`.
+    async fn move_chunk_meeting_segments(
+        conn: &mut sqlx::SqliteConnection,
+        audio_chunk_id: i64,
+        target_speaker_id: i64,
+    ) -> Result<Vec<(i64, i64)>, sqlx::Error> {
+        let matches: Vec<(i64, Option<i64>)> = sqlx::query_as(
+            "SELECT DISTINCT mts.id, mts.speaker_id \
+             FROM meeting_transcript_segments mts \
+             JOIN audio_transcriptions at \
+               ON at.audio_chunk_id = ?1 \
+              AND at.transcription = mts.transcript \
+              AND ABS(julianday(at.timestamp) - julianday(mts.captured_at)) <= 2.0 / 86400.0 \
+             WHERE mts.speaker_id IS NULL OR mts.speaker_id <> ?2 \
+             ORDER BY mts.id",
+        )
+        .bind(audio_chunk_id)
+        .bind(target_speaker_id)
+        .fetch_all(&mut *conn)
+        .await?;
+
+        let mut moved = Vec::with_capacity(matches.len());
+        for (segment_id, previous) in matches {
+            sqlx::query("UPDATE meeting_transcript_segments SET speaker_id = ?1 WHERE id = ?2")
+                .bind(target_speaker_id)
+                .bind(segment_id)
+                .execute(&mut *conn)
+                .await?;
+            moved.push((segment_id, previous.unwrap_or(0)));
+        }
+        Ok(moved)
     }
 
     /// Undo a speaker reassignment using the old_assignments from reassign_speaker
@@ -8360,39 +8856,80 @@ LIMIT ? OFFSET ?
         &self,
         old_assignments: &[(i64, i64)],
     ) -> Result<u64, sqlx::Error> {
-        if old_assignments.is_empty() {
+        self.undo_speaker_reassign_with_segments(old_assignments, &[])
+            .await
+    }
+
+    /// Undo a reassignment: put `audio_transcriptions` rows
+    /// (`old_assignments`) and `meeting_transcript_segments` rows
+    /// (`old_segment_assignments`) back on their previous speakers.
+    ///
+    /// A previous speaker that no longer exists is recreated as a nameless
+    /// row under its old id; a previous id of `0` restores "no speaker".
+    /// Returns how many rows were restored across both tables.
+    pub async fn undo_speaker_reassign_with_segments(
+        &self,
+        old_assignments: &[(i64, i64)],
+        old_segment_assignments: &[(i64, i64)],
+    ) -> Result<u64, sqlx::Error> {
+        if old_assignments.is_empty() && old_segment_assignments.is_empty() {
             return Ok(0);
         }
 
         let mut tx = self.begin_immediate_with_retry().await?;
-        let mut restored = 0u64;
+        let mut restored = Self::restore_speaker_assignments(
+            &mut **tx.conn(),
+            "audio_transcriptions",
+            old_assignments,
+        )
+        .await?;
 
-        for (transcription_id, old_speaker_id) in old_assignments {
-            // Ensure the old speaker exists (recreate if deleted during merge)
-            let exists: bool =
-                sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM speakers WHERE id = ?)")
-                    .bind(old_speaker_id)
-                    .fetch_one(&mut **tx.conn())
-                    .await?;
-
-            if !exists {
-                sqlx::query("INSERT INTO speakers (id, name) VALUES (?, '')")
-                    .bind(old_speaker_id)
-                    .execute(&mut **tx.conn())
-                    .await?;
+        if !old_segment_assignments.is_empty() {
+            let tables = Self::present_speaker_reference_tables(&mut **tx.conn()).await?;
+            if tables.contains(&"meeting_transcript_segments") {
+                restored += Self::restore_speaker_assignments(
+                    &mut **tx.conn(),
+                    "meeting_transcript_segments",
+                    old_segment_assignments,
+                )
+                .await?;
             }
-
-            let affected =
-                sqlx::query("UPDATE audio_transcriptions SET speaker_id = ? WHERE id = ?")
-                    .bind(old_speaker_id)
-                    .bind(transcription_id)
-                    .execute(&mut **tx.conn())
-                    .await?
-                    .rows_affected();
-            restored += affected;
         }
 
         tx.commit().await?;
+        Ok(restored)
+    }
+
+    async fn restore_speaker_assignments(
+        conn: &mut sqlx::SqliteConnection,
+        table: &'static str,
+        assignments: &[(i64, i64)],
+    ) -> Result<u64, sqlx::Error> {
+        let update = format!("UPDATE {table} SET speaker_id = ?1 WHERE id = ?2");
+        let mut restored = 0u64;
+        for (row_id, old_speaker_id) in assignments {
+            let old_speaker = (*old_speaker_id > 0).then_some(*old_speaker_id);
+            if let Some(speaker_id) = old_speaker {
+                // Recreate a speaker that was deleted by a merge in between.
+                let exists: bool =
+                    sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM speakers WHERE id = ?1)")
+                        .bind(speaker_id)
+                        .fetch_one(&mut *conn)
+                        .await?;
+                if !exists {
+                    sqlx::query("INSERT INTO speakers (id, name) VALUES (?1, '')")
+                        .bind(speaker_id)
+                        .execute(&mut *conn)
+                        .await?;
+                }
+            }
+            restored += sqlx::query(sqlx::AssertSqlSafe(update.clone()))
+                .bind(old_speaker)
+                .bind(row_id)
+                .execute(&mut *conn)
+                .await?
+                .rows_affected();
+        }
         Ok(restored)
     }
 

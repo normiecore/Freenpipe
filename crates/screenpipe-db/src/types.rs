@@ -200,6 +200,42 @@ pub struct Speaker {
     pub metadata: String,
 }
 
+// Freenpipe (W2-16): speaker reassign v2 types.
+
+/// What a `/speakers/reassign` call is allowed to change.
+#[derive(OaSchema, Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum SpeakerReassignScope {
+    /// Name the whole voice: when the chunk's current speaker has no name and
+    /// no named speaker already uses the new name, that speaker row is renamed
+    /// in place. Otherwise this behaves like [`SpeakerReassignScope::Chunk`].
+    #[default]
+    Auto,
+    /// Move only the chunk's transcriptions (and one embedding) to the target
+    /// speaker, optionally absorbing similar voices.
+    Chunk,
+}
+
+/// Result of [`crate::DatabaseManager::reassign_speaker_scoped`].
+///
+/// Assignment pairs are `(row id, previous speaker id)`; a previous value of
+/// `0` means the row had no speaker, and undo puts it back to NULL.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct SpeakerReassignOutcome {
+    pub new_speaker_id: i64,
+    pub new_speaker_name: String,
+    pub transcriptions_updated: u64,
+    pub embeddings_moved: u64,
+    pub renamed_whole_speaker: bool,
+    /// The name the renamed speaker had before (`""` when it had none).
+    /// `None` unless a whole-speaker rename happened.
+    pub previous_speaker_name: Option<String>,
+    /// `audio_transcriptions` rows that moved.
+    pub old_assignments: Vec<(i64, i64)>,
+    /// `meeting_transcript_segments` rows that moved.
+    pub old_segment_assignments: Vec<(i64, i64)>,
+}
+
 #[derive(Debug, Clone)]
 pub struct NewDiarizationSegment {
     pub provider_speaker_label: String,

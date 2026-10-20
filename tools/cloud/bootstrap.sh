@@ -173,6 +173,11 @@ _fp_bootstrap_main() {
   _fp_export CARGO_BUILD_JOBS "${CARGO_BUILD_JOBS:-4}"
   _fp_export CARGO_NET_GIT_FETCH_WITH_CLI true
   _fp_export CARGO_TERM_COLOR never
+  # WP worktrees share the target dir, and cargo would let one worktree link another's build of a
+  # Freenpipe crate. The wrapper gives each worktree its own artifacts for the crates it changed.
+  mkdir -p "$state/bin" && install -m 755 "$root/tools/cloud/cargo-wt.py" "$state/bin/cargo"
+  exports+=("case \":\$PATH:\" in *\":$state/bin:\"*) ;; *) export PATH=\"$state/bin:\$PATH\" ;; esac")
+  case ":$PATH:" in *":$state/bin:"*) ;; *) export PATH="$state/bin:$PATH" ;; esac
   [ -d "$HOME/.cargo/bin" ] && case ":$PATH:" in *":$HOME/.cargo/bin:"*) ;; *) _fp_export PATH "$HOME/.cargo/bin:$PATH" ;; esac
 
   # ---- dev isolation (CLAUDE.md, PLAN.md section 2.4): never ~/.screenpipe, never 3030/11435 --

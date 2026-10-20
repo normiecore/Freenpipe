@@ -21,12 +21,36 @@ interface Speaker {
 	metadata?: string;
 }
 
+/** One row moved by `/speakers/reassign`, as needed to undo it. */
+interface OldAssignment {
+	transcription_id: number;
+	old_speaker_id: number;
+}
+
+/** `/speakers/reassign` response (speakers v2). */
+interface ReassignResult {
+	new_speaker_id: number;
+	new_speaker_name: string;
+	transcriptions_updated: number;
+	embeddings_moved: number;
+	renamed_whole_speaker?: boolean;
+	previous_speaker_name?: string | null;
+	old_assignments?: OldAssignment[];
+	old_segment_assignments?: OldAssignment[];
+}
+
 interface SpeakerAssignPopoverProps {
 	audioChunkId: number;
 	speakerId?: number;
 	speakerName?: string;
 	audioFilePath: string;
 	onAssigned?: (newSpeakerId: number, newSpeakerName: string) => void;
+	/**
+	 * "auto" (default): name the whole voice when it has no name yet, then
+	 * look for similar voices. "chunk": relabel only this chunk, with no
+	 * propagation (bulk relabel of a selection).
+	 */
+	scope?: "auto" | "chunk";
 	children?: React.ReactNode;
 }
 
@@ -36,6 +60,7 @@ export function SpeakerAssignPopover({
 	speakerName,
 	audioFilePath,
 	onAssigned,
+	scope = "auto",
 	children,
 }: SpeakerAssignPopoverProps) {
 	const [open, setOpen] = useState(false);
@@ -59,7 +84,7 @@ export function SpeakerAssignPopover({
 			setIsSearching(true);
 			try {
 				const response = await localFetch(
-					`/speakers/search?name=${encodeURIComponent(searchTerm)}`,
+					`/speakers/search?name=${encodeURIComponent(searchTerm)}&limit=20&include_samples=false`,
 					{ signal: AbortSignal.any([controller.signal, AbortSignal.timeout(5000)]) }
 				);
 				if (response.ok) {
@@ -89,23 +114,85 @@ export function SpeakerAssignPopover({
 			setIsAssigning(true);
 			const trimmedName = name.trim();
 
-			try {
-				// Phase 1: Assign just this chunk (instant, no propagation)
+			const reassign = async (
+				propagateSimilar: boolean,
+				scope: "auto" | "chunk"
+			): Promise<ReassignResult> => {
 				const response = await localFetch("/speakers/reassign", {
 					method: "POST",
 					headers: { "Content-Type": "application/json" },
 					body: JSON.stringify({
 						audio_chunk_id: audioChunkId,
 						new_speaker_name: trimmedName,
-						propagate_similar: false,
+						propagate_similar: propagateSimilar,
+						scope,
 					}),
 				});
-
 				if (!response.ok) {
 					throw new Error("Failed to assign speaker");
 				}
+				return response.json();
+			};
 
-				const result = await response.json();
+			// Undo everything this assignment changed. A whole-voice rename is
+			// undone by renaming the speaker back; moved rows go back through
+			// /speakers/undo-reassign. Restores apply in order, so the
+			// propagation step goes first and the original assignment last.
+			const undo = async (first: ReassignResult, propagated: ReassignResult | null) => {
+				try {
+					let restored = 0;
+					if (first.renamed_whole_speaker && first.previous_speaker_name != null) {
+						const renameBack = await localFetch("/speakers/update", {
+							method: "POST",
+							headers: { "Content-Type": "application/json" },
+							body: JSON.stringify({
+								id: first.new_speaker_id,
+								name: first.previous_speaker_name,
+							}),
+						});
+						if (!renameBack.ok) throw new Error("rename back failed");
+						restored += first.transcriptions_updated || 0;
+					}
+					const oldAssignments = [
+						...(propagated?.old_assignments ?? []),
+						...(first.old_assignments ?? []),
+					];
+					const oldSegmentAssignments = [
+						...(propagated?.old_segment_assignments ?? []),
+						...(first.old_segment_assignments ?? []),
+					];
+					if (oldAssignments.length > 0 || oldSegmentAssignments.length > 0) {
+						const undoResp = await localFetch("/speakers/undo-reassign", {
+							method: "POST",
+							headers: { "Content-Type": "application/json" },
+							body: JSON.stringify({
+								old_assignments: oldAssignments,
+								old_segment_assignments: oldSegmentAssignments,
+							}),
+						});
+						if (!undoResp.ok) throw new Error("undo failed");
+						const undoResult = await undoResp.json();
+						if (!first.renamed_whole_speaker) restored += undoResult.restored || 0;
+					}
+					toast({
+						title: "undone",
+						description: `restored ${restored} transcriptions`,
+					});
+				} catch {
+					toast({ title: "undo failed", variant: "destructive" });
+				}
+			};
+
+			const undoAction = (first: ReassignResult, propagated: ReassignResult | null) => (
+				<ToastAction altText="Undo speaker assignment" onClick={() => undo(first, propagated)}>
+					undo
+				</ToastAction>
+			);
+
+			try {
+				// Phase 1 (instant, no propagation). With scope "auto" an unnamed
+				// voice given a new name is renamed as a whole.
+				const result = await reassign(false, scope);
 
 				// Close popover immediately — assignment is done
 				onAssigned?.(result.new_speaker_id, result.new_speaker_name);
@@ -113,64 +200,45 @@ export function SpeakerAssignPopover({
 				setSearchTerm("");
 				setIsAssigning(false);
 
+				if (result.renamed_whole_speaker) {
+					toast({
+						title: `named this voice "${result.new_speaker_name}"`,
+						description: `${result.transcriptions_updated} transcriptions now carry this name`,
+						action: undoAction(result, null),
+					});
+					return;
+				}
+
+				if (scope === "chunk") {
+					toast({
+						title: `assigned to "${result.new_speaker_name}"`,
+						action: undoAction(result, null),
+					});
+					return;
+				}
+
 				toast({
 					title: `assigned to "${trimmedName}"`,
 					description: "propagating to similar voices...",
 				});
 
-				// Phase 2: Propagate in background (non-blocking)
+				// Phase 2: absorb similar voices in the background (non-blocking)
 				try {
-					const propagateResponse = await localFetch("/speakers/reassign", {
-						method: "POST",
-						headers: { "Content-Type": "application/json" },
-						body: JSON.stringify({
-							audio_chunk_id: audioChunkId,
-							new_speaker_name: trimmedName,
-							propagate_similar: true,
-						}),
-					});
+					const propagated = await reassign(true, "chunk");
+					const extraMoved = propagated.embeddings_moved || 0;
 
-					if (propagateResponse.ok) {
-						const propagateResult = await propagateResponse.json();
-						const oldAssignments: Array<{transcription_id: number, old_speaker_id: number}> = propagateResult.old_assignments || [];
-						const extraMoved = propagateResult.embeddings_moved || 0;
-
-						if (extraMoved > 0) {
-							toast({
-								title: `found ${extraMoved} similar voices`,
-								description: "click undo if incorrect",
-								action: (
-									<ToastAction
-										altText="Undo speaker assignment"
-										onClick={async () => {
-											try {
-												const undoResp = await localFetch("/speakers/undo-reassign", {
-													method: "POST",
-													headers: { "Content-Type": "application/json" },
-													body: JSON.stringify({ old_assignments: oldAssignments }),
-												});
-												if (undoResp.ok) {
-													const undoResult = await undoResp.json();
-													toast({
-														title: "undone",
-														description: `restored ${undoResult.restored} transcriptions`,
-													});
-												}
-											} catch {
-												toast({ title: "undo failed", variant: "destructive" });
-											}
-										}}
-									>
-										undo
-									</ToastAction>
-								),
-							});
-						} else {
-							toast({
-								title: `assigned to "${trimmedName}"`,
-								description: "no additional similar voices found",
-							});
-						}
+					if (extraMoved > 0) {
+						toast({
+							title: `found ${extraMoved} similar voices`,
+							description: "click undo if incorrect",
+							action: undoAction(result, propagated),
+						});
+					} else {
+						toast({
+							title: `assigned to "${trimmedName}"`,
+							description: "no additional similar voices found",
+							action: undoAction(result, null),
+						});
 					}
 				} catch (propagateError) {
 					console.error("Background propagation failed:", propagateError);
@@ -186,7 +254,7 @@ export function SpeakerAssignPopover({
 				setIsAssigning(false);
 			}
 		},
-		[audioChunkId, onAssigned, toast]
+		[audioChunkId, onAssigned, scope, toast]
 	);
 
 	const handleMarkAsHallucination = useCallback(async () => {
