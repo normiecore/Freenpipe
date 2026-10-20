@@ -11,6 +11,7 @@
 //! [`AgentExecutor`].
 
 pub mod favorites;
+pub mod managed;
 pub mod permissions;
 pub mod preset_fallback;
 pub mod sync;
