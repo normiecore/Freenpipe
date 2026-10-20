@@ -8,7 +8,7 @@
 //! these targets at a time:
 //!
 //! * `default-render-endpoint`: classic loopback of the default output
-//!   device, rebuilt when the default changes.
+//!   device; a stream on it is rebuilt when the default changes.
 //! * `endpoint:<name>`: classic loopback of one named output device (a
 //!   device the user pinned that is not the default).
 //! * `process-tree:<pid>`: only the audio of that process tree (per-process
@@ -68,10 +68,11 @@ impl LoopbackTarget {
         }
     }
 
-    /// Whether a change of the default render endpoint should rebuild this
-    /// target. Named endpoints stay where they are; per-process targets do
-    /// not depend on an endpoint, but rebuilding them is cheap and keeps the
-    /// client on the device the user now hears.
+    /// Whether a stream that is not bound to one device (the `default`
+    /// request, a meeting tap) rebuilds this target when the default render
+    /// endpoint changes. Named endpoints stay where they are; per-process
+    /// targets do not depend on an endpoint, but rebuilding them is cheap and
+    /// keeps the client on the device the user now hears.
     pub fn follows_default_endpoint(&self) -> bool {
         !matches!(self, LoopbackTarget::Endpoint { .. })
     }
@@ -125,17 +126,46 @@ fn parse_pid(raw: &str) -> Result<u32, String> {
     }
 }
 
-/// What a stream is for. Decided once when the stream opens.
+/// What a stream is for. Decided when the stream opens; a stream opened for
+/// a named output device switches between [`CaptureRole::SystemDefault`] and
+/// [`CaptureRole::NamedEndpoint`] as its device gains or loses the default
+/// (see [`named_role_change`]).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum CaptureRole {
-    /// The system-audio stream: follows the default output device and honours
-    /// the exclusion list.
+    /// The system-audio stream: the default output device, with the
+    /// exclusion list applied.
     SystemDefault,
-    /// A pinned output device that is not the default.
+    /// An output device that is not the default, captured in full.
     NamedEndpoint(String),
     /// Only the audio of these processes (meeting tap). The pids are reduced
     /// to one tree root when the stream opens.
     ProcessTree(Vec<u32>),
+}
+
+/// How a stream opened for a named output device reacts to the current
+/// default render endpoint.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RoleChange {
+    Keep,
+    /// The device became the default: it becomes the system-audio stream and
+    /// the exclusion list applies to it.
+    Promote,
+    /// The device is no longer the default: it is captured as its own
+    /// endpoint, without exclusions.
+    Demote,
+}
+
+/// Role rule for a stream bound to one named device. Such a stream always
+/// records its own device, so device names in the database stay true and
+/// two pinned outputs never end up recording the same endpoint; only the
+/// role moves with the default. `device_is_default` is `None` when there is
+/// no default output at all (every device unplugged), which keeps the role.
+pub fn named_role_change(is_system_role: bool, device_is_default: Option<bool>) -> RoleChange {
+    match (is_system_role, device_is_default) {
+        (false, Some(true)) => RoleChange::Promote,
+        (true, Some(false)) => RoleChange::Demote,
+        _ => RoleChange::Keep,
+    }
 }
 
 /// Whether per-process loopback is usable on this Windows build.
@@ -468,12 +498,14 @@ impl TargetDebounce {
     }
 }
 
-/// Tracks a change of the default render endpoint. The stream waits a short
-/// grace before moving: when recording follows the system default, the
-/// device monitor replaces this stream with one named after the new device
-/// within that window, and moving early would record the same audio twice.
-/// A stream that is still alive after the grace (a pinned device) moves to
-/// the new default so it keeps recording what the user hears.
+/// Tracks a change of the default render endpoint for a stream that is not
+/// bound to one device (the `default` request, a meeting tap that fell back
+/// to the whole output). The stream waits a short grace before moving: when
+/// recording follows the system default, the device monitor replaces such
+/// streams within that window, and moving early would record the same audio
+/// twice. A stream still alive after the grace moves to the new default so
+/// it keeps recording what the user hears. Streams opened for a named device
+/// never move; they follow [`named_role_change`] instead.
 #[derive(Debug)]
 pub struct DefaultEndpointFollow {
     grace: Duration,
@@ -989,6 +1021,20 @@ mod tests {
             f.observe(Some("D".to_string()), t + Duration::from_secs(20)),
             Some("D".to_string())
         );
+    }
+
+    #[test]
+    fn named_streams_swap_roles_with_the_default() {
+        // Pinned speakers (system role) lose the default to a headset.
+        assert_eq!(named_role_change(true, Some(false)), RoleChange::Demote);
+        // The pinned headset stream picks the role up.
+        assert_eq!(named_role_change(false, Some(true)), RoleChange::Promote);
+        // Nothing to do while each stream already has the right role.
+        assert_eq!(named_role_change(true, Some(true)), RoleChange::Keep);
+        assert_eq!(named_role_change(false, Some(false)), RoleChange::Keep);
+        // No default output at all keeps whatever role the stream had.
+        assert_eq!(named_role_change(true, None), RoleChange::Keep);
+        assert_eq!(named_role_change(false, None), RoleChange::Keep);
     }
 
     #[test]

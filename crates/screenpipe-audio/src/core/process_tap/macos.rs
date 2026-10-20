@@ -129,7 +129,9 @@ mod exclusions {
     /// Pure resolution helper, factored out for testability without
     /// mutating process-wide environment variables.
     fn resolved_path(env_override: Option<&str>, home: &str) -> PathBuf {
-        if let Some(p) = env_override {
+        // A blank override counts as unset, as in the Windows reader and the
+        // app's commands, so all three agree on the file.
+        if let Some(p) = env_override.map(str::trim).filter(|p| !p.is_empty()) {
             return PathBuf::from(p);
         }
         PathBuf::from(home).join(DEFAULT_RELATIVE_PATH)
@@ -289,6 +291,15 @@ mod exclusions {
         #[test]
         fn resolved_path_default_uses_home() {
             let p = resolved_path(None, "/Users/anyone");
+            assert_eq!(
+                p,
+                PathBuf::from("/Users/anyone/.screenpipe/audio-exclusions.json")
+            );
+        }
+
+        #[test]
+        fn resolved_path_blank_override_uses_home() {
+            let p = resolved_path(Some("  "), "/Users/anyone");
             assert_eq!(
                 p,
                 PathBuf::from("/Users/anyone/.screenpipe/audio-exclusions.json")

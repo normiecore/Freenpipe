@@ -47,8 +47,12 @@ pub struct ExcludedApp {
 }
 
 fn exclusions_path() -> PathBuf {
+    // A blank override counts as unset, matching the engine readers.
     if let Ok(p) = std::env::var(ENV_OVERRIDE) {
-        return PathBuf::from(p);
+        let p = p.trim();
+        if !p.is_empty() {
+            return PathBuf::from(p);
+        }
     }
     let home = dirs::home_dir().unwrap_or_default();
     home.join(DEFAULT_RELATIVE_PATH)
@@ -98,6 +102,8 @@ pub fn read_audio_exclusions() -> Result<Vec<ExcludedApp>, String> {
 /// engine's 500 ms mtime poll never observes a half-written file. The
 /// engine picks up the new list on the next tick subject to its
 /// `REBUILD_COOLDOWN` (60 s).
+// The timings above are the macOS tap's. The Windows loopback engine polls
+// the file every 2 s and rebuilds at most every 5 s.
 #[tauri::command(async)]
 #[specta::specta]
 pub async fn write_audio_exclusions(apps: Vec<ExcludedApp>) -> Result<(), String> {
@@ -722,6 +728,24 @@ mod tests {
                 assert_eq!(read_audio_exclusions().unwrap(), Vec::<ExcludedApp>::new());
             },
         );
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn blank_override_uses_the_default_path() {
+        // Only resolves the path; nothing under the home directory is read.
+        with_env("   ", || {
+            let expected = dirs::home_dir()
+                .unwrap_or_default()
+                .join(DEFAULT_RELATIVE_PATH);
+            assert_eq!(exclusions_path(), expected);
+        });
+        with_env("/tmp/fp-audio-exclusions-override.json", || {
+            assert_eq!(
+                exclusions_path(),
+                PathBuf::from("/tmp/fp-audio-exclusions-override.json")
+            );
+        });
     }
 
     #[test]

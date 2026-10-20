@@ -13,12 +13,17 @@
 //! What a stream captures is a [`LoopbackTarget`] (see
 //! `process_tap/targets.rs` for the rules):
 //!
-//! * The output device that is the current default becomes the
-//!   *system-audio stream*. It follows the default render endpoint (after a
-//!   short grace, see [`DefaultEndpointFollow`]) and honours
-//!   `audio-exclusions.json`: when an excluded executable runs, the stream
-//!   moves to `exclude-process-tree:<root pid>` for the first running one.
-//! * Any other output device is captured as that endpoint only.
+//! * A stream opened for a named output device always records that device.
+//!   While the device is the default it is the *system-audio stream*
+//!   (`default-render-endpoint`) and honours `audio-exclusions.json`: when
+//!   an excluded executable runs, the stream moves to
+//!   `exclude-process-tree:<root pid>` for the first running one. When the
+//!   default moves to another device the stream is rebuilt as
+//!   `endpoint:<name>` without exclusions, and the stream of the new default
+//!   device (if one runs) takes the role over (see [`named_role_change`]).
+//! * A stream opened for the `default` sentinel, or a meeting tap that fell
+//!   back to the whole output, follows the default render endpoint after a
+//!   short grace (see [`DefaultEndpointFollow`]).
 //! * [`spawn_loopback_capture`] with [`CaptureRequest::ProcessTree`] gives a
 //!   per-process include tap (for meeting capture).
 //!
@@ -78,10 +83,10 @@ use super::process_tap::pcm::{
     FormatDescription, LinearResampler, SampleLayout, FORMAT_TAG_EXTENSIBLE, FORMAT_TAG_PCM,
 };
 use super::process_tap::targets::{
-    choose_exclusion, desired_system_target, initial_include_target, resolve_include_root,
-    CaptureRole, DefaultEndpointFollow, ExclusionChoice, FailureWindow, IncludeRoot,
-    LoopbackTarget, ProcessEntry, ProcessLoopbackSupport, ProcessSnapshot, TargetDebounce,
-    UntappableRoots,
+    choose_exclusion, desired_system_target, initial_include_target, named_role_change,
+    resolve_include_root, CaptureRole, DefaultEndpointFollow, ExclusionChoice, FailureWindow,
+    IncludeRoot, LoopbackTarget, ProcessEntry, ProcessLoopbackSupport, ProcessSnapshot, RoleChange,
+    TargetDebounce, UntappableRoots,
 };
 use super::stream::AudioStreamConfig;
 
@@ -503,6 +508,46 @@ fn find_render_endpoint(enumerator: &IMMDeviceEnumerator, name: &str) -> Result<
     ))
 }
 
+/// The output device a stream was opened for.
+#[derive(Debug, Clone)]
+struct OwnDevice {
+    /// Friendly name, as in the device list and `audioDevices`.
+    name: String,
+    /// Endpoint id when it could be read; preferred for lookups because two
+    /// devices can share a friendly name.
+    id: Option<String>,
+}
+
+/// Opens the device a stream is bound to: by endpoint id when known, else by
+/// friendly name. Fails when the device is gone or no longer active.
+fn own_endpoint(enumerator: &IMMDeviceEnumerator, own: &OwnDevice) -> Result<IMMDevice> {
+    let Some(id) = own.id.as_deref() else {
+        return find_render_endpoint(enumerator, &own.name);
+    };
+    let wide: Vec<u16> = id.encode_utf16().chain(std::iter::once(0)).collect();
+    // SAFETY: `wide` is a NUL-terminated UTF-16 string that outlives the call.
+    let device = unsafe { enumerator.GetDevice(PCWSTR(wide.as_ptr())) }.map_err(|e| {
+        anyhow!(
+            "{ENGINE_LABEL}: output device '{}' is not available: {e}",
+            own.name
+        )
+    })?;
+    // SAFETY: valid device.
+    let state = unsafe { device.GetState() }.map_err(|e| {
+        anyhow!(
+            "{ENGINE_LABEL}: reading the state of output device '{}' failed: {e}",
+            own.name
+        )
+    })?;
+    if state != DEVICE_STATE_ACTIVE {
+        return Err(anyhow!(
+            "{ENGINE_LABEL}: output device '{}' is not an active render endpoint",
+            own.name
+        ));
+    }
+    Ok(device)
+}
+
 /// Reads the fields of a WAVEFORMATEX (or WAVEFORMATEXTENSIBLE) the decoder
 /// needs. The structs are packed, so they are copied out unaligned.
 ///
@@ -887,6 +932,9 @@ impl ExclusionState {
 struct Engine {
     enumerator: IMMDeviceEnumerator,
     role: CaptureRole,
+    /// The device a named output request is bound to. `None` for the
+    /// `default` sentinel and meeting taps, which follow the default instead.
+    own_device: Option<OwnDevice>,
     label: String,
     support: ProcessLoopbackSupport,
     output_rate: u32,
@@ -908,7 +956,7 @@ impl Engine {
     fn start(ctx: &ThreadContext) -> Result<Self> {
         let enumerator = create_enumerator()?;
         let support = process_loopback_support();
-        let role = resolve_role(&enumerator, &ctx.request);
+        let (role, own_device) = resolve_role(&enumerator, &ctx.request);
         let mut exclusions = match role {
             CaptureRole::SystemDefault => Some(ExclusionState::new()),
             _ => None,
@@ -927,7 +975,7 @@ impl Engine {
             CaptureRole::NamedEndpoint(name) => LoopbackTarget::Endpoint { name: name.clone() },
             CaptureRole::ProcessTree(pids) => initial_process_tree_target(support, pids),
         };
-        let client = match open_target(&enumerator, &first, None) {
+        let client = match open_target(&enumerator, &first, None, own_device.as_ref()) {
             Ok(client) => client,
             Err(e) if first.is_per_process() => {
                 if let (Some(state), Some(pid)) = (exclusions.as_mut(), first.watched_pid()) {
@@ -938,7 +986,12 @@ impl Engine {
                      capturing the whole default output instead",
                     ctx.label
                 );
-                open_target(&enumerator, &LoopbackTarget::DefaultRenderEndpoint, None)?
+                open_target(
+                    &enumerator,
+                    &LoopbackTarget::DefaultRenderEndpoint,
+                    None,
+                    own_device.as_ref(),
+                )?
             }
             Err(e) => return Err(e),
         };
@@ -952,6 +1005,7 @@ impl Engine {
         Ok(Self {
             enumerator,
             role,
+            own_device,
             label: ctx.label.clone(),
             support,
             output_rate,
@@ -1060,6 +1114,11 @@ impl Engine {
     }
 
     fn poll_default_endpoint(&mut self, now: Instant) {
+        if self.own_device.is_some() {
+            let latest = default_render_endpoint_id(&self.enumerator);
+            self.update_named_role(latest, now);
+            return;
+        }
         if !self.client.target.follows_default_endpoint() {
             return;
         }
@@ -1085,6 +1144,118 @@ impl Engine {
             let target = self.client.target.clone();
             self.debounce.note_switch(now);
             self.switch_to(target, "default render endpoint changed");
+        }
+    }
+
+    /// Whether the device this stream is bound to is the default render
+    /// endpoint. `None` when there is no default (or it cannot be read).
+    fn own_device_is_default(&self, latest: Option<&str>) -> Option<bool> {
+        let own = self.own_device.as_ref()?;
+        let latest = latest?;
+        match own.id.as_deref() {
+            Some(id) => Some(id == latest),
+            None => default_render_endpoint(&self.enumerator)
+                .ok()
+                .and_then(|d| friendly_name(&d))
+                .map(|name| name == own.name),
+        }
+    }
+
+    /// Moves the system-audio role between streams bound to named devices
+    /// as the default changes: the stream of the new default device takes
+    /// the role (and the exclusion list), the previous one keeps recording
+    /// its own device in full.
+    fn update_named_role(&mut self, latest: Option<String>, now: Instant) {
+        let Some(own) = self.own_device.clone() else {
+            return;
+        };
+        let previous = self.follow.current_id().unwrap_or("none").to_string();
+        let is_system = self.role == CaptureRole::SystemDefault;
+        let change = named_role_change(is_system, self.own_device_is_default(latest.as_deref()));
+        if latest.is_some() && self.follow.current_id() != latest.as_deref() {
+            self.follow.set_current(latest.clone());
+        }
+        let latest = latest.unwrap_or_else(|| "none".to_string());
+        match change {
+            RoleChange::Keep => {}
+            RoleChange::Promote => {
+                info!(
+                    "{ENGINE_LABEL}: default render endpoint changed ({previous} -> {latest}); \
+                     {} is now the default output and the audio exclusion list applies to it",
+                    self.label
+                );
+                let mut state = ExclusionState::new();
+                evaluate_exclusions(&mut state, self.support, &self.label);
+                let next = desired_system_target(
+                    self.support,
+                    state.choice.as_ref(),
+                    state.untappable.set(),
+                );
+                self.role = CaptureRole::SystemDefault;
+                self.exclusions = Some(state);
+                self.debounce.note_switch(now);
+                self.retarget(next, "default render endpoint changed");
+            }
+            RoleChange::Demote => {
+                info!(
+                    "{ENGINE_LABEL}: default render endpoint changed ({previous} -> {latest}); \
+                     {} is no longer the default output and is captured in full as {}",
+                    self.label,
+                    LoopbackTarget::Endpoint {
+                        name: own.name.clone()
+                    }
+                );
+                self.role = CaptureRole::NamedEndpoint(own.name.clone());
+                self.exclusions = None;
+                // The line above already says the exclusions no longer apply.
+                self.logged_named_exclusions = true;
+                self.debounce.note_switch(now);
+                self.retarget(
+                    LoopbackTarget::Endpoint { name: own.name },
+                    "default render endpoint changed",
+                );
+            }
+        }
+    }
+
+    /// Puts a stream bound to its own device on `next` after a role change.
+    /// Every endpoint target of such a stream opens that same device, so
+    /// moving between `default-render-endpoint` and `endpoint:<name>` only
+    /// changes the label; a per-process target on either side needs a new
+    /// client.
+    fn retarget(&mut self, next: LoopbackTarget, reason: &str) {
+        if self.client.target == next || self.broken.is_some() {
+            // A broken client is replaced by repair(), which opens the
+            // target the current role asks for.
+            return;
+        }
+        if !next.is_per_process() && !self.client.target.is_per_process() {
+            info!(
+                "{ENGINE_LABEL}: {} now captures {next} (was {})",
+                self.label, self.client.target
+            );
+            self.client.target = next;
+            return;
+        }
+        if next.is_per_process() {
+            self.switch_to(next, reason);
+            // An untappable tree leaves the stream on this device's plain
+            // loopback; label it for the role it now has.
+            if !self.client.target.is_per_process() && self.role == CaptureRole::SystemDefault {
+                self.client.target = LoopbackTarget::DefaultRenderEndpoint;
+            }
+            return;
+        }
+        match open_target(
+            &self.enumerator,
+            &next,
+            Some(self.output_rate),
+            self.own_device.as_ref(),
+        ) {
+            Ok(client) => self.install(client),
+            // Staying on the per-process client would record audio that is
+            // not this device's under its name, so rebuild instead.
+            Err(e) => self.mark_broken(format!("opening {next} after {reason} failed: {e:#}")),
         }
     }
 
@@ -1126,7 +1297,8 @@ impl Engine {
     /// back to the plain default loopback, so the stream never goes quiet
     /// because of a rebuild.
     fn switch_to(&mut self, target: LoopbackTarget, reason: &str) {
-        match open_target(&self.enumerator, &target, Some(self.output_rate)) {
+        let own = self.own_device.as_ref();
+        match open_target(&self.enumerator, &target, Some(self.output_rate), own) {
             Ok(client) => self.install(client),
             Err(e) if target.is_per_process() => {
                 self.note_untappable(&target, &e);
@@ -1138,6 +1310,7 @@ impl Engine {
                     &self.enumerator,
                     &LoopbackTarget::DefaultRenderEndpoint,
                     Some(self.output_rate),
+                    self.own_device.as_ref(),
                 ) {
                     Ok(client) => self.install(client),
                     Err(e) => self.note_rebuild_failure(reason, &e),
@@ -1155,7 +1328,8 @@ impl Engine {
                 .as_ref()
                 .map(|s| desired_system_target(self.support, s.choice.as_ref(), s.untappable.set()))
                 .unwrap_or(LoopbackTarget::DefaultRenderEndpoint),
-            _ => self.client.target.clone(),
+            CaptureRole::NamedEndpoint(name) => LoopbackTarget::Endpoint { name: name.clone() },
+            CaptureRole::ProcessTree(_) => self.client.target.clone(),
         };
         let reason = self.broken.clone().unwrap_or_default();
         self.switch_to(target, &reason);
@@ -1257,22 +1431,35 @@ fn device_key(label: &str) -> &str {
     label.strip_suffix(" (output)").unwrap_or(label)
 }
 
-/// Decides the role of an output-device request: the device that is the
-/// current default (or the `default` sentinel) is the system-audio stream.
-fn resolve_role(enumerator: &IMMDeviceEnumerator, request: &CaptureRequest) -> CaptureRole {
+/// Decides the starting role of a request and the device it is bound to:
+/// the device that is the current default (or the `default` sentinel) is
+/// the system-audio stream. Named requests stay bound to their device.
+fn resolve_role(
+    enumerator: &IMMDeviceEnumerator,
+    request: &CaptureRequest,
+) -> (CaptureRole, Option<OwnDevice>) {
     match request {
-        CaptureRequest::ProcessTree { pids } => CaptureRole::ProcessTree(pids.clone()),
+        CaptureRequest::ProcessTree { pids } => (CaptureRole::ProcessTree(pids.clone()), None),
         CaptureRequest::OutputDevice { name } => {
             if name.trim().eq_ignore_ascii_case("default") {
-                return CaptureRole::SystemDefault;
+                return (CaptureRole::SystemDefault, None);
             }
-            let default_name = default_render_endpoint(enumerator)
-                .ok()
-                .and_then(|d| friendly_name(&d));
+            let default = default_render_endpoint(enumerator).ok();
+            let default_name = default.as_ref().and_then(friendly_name);
             if default_name.as_deref() == Some(name.as_str()) {
-                CaptureRole::SystemDefault
+                let own = OwnDevice {
+                    name: name.clone(),
+                    id: default.as_ref().and_then(endpoint_id),
+                };
+                (CaptureRole::SystemDefault, Some(own))
             } else {
-                CaptureRole::NamedEndpoint(name.clone())
+                let own = OwnDevice {
+                    name: name.clone(),
+                    id: find_render_endpoint(enumerator, name)
+                        .ok()
+                        .and_then(|d| endpoint_id(&d)),
+                };
+                (CaptureRole::NamedEndpoint(name.clone()), Some(own))
             }
         }
     }
@@ -1327,19 +1514,29 @@ fn initial_process_tree_target(support: ProcessLoopbackSupport, pids: &[u32]) ->
 }
 
 /// Opens a client for `target`. `rate` is the stream rate a per-process
-/// client should run at (endpoint clients use their mix rate).
+/// client should run at (endpoint clients use their mix rate). A stream
+/// bound to `own` opens its own device for `default-render-endpoint` too:
+/// that target only means "this device while it is the default", and the
+/// role update moves it off the label once the default changes.
 fn open_target(
     enumerator: &IMMDeviceEnumerator,
     target: &LoopbackTarget,
     rate: Option<u32>,
+    own: Option<&OwnDevice>,
 ) -> Result<LoopbackClient> {
     match target {
         LoopbackTarget::DefaultRenderEndpoint => {
-            let device = default_render_endpoint(enumerator)?;
+            let device = match own {
+                Some(own) => own_endpoint(enumerator, own)?,
+                None => default_render_endpoint(enumerator)?,
+            };
             LoopbackClient::open_endpoint(target.clone(), &device)
         }
         LoopbackTarget::Endpoint { name } => {
-            let device = find_render_endpoint(enumerator, name)?;
+            let device = match own {
+                Some(own) if own.name == *name => own_endpoint(enumerator, own)?,
+                _ => find_render_endpoint(enumerator, name)?,
+            };
             LoopbackClient::open_endpoint(target.clone(), &device)
         }
         LoopbackTarget::ProcessTree { .. } | LoopbackTarget::ExcludeProcessTree { .. } => {
