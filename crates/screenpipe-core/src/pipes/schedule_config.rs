@@ -21,11 +21,15 @@
 //!
 //! How each frequency recurs:
 //!
-//! - `minutes`: every `interval` minutes measured from `starting`. Without a
-//!   start the count begins at midnight on 2000-01-01 in the schedule's zone,
-//!   so an interval that divides an hour lands on round clock times.
+//! - `minutes`: every `interval` minutes of elapsed time, measured from
+//!   `starting`. Without a start the count begins at midnight on 2000-01-01
+//!   in the schedule's zone, so an interval that divides an hour lands on
+//!   round clock times, and stays there across daylight-saving changes,
+//!   which move clocks by whole hours (in all but a few zones).
 //! - `hours`: every `interval` hours at `at_minute` past the hour, counted
-//!   from the hour `starting` falls in.
+//!   in wall-clock hours from the hour `starting` falls in (from midnight on
+//!   2000-01-01 without a start), so "every 2 hours" keeps to the same clock
+//!   hours after a daylight-saving change. A repeated hour runs once.
 //! - `days`: at `at_hour:at_minute` on every `interval`-th day, counted from
 //!   the day of `starting`.
 //! - `weeks`: at `at_hour:at_minute` on each listed weekday of every
@@ -36,15 +40,18 @@
 //!   end of a short month means that month's last day.
 //!
 //! Wall-clock times are resolved in the schedule's zone: a time that falls in
-//! a daylight-saving gap moves forward to the first valid minute, and a time
-//! that happens twice uses the first. `ending` and `max_occurrences` end the
+//! a daylight-saving gap moves forward in quarter-hour steps until it exists,
+//! and a time that happens twice uses the first. `ending` and `max_occurrences` end the
 //! schedule; the pipe runtime then disables the pipe, as it does for a fired
 //! one-off.
 //!
 //! [`ScheduleConfig`] is the wire form. It is deliberately loose (plain
-//! integers and strings) so every pipe.md loads; [`ScheduleConfig::compile`]
-//! checks the values and returns a [`CompiledSchedule`] that computes run
-//! times and a one-line summary.
+//! integers and strings) so hand-written values read; a `schedule_config` of
+//! another shape is set aside when pipe.md loads, and the pipe still loads.
+//! [`ScheduleConfig::compile`] checks the values and returns a
+//! [`CompiledSchedule`] that computes run times and a one-line summary. A
+//! schedule that is set aside or does not compile is ignored: the pipe
+//! follows its `schedule` string.
 
 use chrono::{
     DateTime, Datelike, Duration, Local, LocalResult, NaiveDate, NaiveDateTime, NaiveTime,
@@ -663,12 +670,10 @@ impl CompiledSchedule {
                 Some(vec![base.checked_add_signed(Duration::try_minutes(steps)?)?])
             }
             ScheduleFrequency::Hours => {
-                let base = self.tz.resolve(self.anchor.date().and_hms_opt(
-                    self.anchor.hour(),
-                    self.time.minute(),
-                    0,
-                )?)?;
-                Some(vec![base.checked_add_signed(Duration::try_hours(steps)?)?])
+                let wall = self
+                    .hour_origin()?
+                    .checked_add_signed(Duration::try_hours(steps)?)?;
+                Some(vec![self.tz.resolve(wall)?])
             }
             ScheduleFrequency::Days => {
                 let date = self
@@ -701,6 +706,14 @@ impl CompiledSchedule {
         }
     }
 
+    /// Wall-clock time of the first hourly slot: the anchor's hour at
+    /// `at_minute` (hours frequency).
+    fn hour_origin(&self) -> Option<NaiveDateTime> {
+        self.anchor
+            .date()
+            .and_hms_opt(self.anchor.hour(), self.time.minute(), 0)
+    }
+
     /// The anchor as an instant (minutes frequency).
     fn anchor_instant(&self) -> Option<DateTime<Utc>> {
         self.starting.or_else(|| self.tz.resolve(self.anchor))
@@ -716,19 +729,17 @@ impl CompiledSchedule {
     fn first_period_after(&self, t: DateTime<Utc>) -> u64 {
         let n = i64::from(self.interval);
         let periods: i64 = match self.frequency {
-            ScheduleFrequency::Minutes | ScheduleFrequency::Hours => {
-                let base = match self.frequency {
-                    ScheduleFrequency::Minutes => self.anchor_instant(),
-                    _ => self.candidates(0).and_then(|c| c.first().copied()),
-                };
-                let unit_secs = if self.frequency == ScheduleFrequency::Minutes {
-                    60
-                } else {
-                    3_600
-                };
-                match base {
-                    Some(base) if t > base => (t - base).num_seconds() / (unit_secs * n) - 1,
-                    _ => 0,
+            ScheduleFrequency::Minutes => match self.anchor_instant() {
+                Some(base) if t > base => (t - base).num_seconds() / (60 * n) - 1,
+                _ => 0,
+            },
+            ScheduleFrequency::Hours => {
+                // Counted on the wall clock, like the slots. Starting a
+                // period early also covers a slot that a daylight-saving gap
+                // pushed past `t`'s wall time.
+                match self.hour_origin() {
+                    Some(origin) => (self.tz.wall_clock(t) - origin).num_hours() / n - 1,
+                    None => 0,
                 }
             }
             ScheduleFrequency::Days => {
@@ -1027,6 +1038,71 @@ mod tests {
                 "2026-10-20T12:15:00Z",
                 "2026-10-20T14:15:00Z",
                 "2026-10-20T16:15:00Z"
+            ]
+        );
+    }
+
+    #[test]
+    fn hours_keep_their_clock_hours_across_dst() {
+        // Berlin leaves summer time at 03:00 on 2026-10-25; 02:15 happens
+        // twice and runs once. Every 2 hours stays on even clock hours.
+        let next = next_n(
+            json!({"frequency": "hours", "interval": 2, "at_minute": 15, "timezone": "Europe/Berlin"}),
+            "2026-10-24T20:00:00Z",
+            5,
+        );
+        assert_eq!(
+            next,
+            [
+                "2026-10-24T22:15:00+02:00",
+                "2026-10-25T00:15:00+02:00",
+                "2026-10-25T02:15:00+02:00",
+                "2026-10-25T04:15:00+01:00",
+                "2026-10-25T06:15:00+01:00"
+            ]
+        );
+        // Asked during the repeated hour, the next run is still 04:15.
+        let during = next_n(
+            json!({"frequency": "hours", "interval": 2, "at_minute": 15, "timezone": "Europe/Berlin"}),
+            "2026-10-25T01:20:00Z",
+            1,
+        );
+        assert_eq!(during, ["2026-10-25T04:15:00+01:00"]);
+    }
+
+    #[test]
+    fn hourly_slot_in_a_dst_gap_still_runs() {
+        // New York skips 02:00-03:00 on 2026-03-08.
+        let next = next_n(
+            json!({"frequency": "hours", "at_minute": 30, "timezone": "America/New_York"}),
+            "2026-03-08T05:00:00Z",
+            5,
+        );
+        assert_eq!(
+            next,
+            [
+                "2026-03-08T00:30:00-05:00",
+                "2026-03-08T01:30:00-05:00",
+                "2026-03-08T03:00:00-04:00",
+                "2026-03-08T03:30:00-04:00",
+                "2026-03-08T04:30:00-04:00"
+            ]
+        );
+    }
+
+    #[test]
+    fn minutes_keep_elapsed_time_and_round_times_across_dst() {
+        let next = next_n(
+            json!({"frequency": "minutes", "interval": 30, "timezone": "Europe/Berlin"}),
+            "2026-10-25T00:10:00Z",
+            3,
+        );
+        assert_eq!(
+            next,
+            [
+                "2026-10-25T02:30:00+02:00",
+                "2026-10-25T02:00:00+01:00",
+                "2026-10-25T02:30:00+01:00"
             ]
         );
     }

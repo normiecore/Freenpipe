@@ -102,8 +102,14 @@ curl -X POST http://localhost:3030/pipes/<name>/config \
 
 Send the fields at the top level of the body; a body wrapped in `{"config": {...}}` and
 unknown field names are refused with HTTP 400. For a structured schedule send
-`schedule_config` (check it first with `POST /pipes/schedule/preview`, which returns a
-summary and the next run times).
+`schedule_config`, for example
+`{"schedule_config": {"frequency": "weeks", "interval": 1, "days_of_week": [1, 4], "at_hour": 9, "at_minute": 0}}`.
+`frequency` is `minutes`, `hours`, `days`, `weeks` or `months`; `days_of_week` counts from
+0 = Sunday and is required for `weeks`; `day_of_month`, `timezone` (IANA name), `starting`,
+`ending` and `max_occurrences` are optional. Check it first with
+`POST /pipes/schedule/preview` (same object as the body), which returns a summary and the
+next run times. A `schedule` string sent without `schedule_config` replaces the structured
+schedule.
 
 ### Rules
 

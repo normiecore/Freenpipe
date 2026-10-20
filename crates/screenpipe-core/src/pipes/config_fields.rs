@@ -5,9 +5,11 @@
 //! `artifacts`, `cloud_agent` and `trigger.sources`, plus their checks.
 //!
 //! Loading stays lenient so a pipe.md written by screenpipe (or by hand)
-//! loads even when a value is one this build does not act on; the checks in
-//! this module run when a client changes the config over the API, and give an
-//! error that names the field and the accepted values.
+//! loads even when a value is one this build does not act on, and a value
+//! that cannot be read at all is set aside rather than failing the file (see
+//! `pipes::parse_frontmatter`). The checks in this module run when a client
+//! changes the config over the API, and give an error that names the field
+//! and the accepted values.
 
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use std::fmt;

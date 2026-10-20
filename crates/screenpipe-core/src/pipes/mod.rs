@@ -33,7 +33,7 @@ pub use config_fields::{
     ArtifactDeclaration, CloudAgentConfig, PipeEffort, PipeRunIn, SourceTrigger,
 };
 pub use config_update::PipeConfigUpdateError;
-pub use pipe_id::{validate_pipe_id, InvalidPipeId};
+pub use pipe_id::{validate_existing_pipe_id, validate_pipe_id, InvalidPipeId};
 pub use schedule_config::{
     CompiledSchedule, ScheduleConfig, ScheduleConfigError, ScheduleFrequency, SchedulePreview,
 };
@@ -93,6 +93,11 @@ pub struct TriggerConfig {
         skip_serializing_if = "Vec::is_empty"
     )]
     pub sources: Vec<SourceTrigger>,
+    /// Other keys under `trigger:`, kept as written. A `sources` list this
+    /// build could not read is kept here too (and not used), so saving the
+    /// pipe does not lose it.
+    #[serde(default, flatten, skip_serializing_if = "HashMap::is_empty")]
+    pub extra: HashMap<String, serde_json::Value>,
 }
 
 /// Parsed pipe configuration (from pipe.md front-matter).
@@ -228,8 +233,8 @@ pub struct PipeConfig {
     )]
     pub artifacts: Vec<ArtifactDeclaration>,
 
-    /// Structured schedule. When present the scheduler follows it and
-    /// ignores `schedule`.
+    /// Structured schedule. When present and valid the scheduler follows it
+    /// and ignores `schedule`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub schedule_config: Option<ScheduleConfig>,
 
@@ -279,8 +284,9 @@ impl Default for PipeConfig {
 }
 
 impl PipeConfig {
-    /// The structured schedule, compiled, when one is set. An invalid one is
-    /// logged at debug level and treated as "never runs on a schedule".
+    /// The structured schedule, compiled, when one is set and valid. An
+    /// invalid one is logged at debug level and treated as absent, so the
+    /// pipe follows its `schedule` string (what the settings UI shows).
     pub fn compiled_schedule(&self) -> Option<CompiledSchedule> {
         let raw = self.schedule_config.as_ref()?;
         match raw.compile() {
@@ -1651,8 +1657,11 @@ impl PipeManager {
                 .to_string_lossy()
                 .to_string();
             match std::fs::read_to_string(&pipe_md) {
-                Ok(content) => match parse_frontmatter(&content) {
-                    Ok((mut config, body)) => {
+                Ok(content) => match parse_frontmatter_with_notes(&content) {
+                    Ok((mut config, body, set_aside)) => {
+                        for note in set_aside {
+                            warn!("pipe '{}': {}", dir_name, note);
+                        }
                         config.name = dir_name.clone();
                         // Apply device-local enabled override if present
                         if let Some(&enabled) = local_overrides.get(&dir_name) {
@@ -1964,9 +1973,18 @@ impl PipeManager {
     }
 
     /// The folder of pipe `name` under the pipes directory, after checking
-    /// that `name` is a valid pipe id (one portable path component).
+    /// that `name` is a valid pipe id (one portable path component). For
+    /// names that are about to create a folder.
     fn pipe_dir_checked(&self, name: &str) -> Result<PathBuf> {
         validate_pipe_id(name)?;
+        Ok(self.pipes_dir.join(name))
+    }
+
+    /// The folder of an installed pipe `name`: a valid pipe id, or the exact
+    /// name of a folder already in the pipes directory (see
+    /// [`validate_existing_pipe_id`]).
+    fn existing_pipe_dir(&self, name: &str) -> Result<PathBuf> {
+        validate_existing_pipe_id(&self.pipes_dir, name)?;
         Ok(self.pipes_dir.join(name))
     }
 
@@ -1975,7 +1993,7 @@ impl PipeManager {
     fn pipe_not_found_error(&self, name: &str) -> anyhow::Error {
         // Never probe the disk for an id that could point outside the pipes
         // directory.
-        let pipe_dir = match self.pipe_dir_checked(name) {
+        let pipe_dir = match self.existing_pipe_dir(name) {
             Ok(dir) => dir,
             Err(e) => return e,
         };
@@ -2993,7 +3011,7 @@ impl PipeManager {
 
     /// Enable or disable a pipe (writes back to pipe.md front-matter).
     pub async fn enable_pipe(&self, name: &str, enabled: bool) -> Result<()> {
-        let pipe_md = self.pipe_dir_checked(name)?.join("pipe.md");
+        let pipe_md = self.existing_pipe_dir(name)?.join("pipe.md");
         ensure_not_managed(name)?;
         if !pipe_md.exists() {
             return Err(self.pipe_not_found_error(name));
@@ -3001,24 +3019,8 @@ impl PipeManager {
 
         let content = std::fs::read_to_string(&pipe_md)?;
         let (mut config, body) = parse_frontmatter(&content)?;
-        // Block enabling a stale one-off — would either silently no-op
-        // (caught by the scheduler's stale guard) or fire a confusingly
-        // old reminder. User must set a new `at <iso>` first.
         if enabled {
-            if config.schedule_config.is_none() {
-                validate_one_off_freshness(&config.schedule)?;
-            }
-            // Likewise a structured schedule past its end or out of
-            // occurrences: the scheduler would switch it straight back off.
-            if let Some(compiled) = config.compiled_schedule() {
-                if compiled.has_ended_after(Utc::now()) {
-                    return Err(anyhow!(
-                        "pipe '{}' has a schedule_config that has already ended; \
-                         move `ending` later or raise `max_occurrences` before enabling it",
-                        name
-                    ));
-                }
-            }
+            ensure_can_enable(name, &config)?;
         }
         config.enabled = enabled;
         let new_content = serialize_pipe(&config, &body)?;
@@ -3058,7 +3060,8 @@ impl PipeManager {
         name: &str,
         updates: HashMap<String, serde_json::Value>,
     ) -> Result<()> {
-        validate_pipe_id(name).map_err(PipeConfigUpdateError::InvalidId)?;
+        validate_existing_pipe_id(&self.pipes_dir, name)
+            .map_err(PipeConfigUpdateError::InvalidId)?;
         let pipe_md = self.pipes_dir.join(name).join("pipe.md");
         if managed::is_pipe_managed(name) {
             return Err(PipeConfigUpdateError::Managed(name.to_string()).into());
@@ -3066,7 +3069,7 @@ impl PipeManager {
         if !pipe_md.exists() {
             return Err(PipeConfigUpdateError::NotFound(name.to_string()).into());
         }
-        config_update::check_update_keys(&updates)?;
+        let on_disk = std::fs::read_to_string(&pipe_md)?;
 
         // `raw_content` replaces the whole file; any other fields sent with
         // it are applied on top of the new content.
@@ -3088,14 +3091,27 @@ impl PipeManager {
                         field: "raw_content".into(),
                         message: e.to_string(),
                     })?;
-                config_update::validate_config(&parsed.0)?;
+                // Only what the new file changes is checked, so a value
+                // already on disk (one this build loads leniently) does not
+                // block saving an unrelated edit. A file that no longer
+                // parses is compared against an empty config.
+                let before = parse_frontmatter(&on_disk)
+                    .map(|(config, _)| config)
+                    .unwrap_or_default();
+                config_update::check_file_changes(name, &before, &parsed.0)?;
                 parsed
             }
-            None => parse_frontmatter(&std::fs::read_to_string(&pipe_md)?)?,
+            None => parse_frontmatter(&on_disk)?,
         };
         config.name = name.to_string(); // the directory name is the identity
 
         let applied = config_update::apply_config_updates(name, &mut config, &mut body, &updates)?;
+        if applied.enabled == Some(true) {
+            ensure_can_enable(name, &config).map_err(|e| PipeConfigUpdateError::Invalid {
+                field: "enabled".into(),
+                message: e.to_string(),
+            })?;
+        }
 
         let only_raw = raw.is_some() && updates.len() == 1;
         let new_content = match raw {
@@ -3269,7 +3285,7 @@ impl PipeManager {
         slug: &str,
         version: i64,
     ) -> Result<()> {
-        let dest_dir = self.pipe_dir_checked(name)?;
+        let dest_dir = self.existing_pipe_dir(name)?;
         ensure_not_managed(name)?;
         if !dest_dir.exists() {
             return Err(anyhow!("pipe '{}' not found", name));
@@ -3312,7 +3328,7 @@ impl PipeManager {
     /// Writes a tombstone so the pipe is not restored by builtin installation
     /// or cloud sync.
     pub async fn delete_pipe(&self, name: &str) -> Result<()> {
-        let dir = self.pipe_dir_checked(name)?;
+        let dir = self.existing_pipe_dir(name)?;
         ensure_not_managed(name)?;
         if !dir.exists() {
             return Err(self.pipe_not_found_error(name));
@@ -3363,7 +3379,7 @@ impl PipeManager {
 
     /// Clear a pipe's chat history by deleting its Pi session files.
     pub async fn clear_pipe_history(&self, name: &str) -> Result<()> {
-        let pipe_dir = self.pipe_dir_checked(name)?;
+        let pipe_dir = self.existing_pipe_dir(name)?;
         if !pipe_dir.exists() {
             return Err(anyhow!("pipe '{}' not found", name));
         }
@@ -3374,7 +3390,7 @@ impl PipeManager {
 
     /// Stop a running pipe.
     pub async fn stop_pipe(&self, name: &str) -> Result<()> {
-        validate_pipe_id(name)?;
+        validate_existing_pipe_id(&self.pipes_dir, name)?;
         let handle = {
             let mut running = self.running.lock().await;
             running.remove(name)
@@ -3711,7 +3727,7 @@ impl PipeManager {
                     // One-off (`schedule: at <iso>`) auto-disables on fire so
                     // it never runs twice — even across crashes/restarts. The
                     // pipe.md stays on disk; only the local-override flag flips.
-                    if config.schedule_config.is_none()
+                    if config.compiled_schedule().is_none()
                         && matches!(
                             parse_schedule(&config.schedule),
                             Some(ParsedSchedule::Once(_))
@@ -4396,27 +4412,82 @@ fn ensure_not_managed(name: &str) -> Result<()> {
     Ok(())
 }
 
-/// Per-pipe map of ACP agent sessions kept by `history: true` pipes.
-const ACP_SESSIONS_FILE: &str = ".screenpipe-acp-sessions.json";
+/// Refuse to switch on a pipe whose schedule cannot fire again: a stale
+/// one-off (`at <time>` more than an hour ago) would no-op or fire a
+/// confusingly old reminder, and a structured schedule past its end or out
+/// of occurrences would be switched straight back off by the scheduler.
+fn ensure_can_enable(name: &str, config: &PipeConfig) -> Result<()> {
+    match config.compiled_schedule() {
+        None => validate_one_off_freshness(&config.schedule),
+        Some(compiled) if compiled.has_ended_after(Utc::now()) => Err(anyhow!(
+            "pipe '{}' has a schedule_config that has already ended; \
+             move `ending` later or raise `max_occurrences` before enabling it",
+            name
+        )),
+        Some(_) => Ok(()),
+    }
+}
 
 /// True when the pipe has an earlier agent session to continue: a Pi
-/// session for its folder, or a non-empty ACP session map.
+/// session for its folder, or a non-empty ACP session map
+/// ([`crate::paths::ACP_SESSIONS_FILE`]). Called for every pipe on each
+/// status listing, so it stops at the first session file it finds.
 pub fn has_saved_context(pipe_dir: &Path) -> bool {
-    if find_latest_pi_session(pipe_dir).is_some() {
+    if has_pi_session(pipe_dir) {
         return true;
     }
-    std::fs::read_to_string(pipe_dir.join(ACP_SESSIONS_FILE))
+    std::fs::read_to_string(pipe_dir.join(crate::paths::ACP_SESSIONS_FILE))
         .ok()
         .and_then(|text| serde_json::from_str::<serde_json::Value>(&text).ok())
         .is_some_and(|map| map.as_object().is_some_and(|m| !m.is_empty()))
+}
+
+/// True when Pi keeps at least one session file for this working directory.
+fn has_pi_session(pipe_dir: &Path) -> bool {
+    let Some(session_dir) = encode_pi_session_dir(pipe_dir) else {
+        return false;
+    };
+    std::fs::read_dir(session_dir).is_ok_and(|entries| {
+        entries
+            .flatten()
+            .any(|e| e.path().extension().is_some_and(|ext| ext == "jsonl"))
+    })
 }
 
 // ---------------------------------------------------------------------------
 // Front-matter parsing
 // ---------------------------------------------------------------------------
 
+/// Typed frontmatter fields that never stop a pipe from loading. A value
+/// that cannot be read (an `effort` this build does not know, a
+/// `schedule_config` of another shape, a source trigger without an app...) is
+/// set aside: the typed field stays empty, the value is kept as written among
+/// the free-form extras so a save writes it back, and the rest of the file
+/// loads. The API still checks these fields strictly when a client changes
+/// them ([`config_update`]).
+const LENIENT_FIELDS: &[&str] = &[
+    "effort",
+    "history",
+    "run_in",
+    "artifacts",
+    "schedule_config",
+    "cloud_agent",
+    "event_read_only",
+    "trigger",
+];
+
 /// Parse a pipe.md file into (config, prompt_body).
 pub fn parse_frontmatter(content: &str) -> Result<(PipeConfig, String)> {
+    let (config, body, set_aside) = parse_frontmatter_with_notes(content)?;
+    for note in set_aside {
+        debug!("{}", note);
+    }
+    Ok((config, body))
+}
+
+/// Like [`parse_frontmatter`], and also describes each value that could not
+/// be read and was set aside (see [`LENIENT_FIELDS`]).
+pub fn parse_frontmatter_with_notes(content: &str) -> Result<(PipeConfig, String, Vec<String>)> {
     let content = content.trim();
     if !content.starts_with("---") {
         return Err(anyhow!("pipe.md must start with --- (YAML front-matter)"));
@@ -4430,9 +4501,123 @@ pub fn parse_frontmatter(content: &str) -> Result<(PipeConfig, String)> {
     let yaml_str = &rest[..end];
     let body = rest[end + 4..].trim().to_string();
 
-    let config: PipeConfig = serde_yaml::from_str(yaml_str)?;
+    match serde_yaml::from_str::<PipeConfig>(yaml_str) {
+        Ok(config) => Ok((config, body, Vec::new())),
+        Err(strict) => match parse_config_setting_aside(yaml_str) {
+            Some((config, notes)) => Ok((config, body, notes)),
+            None => Err(strict.into()),
+        },
+    }
+}
 
-    Ok((config, body))
+/// Second attempt at a frontmatter block that did not parse as a whole: set
+/// aside every [`LENIENT_FIELDS`] value that fails on its own and parse the
+/// rest. `None` when the failure lies elsewhere.
+fn parse_config_setting_aside(yaml_str: &str) -> Option<(PipeConfig, Vec<String>)> {
+    use serde_yaml::{Mapping, Value as Yaml};
+
+    // Each field is tried as the only key of a frontmatter block, so it goes
+    // through exactly the attributes it has in `PipeConfig`.
+    fn readable(key: &str, value: &Yaml) -> std::result::Result<(), serde_yaml::Error> {
+        let mut probe = Mapping::new();
+        probe.insert(Yaml::String(key.to_string()), value.clone());
+        serde_yaml::from_value::<PipeConfig>(Yaml::Mapping(probe)).map(|_| ())
+    }
+
+    let Ok(Yaml::Mapping(mut map)) = serde_yaml::from_str::<Yaml>(yaml_str) else {
+        return None;
+    };
+    let mut set_aside: Vec<(String, Yaml)> = Vec::new();
+    let mut set_aside_sources: Option<Yaml> = None;
+    let mut notes = Vec::new();
+
+    for key in LENIENT_FIELDS {
+        let yaml_key = Yaml::String(key.to_string());
+        let Some(value) = map.get(&yaml_key).cloned() else {
+            continue;
+        };
+        let Err(e) = readable(key, &value) else {
+            continue;
+        };
+        // A trigger whose only problem is its `sources` keeps its events.
+        if *key == "trigger" {
+            if let Yaml::Mapping(mut trigger) = value.clone() {
+                if let Some(sources) = trigger.remove(Yaml::String("sources".into())) {
+                    let without_sources = Yaml::Mapping(trigger);
+                    if readable(key, &without_sources).is_ok() {
+                        map.insert(yaml_key, without_sources);
+                        notes.push(format!(
+                            "trigger.sources could not be read ({e}); kept as written and not used"
+                        ));
+                        set_aside_sources = Some(sources);
+                        continue;
+                    }
+                }
+            }
+        }
+        map.remove(&yaml_key);
+        notes.push(format!(
+            "{key} could not be read ({e}); kept as written and not used"
+        ));
+        set_aside.push((key.to_string(), value));
+    }
+    if set_aside.is_empty() && set_aside_sources.is_none() {
+        return None;
+    }
+
+    let mut config: PipeConfig = serde_yaml::from_value(Yaml::Mapping(map)).ok()?;
+    let as_json =
+        |key: &str, value: &Yaml, notes: &mut Vec<String>| match serde_json::to_value(value) {
+            Ok(json) => Some(json),
+            Err(e) => {
+                notes.push(format!("{key} dropped: it cannot be kept as written ({e})"));
+                None
+            }
+        };
+    for (key, value) in set_aside {
+        if let Some(json) = as_json(&key, &value, &mut notes) {
+            config.config.insert(key, json);
+        }
+    }
+    if let (Some(sources), Some(trigger)) = (set_aside_sources, config.trigger.as_mut()) {
+        if let Some(json) = as_json("trigger.sources", &sources, &mut notes) {
+            trigger.extra.insert("sources".to_string(), json);
+        }
+    }
+    Some((config, notes))
+}
+
+/// True when the typed field `key` (one of [`LENIENT_FIELDS`]) holds a value
+/// that will be written, so a same-named extra would duplicate it.
+fn typed_field_is_set(config: &PipeConfig, key: &str) -> bool {
+    match key {
+        "effort" => config.effort.is_some(),
+        "history" => config.history,
+        "run_in" => config.run_in.is_some(),
+        "artifacts" => !config.artifacts.is_empty(),
+        "schedule_config" => config.schedule_config.is_some(),
+        "cloud_agent" => config.cloud_agent.is_some(),
+        "event_read_only" => config.event_read_only,
+        "trigger" => config.trigger.is_some(),
+        _ => true,
+    }
+}
+
+/// Drop extras that shadow a typed field holding a value. A set-aside value
+/// whose typed field is empty is kept so it is written back as it was.
+fn drop_shadowed_extras(config: &mut PipeConfig) {
+    for key in LENIENT_FIELDS {
+        if typed_field_is_set(config, key) {
+            config.config.remove(*key);
+        }
+    }
+    if let Some(trigger) = config.trigger.as_mut() {
+        trigger.extra.remove("events");
+        trigger.extra.remove("custom");
+        if !trigger.sources.is_empty() {
+            trigger.extra.remove("sources");
+        }
+    }
 }
 
 /// Atomic file write: write to a temp file in the same directory, then rename.
@@ -4473,23 +4658,16 @@ pub fn serialize_pipe(config: &PipeConfig, body: &str) -> Result<String> {
         "connections",
         "permissions",
         "timeout",
-        "trigger",
         "source_slug",
         "installed_version",
         "source_hash",
-        "cloud_agent",
-        "effort",
         "subagent",
-        "history",
-        "run_in",
         "privacy_filter",
-        "artifacts",
-        "schedule_config",
-        "event_read_only",
     ];
     for key in KNOWN_FIELDS {
         cfg.config.remove(*key);
     }
+    drop_shadowed_extras(&mut cfg);
 
     let yaml = serde_yaml::to_string(&cfg)?;
     Ok(format!("---\n{}---\n\n{}\n", yaml, body))
@@ -4537,7 +4715,11 @@ fn render_pipe_system_prompt(
     sys.push_str(&format!(
         "CRITICAL: You ARE this pipe. You are already running inside it. NEVER run `screenpipe pipe run` — that would create a recursive duplicate. Execute the task directly using the tools available to you (bash, file I/O, HTTP requests, etc.).\n\nOS: {os}\nOutput directory: ./output/\nScreenpipe API: http://localhost:{api_port}{api_auth_note}\nPrefer bun/TypeScript for scripts. Python may not be installed.\nSend notifications via POST http://localhost:11435/notify with {{\"title\": \"...\", \"body\": \"...\"}}. Body supports markdown. File links MUST use absolute paths (e.g. [View log](/Users/me/file.md)), never relative paths like ./output/file.md — relative paths break the notification link handler.\n\n"
     ));
-    sys.push_str(&render_pipe_guidance(config, api_port));
+    sys.push_str(&render_pipe_guidance(
+        config,
+        api_port,
+        FEEDBACK_ROUTE_AVAILABLE,
+    ));
     sys.push_str(body);
 
     if let Some(ctx) = connections_context {
@@ -4549,19 +4731,27 @@ fn render_pipe_system_prompt(
     sys
 }
 
+/// Whether the engine serves `GET /feedback` (the unified AI feedback
+/// route, owned by W2-03). The ratings directive of the pipe preamble sends
+/// agents there, so it is only added once the route exists: until then every
+/// run would spend a tool call on a 404. W2-03 switches this on.
+const FEEDBACK_ROUTE_AVAILABLE: bool = false;
+
 /// Standing guidance for every pipe run, placed between the base preamble
-/// and the pipe body: learn from the user's ratings, ask through
-/// notification buttons, keep sub-agents for genuinely parallel work, and
-/// remember stable preferences. Fixed per pipe, so it stays in the cached
-/// part of the prompt.
-fn render_pipe_guidance(config: &PipeConfig, api_port: u16) -> String {
-    let producer = query_escape(&format!("pipe:{}", config.name));
+/// and the pipe body: learn from the user's ratings (when `ratings_route`
+/// says the feedback route exists), ask through notification buttons, keep
+/// sub-agents for genuinely parallel work, and remember stable preferences.
+/// Fixed per pipe, so it stays in the cached part of the prompt.
+fn render_pipe_guidance(config: &PipeConfig, api_port: u16, ratings_route: bool) -> String {
     let mut out = String::from("How to work with the user:\n");
-    out.push_str(&format!(
-        "- Ratings: when this run produces something earlier runs also produced (a digest, a summary, a report), \
-         first fetch GET http://localhost:{api_port}/feedback?producer={producer} and read how the user rated \
-         past output. Repeat what got a thumbs up; fix whatever got a thumbs down or a correction.\n"
-    ));
+    if ratings_route {
+        let producer = query_escape(&format!("pipe:{}", config.name));
+        out.push_str(&format!(
+            "- Ratings: when this run produces something earlier runs also produced (a digest, a summary, a report), \
+             first fetch GET http://localhost:{api_port}/feedback?producer={producer} and read how the user rated \
+             past output. Repeat what got a thumbs up; fix whatever got a thumbs down or a correction.\n"
+        ));
+    }
     out.push_str(
         "- Questions: if you need the user to choose or confirm something, offer the choices as buttons on the \
          notification (an \"actions\" list in the /notify body) instead of a note they would have to answer elsewhere.\n",
@@ -4981,14 +5171,12 @@ fn structured_should_fire(
 }
 
 /// True when the pipe is due on its own schedule: the structured
-/// `schedule_config` when present, else the `schedule` string.
+/// `schedule_config` when present and valid, else the `schedule` string.
 fn pipe_should_run(config: &PipeConfig, last_run: DateTime<Utc>, now: DateTime<Utc>) -> bool {
-    if config.schedule_config.is_some() {
-        return config
-            .compiled_schedule()
-            .is_some_and(|compiled| structured_should_fire(&compiled, last_run, now));
+    match config.compiled_schedule() {
+        Some(compiled) => structured_should_fire(&compiled, last_run, now),
+        None => should_run(&config.schedule, last_run),
     }
-    should_run(&config.schedule, last_run)
 }
 
 /// True when the pipe's structured schedule has no run left: it is past
@@ -5015,8 +5203,7 @@ pub fn next_run_for(
         return None;
     }
     let last = last_run.unwrap_or(DateTime::<Utc>::UNIX_EPOCH);
-    if config.schedule_config.is_some() {
-        let compiled = config.compiled_schedule()?;
+    if let Some(compiled) = config.compiled_schedule() {
         let due = compiled.next_after(structured_search_from(last, now))?;
         return Some(due.max(now));
     }

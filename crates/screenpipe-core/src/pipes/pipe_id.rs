@@ -16,8 +16,17 @@
 //! (`.local-overrides.json`, `.tombstones.json`, ...) out of the id space.
 //! Any other character, including non-ASCII letters and inner spaces, is
 //! allowed so existing pipe folders keep working.
+//!
+//! These rules apply in full to names that are about to create a folder
+//! (install, store install, sync). Operations on a pipe that is already
+//! installed use [`validate_existing_pipe_id`], which also accepts the exact
+//! name of a folder already in the pipes directory, so a folder made before
+//! these rules (or by hand) can still be enabled, edited, stopped and
+//! deleted.
 
+use std::ffi::OsStr;
 use std::fmt;
+use std::path::Path;
 
 /// Longest id accepted, in bytes (the common file-name limit).
 pub const MAX_PIPE_ID_BYTES: usize = 255;
@@ -68,6 +77,52 @@ impl std::error::Error for InvalidPipeId {}
 /// Accept `id` only if it is one portable path component (see the module
 /// docs for the rules).
 pub fn validate_pipe_id(id: &str) -> Result<(), InvalidPipeId> {
+    check(id, false)
+}
+
+/// Accept `id` for an operation on an installed pipe: any id that passes
+/// [`validate_pipe_id`], and also the exact name of a folder that already
+/// exists in `pipes_dir`. A directory listing only yields single components,
+/// so such a name cannot reach outside `pipes_dir`.
+///
+/// On Windows the exception covers only the leading-dot rule: Win32 path
+/// handling drops trailing dots and spaces and maps device names, so a folder
+/// with such a name (made through a `\\?\` path or another OS) could open as
+/// a different pipe's folder.
+pub fn validate_existing_pipe_id(pipes_dir: &Path, id: &str) -> Result<(), InvalidPipeId> {
+    let strict = validate_pipe_id(id);
+    if strict.is_err() && opens_unchanged_here(id) && names_existing_folder(pipes_dir, id) {
+        return Ok(());
+    }
+    strict
+}
+
+/// True when `pipes_dir` holds a folder named exactly `id`.
+fn names_existing_folder(pipes_dir: &Path, id: &str) -> bool {
+    if id.is_empty() || id == "." || id == ".." || id.contains('/') {
+        return false;
+    }
+    let Ok(entries) = std::fs::read_dir(pipes_dir) else {
+        return false;
+    };
+    entries
+        .flatten()
+        .any(|entry| entry.file_name() == OsStr::new(id) && entry.path().is_dir())
+}
+
+/// Whether a folder named `id` is opened under that exact name on this
+/// platform.
+#[cfg(windows)]
+fn opens_unchanged_here(id: &str) -> bool {
+    check(id, true).is_ok()
+}
+
+#[cfg(not(windows))]
+fn opens_unchanged_here(_id: &str) -> bool {
+    true
+}
+
+fn check(id: &str, leading_dot_ok: bool) -> Result<(), InvalidPipeId> {
     let refuse = |reason| {
         Err(InvalidPipeId {
             id: id.to_string(),
@@ -92,7 +147,7 @@ pub fn validate_pipe_id(id: &str) -> Result<(), InvalidPipeId> {
     if id.contains(WINDOWS_FORBIDDEN) {
         return refuse("it contains a character Windows forbids in file names (< > : \" | ? *)");
     }
-    if id.starts_with('.') {
+    if id.starts_with('.') && !leading_dot_ok {
         return refuse("it starts with a dot, which is kept for hidden files");
     }
     if id.starts_with(char::is_whitespace) {
@@ -196,6 +251,37 @@ mod tests {
             "prn-report",
         ] {
             assert!(validate_pipe_id(id).is_ok(), "{id:?} should be valid");
+        }
+    }
+
+    #[test]
+    fn existing_folders_keep_working_under_their_own_name() {
+        let tmp = tempfile::tempdir().unwrap();
+        let pipes = tmp.path();
+        std::fs::create_dir_all(pipes.join(".hidden-pipe")).unwrap();
+        std::fs::write(pipes.join(".sidecar.json"), "{}").unwrap();
+        assert!(validate_existing_pipe_id(pipes, ".hidden-pipe").is_ok());
+        // Files are not pipes, and a name with no folder gets the full rules.
+        assert!(validate_existing_pipe_id(pipes, ".sidecar.json").is_err());
+        assert!(validate_existing_pipe_id(pipes, ".missing").is_err());
+        // Traversal never names a listed folder.
+        for id in ["..", ".", "../x", ""] {
+            assert!(validate_existing_pipe_id(pipes, id).is_err(), "{id:?}");
+        }
+        assert!(validate_existing_pipe_id(pipes, "ordinary").is_ok());
+    }
+
+    #[cfg(not(windows))]
+    #[test]
+    fn existing_folders_with_windows_unsafe_names_keep_working_elsewhere() {
+        let tmp = tempfile::tempdir().unwrap();
+        for id in ["aux", "trailing.", "what?", "daily.md?raw=1"] {
+            std::fs::create_dir_all(tmp.path().join(id)).unwrap();
+            assert!(validate_pipe_id(id).is_err(), "{id:?} is not portable");
+            assert!(
+                validate_existing_pipe_id(tmp.path(), id).is_ok(),
+                "{id:?} exists and should be usable"
+            );
         }
     }
 

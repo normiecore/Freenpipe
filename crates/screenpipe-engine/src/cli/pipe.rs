@@ -26,9 +26,11 @@ pub async fn handle_pipe_command(command: &PipeCommand) -> anyhow::Result<()> {
     manager.load_pipes().await?;
 
     // A pipe name is a folder under the pipes directory; refuse anything that
-    // is not a single portable folder name before it reaches the disk.
+    // is not a single portable folder name (or the exact name of an existing
+    // pipe folder) before it reaches the disk. Every command here acts on an
+    // installed pipe.
     if let Some(name) = pipe_name_argument(command) {
-        screenpipe_core::pipes::validate_pipe_id(name)?;
+        screenpipe_core::pipes::validate_existing_pipe_id(&pipes_dir, name)?;
     }
 
     match command {

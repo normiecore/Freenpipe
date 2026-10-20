@@ -205,6 +205,122 @@ fn hand_written_values_load_leniently() {
     assert!(nulls.trigger.unwrap().sources.is_empty());
 }
 
+/// A pipe.md with a value this build cannot read in every v2 field.
+const UNREADABLE_V2_PIPE_MD: &str = r#"---
+schedule: every 1h
+enabled: true
+effort: max
+history: maybe
+run_in:
+  chat_id: abc
+cloud_agent:
+  repository: octo/repo
+artifacts: 5
+schedule_config:
+  frequency: daily
+  at_hour: 9
+event_read_only: sometimes
+trigger:
+  events:
+  - meeting_ended
+  sources:
+  - path: octo/repo
+title: Odd pipe
+---
+
+Do the work.
+"#;
+
+#[test]
+fn unreadable_v2_values_are_set_aside_instead_of_failing_the_file() {
+    let (config, body, notes) = parse_frontmatter_with_notes(UNREADABLE_V2_PIPE_MD).unwrap();
+    assert_eq!(body, "Do the work.");
+    assert_eq!(config.schedule, "every 1h");
+    assert!(config.enabled);
+    assert!(config.effort.is_none() && config.schedule_config.is_none());
+    assert!(config.run_in.is_none() && config.cloud_agent.is_none());
+    assert!(config.artifacts.is_empty());
+    assert!(!config.history && !config.event_read_only);
+    // The trigger keeps its events; only the unreadable sources are set aside.
+    let trigger = config.trigger.as_ref().unwrap();
+    assert_eq!(trigger.events, vec!["meeting_ended"]);
+    assert!(trigger.sources.is_empty());
+    assert_eq!(
+        trigger.extra.get("sources"),
+        Some(&json!([{"path": "octo/repo"}]))
+    );
+    // Each set-aside value is kept as written and named in a note.
+    assert_eq!(config.config.get("effort"), Some(&json!("max")));
+    assert_eq!(
+        config.config.get("schedule_config"),
+        Some(&json!({"frequency": "daily", "at_hour": 9}))
+    );
+    assert_eq!(config.config.get("history"), Some(&json!("maybe")));
+    assert_eq!(config.config.get("title"), Some(&json!("Odd pipe")));
+    for key in [
+        "effort",
+        "history",
+        "run_in",
+        "cloud_agent",
+        "artifacts",
+        "schedule_config",
+        "event_read_only",
+        "trigger.sources",
+    ] {
+        assert!(
+            notes.iter().any(|n| n.starts_with(key)),
+            "no note for {key}: {notes:?}"
+        );
+    }
+
+    // A save writes the set-aside values back unchanged.
+    let saved = serialize_pipe(&config, &body).unwrap();
+    for kept in [
+        "effort: max",
+        "history: maybe",
+        "frequency: daily",
+        "artifacts: 5",
+        "path: octo/repo",
+    ] {
+        assert!(saved.contains(kept), "{kept} lost:\n{saved}");
+    }
+    let (again, _) = parse_frontmatter(&saved).unwrap();
+    assert_eq!(again.config, config.config);
+    assert_eq!(again.trigger.unwrap().extra, trigger.extra);
+
+    // A file that is broken outside the v2 fields still fails.
+    assert!(parse_frontmatter("---\nschedule: [1, 2\n---\n\nB").is_err());
+    assert!(parse_frontmatter("---\nenabled: 5\neffort: max\n---\n\nB").is_err());
+}
+
+#[tokio::test]
+async fn a_pipe_with_unreadable_v2_values_loads_and_runs_on_its_schedule_string() {
+    let tmp = tempfile::tempdir().unwrap();
+    let pm = manager(&tmp);
+    write_pipe(
+        &pm,
+        "odd",
+        "---\nschedule: every 1h\nenabled: true\neffort: max\nschedule_config:\n  frequency: daily\n---\n\nB",
+    );
+    pm.load_pipes().await.unwrap();
+    let status = pm.get_pipe("odd").await.expect("the pipe is listed");
+    assert!(status.config.schedule_config.is_none());
+    // Interval schedules are measured against the real clock.
+    let now = Utc::now();
+    let half_an_hour_ago = now - chrono::Duration::minutes(30);
+    assert!(pipe_should_run(
+        &status.config,
+        DateTime::<Utc>::UNIX_EPOCH,
+        now
+    ));
+    assert!(!pipe_should_run(&status.config, half_an_hour_ago, now));
+    assert_eq!(
+        next_run_for(&status.config, Some(half_an_hour_ago), now),
+        Some(half_an_hour_ago + chrono::Duration::hours(1))
+    );
+    assert_eq!(status.config.schedule_label(), "every 1h");
+}
+
 #[test]
 fn builtin_pipes_still_parse() {
     for (name, content) in BUILTIN_PIPES {
@@ -438,6 +554,221 @@ async fn enabling_a_finished_structured_schedule_is_refused() {
     pm.enable_pipe("ended", false).await.unwrap();
 }
 
+#[tokio::test]
+async fn enabling_a_finished_structured_schedule_through_config_is_refused() {
+    let tmp = tempfile::tempdir().unwrap();
+    let pm = manager(&tmp);
+    write_pipe(
+        &pm,
+        "ended",
+        "---\nschedule: manual\nenabled: false\nschedule_config:\n  frequency: days\n  timezone: UTC\n  ending: 2020-01-01T00:00:00Z\n---\n\nB",
+    );
+    pm.load_pipes().await.unwrap();
+    let before = std::fs::read_to_string(pm.pipes_dir().join("ended/pipe.md")).unwrap();
+    let err = pm
+        .update_config("ended", updates(json!({"enabled": true})))
+        .await
+        .unwrap_err();
+    assert!(
+        matches!(
+            err.downcast_ref::<PipeConfigUpdateError>(),
+            Some(PipeConfigUpdateError::Invalid { field, .. }) if field == "enabled"
+        ),
+        "{err}"
+    );
+    assert!(err.to_string().contains("already ended"), "{err}");
+    assert_eq!(
+        std::fs::read_to_string(pm.pipes_dir().join("ended/pipe.md")).unwrap(),
+        before
+    );
+    assert_ne!(
+        load_local_overrides(pm.pipes_dir()).get("ended"),
+        Some(&true)
+    );
+    // Enabling together with a new end date is fine.
+    pm.update_config(
+        "ended",
+        updates(json!({
+            "enabled": true,
+            "schedule_config": {"frequency": "days", "timezone": "UTC", "ending": "2999-01-01"}
+        })),
+    )
+    .await
+    .unwrap();
+    assert_eq!(
+        load_local_overrides(pm.pipes_dir()).get("ended"),
+        Some(&true)
+    );
+}
+
+#[tokio::test]
+async fn a_schedule_string_sent_alone_replaces_the_structured_schedule() {
+    let tmp = tempfile::tempdir().unwrap();
+    let pm = manager(&tmp);
+    // Written elsewhere: a structured schedule and no `schedule` string, so
+    // the settings UI shows the default "manual".
+    let structured = "---\nenabled: true\nschedule_config:\n  frequency: minutes\n  interval: 5\n  timezone: UTC\n---\n\nB";
+    write_pipe(&pm, "structured", structured);
+    write_pipe(&pm, "both", structured);
+    pm.load_pipes().await.unwrap();
+    let now = Utc::now();
+    let status = pm.get_pipe("structured").await.unwrap();
+    assert_eq!(status.config.schedule, "manual");
+    assert!(status.next_run.is_some());
+
+    // Choosing "manual" in the UI now stops the timed runs.
+    pm.update_config("structured", updates(json!({"schedule": "manual"})))
+        .await
+        .unwrap();
+    let status = pm.get_pipe("structured").await.unwrap();
+    assert!(status.config.schedule_config.is_none());
+    assert!(status.next_run.is_none(), "{:?}", status.next_run);
+    assert!(!pipe_should_run(
+        &status.config,
+        DateTime::<Utc>::UNIX_EPOCH,
+        now
+    ));
+    let written = std::fs::read_to_string(pm.pipes_dir().join("structured/pipe.md")).unwrap();
+    assert!(!written.contains("schedule_config"), "{written}");
+
+    // Another string choice takes over the same way.
+    pm.update_config("structured", updates(json!({"schedule": "every 2h"})))
+        .await
+        .unwrap();
+    let status = pm.get_pipe("structured").await.unwrap();
+    assert_eq!(status.config.schedule_label(), "every 2h");
+
+    // Sent together, the structured schedule stays.
+    pm.update_config(
+        "both",
+        updates(json!({
+            "schedule": "every 2h",
+            "schedule_config": {"frequency": "days", "at_hour": 9, "timezone": "UTC"}
+        })),
+    )
+    .await
+    .unwrap();
+    let both = pm.get_pipe("both").await.unwrap();
+    assert_eq!(
+        both.config.schedule_config.map(|s| s.frequency),
+        Some(ScheduleFrequency::Days)
+    );
+}
+
+#[tokio::test]
+async fn values_already_on_disk_do_not_block_unrelated_saves() {
+    let tmp = tempfile::tempdir().unwrap();
+    let pm = manager(&tmp);
+    // Loads fine, but several values would not pass the API's checks.
+    let file = "---\nschedule: every 1h\nenabled: true\neffort: max\nrun_in:\n  mode: new_chat\nartifacts:\n- path: output/x.csv\n  kind: csv\ntrigger:\n  events:\n  - meeting_ended\n  sources:\n  - app: myspace\ncolour: red\n---\n\nBody";
+    write_pipe(&pm, "lenient", file);
+    pm.load_pipes().await.unwrap();
+    let view =
+        || async { serde_json::to_value(pm.get_pipe("lenient").await.unwrap().config).unwrap() };
+
+    // The prompt editor saves the whole file with only the body changed.
+    let edited = file.replace("Body", "New body");
+    pm.update_config("lenient", updates(json!({"raw_content": edited})))
+        .await
+        .unwrap();
+    // The notification toggle and other single-field saves.
+    pm.update_config("lenient", updates(json!({"history": true})))
+        .await
+        .unwrap();
+    // The trigger editor posts the whole trigger back with one change.
+    let mut trigger = view().await["trigger"].clone();
+    trigger["events"] = json!(["meeting_ended", "meeting_started"]);
+    pm.update_config("lenient", updates(json!({"trigger": trigger})))
+        .await
+        .unwrap();
+    let status = pm.get_pipe("lenient").await.unwrap();
+    let trigger = status.config.trigger.as_ref().unwrap();
+    assert_eq!(trigger.events, vec!["meeting_ended", "meeting_started"]);
+    assert_eq!(trigger.sources[0].app, "myspace");
+    assert_eq!(status.prompt_body, "New body");
+
+    // A full-object save echoes every field, free-form extras included.
+    let mut whole: HashMap<String, serde_json::Value> =
+        serde_json::from_value(view().await).unwrap();
+    whole.insert("timeout".into(), json!(900));
+    pm.update_config("lenient", whole).await.unwrap();
+    let status = pm.get_pipe("lenient").await.unwrap();
+    assert_eq!(status.config.timeout, Some(900));
+    assert_eq!(status.config.config.get("effort"), Some(&json!("max")));
+    assert_eq!(status.config.config.get("colour"), Some(&json!("red")));
+
+    // New bad values are still refused.
+    for (change, field) in [
+        (
+            json!({"trigger": {"events": ["meeting_ended"], "sources": [{"app": "myspace"}, {"app": "fax"}]}}),
+            "trigger",
+        ),
+        (
+            json!({"artifacts": [{"path": "output/x.csv", "kind": "csv"}, {"path": "../y.md"}]}),
+            "artifacts",
+        ),
+        (
+            json!({"raw_content": file.replace("effort: max", "effort: extreme")}),
+            "effort",
+        ),
+    ] {
+        match pm.update_config("lenient", updates(change.clone())).await {
+            Err(e) => assert!(
+                matches!(
+                    e.downcast_ref::<PipeConfigUpdateError>(),
+                    Some(PipeConfigUpdateError::Invalid { field: f, .. }) if f == field
+                ),
+                "{change}: {e}"
+            ),
+            Ok(()) => panic!("{change} should be refused"),
+        }
+    }
+    // An extra the file does not have is still an unknown field.
+    let err = pm
+        .update_config("lenient", updates(json!({"colour": "blue"})))
+        .await
+        .unwrap_err();
+    assert_eq!(
+        err.downcast_ref::<PipeConfigUpdateError>(),
+        Some(&PipeConfigUpdateError::UnknownField("colour".into()))
+    );
+}
+
+#[tokio::test]
+async fn pipes_in_folders_named_before_the_id_rules_can_still_be_managed() {
+    let tmp = tempfile::tempdir().unwrap();
+    let pm = manager(&tmp);
+    let mut names = vec![".dotted"];
+    if cfg!(not(windows)) {
+        names.extend(["aux", "trailing.", "daily.md?raw=1"]);
+    }
+    for name in &names {
+        write_pipe(
+            &pm,
+            name,
+            "---\nschedule: every 1h\nenabled: true\n---\n\nB",
+        );
+    }
+    pm.load_pipes().await.unwrap();
+    for name in names {
+        assert!(validate_pipe_id(name).is_err(), "{name:?}");
+        assert!(pm.get_pipe(name).await.is_some(), "{name:?} loads");
+        pm.enable_pipe(name, false).await.unwrap();
+        pm.update_config(name, updates(json!({"prompt_body": "Edited"})))
+            .await
+            .unwrap();
+        pm.stop_pipe(name).await.unwrap();
+        pm.clear_pipe_history(name).await.unwrap();
+        pm.delete_pipe(name).await.unwrap();
+        assert!(!pm.pipes_dir().join(name).exists(), "{name:?} deleted");
+    }
+    // New pipes still get the full rules.
+    assert!(pm
+        .install_pipe_from_store("---\nschedule: manual\n---\n\nB", ".dotted", 1)
+        .await
+        .is_err());
+}
+
 // -- status ------------------------------------------------------------------------
 
 #[tokio::test]
@@ -573,8 +904,15 @@ fn structured_schedule_drives_should_run() {
         at("2026-10-20T15:00:00Z")
     ));
 
-    // An invalid structured schedule never fires.
+    // An invalid structured schedule is ignored: the schedule string (what
+    // the settings UI shows) drives the pipe.
     config.schedule_config.as_mut().unwrap().at_hour = Some(99);
+    assert!(pipe_should_run(
+        &config,
+        at("2026-10-20T08:58:00Z"),
+        at("2026-10-20T08:59:30Z")
+    ));
+    config.schedule = "manual".into();
     assert!(!pipe_should_run(
         &config,
         DateTime::<Utc>::UNIX_EPOCH,
@@ -652,9 +990,17 @@ fn preamble_carries_the_four_directives() {
         name: "daily digest".into(),
         ..Default::default()
     };
-    let sys = render_pipe_system_prompt(&config, "BODY", 3035, None, None, None);
+    // The ratings directive waits for the feedback route.
+    let guidance = render_pipe_guidance(&config, 3035, true);
     assert!(
-        sys.contains("GET http://localhost:3035/feedback?producer=pipe:daily%20digest"),
+        guidance.contains("GET http://localhost:3035/feedback?producer=pipe:daily%20digest"),
+        "{guidance}"
+    );
+    assert!(!render_pipe_guidance(&config, 3035, false).contains("/feedback"));
+    let sys = render_pipe_system_prompt(&config, "BODY", 3035, None, None, None);
+    assert_eq!(
+        sys.contains("/feedback?producer="),
+        FEEDBACK_ROUTE_AVAILABLE,
         "{sys}"
     );
     assert!(sys.contains("\"actions\""), "{sys}");
