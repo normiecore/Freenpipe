@@ -65,6 +65,20 @@ pub struct Segment {
     pub text: String,
 }
 
+/// Execution provider for the ONNX Parakeet engine (Freenpipe addition).
+///
+/// `Auto` keeps the engine's own choice. `Cpu` and `DirectMl` let the caller
+/// decide; with `DirectMl` a provider that cannot be registered is an error
+/// instead of a silent CPU fallback, so the caller can log it and choose.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Accelerator {
+    #[default]
+    Auto,
+    Cpu,
+    /// DirectML on the DXGI adapter with this enumeration ordinal.
+    DirectMl { device_id: i32 },
+}
+
 impl Model {
     /// Load a model by name. Downloads from HuggingFace if not cached.
     ///
@@ -155,6 +169,19 @@ impl Model {
                 name
             ))),
         }
+    }
+
+    /// Like [`Self::from_pretrained_cache_only`], with an explicit execution
+    /// provider for the ONNX Parakeet engine. Other engines ignore it.
+    pub fn from_pretrained_cache_only_with(name: &str, accelerator: Accelerator) -> Result<Self> {
+        #[cfg(feature = "parakeet")]
+        if name.starts_with("parakeet") && !name.contains("mlx") {
+            let engine =
+                crate::parakeet::ParakeetEngine::from_pretrained_cache_only_with(name, accelerator)?;
+            return Ok(Self { inner: Box::new(engine), uses_gpu: false });
+        }
+        let _ = accelerator;
+        Self::from_pretrained_cache_only(name)
     }
 
     /// Start a background thread that runs [`Self::from_pretrained`] (blocking download + load).

@@ -46,7 +46,8 @@ symphonia = { version = "0.5.4", features = ["aac", "isomp4", "opt-simd"] }
 rubato = "0.15.0"
 # screenpipe/whisper-rs @ 97e4070, vendored in third_party/whisper-rs (audiopipe
 # points at the same copy, so there is one whisper-rs-sys in the graph).
-whisper-rs = { path = "../../third_party/whisper-rs", features = ["tracing_backend"] }
+# `raw-api` exposes the ggml backend-device calls the GPU probe uses.
+whisper-rs = { path = "../../third_party/whisper-rs", features = ["tracing_backend", "raw-api"] }
 
 # Log
 log = { workspace = true }

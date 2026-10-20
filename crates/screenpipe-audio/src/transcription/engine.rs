@@ -8,14 +8,17 @@ use crate::transcription::deepgram::batch::{
 };
 use crate::transcription::deepgram::DeepgramTranscriptionConfig;
 use crate::transcription::openai_compatible::batch::transcribe_with_openai_compatible;
-use crate::transcription::whisper::batch::process_with_whisper;
+use crate::transcription::whisper::batch::run_whisper;
 use crate::transcription::whisper::model::{
-    create_whisper_context_parameters, download_whisper_model, get_cached_whisper_model_path,
+    download_whisper_model, get_cached_whisper_model_path, gpu_fault_from_env,
+    infer_with_recovery, load_whisper_context, open_whisper_state, shared_cpu_context,
+    whisper_gpu_latch, GpuFault, WhisperDevice, WHISPER_GPU_FAULT_ENV,
 };
 use crate::transcription::{TranscriptionOutput, VocabularyEntry};
 use anyhow::{anyhow, Result};
 use reqwest::Client;
 use screenpipe_core::Language;
+use std::path::PathBuf;
 use std::sync::Arc;
 #[cfg(any(feature = "qwen3-asr", feature = "parakeet", feature = "parakeet-mlx"))]
 use std::sync::Mutex as StdMutex;
@@ -73,6 +76,10 @@ mod mlx_memory {
 pub enum TranscriptionEngine {
     Whisper {
         context: Arc<WhisperContext>,
+        /// Where `context` runs. GPU sessions fall back to the shared CPU
+        /// context (built from `model_path`) when the GPU fails.
+        device: WhisperDevice,
+        model_path: Arc<PathBuf>,
         config: Arc<AudioTranscriptionEngine>,
         languages: Vec<Language>,
         vocabulary: Vec<VocabularyEntry>,
@@ -354,17 +361,16 @@ impl TranscriptionEngine {
 
                 info!("whisper model available: {:?}", quantized_path);
 
-                let context_param = create_whisper_context_parameters(config.clone())?;
+                // Probes ggml's GPU devices (Vulkan on Windows, Metal on
+                // macOS) and falls back to a CPU context when none works.
+                let model_path = Arc::new(quantized_path);
+                let load_path = model_path.clone();
+                let (context, device) =
+                    tokio::task::spawn_blocking(move || load_whisper_context(&load_path))
+                        .await
+                        .map_err(|e| anyhow!("whisper model loading task panicked: {}", e))??;
 
-                info!("loading whisper model with GPU acceleration...");
-                let context = tokio::task::spawn_blocking(move || {
-                    WhisperContext::new_with_params(&quantized_path, context_param).map(Arc::new)
-                })
-                .await
-                .map_err(|e| anyhow!("whisper model loading task panicked: {}", e))?
-                .map_err(|e| anyhow!("failed to load whisper model: {}", e))?;
-
-                info!("whisper model loaded successfully");
+                info!("whisper model loaded successfully ({:?})", device);
                 // NOTE: do NOT call whisper_rs::install_logging_hooks() here.
                 // It redirects ggml/whisper logs into Rust's tracing subscriber via
                 // a global FFI callback. During app restart (process::exit), C++ static
@@ -375,6 +381,8 @@ impl TranscriptionEngine {
 
                 Ok(Self::Whisper {
                     context,
+                    device,
+                    model_path,
                     config,
                     languages,
                     vocabulary,
@@ -390,16 +398,18 @@ impl TranscriptionEngine {
         match self {
             Self::Whisper {
                 context,
+                device,
+                model_path,
                 config,
                 languages,
                 vocabulary,
             } => {
-                let state = context
-                    .create_state()
-                    .map_err(|e| anyhow!("failed to create whisper state: {}", e))?;
+                let opened = open_whisper_state(context, *device, model_path)?;
                 Ok(TranscriptionSession::Whisper {
-                    state,
-                    context: context.clone(),
+                    state: opened.state,
+                    context: opened.context,
+                    device: opened.device,
+                    model_path: model_path.clone(),
                     config: config.clone(),
                     languages: languages.clone(),
                     vocabulary: vocabulary.clone(),
@@ -477,13 +487,59 @@ impl TranscriptionEngine {
     }
 }
 
+/// Mutable parts of a whisper session that a GPU→CPU recovery replaces.
+struct WhisperRun<'a> {
+    state: &'a mut WhisperState,
+    context: &'a mut Arc<WhisperContext>,
+    device: &'a mut WhisperDevice,
+}
+
+/// Run whisper on `audio`; a failure on GPU moves the session to the shared
+/// CPU context and reruns the same audio once (audio-019).
+fn transcribe_whisper_with_recovery(
+    audio: &[f32],
+    languages: &[Language],
+    vocabulary: &[VocabularyEntry],
+    mut run: WhisperRun<'_>,
+    model_path: &std::path::Path,
+    fault: GpuFault,
+) -> Result<String> {
+    infer_with_recovery(
+        &mut run,
+        |r| *r.device == WhisperDevice::Gpu,
+        whisper_gpu_latch(),
+        |r| {
+            if *r.device == WhisperDevice::Gpu && fault == GpuFault::Inference {
+                return Err(anyhow!(
+                    "simulated GPU inference failure ({WHISPER_GPU_FAULT_ENV})"
+                ));
+            }
+            run_whisper(audio, languages.to_vec(), r.state, vocabulary)
+        },
+        |r| {
+            let (cpu, built) = shared_cpu_context(model_path)?;
+            let state = cpu
+                .create_state()
+                .map_err(|e| anyhow!("whisper session lost its state before CPU recovery: {e}"))?;
+            *r.state = state;
+            *r.context = cpu;
+            *r.device = WhisperDevice::Cpu;
+            info!("whisper: CPU state installed");
+            Ok(built)
+        },
+    )
+}
+
 /// Per-thread transcription session. Holds `WhisperState` (which is `!Send`)
 /// for Whisper variants, or shared model handles for other engines.
 pub enum TranscriptionSession {
     Whisper {
         state: WhisperState,
-        #[allow(dead_code)]
+        /// The context `state` belongs to (GPU, or the shared CPU context
+        /// after a recovery).
         context: Arc<WhisperContext>,
+        device: WhisperDevice,
+        model_path: Arc<PathBuf>,
         config: Arc<AudioTranscriptionEngine>,
         languages: Vec<Language>,
         vocabulary: Vec<VocabularyEntry>,
@@ -708,10 +764,24 @@ impl TranscriptionSession {
 
             Self::Whisper {
                 state,
+                context,
+                device,
+                model_path,
                 languages,
                 vocabulary,
                 ..
-            } => process_with_whisper(audio, languages.clone(), state, vocabulary).await,
+            } => transcribe_whisper_with_recovery(
+                audio,
+                languages,
+                vocabulary,
+                WhisperRun {
+                    state,
+                    context,
+                    device,
+                },
+                model_path,
+                gpu_fault_from_env(),
+            ),
 
             Self::OpenAICompatible {
                 endpoint,
@@ -776,5 +846,51 @@ impl TranscriptionSession {
             }
             err => err,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// End-to-end check of the GPU→CPU recovery with a real whisper model:
+    /// the session is labelled GPU, the simulated inference fault fires, and
+    /// the shared CPU context transcribes the same audio. Needs a ggml model:
+    /// SCREENPIPE_TEST_WHISPER_MODEL=/path/to/ggml-tiny.bin cargo test -p screenpipe-audio --lib whisper_gpu_fault -- --ignored
+    #[test]
+    #[ignore]
+    fn whisper_gpu_fault_recovers_on_cpu_with_a_real_model() {
+        let model = std::env::var("SCREENPIPE_TEST_WHISPER_MODEL")
+            .expect("set SCREENPIPE_TEST_WHISPER_MODEL to a ggml model file");
+        let model_path = PathBuf::from(model);
+        let context = Arc::new(
+            WhisperContext::new_with_params(
+                &model_path,
+                crate::transcription::whisper::model::whisper_context_params(false),
+            )
+            .unwrap(),
+        );
+        let mut state = context.create_state().unwrap();
+        let mut ctx = context.clone();
+        let mut device = WhisperDevice::Gpu;
+        // One second of a loud 440 Hz tone: above the silence gate, so whisper runs.
+        let audio: Vec<f32> = (0..16_000)
+            .map(|i| 0.3 * (i as f32 * 440.0 * std::f32::consts::TAU / 16_000.0).sin())
+            .collect();
+        let result = transcribe_whisper_with_recovery(
+            &audio,
+            &[Language::English],
+            &[],
+            WhisperRun {
+                state: &mut state,
+                context: &mut ctx,
+                device: &mut device,
+            },
+            &model_path,
+            GpuFault::Inference,
+        );
+        assert!(result.is_ok(), "{result:?}");
+        assert_eq!(device, WhisperDevice::Cpu);
+        assert!(!Arc::ptr_eq(&ctx, &context), "the session moved to the shared CPU context");
     }
 }
