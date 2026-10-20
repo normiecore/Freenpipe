@@ -19,7 +19,12 @@
 //! ## Status
 //!
 //! Feature-gated behind `opf-text`. Off by default — local dev opts in
-//! with `cargo build --features opf-text`. The async PII reconciliation
+//! with `cargo build --features opf-text` (or `redact-opf-text` on
+//! screenpipe-engine and the app crate). opf-rs is licensed CC BY-NC 4.0,
+//! so no default or release build may enable it (owner decision 7 in
+//! `docs/clean-room/DECISIONS.md`; `scripts/ci/licence-guard.test.ts`
+//! enforces it). Without it the reconciliation workers go from the v45
+//! ONNX model straight to regex-only redaction. The async PII reconciliation
 //! worker is still gated separately at the engine layer (see
 //! `apps/screenpipe-app-tauri/src-tauri/src/server_core.rs`); this
 //! adapter just makes the model reachable when the worker is
