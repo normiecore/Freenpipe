@@ -11,10 +11,12 @@
 //! [`AgentExecutor`].
 
 pub mod favorites;
-pub mod hooks;
 pub mod permissions;
 pub mod preset_fallback;
 pub mod sync;
+
+// Run-lifecycle hooks that features register instead of editing this file.
+pub mod hooks;
 
 use crate::agents::{
     pi::{PiExecutor, SCREENPIPE_API_URL},
