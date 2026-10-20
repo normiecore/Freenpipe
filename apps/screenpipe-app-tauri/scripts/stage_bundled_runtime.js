@@ -22,8 +22,9 @@
 //   - DirectML.dll: Microsoft's DirectML redistributable, only with
 //     FREENPIPE_BUNDLE_DIRECTML=1. It ships under Microsoft's own licence
 //     terms, not an open-source licence, so it stays out of builds until the
-//     release licence audit clears it (owner decision 7); without it ONNX
-//     Runtime uses the DirectML.dll that Windows itself provides.
+//     release licence audit clears it (owner decision 7); without it
+//     Parakeet runs on CPU unless SCREENPIPE_DIRECTML=1 allows the copy that
+//     Windows itself provides (transcription/parakeet_windows.rs).
 //
 // Nothing here resolves a package from a registry at app run time: the MCP
 // server is bundled from packages/screenpipe-mcp in this repository, the CLI
@@ -467,7 +468,7 @@ export async function stageDirectMl({ stageRoot, platform, arch }) {
 	if (process.env.FREENPIPE_BUNDLE_DIRECTML !== '1') {
 		for (const f of DIRECTML_PACKAGE.files(arch)) await fs.rm(path.join(destDir, f.dest), { force: true })
 		console.log(
-			'[bundled-runtime] DirectML.dll not bundled (FREENPIPE_BUNDLE_DIRECTML=1 after the licence review); Windows provides its own copy',
+			'[bundled-runtime] DirectML.dll not bundled (FREENPIPE_BUNDLE_DIRECTML=1 after the licence review); Parakeet uses CPU unless SCREENPIPE_DIRECTML=1',
 		)
 		return
 	}

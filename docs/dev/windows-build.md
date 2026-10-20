@@ -187,7 +187,7 @@ on their own, so a GPU build also runs on machines without a usable GPU.
 | Feature | What it does | Build needs | Runtime needs |
 |---|---|---|---|
 | `vulkan` | whisper.cpp on ggml-vulkan | Vulkan SDK, `VULKAN_SDK` set | `vulkan-1.dll` (load-time import) |
-| `directml` | Parakeet's ONNX sessions on a DirectX 12 GPU | nothing extra (`ort` is load-dynamic) | the DirectML build of `onnxruntime.dll`, and `DirectML.dll` |
+| `directml` | Parakeet's ONNX sessions on a DirectX 12 GPU | nothing extra (`ort` is load-dynamic) | the DirectML build of `onnxruntime.dll`, and `DirectML.dll` next to the exe (or in System32 with `SCREENPIPE_DIRECTML=1`) |
 
 **Vulkan SDK.** Install the LunarG Vulkan SDK (the release uses 1.4.313.0)
 with its default components, then open a new shell so `VULKAN_SDK` is set
@@ -222,21 +222,27 @@ install root by `tauri.windows.conf.json`):
 - `DirectML.dll` only with `FREENPIPE_BUNDLE_DIRECTML=1`. It is Microsoft's
   redistributable under Microsoft's own licence terms, so it stays out until
   the release licence audit clears it (see
-  `docs/dev/bundled-runtime-licences.md`). Without it ONNX Runtime uses the
-  `DirectML.dll` in System32 (Windows 10 1903 and later); when that copy is
-  missing or too old, Parakeet runs on CPU.
+  `docs/dev/bundled-runtime-licences.md`). Without it Parakeet runs on CPU by
+  default; `SCREENPIPE_DIRECTML=1` lets it use the `DirectML.dll` in System32
+  (Windows 10 1903 and later) instead. Any copy must export
+  `DMLCreateDevice1` at ordinal 2, the ordinal the pinned ONNX Runtime binds
+  when the provider first runs; a copy without it is refused up front, so it
+  cannot fail inside ONNX Runtime later.
 
 **Run-time switches and logs.**
 
 - `SCREENPIPE_DIRECTML`: unset or empty picks DirectML when an adapter
-  qualifies; `1`/`true` asks for it; any other value (`0`, `false`) forces CPU.
-  The engine logs the decision once, for example
-  `parakeet: DirectML adapter ordinal 0: <name> (<n> MiB dedicated video memory, UMA=false)`
+  qualifies and a `DirectML.dll` sits next to the exe; `1`/`true` asks for it
+  and also accepts the System32 copy; any other value (`0`, `false`) forces
+  CPU. The engine logs the decision once, for example
+  `parakeet: DirectML adapter ordinal 0: <name> (<n> MiB dedicated video memory, UMA=false), DirectML.dll next to the executable (<path>)`,
+  `parakeet: no DirectML.dll next to the executable (<path>); automatic mode does not use the System32 DirectML.dll (set SCREENPIPE_DIRECTML=1 to allow it); using CPU`
   or `parakeet: SCREENPIPE_DIRECTML explicitly disabled DirectML; using CPU`.
-- whisper logs `whisper context: GPU backend Vulkan (...)` or
+- whisper logs `whisper context: GPU backend Vulkan (...; gpu_device <n>)` or
   `whisper context: GPU unavailable; using CPU fallback (...)` when it loads
-  a model.
-- `SCREENPIPE_WHISPER_GPU_FAULT=inference` (or `state`) makes GPU whisper
+  a model. It runs on the first discrete GPU ggml lists, else the first
+  integrated one; `<n>` is that device's index among ggml's GPUs.
+- `FREENPIPE_WHISPER_GPU_FAULT=inference` (or `state`) makes GPU whisper
   sessions fail on purpose, to exercise the CPU recovery: the log shows
   `GPU inference failed`, then `CPU state installed` and
   `CPU inference finished after GPU recovery`, and the transcript still

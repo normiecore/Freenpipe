@@ -69,7 +69,7 @@ services used are left out.
 
 | Variable | Meaning |
 |---|---|
-| `SCREENPIPE_DIRECTML` | Set to a false value to turn DirectML acceleration off. |
+| `SCREENPIPE_DIRECTML` | DirectML for the ONNX Parakeet engine (Windows). Unset or empty: automatic, DirectML when an adapter qualifies and a `DirectML.dll` sits next to the executable. `1` or `true`: on, also with the `DirectML.dll` in System32. Any other value (`0`, `false`, `off`, typos): CPU. |
 | `SCREENPIPE_COMPACTION_ENCODER` | Encoder for snapshot compaction: `software`, `hardware`, or a named ffmpeg encoder; anything else falls back to the default probe order. |
 | `SCREENPIPE_FILTER_PII` | Turns on PII filtering of captured text. |
 | `SCREENPIPE_AUDIO_EXCLUSIONS_PATH` | Path of the audio exclusion list. |
@@ -161,3 +161,14 @@ services used are left out.
 | `SCREENPIPE_MCP_PATH` | Path of the portable MCP server. |
 | `SCREENPIPE_MCP_CLIENT` | Name of the MCP client. |
 | `SCREENPIPE_MCP_SERVER_ALLOWLIST` | MCP servers a pipe session may call. |
+
+## Freenpipe only
+
+Not read by screenpipe, so they carry a `FREENPIPE_` prefix and are not in
+`screenpipe_core::env`.
+
+| Variable | Meaning |
+|---|---|
+| `FREENPIPE_WHISPER_GPU_FAULT` | Test hook: `inference` (or `1`/`true`) makes GPU whisper inference fail, `state` makes GPU state creation fail, so the CPU recovery can be checked on real hardware. CPU sessions are never affected. |
+| `FREENPIPE_VULKAN_RUNTIME_DIR` | Build time (`scripts/stage_bundled_runtime.js`): folder holding the unpacked Vulkan runtime components whose `vulkan-1.dll` the Windows installer ships. |
+| `FREENPIPE_BUNDLE_DIRECTML` | Build time: `1` also ships Microsoft's `DirectML.dll` (held back until the release licence audit). |
