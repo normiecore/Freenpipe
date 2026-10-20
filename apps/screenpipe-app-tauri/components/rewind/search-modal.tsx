@@ -21,7 +21,7 @@ import { cn } from "@/lib/utils";
 import { commands } from "@/lib/utils/tauri";
 import { showChatWithPrefill } from "@/lib/chat-utils";
 import { ThumbnailHighlightOverlay } from "./thumbnail-highlight-overlay";
-import { localFetch, getApiBaseUrl } from "@/lib/api";
+import { localFetch, getApiBaseUrl, appendAuthToken } from "@/lib/api";
 
 interface SpeakerResult {
   id: number;
@@ -273,11 +273,11 @@ function useSuggestions(isOpen: boolean) {
 const FrameThumbnail = ({ frameId, alt }: { frameId: number; alt: string }) => {
   const [isLoading, setIsLoading] = useState(true);
   const [hasError, setHasError] = useState(false);
-  const [src, setSrc] = useState(`${getApiBaseUrl()}/frames/${frameId}`);
+  const [src, setSrc] = useState(appendAuthToken(`${getApiBaseUrl()}/frames/${frameId}`));
   const retryCount = useRef(0);
 
   useEffect(() => {
-    setSrc(`${getApiBaseUrl()}/frames/${frameId}`);
+    setSrc(appendAuthToken(`${getApiBaseUrl()}/frames/${frameId}`));
     setIsLoading(true);
     setHasError(false);
     retryCount.current = 0;
@@ -311,7 +311,7 @@ const FrameThumbnail = ({ frameId, alt }: { frameId: number; alt: string }) => {
             if (retryCount.current < 3) {
               retryCount.current += 1;
               setTimeout(() => {
-                setSrc(`${getApiBaseUrl()}/frames/${frameId}?retry=${retryCount.current}`);
+                setSrc(appendAuthToken(`${getApiBaseUrl()}/frames/${frameId}?retry=${retryCount.current}`));
               }, 1000 * retryCount.current);
             } else {
               setIsLoading(false);

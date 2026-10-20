@@ -729,11 +729,7 @@ impl VideoMetadataOverride {
 /// seconds, clamped to the last frame the file holds. Errors carry the
 /// `VIDEO_NOT_FOUND`, `VIDEO_CORRUPTED` and `FFPROBE_NOT_FOUND` markers the
 /// frame routes map to typed errors.
-async fn frame_seek_seconds(
-    ffmpeg_path: &Path,
-    file_path: &str,
-    offset_index: i64,
-) -> Result<f64> {
+async fn frame_seek_seconds(ffmpeg_path: &Path, file_path: &str, offset_index: i64) -> Result<f64> {
     // Check if file exists first
     if !std::path::Path::new(file_path).exists() {
         return Err(anyhow::anyhow!("VIDEO_NOT_FOUND: {}", file_path));

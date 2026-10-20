@@ -127,9 +127,15 @@ async fn serve_snapshot_frame(
     redact_pii: bool,
 ) -> Result<Response<Body>, (StatusCode, JsonResponse<Value>)> {
     match read_snapshot_file(snapshot_path).await {
-        Ok(bytes) => return snapshot_response(state, frame_id, snapshot_path, bytes, redact_pii).await,
+        Ok(bytes) => {
+            return snapshot_response(state, frame_id, snapshot_path, bytes, redact_pii).await
+        }
         Err(SnapshotReadError::Unreadable(details)) => {
-            return Err(snapshot_read_failed_error(frame_id, snapshot_path, &details))
+            return Err(snapshot_read_failed_error(
+                frame_id,
+                snapshot_path,
+                &details,
+            ))
         }
         Err(SnapshotReadError::Missing) => {}
     }
@@ -231,7 +237,10 @@ async fn serve_video_frame(
             // No fallback found either
             let err_str = e.to_string();
             if err_str.contains("FFPROBE_NOT_FOUND") {
-                error!("ffprobe not found — frame extraction will fail for all compacted frames: {}", err_str);
+                error!(
+                    "ffprobe not found — frame extraction will fail for all compacted frames: {}",
+                    err_str
+                );
                 Err((
                     StatusCode::INTERNAL_SERVER_ERROR,
                     JsonResponse(json!({
@@ -1477,7 +1486,10 @@ impl ServedThumbnail {
                 .header(header::ETAG, etag.as_str())
                 .header("x-screenpipe-thumbnail-cache", status.as_str())
                 .header("x-screenpipe-thumbnail-width", thumbnail.width.to_string())
-                .header("x-screenpipe-thumbnail-height", thumbnail.height.to_string())
+                .header(
+                    "x-screenpipe-thumbnail-height",
+                    thumbnail.height.to_string(),
+                )
                 .header(header::CONTENT_LENGTH, thumbnail.jpeg.len().to_string()),
             ServedThumbnail::NotModified { etag } => Response::builder()
                 .status(StatusCode::NOT_MODIFIED)
@@ -1630,8 +1642,7 @@ async fn thumbnail_for_frame(
             }
         };
         for candidate in candidates {
-            if let Ok(served) = thumbnail_from_row(state, &candidate, params, if_none_match).await
-            {
+            if let Ok(served) = thumbnail_from_row(state, &candidate, params, if_none_match).await {
                 debug!(
                     "thumbnail: serving frame {} in place of frame {}",
                     candidate.frame_id, frame_id
@@ -1694,7 +1705,11 @@ async fn thumbnail_from_row(
             }
             return Err(fail(thumbs::ThumbnailError::SourceMissing(path)));
         }
-        Err(e) => return Err(fail(thumbs::ThumbnailError::SourceUnreadable(e.to_string()))),
+        Err(e) => {
+            return Err(fail(thumbs::ThumbnailError::SourceUnreadable(
+                e.to_string(),
+            )))
+        }
     };
     if !metadata.is_file() {
         debug!(
@@ -1737,16 +1752,12 @@ async fn thumbnail_from_row(
 
     let source = async {
         match kind {
-            thumbs::SourceKind::Snapshot => {
-                read_snapshot_file(&path).await.map_err(|e| match e {
-                    SnapshotReadError::Missing => {
-                        thumbs::ThumbnailError::SourceMissing(path.clone())
-                    }
-                    SnapshotReadError::Unreadable(details) => {
-                        thumbs::ThumbnailError::SourceUnreadable(details)
-                    }
-                })
-            }
+            thumbs::SourceKind::Snapshot => read_snapshot_file(&path).await.map_err(|e| match e {
+                SnapshotReadError::Missing => thumbs::ThumbnailError::SourceMissing(path.clone()),
+                SnapshotReadError::Unreadable(details) => {
+                    thumbs::ThumbnailError::SourceUnreadable(details)
+                }
+            }),
             thumbs::SourceKind::Video => {
                 // Share the ffmpeg limit with full-frame extraction.
                 let _permit = state
@@ -1957,14 +1968,12 @@ async fn preview_sample_for(row: &FrameMediaRow) -> Option<FramePreviewSample> {
         }
         FrameMediaLocation::Video { chunk_id, path, .. } => {
             let offset = row.video_offset_seconds()?;
-            (has_mp4_extension(&path) && is_regular_file(&path).await).then(|| {
-                FramePreviewSample {
-                    frame_id: row.frame_id,
-                    timestamp: row.timestamp,
-                    source: FramePreviewSource::Video,
-                    video_chunk_id: Some(chunk_id),
-                    video_offset_seconds: Some(offset),
-                }
+            (has_mp4_extension(&path) && is_regular_file(&path).await).then(|| FramePreviewSample {
+                frame_id: row.frame_id,
+                timestamp: row.timestamp,
+                source: FramePreviewSource::Video,
+                video_chunk_id: Some(chunk_id),
+                video_offset_seconds: Some(offset),
             })
         }
         FrameMediaLocation::Remote | FrameMediaLocation::Unavailable => None,
@@ -2069,7 +2078,10 @@ fn preview_media_not_found(video_chunk_id: i64, reason: &str) -> (StatusCode, Js
     )
 }
 
-fn preview_media_lookup_failed(video_chunk_id: i64, details: String) -> (StatusCode, JsonResponse<Value>) {
+fn preview_media_lookup_failed(
+    video_chunk_id: i64,
+    details: String,
+) -> (StatusCode, JsonResponse<Value>) {
     error!(
         "preview media: lookup of chunk {} failed: {}",
         video_chunk_id, details
@@ -2105,7 +2117,10 @@ pub async fn get_frame_preview_media(
         return Err(preview_media_not_found(video_chunk_id, "media evicted"));
     }
     if path.starts_with(REMOTE_PATH_PREFIX) {
-        return Err(preview_media_not_found(video_chunk_id, "chunk is on another device"));
+        return Err(preview_media_not_found(
+            video_chunk_id,
+            "chunk is on another device",
+        ));
     }
     if !has_mp4_extension(path) {
         return Err(preview_media_not_found(video_chunk_id, "not an MP4 file"));
@@ -2113,7 +2128,12 @@ pub async fn get_frame_preview_media(
     // The path itself must be a regular file, not a link to somewhere else.
     match tokio::fs::symlink_metadata(path).await {
         Ok(meta) if meta.is_file() => {}
-        Ok(_) => return Err(preview_media_not_found(video_chunk_id, "not a regular file")),
+        Ok(_) => {
+            return Err(preview_media_not_found(
+                video_chunk_id,
+                "not a regular file",
+            ))
+        }
         Err(e) if is_missing_file_error(&e) => {
             return Err(preview_media_not_found(video_chunk_id, "file missing"))
         }
@@ -2130,7 +2150,12 @@ pub async fn get_frame_preview_media(
     // Size of the file that was actually opened.
     let len = match file.metadata().await {
         Ok(meta) if meta.is_file() => meta.len(),
-        Ok(_) => return Err(preview_media_not_found(video_chunk_id, "not a regular file")),
+        Ok(_) => {
+            return Err(preview_media_not_found(
+                video_chunk_id,
+                "not a regular file",
+            ))
+        }
         Err(e) => return Err(preview_media_lookup_failed(video_chunk_id, e.to_string())),
     };
     if len == 0 {
@@ -2195,3 +2220,237 @@ pub use super::content::FrameContent;
 
 /// extract_high_quality_frame re-export for video export
 pub use crate::video_utils::extract_high_quality_frame as extract_hq_frame;
+
+#[cfg(test)]
+mod media_tests {
+    use super::*;
+    use chrono::TimeZone;
+
+    #[test]
+    fn byte_ranges_resolve_within_the_file() {
+        use ByteRangeRequest::*;
+        assert_eq!(
+            parse_byte_range("bytes=0-99", 1000),
+            Partial { start: 0, end: 99 }
+        );
+        assert_eq!(
+            parse_byte_range(" bytes = 10 - 20 ", 1000),
+            Partial { start: 10, end: 20 }
+        );
+        assert_eq!(
+            parse_byte_range("BYTES=990-", 1000),
+            Partial {
+                start: 990,
+                end: 999
+            }
+        );
+        assert_eq!(
+            parse_byte_range("bytes=-5", 1000),
+            Partial {
+                start: 995,
+                end: 999
+            }
+        );
+        assert_eq!(
+            parse_byte_range("bytes=-5000", 1000),
+            Partial { start: 0, end: 999 }
+        );
+        assert_eq!(
+            parse_byte_range("bytes=900-5000", 1000),
+            Partial {
+                start: 900,
+                end: 999
+            }
+        );
+        assert_eq!(
+            parse_byte_range("bytes=999-999", 1000),
+            Partial {
+                start: 999,
+                end: 999
+            }
+        );
+        assert_eq!(
+            parse_byte_range("bytes=0-0", 1),
+            Partial { start: 0, end: 0 }
+        );
+        assert_eq!(
+            parse_byte_range(&format!("bytes=0-{}", u64::MAX), u64::MAX),
+            Partial {
+                start: 0,
+                end: u64::MAX - 1
+            }
+        );
+    }
+
+    #[test]
+    fn bad_byte_ranges_are_unsatisfiable() {
+        for value in [
+            "",
+            "bytes",
+            "bytes=",
+            "bytes=-",
+            "bytes=-0",
+            "bytes=1000-",
+            "bytes=1000-2000",
+            "bytes=5-1",
+            "bytes=a-b",
+            "bytes=+1-2",
+            "bytes=1-2-3",
+            "bytes=0-1,5-6",
+            "bytes= 0-1 ,",
+            "bytes=99999999999999999999999-",
+            "bytes=0-99999999999999999999999",
+            "0-99",
+        ] {
+            assert_eq!(
+                parse_byte_range(value, 1000),
+                ByteRangeRequest::Unsatisfiable,
+                "{value:?}"
+            );
+        }
+        // Nothing can be served from an empty file.
+        assert_eq!(
+            parse_byte_range("bytes=0-", 0),
+            ByteRangeRequest::Unsatisfiable
+        );
+        assert_eq!(
+            parse_byte_range("bytes=-1", 0),
+            ByteRangeRequest::Unsatisfiable
+        );
+    }
+
+    #[test]
+    fn other_range_units_are_ignored() {
+        assert_eq!(parse_byte_range("items=0-5", 1000), ByteRangeRequest::Full);
+        assert_eq!(parse_byte_range("none=", 1000), ByteRangeRequest::Full);
+    }
+
+    #[test]
+    fn thumbnail_params_defaults_and_bounds() {
+        let p = ThumbnailParams::from_query(&FrameThumbnailQuery::default()).unwrap();
+        assert_eq!(
+            p,
+            ThumbnailParams {
+                width: 320,
+                quality: 75,
+                fallback: true
+            }
+        );
+        let q = FrameThumbnailQuery {
+            width: Some(3840),
+            quality: Some(1),
+            fallback: Some(false),
+            retry: Some("7".into()),
+        };
+        assert_eq!(
+            ThumbnailParams::from_query(&q).unwrap(),
+            ThumbnailParams {
+                width: 3840,
+                quality: 1,
+                fallback: false
+            }
+        );
+        for (width, quality) in [(31, 75), (3841, 75), (320, 0), (320, 101), (320, 300)] {
+            let q = FrameThumbnailQuery {
+                width: Some(width),
+                quality: Some(quality),
+                ..Default::default()
+            };
+            assert!(
+                ThumbnailParams::from_query(&q).is_err(),
+                "{width}/{quality}"
+            );
+        }
+    }
+
+    fn samples_query(hours: i64) -> FramePreviewSamplesQuery {
+        let start = Utc.with_ymd_and_hms(2026, 10, 1, 0, 0, 0).unwrap();
+        FramePreviewSamplesQuery {
+            start_time: Some(start),
+            end_time: Some(start + chrono::Duration::hours(hours)),
+            app_name: Some("  Code ".into()),
+            limit: None,
+            browser_domain: None,
+        }
+    }
+
+    #[test]
+    fn preview_sample_requests_are_validated() {
+        let ok = PreviewSamplesRequest::from_query(&samples_query(24)).unwrap();
+        assert_eq!(ok.app_name, "Code");
+        assert_eq!(ok.limit, PREVIEW_DEFAULT_LIMIT);
+        assert_eq!(ok.browser_domain, None);
+
+        assert!(PreviewSamplesRequest::from_query(&samples_query(25)).is_err());
+        assert!(PreviewSamplesRequest::from_query(&samples_query(0)).is_err());
+        assert!(PreviewSamplesRequest::from_query(&samples_query(-1)).is_err());
+
+        let mut q = samples_query(1);
+        q.end_time = None;
+        assert!(PreviewSamplesRequest::from_query(&q).is_err());
+
+        let mut q = samples_query(1);
+        q.app_name = Some("é".repeat(256));
+        assert!(
+            PreviewSamplesRequest::from_query(&q).is_ok(),
+            "256 characters fit"
+        );
+        q.app_name = Some("é".repeat(257));
+        assert!(PreviewSamplesRequest::from_query(&q).is_err());
+        q.app_name = None;
+        assert!(PreviewSamplesRequest::from_query(&q).is_err());
+
+        for (limit, ok) in [(0, false), (1, true), (12, true), (13, false)] {
+            let mut q = samples_query(1);
+            q.limit = Some(limit);
+            assert_eq!(PreviewSamplesRequest::from_query(&q).is_ok(), ok, "{limit}");
+        }
+
+        let mut q = samples_query(1);
+        q.browser_domain = Some("Docs.GitHub.com".into());
+        assert_eq!(
+            PreviewSamplesRequest::from_query(&q)
+                .unwrap()
+                .browser_domain
+                .as_deref(),
+            Some("docs.github.com")
+        );
+        q.browser_domain = Some("".into());
+        assert_eq!(
+            PreviewSamplesRequest::from_query(&q)
+                .unwrap()
+                .browser_domain,
+            None
+        );
+        q.browser_domain = Some("https://github.com/x".into());
+        assert!(PreviewSamplesRequest::from_query(&q).is_err());
+    }
+
+    #[test]
+    fn mp4_extension_check() {
+        assert!(has_mp4_extension("/d/chunk.mp4"));
+        assert!(has_mp4_extension("C:\\d\\CHUNK.MP4"));
+        assert!(!has_mp4_extension("/d/chunk.mkv"));
+        assert!(!has_mp4_extension("/d/mp4"));
+        assert!(!has_mp4_extension(""));
+    }
+
+    #[test]
+    fn query_flags_accept_common_spellings() {
+        #[derive(Deserialize)]
+        struct Q {
+            #[serde(default, deserialize_with = "deserialize_query_flag")]
+            flag: Option<bool>,
+        }
+        let parse = |s: &str| {
+            let uri: axum::http::Uri = format!("/x?{s}").parse().unwrap();
+            Query::<Q>::try_from_uri(&uri).map(|q| q.0.flag)
+        };
+        assert_eq!(parse("flag=false").unwrap(), Some(false));
+        assert_eq!(parse("flag=0").unwrap(), Some(false));
+        assert_eq!(parse("flag=TRUE").unwrap(), Some(true));
+        assert_eq!(parse("flag=").unwrap(), None);
+        assert_eq!(parse("").unwrap(), None);
+        assert!(parse("flag=maybe").is_err());
+    }
+}

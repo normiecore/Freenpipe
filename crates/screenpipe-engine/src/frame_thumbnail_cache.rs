@@ -269,7 +269,9 @@ impl FrameThumbnailCache {
             .entries
             .try_get_with(key, async move {
                 let bytes = source.await?;
-                self.render(bytes, key.width, key.quality).await.map(Arc::new)
+                self.render(bytes, key.width, key.quality)
+                    .await
+                    .map(Arc::new)
             })
             .await?;
         Ok((thumbnail, CacheStatus::Miss))
@@ -548,6 +550,9 @@ mod tests {
         let size = cache.weighted_size().await;
         assert!(size <= budget, "cache holds {size} bytes, budget {budget}");
         let count = cache.entry_count().await;
-        assert!(count > 0 && count < 64, "evictions expected, {count} entries");
+        assert!(
+            count > 0 && count < 64,
+            "evictions expected, {count} entries"
+        );
     }
 }

@@ -4,7 +4,7 @@
 
 import React, { useEffect, useRef, useState } from "react";
 import { commands } from "@/lib/utils/tauri";
-import { getApiBaseUrl } from "@/lib/api";
+import { getApiBaseUrl, appendAuthToken } from "@/lib/api";
 
 export function useLiveText(opts: {
 	debouncedFrame: { filePath: string; offsetIndex: number; fps: number; frameId: string } | null;
@@ -132,7 +132,7 @@ export function useLiveText(opts: {
 			if (isSearchModalOpen) return;
 			const fid = debouncedFrame?.frameId;
 			if (!fid) return;
-			const imagePath = `${getApiBaseUrl()}/frames/${fid}`;
+			const imagePath = appendAuthToken(`${getApiBaseUrl()}/frames/${fid}`);
 			const fidStr = String(fid);
 			commands
 				.livetextAnalyze(imagePath, fidStr, 0, 0, 0, 0)
@@ -172,7 +172,7 @@ export function useLiveText(opts: {
 
 		// For snapshot frames, use the local file path directly (instant).
 		// For video-chunk frames, fall back to HTTP endpoint (requires ffmpeg extraction).
-		const imagePath = `${getApiBaseUrl()}/frames/${debouncedFrame.frameId}`;
+		const imagePath = appendAuthToken(`${getApiBaseUrl()}/frames/${debouncedFrame.frameId}`);
 
 		// Position is managed exclusively by livetext_update_position.
 		// The analyze call only sets the analysis + shows the overlay.
@@ -289,7 +289,7 @@ export function useLiveText(opts: {
 		} else if (debouncedFrame?.frameId) {
 			// Re-analyze to show overlay again, then send position update
 			// to apply the pending analysis with correct geometry.
-			const imagePath = `${getApiBaseUrl()}/frames/${debouncedFrame.frameId}`;
+			const imagePath = appendAuthToken(`${getApiBaseUrl()}/frames/${debouncedFrame.frameId}`);
 			const fid = String(debouncedFrame.frameId);
 			commands.livetextAnalyze(
 				imagePath,
