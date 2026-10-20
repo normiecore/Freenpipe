@@ -121,7 +121,7 @@ impl Fixture {
             .unwrap()
     }
 
-    async fn sql(&self, sql: &str, id: i64) {
+    async fn sql(&self, sql: &'static str, id: i64) {
         sqlx::query(sql)
             .bind(id)
             .execute(&self.db.pool)
