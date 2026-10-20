@@ -272,9 +272,8 @@ pub async fn paired_capture(
             (None, None)
         } else if tree_json.is_some() && a11y_is_thin && !ocr_text.is_empty() {
             // Hybrid: a11y had chrome text, OCR captured the real content.
-            // Keep a11y text as accessibility_text (structured); the OCR text
-            // is appended to the frame's full_text and its word boxes go to
-            // frames.text_json via ocr_data below.
+            // Keep a11y text as accessibility_text (structured); OCR data is
+            // stored separately in the ocr_text table via ocr_data below.
             (Some(text.as_str()), Some("hybrid"))
         } else if tree_json.is_some() {
             (Some(text.as_str()), Some("accessibility"))
@@ -305,10 +304,20 @@ pub async fn paired_capture(
         ocr_text_json.clone()
     };
 
-    // Insert the snapshot frame with its OCR output in a single transaction:
-    // the OCR text feeds frames.full_text and the word boxes frames.text_json.
+    // Insert snapshot frame + OCR text positions in a single transaction.
+    let ocr_engine_name = if cfg!(target_os = "macos") {
+        "AppleNative"
+    } else if cfg!(target_os = "windows") {
+        "WindowsNative"
+    } else {
+        "Tesseract"
+    };
     let ocr_data = if !sanitized_ocr_text.is_empty() {
-        Some((sanitized_ocr_text.as_str(), sanitized_ocr_json.as_str()))
+        Some((
+            sanitized_ocr_text.as_str(),
+            sanitized_ocr_json.as_str(),
+            ocr_engine_name,
+        ))
     } else {
         None
     };
