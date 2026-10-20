@@ -327,7 +327,7 @@ async fn frames_attach_in_batches() {
     let f2 = insert_frame(&db, 2).await;
     let f3 = insert_frame(&db, 3).await;
 
-    let updated = db
+    let outcome = db
         .attach_semantic_runs_to_frames(&[
             SemanticFrameAttachment {
                 frame_id: f1,
@@ -342,15 +342,28 @@ async fn frames_attach_in_batches() {
                 frame_id: f2,
                 run_id: run_b.run_id,
             },
-            // A run that does not exist is skipped instead of failing the batch.
+            // A run that does not exist is skipped instead of failing the
+            // batch, and reported back.
             SemanticFrameAttachment {
                 frame_id: f3,
                 run_id: 9_999,
             },
+            // A frame that does not exist is ignored.
+            SemanticFrameAttachment {
+                frame_id: 123_456,
+                run_id: run_a.run_id,
+            },
         ])
         .await
         .unwrap();
-    assert_eq!(updated, 2);
+    assert_eq!(outcome.frames_updated, 2);
+    assert_eq!(
+        outcome.skipped,
+        vec![SemanticFrameAttachment {
+            frame_id: f3,
+            run_id: 9_999,
+        }]
+    );
 
     let on_f1 = db.get_semantic_run_for_frame(f1).await.unwrap().unwrap();
     assert_eq!(on_f1.run.id, run_a.run_id);
@@ -367,7 +380,7 @@ async fn frames_attach_in_batches() {
     let mut buffer = SemanticFrameAttachmentBuffer::new(2, Duration::from_secs(3600));
     assert!(!buffer.push(f3, run_a.run_id).unwrap());
     assert!(buffer.push(f1, run_b.run_id).unwrap());
-    assert_eq!(buffer.flush(&db).await.unwrap(), 2);
+    assert_eq!(buffer.flush(&db).await.unwrap().frames_updated, 2);
     assert!(buffer.is_empty());
     assert_eq!(
         db.get_semantic_run_for_frame(f3)
@@ -434,7 +447,7 @@ async fn buffer_flush_attaches_valid_entries_mixed_with_invalid_pushes() {
     buffer.push(f3, run_b.run_id).unwrap();
     assert_eq!(buffer.len(), 3);
 
-    assert_eq!(buffer.flush(&db).await.unwrap(), 3);
+    assert_eq!(buffer.flush(&db).await.unwrap().frames_updated, 3);
     assert!(buffer.is_empty());
     for (frame, run) in [(f1, run_a.run_id), (f2, run_b.run_id), (f3, run_b.run_id)] {
         let on_frame = db.get_semantic_run_for_frame(frame).await.unwrap().unwrap();
@@ -478,7 +491,7 @@ async fn buffer_flush_requeues_the_batch_when_the_database_fails() {
         .execute(&db.pool)
         .await
         .unwrap();
-    assert_eq!(buffer.flush(&db).await.unwrap(), 2);
+    assert_eq!(buffer.flush(&db).await.unwrap().frames_updated, 2);
     assert!(buffer.is_empty());
     assert_eq!(
         db.get_semantic_run_for_frame(f1)
@@ -780,16 +793,127 @@ async fn gc_grace_keeps_runs_awaiting_attachment() {
     let stats = db.gc_semantic_projection(Duration::ZERO).await.unwrap();
     assert_eq!((stats.runs_deleted, stats.items_deleted), (1, 1));
 
-    // Attaching to a run GC already removed is a no-op, not an FK failure.
+    // Attaching to a run GC already removed is reported back, not written
+    // and not an FK failure.
     let frame = insert_frame(&db, 5).await;
-    let updated = db
+    let outcome = db
         .attach_semantic_runs_to_frames(&[SemanticFrameAttachment {
             frame_id: frame,
             run_id: run.run_id,
         }])
         .await
         .unwrap();
-    assert_eq!(updated, 0);
+    assert_eq!(outcome.frames_updated, 0);
+    assert_eq!(
+        outcome.skipped,
+        vec![SemanticFrameAttachment {
+            frame_id: frame,
+            run_id: run.run_id,
+        }]
+    );
+}
+
+#[tokio::test]
+async fn gc_of_a_reused_run_reports_the_frames_waiting_on_it() {
+    let (_dir, db) = open_db().await;
+    let parse = new_run("reused", vec![message("m", "r", "reusedbody", None)]);
+    let first = db.store_semantic_run(&parse).await.unwrap();
+    let old_frame = insert_frame(&db, 1).await;
+    db.attach_semantic_runs_to_frames(&[SemanticFrameAttachment {
+        frame_id: old_frame,
+        run_id: first.run_id,
+    }])
+    .await
+    .unwrap();
+
+    // The run is older than the grace, and retention removes its only frame.
+    sqlx::query("UPDATE semantic_runs SET created_at = '2026-01-01T00:00:00.000Z' WHERE id = ?1")
+        .bind(first.run_id)
+        .execute(&db.pool)
+        .await
+        .unwrap();
+    sqlx::query("DELETE FROM frames WHERE id = ?1")
+        .bind(old_frame)
+        .execute(&db.pool)
+        .await
+        .unwrap();
+
+    // The worker sees the same input on a new frame and reuses the run.
+    let reused = db.store_semantic_run(&parse).await.unwrap();
+    assert!(!reused.created);
+    assert_eq!(reused.run_id, first.run_id);
+    let new_frame = insert_frame(&db, 2).await;
+    let mut buffer = SemanticFrameAttachmentBuffer::new(100, Duration::from_secs(3600));
+    buffer.push(new_frame, reused.run_id).unwrap();
+
+    // A periodic retention pass runs before the flush and collects the run.
+    let stats = db
+        .gc_semantic_projection(SEMANTIC_GC_DEFAULT_GRACE)
+        .await
+        .unwrap();
+    assert_eq!((stats.runs_deleted, stats.items_deleted), (1, 1));
+
+    // The flush says which frame lost its run instead of dropping it quietly.
+    let outcome = buffer.flush(&db).await.unwrap();
+    assert_eq!(outcome.frames_updated, 0);
+    assert_eq!(
+        outcome.skipped,
+        vec![SemanticFrameAttachment {
+            frame_id: new_frame,
+            run_id: reused.run_id,
+        }]
+    );
+    assert!(buffer.is_empty());
+
+    // Storing the parse again gives the frame a fresh run.
+    let again = db.store_semantic_run(&parse).await.unwrap();
+    assert!(again.created);
+    assert_ne!(again.run_id, first.run_id);
+    buffer.push(new_frame, again.run_id).unwrap();
+    let outcome = buffer.flush(&db).await.unwrap();
+    assert_eq!(outcome.frames_updated, 1);
+    assert!(outcome.skipped.is_empty());
+    let on_frame = db
+        .get_semantic_run_for_frame(new_frame)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(on_frame.run.id, again.run_id);
+    assert_eq!(fts_hits(&db, "reusedbody").await, 1);
+}
+
+#[tokio::test]
+async fn dropping_a_flush_keeps_the_batch_queued() {
+    let (_dir, db) = open_db().await;
+    let stored = db
+        .store_semantic_run(&new_run("a", vec![message("m", "a", "alpha", None)]))
+        .await
+        .unwrap();
+    let f1 = insert_frame(&db, 1).await;
+    let f2 = insert_frame(&db, 2).await;
+    let mut buffer = SemanticFrameAttachmentBuffer::new(100, Duration::from_secs(3600));
+    buffer.push(f1, stored.run_id).unwrap();
+    buffer.push(f2, stored.run_id).unwrap();
+
+    // Another writer holds the write lock, so the flush waits for it. Drop
+    // the flush there, as a timeout or the losing branch of a select! would.
+    let holder = db.begin_immediate_with_retry().await.unwrap();
+    let res = tokio::time::timeout(Duration::from_millis(100), buffer.flush(&db)).await;
+    assert!(
+        res.is_err(),
+        "the flush should still be waiting for the lock"
+    );
+    assert_eq!(buffer.len(), 2, "a dropped flush loses nothing");
+    holder.rollback().await.unwrap();
+
+    let outcome = buffer.flush(&db).await.unwrap();
+    assert_eq!(outcome.frames_updated, 2);
+    assert!(outcome.skipped.is_empty());
+    assert!(buffer.is_empty());
+    for frame in [f1, f2] {
+        let on_frame = db.get_semantic_run_for_frame(frame).await.unwrap().unwrap();
+        assert_eq!(on_frame.run.id, stored.run_id, "frame {frame}");
+    }
 }
 
 #[tokio::test]
@@ -957,7 +1081,7 @@ async fn alias_lookup_is_unique_per_source_and_normalized_label() {
 }
 
 #[tokio::test]
-async fn control_characters_in_names_and_keys_are_client_errors() {
+async fn control_characters_in_actor_names_are_client_errors() {
     let (_dir, db) = open_db().await;
     // Stripped, or rejected as invalid input: never a constraint failure (a
     // 500) from the actor table's length check.
@@ -993,16 +1117,72 @@ async fn control_characters_in_names_and_keys_are_client_errors() {
             .name,
         "Ada L."
     );
+}
 
-    // A source key is an identifier: rejected before any write.
-    let mut nul_key = new_run("nul-key", vec![message("m", "nk", "body", Some("Ada"))]);
-    nul_key.actor_source_key = Some("\0mail:work".into());
+#[tokio::test]
+async fn unusable_actor_source_key_costs_only_the_assignment() {
+    let (_dir, db) = open_db().await;
+    // The key may be built from screen text (a workspace or account name).
+    // A control character or an over-long key never fails the run: the run
+    // and its items are stored and searchable, only heuristic assignment is
+    // skipped.
+    for (tag, key) in [
+        ("nul", "\0mail:work".to_string()),
+        ("ctrl", "mail:\u{1}work".to_string()),
+        ("long", "k".repeat(1025)),
+    ] {
+        let mut run = new_run(
+            &format!("bad-key-{tag}"),
+            vec![message(
+                "m",
+                &format!("bk-{tag}"),
+                &format!("badkey{tag} body"),
+                Some("Ada"),
+            )],
+        );
+        run.actor_source_key = Some(key);
+        let stored = db.store_semantic_run(&run).await.unwrap();
+        assert!(stored.created, "{tag}");
+        assert!(stored.actor_assignment_skipped, "{tag}");
+        assert_eq!(
+            (stored.actors_created, stored.assignments_created),
+            (0, 0),
+            "{tag}"
+        );
+        assert_eq!(stored.item_ids.len(), 1, "{tag}");
+        assert_eq!(fts_hits(&db, &format!("badkey{tag}")).await, 1, "{tag}");
+    }
+    assert_eq!(count(&db, "SELECT COUNT(*) FROM semantic_runs").await, 3);
+    assert_eq!(count(&db, "SELECT COUNT(*) FROM semantic_actors").await, 0);
+    assert_eq!(
+        count(&db, "SELECT COUNT(*) FROM semantic_actor_aliases").await,
+        0
+    );
+    assert_eq!(
+        count(&db, "SELECT COUNT(*) FROM semantic_item_actors").await,
+        0
+    );
+
+    // A later run that sees the same item with a valid key assigns it.
+    let mut good = new_run(
+        "good-key",
+        vec![message("m", "bk-nul", "badkeynul body", Some("Ada"))],
+    );
+    good.actor_source_key = Some("mail:work".into());
+    let stored = db.store_semantic_run(&good).await.unwrap();
+    assert!(!stored.actor_assignment_skipped);
+    assert_eq!((stored.actors_created, stored.assignments_created), (1, 1));
+
+    // A bad parser id as the default key is still a caller error, before any
+    // write.
+    let mut bad_parser = new_run("bad-parser", vec![message("m", "bp", "body", Some("Ada"))]);
+    bad_parser.parser_id = "chat\u{1}".into();
     assert!(db
-        .store_semantic_run(&nul_key)
+        .store_semantic_run(&bad_parser)
         .await
         .unwrap_err()
         .is_invalid_input());
-    assert_eq!(count(&db, "SELECT COUNT(*) FROM semantic_runs").await, 0);
+    assert_eq!(count(&db, "SELECT COUNT(*) FROM semantic_runs").await, 4);
 }
 
 #[tokio::test]

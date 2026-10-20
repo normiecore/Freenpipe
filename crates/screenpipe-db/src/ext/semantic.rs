@@ -588,20 +588,51 @@ pub struct NewSemanticRun {
     pub parse_duration_us: u64,
     /// Scope for actor aliases (see [`DatabaseManager::store_semantic_run`]).
     /// `None` or blank uses `parser_id`.
+    ///
+    /// The key may be built from captured text (a workspace or account
+    /// name), so a bad one never costs the parse: a key longer than
+    /// [`SEMANTIC_SOURCE_KEY_MAX_CHARS`] or containing a control character
+    /// is not used, the run and its items are stored without heuristic actor
+    /// assignment ([`StoredSemanticRun::actor_assignment_skipped`]) and a
+    /// warning is logged.
     pub actor_source_key: Option<String>,
     /// Items in run order. An item's `sort_order` is its index here.
     pub items: Vec<NewSemanticItem>,
 }
 
 impl NewSemanticRun {
-    /// The source key that this run's actor labels are looked up under.
+    /// The source key that this run's actor labels are looked up under:
+    /// `actor_source_key` when it is set and not blank, `parser_id`
+    /// otherwise. Heuristic assignment only uses it when it is valid (see
+    /// [`Self::actor_source_key`]).
     pub fn effective_actor_source_key(&self) -> &str {
+        self.explicit_actor_source_key()
+            .unwrap_or(self.parser_id.trim())
+    }
+
+    /// `actor_source_key`, trimmed, when it is set and not blank.
+    fn explicit_actor_source_key(&self) -> Option<&str> {
         self.actor_source_key
             .as_deref()
             .map(str::trim)
             .filter(|k| !k.is_empty())
-            .unwrap_or(self.parser_id.trim())
     }
+}
+
+/// Why `key` cannot scope actor aliases, if it cannot. The alias table
+/// requires 1 to [`SEMANTIC_SOURCE_KEY_MAX_CHARS`] characters as SQLite counts
+/// them, and SQLite stops counting at a NUL, so control characters are out
+/// too.
+fn source_key_problem(key: &str) -> Option<String> {
+    if key.chars().count() > SEMANTIC_SOURCE_KEY_MAX_CHARS {
+        return Some(format!(
+            "must be at most {SEMANTIC_SOURCE_KEY_MAX_CHARS} characters"
+        ));
+    }
+    if key.chars().any(char::is_control) {
+        return Some("must not contain control characters".into());
+    }
+    None
 }
 
 /// One item of a [`NewSemanticRun`].
@@ -665,6 +696,23 @@ pub struct SemanticFrameAttachment {
     pub run_id: i64,
 }
 
+/// Result of [`DatabaseManager::attach_semantic_runs_to_frames`] and
+/// [`SemanticFrameAttachmentBuffer::flush`].
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
+pub struct SemanticAttachOutcome {
+    /// Frame rows updated. Frames that no longer exist are not counted and
+    /// not reported: there is nothing left to attach a run to.
+    pub frames_updated: u64,
+    /// Attachments not written because their run no longer exists, ordered
+    /// by frame id. GC collected the run between the worker getting it
+    /// (stored, or found by fingerprint) and the flush, which can happen when
+    /// a reused run is older than the GC grace and nothing pointed at it. The
+    /// frames are still there without a run: the caller should store the
+    /// parse again (which creates a new run) or queue the frame for parsing
+    /// again, then attach the new run.
+    pub skipped: Vec<SemanticFrameAttachment>,
+}
+
 // ---------------------------------------------------------------------------
 // Read-side records
 // ---------------------------------------------------------------------------
@@ -685,6 +733,11 @@ pub struct StoredSemanticRun {
     pub actors_created: usize,
     /// Items the heuristic assigned an actor to.
     pub assignments_created: usize,
+    /// True when the run's `actor_source_key` could not be used (too long,
+    /// or containing a control character), so the run and its items were
+    /// stored without heuristic actor assignment. Their items can still be
+    /// assigned by a later run that sees them with a valid key, or by hand.
+    pub actor_assignment_skipped: bool,
 }
 
 /// A `semantic_runs` row.
@@ -1025,31 +1078,16 @@ fn validate_new_run(run: &NewSemanticRun) -> Result<()> {
         }
         _ => {}
     }
-    if run.effective_actor_source_key().chars().count() > SEMANTIC_SOURCE_KEY_MAX_CHARS {
-        return Err(SemanticStoreError::invalid(format!(
-            "actor_source_key must be at most {SEMANTIC_SOURCE_KEY_MAX_CHARS} characters"
-        )));
-    }
-    // The source key is an identifier, so it is rejected rather than
-    // rewritten. A NUL in it would also fail the alias table's length check
-    // and roll the run back with an opaque constraint error.
-    if run
-        .effective_actor_source_key()
-        .chars()
-        .any(char::is_control)
-    {
-        let field = if run
-            .actor_source_key
-            .as_deref()
-            .is_some_and(|k| !k.trim().is_empty())
-        {
-            "actor_source_key"
-        } else {
-            "parser_id"
-        };
-        return Err(SemanticStoreError::invalid(format!(
-            "{field} must not contain control characters"
-        )));
+    // When the parser id is the alias source key it must be a valid one. The
+    // parser id is a constant of the parser's code, so a bad one is a caller
+    // bug and fails the run here, instead of failing the alias table's length
+    // check later with an opaque constraint error. An explicit
+    // `actor_source_key` may come from captured text, so a bad one only skips
+    // heuristic assignment (see `store_run_tx`).
+    if run.explicit_actor_source_key().is_none() {
+        if let Some(problem) = source_key_problem(run.parser_id.trim()) {
+            return Err(SemanticStoreError::invalid(format!("parser_id {problem}")));
+        }
     }
 
     let mut parents: HashMap<&str, Option<&str>> = HashMap::with_capacity(run.items.len());
@@ -1286,6 +1324,7 @@ async fn store_run_tx(
             items_inserted: 0,
             actors_created: 0,
             assignments_created: 0,
+            actor_assignment_skipped: false,
         });
     }
     let run_id = inserted.last_insert_rowid();
@@ -1354,13 +1393,30 @@ async fn store_run_tx(
     }
 
     // Heuristic actor assignment. The cache turns one sender with many
-    // messages into one alias lookup.
+    // messages into one alias lookup. `validate_new_run` has already failed
+    // the run for a bad parser id, so a problem here is an explicit key,
+    // which may hold captured text: it skips this step and nothing else, and
+    // the warning leaves the key itself out of the log.
     let source_key = run.effective_actor_source_key();
+    let key_problem = source_key_problem(source_key);
+    if let Some(problem) = &key_problem {
+        warn!(
+            run_id,
+            parser_id = %run.parser_id,
+            key_chars = source_key.chars().count(),
+            "semantic: actor_source_key {problem}; run stored without actor assignment"
+        );
+    }
+    let to_assign: &[NewSemanticItem] = if key_problem.is_some() {
+        &[]
+    } else {
+        &run.items
+    };
     let mut alias_cache: HashMap<String, (i64, i64)> = HashMap::new();
     let mut seen_items: HashSet<i64> = HashSet::new();
     let mut actors_created = 0usize;
     let mut assignments_created = 0usize;
-    for (item, &item_id) in run.items.iter().zip(&item_ids) {
+    for (item, &item_id) in to_assign.iter().zip(&item_ids) {
         let Some(labels) = item.actor.as_deref().and_then(AliasLabels::from_label) else {
             continue;
         };
@@ -1408,27 +1464,44 @@ async fn store_run_tx(
         items_inserted,
         actors_created,
         assignments_created,
+        actor_assignment_skipped: key_problem.is_some(),
     })
 }
 
-async fn attach_tx(conn: &mut SqliteConnection, by_run: BTreeMap<i64, Vec<i64>>) -> Result<u64> {
-    let mut updated = 0u64;
+async fn attach_tx(
+    conn: &mut SqliteConnection,
+    by_run: BTreeMap<i64, Vec<i64>>,
+) -> Result<SemanticAttachOutcome> {
+    let mut outcome = SemanticAttachOutcome::default();
     for (run_id, frame_ids) in by_run {
+        // The transaction holds the write lock, so GC cannot remove the run
+        // between this check and the UPDATE below.
+        let exists: Option<i64> = sqlx::query_scalar("SELECT 1 FROM semantic_runs WHERE id = ?1")
+            .bind(run_id)
+            .fetch_optional(&mut *conn)
+            .await?;
+        if exists.is_none() {
+            outcome.skipped.extend(
+                frame_ids
+                    .into_iter()
+                    .map(|frame_id| SemanticFrameAttachment { frame_id, run_id }),
+            );
+            continue;
+        }
         for chunk in frame_ids.chunks(IN_CHUNK) {
             let sql = format!(
-                "UPDATE frames SET semantic_run_id = ?1 \
-                 WHERE id IN ({}) \
-                   AND EXISTS (SELECT 1 FROM semantic_runs WHERE id = ?1)",
+                "UPDATE frames SET semantic_run_id = ?1 WHERE id IN ({})",
                 numbered_placeholders(2, chunk.len())
             );
             let mut q = sqlx::query(sqlx::AssertSqlSafe(sql)).bind(run_id);
             for id in chunk {
                 q = q.bind(id);
             }
-            updated += q.execute(&mut *conn).await?.rows_affected();
+            outcome.frames_updated += q.execute(&mut *conn).await?.rows_affected();
         }
     }
-    Ok(updated)
+    outcome.skipped.sort_unstable_by_key(|a| a.frame_id);
+    Ok(outcome)
 }
 
 async fn create_actor_tx(conn: &mut SqliteConnection, name: &str) -> Result<SemanticActor> {
@@ -1656,14 +1729,16 @@ impl DatabaseManager {
     /// Point frames at runs (`frames.semantic_run_id`) in one transaction.
     ///
     /// When a frame appears more than once, the last entry wins. Entries whose
-    /// run no longer exists (collected by GC in the meantime) are skipped.
-    /// Returns the number of frame rows updated.
+    /// run no longer exists (collected by GC in the meantime) are not written
+    /// and do not fail the batch; they come back in
+    /// [`SemanticAttachOutcome::skipped`] so the caller can store or parse
+    /// those frames again. Frames that no longer exist are ignored.
     pub async fn attach_semantic_runs_to_frames(
         &self,
         attachments: &[SemanticFrameAttachment],
-    ) -> Result<u64> {
+    ) -> Result<SemanticAttachOutcome> {
         if attachments.is_empty() {
-            return Ok(0);
+            return Ok(SemanticAttachOutcome::default());
         }
         let mut latest: HashMap<i64, i64> = HashMap::with_capacity(attachments.len());
         for a in attachments {
@@ -1851,6 +1926,15 @@ impl DatabaseManager {
     /// assignment (cascade) and its FTS row (trigger). Actors and aliases are
     /// kept on purpose.
     ///
+    /// The grace counts from the run's `created_at`, not from its last use:
+    /// the schema records no use time. A run the worker reuses (a fingerprint
+    /// hit, or `store_semantic_run` returning `created == false`) can be
+    /// older than the grace and, if retention just removed the frames that
+    /// pointed at it, unreferenced. A pass before the next flush then
+    /// collects it, and the flush reports the frames waiting on it in
+    /// [`SemanticAttachOutcome::skipped`] instead of attaching them. The
+    /// worker must store or parse those frames again.
+    ///
     /// Which grace to pass depends on why frames went away:
     ///
     /// - Periodic retention passes (old frames aged out on a schedule) pass
@@ -1862,8 +1946,8 @@ impl DatabaseManager {
     ///   instead of lingering until a later pass. The cost: a run the worker
     ///   stored moments ago for a frame outside the deleted range, and has
     ///   not attached yet, is collected too. Its pending attachment is then
-    ///   skipped (see [`Self::attach_semantic_runs_to_frames`]), so that one
-    ///   frame has no run until it is parsed again.
+    ///   skipped and reported (see [`Self::attach_semantic_runs_to_frames`]),
+    ///   so the worker can store or parse that frame again.
     pub async fn gc_semantic_projection(&self, grace: Duration) -> Result<SemanticGcStats> {
         let grace =
             chrono::Duration::from_std(grace).unwrap_or_else(|_| chrono::Duration::days(365 * 100));
@@ -2167,44 +2251,63 @@ impl SemanticFrameAttachmentBuffer {
         }
     }
 
-    /// Remove and return everything queued, ordered by frame id.
-    pub fn take(&mut self) -> Vec<SemanticFrameAttachment> {
-        self.oldest = None;
+    /// Everything queued, ordered by frame id, without removing it.
+    fn queued(&self) -> Vec<SemanticFrameAttachment> {
         let mut out: Vec<SemanticFrameAttachment> = self
             .pending
-            .drain()
-            .map(|(frame_id, run_id)| SemanticFrameAttachment { frame_id, run_id })
+            .iter()
+            .map(|(&frame_id, &run_id)| SemanticFrameAttachment { frame_id, run_id })
             .collect();
         out.sort_unstable_by_key(|a| a.frame_id);
         out
     }
 
+    /// Remove and return everything queued, ordered by frame id.
+    pub fn take(&mut self) -> Vec<SemanticFrameAttachment> {
+        let out = self.queued();
+        self.pending.clear();
+        self.oldest = None;
+        out
+    }
+
     /// Write everything queued in one transaction and log the flush (at
-    /// debug level). Returns the number of frame rows updated; entries whose
-    /// run GC removed in the meantime are skipped, not counted.
+    /// debug level). Entries whose run GC removed in the meantime are not
+    /// written; they come back in [`SemanticAttachOutcome::skipped`] for the
+    /// caller to store or parse again.
     ///
-    /// [`Self::push`] only queues valid ids, so a failed flush is a database
-    /// failure (locked, busy, I/O). The transaction then rolls back and every
-    /// entry goes back into the buffer, a newer push for the same frame
-    /// winning, so the next flush retries the whole batch.
-    pub async fn flush(&mut self, db: &DatabaseManager) -> Result<u64> {
+    /// The entries leave the buffer only after the transaction commits:
+    ///
+    /// - [`Self::push`] only queues valid ids, so a failed flush is a
+    ///   database failure (locked, busy, I/O). The transaction rolls back,
+    ///   every entry stays queued and the age clock restarts, so the next
+    ///   flush that is due retries the whole batch.
+    /// - Cancel safety: dropping the future before it completes (a task
+    ///   abort, or the losing branch of a `tokio::select!`) loses nothing.
+    ///   An unfinished transaction rolls back and every entry stays queued.
+    ///   A drop that lands while the commit itself is in flight may leave the
+    ///   rows written with the entries still queued; the next flush then
+    ///   writes the same values again, which changes nothing.
+    pub async fn flush(&mut self, db: &DatabaseManager) -> Result<SemanticAttachOutcome> {
         if self.pending.is_empty() {
-            return Ok(0);
+            return Ok(SemanticAttachOutcome::default());
         }
-        let batch = self.take();
+        let batch = self.queued();
         match db.attach_semantic_runs_to_frames(&batch).await {
-            Ok(updated) => {
+            Ok(outcome) => {
+                // `&mut self` is held across the await, so nothing was pushed
+                // in between: everything queued is in `batch`.
+                self.pending.clear();
+                self.oldest = None;
                 debug!(
                     queued = batch.len(),
-                    updated, "semantic: flushed frame attachments"
+                    updated = outcome.frames_updated,
+                    skipped = outcome.skipped.len(),
+                    "semantic: flushed frame attachments"
                 );
-                Ok(updated)
+                Ok(outcome)
             }
             Err(e) => {
-                for a in &batch {
-                    self.pending.entry(a.frame_id).or_insert(a.run_id);
-                }
-                self.oldest.get_or_insert_with(Instant::now);
+                self.oldest = Some(Instant::now());
                 Err(e)
             }
         }
@@ -2439,19 +2542,45 @@ mod tests {
         huge.text_bytes = u64::MAX;
         assert!(validate_new_run(&huge).is_err());
 
+        // A bad explicit key may come from screen text: it never fails the
+        // run (heuristic assignment is skipped instead, see the integration
+        // tests).
         let mut long_key = run(vec![]);
         long_key.actor_source_key = Some("k".repeat(1025));
-        assert!(validate_new_run(&long_key).is_err());
-
+        assert!(validate_new_run(&long_key).is_ok());
         let mut nul_key = run(vec![]);
         nul_key.actor_source_key = Some("\0slack:T123".into());
-        let err = validate_new_run(&nul_key).unwrap_err();
-        assert!(err.to_string().contains("actor_source_key"), "{err}");
+        assert!(validate_new_run(&nul_key).is_ok());
 
+        // A bad parser id as the default key is a caller bug.
         let mut nul_parser = run(vec![]);
         nul_parser.parser_id = "chat\u{1}".into();
         let err = validate_new_run(&nul_parser).unwrap_err();
         assert!(err.to_string().contains("parser_id"), "{err}");
+        let mut long_parser = run(vec![]);
+        long_parser.parser_id = "p".repeat(1025);
+        let err = validate_new_run(&long_parser).unwrap_err();
+        assert!(err.to_string().contains("parser_id"), "{err}");
+        // With a valid explicit key the parser id is not an alias key.
+        long_parser.actor_source_key = Some("slack:T123".into());
+        assert!(validate_new_run(&long_parser).is_ok());
+    }
+
+    #[test]
+    fn source_key_problems() {
+        assert_eq!(source_key_problem("slack:T123"), None);
+        assert_eq!(source_key_problem(&"k".repeat(1024)), None);
+        assert!(source_key_problem(&"k".repeat(1025))
+            .unwrap()
+            .contains("at most 1024"));
+        for bad in ["\0slack", "slack\u{1}", "a\tb", "a\nb", "\u{7f}"] {
+            assert!(
+                source_key_problem(bad)
+                    .unwrap()
+                    .contains("control characters"),
+                "{bad:?}"
+            );
+        }
     }
 
     #[test]
