@@ -395,6 +395,11 @@ async fn frames_attach_in_batches() {
         .await
         .unwrap_err();
     assert!(err.is_invalid_input());
+
+    // Invalid entries are dropped from the buffer rather than retried forever.
+    buffer.push(-5, run_a.run_id);
+    assert!(buffer.flush(&db).await.unwrap_err().is_invalid_input());
+    assert!(buffer.is_empty());
 }
 
 #[tokio::test]

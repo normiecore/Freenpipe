@@ -297,7 +297,7 @@ pub fn encode_source_node_ids(ids: &[u32]) -> Vec<u8> {
 /// Returns `None` when the length is not a multiple of 4 (a blob in some
 /// other encoding). An empty blob is an empty list.
 pub fn decode_source_node_ids(blob: &[u8]) -> Option<Vec<u32>> {
-    if blob.len() % 4 != 0 {
+    if !blob.len().is_multiple_of(4) {
         return None;
     }
     Some(
@@ -1546,7 +1546,7 @@ impl DatabaseManager {
     pub async fn store_semantic_run(&self, run: &NewSemanticRun) -> Result<StoredSemanticRun> {
         validate_new_run(run)?;
         let mut tx = self.begin_immediate_with_retry().await?;
-        let out = store_run_tx(&mut **tx.conn(), run).await;
+        let out = store_run_tx(tx.conn(), run).await;
         let stored = finish_tx(tx, out).await?;
         debug!(
             run_id = stored.run_id,
@@ -1586,7 +1586,7 @@ impl DatabaseManager {
             frame_ids.sort_unstable();
         }
         let mut tx = self.begin_immediate_with_retry().await?;
-        let out = attach_tx(&mut **tx.conn(), by_run).await;
+        let out = attach_tx(tx.conn(), by_run).await;
         finish_tx(tx, out).await
     }
 
@@ -1932,7 +1932,7 @@ impl DatabaseManager {
     pub async fn create_semantic_actor(&self, name: &str) -> Result<SemanticActor> {
         let name = clean_actor_name(name)?;
         let mut tx = self.begin_immediate_with_retry().await?;
-        let out = create_actor_tx(&mut **tx.conn(), &name).await;
+        let out = create_actor_tx(tx.conn(), &name).await;
         finish_tx(tx, out).await
     }
 
@@ -1942,7 +1942,7 @@ impl DatabaseManager {
         require_positive("id", id)?;
         let name = clean_actor_name(name)?;
         let mut tx = self.begin_immediate_with_retry().await?;
-        let out = rename_actor_tx(&mut **tx.conn(), id, &name).await;
+        let out = rename_actor_tx(tx.conn(), id, &name).await;
         finish_tx(tx, out).await
     }
 
@@ -1963,7 +1963,7 @@ impl DatabaseManager {
             ));
         }
         let mut tx = self.begin_immediate_with_retry().await?;
-        let out = merge_tx(&mut **tx.conn(), keep_id, merge_id).await;
+        let out = merge_tx(tx.conn(), keep_id, merge_id).await;
         finish_tx(tx, out).await
     }
 
@@ -1979,7 +1979,7 @@ impl DatabaseManager {
         require_positive("item_id", item_id)?;
         require_positive("actor_id", actor_id)?;
         let mut tx = self.begin_immediate_with_retry().await?;
-        let out = reassign_item_tx(&mut **tx.conn(), item_id, actor_id).await;
+        let out = reassign_item_tx(tx.conn(), item_id, actor_id).await;
         finish_tx(tx, out).await
     }
 
@@ -1994,7 +1994,7 @@ impl DatabaseManager {
         require_positive("alias_id", alias_id)?;
         require_positive("actor_id", actor_id)?;
         let mut tx = self.begin_immediate_with_retry().await?;
-        let out = reassign_alias_tx(&mut **tx.conn(), alias_id, actor_id).await;
+        let out = reassign_alias_tx(tx.conn(), alias_id, actor_id).await;
         finish_tx(tx, out).await
     }
 }
@@ -2065,9 +2065,10 @@ impl SemanticFrameAttachmentBuffer {
         out
     }
 
-    /// Write everything queued in one transaction and log the flush. On
-    /// failure the entries go back into the buffer (a newer push for the same
-    /// frame wins) so the next flush retries them.
+    /// Write everything queued in one transaction and log the flush (at
+    /// debug level). When the database fails, the entries go back into the
+    /// buffer (a newer push for the same frame wins) so the next flush retries
+    /// them. Entries the store rejects as invalid are dropped.
     pub async fn flush(&mut self, db: &DatabaseManager) -> Result<u64> {
         if self.pending.is_empty() {
             return Ok(0);
@@ -2075,19 +2076,20 @@ impl SemanticFrameAttachmentBuffer {
         let batch = self.take();
         match db.attach_semantic_runs_to_frames(&batch).await {
             Ok(updated) => {
-                info!(
+                debug!(
                     queued = batch.len(),
                     updated, "semantic: flushed frame attachments"
                 );
                 Ok(updated)
             }
-            Err(e) => {
+            Err(e @ SemanticStoreError::Database(_)) => {
                 for a in &batch {
                     self.pending.entry(a.frame_id).or_insert(a.run_id);
                 }
                 self.oldest.get_or_insert_with(Instant::now);
                 Err(e)
             }
+            Err(e) => Err(e),
         }
     }
 }
