@@ -5477,11 +5477,14 @@ impl DatabaseManager {
             -mts.id AS audio_chunk_id,
             NULL AS start_time,
             NULL AS end_time,
-            mts.speaker_name AS speaker_name,
+            -- Resolved global speaker's name first, then the provider label.
+            -- speaker_id stays NULL: the row has no chunk to reassign.
+            COALESCE(NULLIF(s.name, ''), mts.speaker_name) AS speaker_name,
             NULL AS speaker_id,
             1 AS is_live,
             0.0 AS duration_secs
         FROM meeting_transcript_segments mts
+        LEFT JOIN speakers s ON s.id = mts.speaker_id
         WHERE julianday(mts.captured_at) >= julianday(?1)
           AND julianday(mts.captured_at) <= julianday(?2)
           AND TRIM(mts.transcript) != ''

@@ -697,6 +697,33 @@ async fn timeline_live_rows_are_flagged_with_distinct_negative_ids() {
     expected.sort();
     assert_eq!(ids, expected, "audio_chunk_id is the negated segment id");
     assert!(ids.iter().all(|id| *id < 0));
+
+    // A segment mapped to a global speaker shows that speaker's name.
+    let alice = db.create_speaker_with_name("Alice").await.unwrap().id;
+    sqlx::query("UPDATE meeting_transcript_segments SET speaker_id = ?1 WHERE id = ?2")
+        .bind(alice)
+        .bind(segment_ids[0])
+        .execute(&db.pool)
+        .await
+        .unwrap();
+    let chunks = db
+        .find_video_chunks(t - Duration::minutes(1), t + Duration::minutes(1))
+        .await
+        .unwrap();
+    let mapped = chunks
+        .frames
+        .iter()
+        .flat_map(|f| f.audio_entries.iter())
+        .find(|a| a.audio_chunk_id == -segment_ids[0])
+        .expect("mapped live row");
+    assert_eq!(mapped.speaker_name.as_deref(), Some("Alice"));
+    let unmapped = chunks
+        .frames
+        .iter()
+        .flat_map(|f| f.audio_entries.iter())
+        .find(|a| a.audio_chunk_id == -segment_ids[1])
+        .expect("unmapped live row");
+    assert_eq!(unmapped.speaker_name.as_deref(), Some("speaker 1"));
 }
 
 #[tokio::test]
