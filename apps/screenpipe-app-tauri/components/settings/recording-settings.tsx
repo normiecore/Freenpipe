@@ -154,6 +154,11 @@ import { useOpenAIModels } from "./hooks/use-openai-models";
 import { useTranscriptionDiagnostics } from "./hooks/use-transcription-diagnostics";
 import { useVoiceTraining } from "./hooks/use-voice-training";
 import { editUrlRules } from "@/lib/settings-schema";
+import {
+  canAddAudioExclusion,
+  exclusionPickerOptions,
+  showAudioExclusionsPanel,
+} from "@/lib/utils/audio-exclusions";
 
 type PermissionsStatus = {
   screenRecording: string;
@@ -1689,11 +1694,11 @@ export function RecordingSettings() {
     icon: string | null;
   };
 
-  // Per-app exclusions for the CoreAudio Process Tap. The list is owned by
+  // Per-app exclusions for the CoreAudio Process Tap (macOS) and the
+  // per-process WASAPI loopback (Windows, one app). The list is owned by
   // the audio engine (file at ~/.screenpipe/audio-exclusions.json); we just
-  // read/write it through Tauri commands. Hot-reload happens engine-side
-  // on the existing 500ms tap-rebuild loop, so a write here propagates in
-  // ~1 tick subject to the 60s REBUILD_COOLDOWN.
+  // read/write it through Tauri commands. The engine polls the file, so a
+  // write here takes effect without restarting recording.
   const [audioExclusions, setAudioExclusions] = useState<ExcludedApp[]>([]);
   const [pendingAudioExclusions, setPendingAudioExclusions] = useState<ExcludedApp[] | null>(null);
   const [selectedBundleId, setSelectedBundleId] = useState<string | null>(null);
@@ -1726,6 +1731,7 @@ export function RecordingSettings() {
     (app: ExcludedApp) => {
       const current = pendingAudioExclusions ?? audioExclusions;
       if (!app.bundleId || current.some((a) => a.bundleId === app.bundleId)) return;
+      if (!canAddAudioExclusion(platform(), current.length)) return;
       setPendingAudioExclusions([...current, app]);
       setHasUnsavedChanges(true);
     },
@@ -1743,9 +1749,10 @@ export function RecordingSettings() {
   );
 
   const pickAppToExclude = useCallback(async () => {
+    const picker = exclusionPickerOptions(platform());
     const picked = await open({
-      filters: [{ name: "Application", extensions: ["app"] }],
-      defaultPath: "/Applications",
+      filters: picker.filters,
+      defaultPath: picker.defaultPath,
       multiple: false,
       directory: false,
     });
@@ -1757,7 +1764,7 @@ export function RecordingSettings() {
       addAudioExclusion(meta);
     } catch (e) {
       toast({
-        title: "Couldn't read app bundle",
+        title: "Couldn't read the selected app",
         description: String(e),
         variant: "destructive",
       });
@@ -3202,7 +3209,7 @@ Your screen is a pipe. Everything you see, hear, and type flows through it. Free
         )}
 
         {/* CoreAudio System Audio (macOS 14.4+ only) */}
-        {!settings.disableAudio && coreaudioTapAvailable && (
+        {!settings.disableAudio && isMacOS && coreaudioTapAvailable && (
         <Card className="border-border bg-card">
           <CardContent className="px-3 py-2.5">
             <div className="flex items-center justify-between">
@@ -3283,9 +3290,15 @@ Your screen is a pipe. Everything you see, hear, and type flows through it. Free
           onToggle={handleToggleIgnoredMeetingApp}
         />
 
-        {/* Per-app exclusion list for the CoreAudio Process Tap. Only
-            meaningful when the tap is the active backend. */}
-        {!settings.disableAudio && coreaudioTapAvailable && settings.experimentalCoreaudioSystemAudio && (
+        {/* Per-app exclusion list. macOS: only meaningful when the CoreAudio
+            tap is the active backend. Windows: applied by the loopback
+            engine on build 20348+, one app at a time. */}
+        {!settings.disableAudio &&
+          showAudioExclusionsPanel({
+            platform: isWindows ? "windows" : isMacOS ? "macos" : null,
+            tapAvailable: coreaudioTapAvailable,
+            coreaudioSystemAudioEnabled: Boolean(settings.experimentalCoreaudioSystemAudio),
+          }) && (
         <Card className="border-border bg-card">
           <CardContent className="px-3 py-2.5 space-y-2">
             <div className="flex items-center space-x-2.5">
@@ -3344,23 +3357,33 @@ Your screen is a pipe. Everything you see, hear, and type flows through it. Free
                   </button>
                 </Badge>
               ))}
-              <Button
-                variant="outline"
-                size="sm"
-                className="h-6 text-xs"
-                onClick={(e) => {
-                  e.stopPropagation();
-                  pickAppToExclude();
-                }}
-              >
-                + add app
-              </Button>
+              {canAddAudioExclusion(
+                isWindows ? "windows" : isMacOS ? "macos" : null,
+                effectiveAudioExclusions.length
+              ) && (
+                <Button
+                  variant="outline"
+                  size="sm"
+                  className="h-6 text-xs"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    pickAppToExclude();
+                  }}
+                >
+                  + add app
+                </Button>
+              )}
               {effectiveAudioExclusions.length === 0 && (
                 <span className="text-xs text-muted-foreground italic self-center">
                   No apps excluded. All system audio is captured.
                 </span>
               )}
             </div>
+            {isWindows && (
+              <p className="text-xs text-muted-foreground pl-6">
+                On Windows one app can be left out at a time. Remove it to choose a different one.
+              </p>
+            )}
           </CardContent>
         </Card>
         )}

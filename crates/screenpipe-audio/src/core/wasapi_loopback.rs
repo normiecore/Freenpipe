@@ -820,7 +820,7 @@ impl LoopbackClient {
                     .map_err(|e| describe_client_error("GetBuffer", e))?;
                 let frames_usize = frames as usize;
                 if flags & (AUDCLNT_BUFFERFLAGS_SILENT.0 as u32) != 0 || data.is_null() {
-                    out.extend(std::iter::repeat(0.0f32).take(frames_usize));
+                    out.extend(std::iter::repeat_n(0.0f32, frames_usize));
                 } else {
                     let bytes = std::slice::from_raw_parts(data, frames_usize * block);
                     out.extend(self.layout.decode_mono(bytes, frames_usize));
