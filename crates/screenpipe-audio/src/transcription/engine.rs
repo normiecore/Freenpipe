@@ -8,11 +8,13 @@ use crate::transcription::deepgram::batch::{
 };
 use crate::transcription::deepgram::DeepgramTranscriptionConfig;
 use crate::transcription::openai_compatible::batch::transcribe_with_openai_compatible;
+#[cfg(feature = "parakeet")]
+use crate::transcription::parakeet_windows::{is_model_not_cached, load_parakeet, ParakeetRuntime};
 use crate::transcription::whisper::batch::run_whisper;
 use crate::transcription::whisper::model::{
-    download_whisper_model, get_cached_whisper_model_path, gpu_fault_from_env,
-    infer_with_recovery, load_whisper_context, open_whisper_state, shared_cpu_context,
-    whisper_gpu_latch, GpuFault, WhisperDevice, WHISPER_GPU_FAULT_ENV,
+    download_whisper_model, get_cached_whisper_model_path, gpu_fault_from_env, infer_with_recovery,
+    load_whisper_context, open_whisper_state, shared_cpu_context, whisper_gpu_latch, GpuFault,
+    WhisperDevice, WHISPER_GPU_FAULT_ENV,
 };
 use crate::transcription::{TranscriptionOutput, VocabularyEntry};
 use anyhow::{anyhow, Result};
@@ -89,9 +91,11 @@ pub enum TranscriptionEngine {
         model: Arc<StdMutex<audiopipe::Model>>,
         vocabulary: Vec<VocabularyEntry>,
     },
+    /// ONNX Parakeet with the DirectML policy (adapter choice, recycling,
+    /// CPU recovery) of `parakeet_windows`.
     #[cfg(feature = "parakeet")]
     Parakeet {
-        model: Arc<StdMutex<audiopipe::Model>>,
+        runtime: Arc<StdMutex<ParakeetRuntime>>,
         vocabulary: Vec<VocabularyEntry>,
     },
     #[cfg(feature = "parakeet-mlx")]
@@ -250,29 +254,32 @@ impl TranscriptionEngine {
                 }
                 #[cfg(all(feature = "parakeet", not(feature = "parakeet-mlx")))]
                 {
-                    info!("transcription engine runtime: Parakeet (CPU)");
+                    // CPU, or DirectML on Windows when an adapter qualifies
+                    // (parakeet_windows decides and logs which).
+                    info!("transcription engine runtime: Parakeet (ONNX)");
                     const MODEL_NAME: &str = "parakeet-tdt-0.6b-v3";
-                    let load_result = tokio::task::spawn_blocking(|| {
-                        audiopipe::Model::from_pretrained_cache_only(MODEL_NAME)
-                    })
-                    .await
-                    .map_err(|e| anyhow!("parakeet model loading task panicked: {}", e))?;
+                    let load_result = tokio::task::spawn_blocking(|| load_parakeet(MODEL_NAME))
+                        .await
+                        .map_err(|e| anyhow!("parakeet model loading task panicked: {}", e))?;
                     match load_result {
-                        Ok(model) => {
-                            info!("parakeet-tdt-0.6b-v3 (multilingual) model loaded successfully");
+                        Ok(runtime) => {
+                            info!(
+                                "parakeet-tdt-0.6b-v3 (multilingual) model loaded successfully ({:?})",
+                                runtime.target()
+                            );
                             Ok(Self::Parakeet {
-                                model: Arc::new(StdMutex::new(model)),
+                                runtime: Arc::new(StdMutex::new(runtime)),
                                 vocabulary,
                             })
                         }
-                        Err(e) if e.is_model_not_cached() => {
+                        Err(e) if is_model_not_cached(&e) => {
                             warn!(
                                 "parakeet weights not in Hugging Face cache yet; transcription disabled until download completes"
                             );
                             audiopipe::Model::spawn_pretrained_download(MODEL_NAME.to_string());
                             Ok(Self::Disabled)
                         }
-                        Err(e) => Err(anyhow!("failed to load parakeet model: {}", e)),
+                        Err(e) => Err(anyhow!("failed to load parakeet model: {:#}", e)),
                     }
                 }
                 #[cfg(not(any(feature = "parakeet", feature = "parakeet-mlx")))]
@@ -421,8 +428,11 @@ impl TranscriptionEngine {
                 vocabulary: vocabulary.clone(),
             }),
             #[cfg(feature = "parakeet")]
-            Self::Parakeet { model, vocabulary } => Ok(TranscriptionSession::Parakeet {
-                model: model.clone(),
+            Self::Parakeet {
+                runtime,
+                vocabulary,
+            } => Ok(TranscriptionSession::Parakeet {
+                runtime: runtime.clone(),
                 vocabulary: vocabulary.clone(),
             }),
             #[cfg(feature = "parakeet-mlx")]
@@ -549,9 +559,11 @@ pub enum TranscriptionSession {
         model: Arc<StdMutex<audiopipe::Model>>,
         vocabulary: Vec<VocabularyEntry>,
     },
+    /// ONNX Parakeet with the DirectML policy (adapter choice, recycling,
+    /// CPU recovery) of `parakeet_windows`.
     #[cfg(feature = "parakeet")]
     Parakeet {
-        model: Arc<StdMutex<audiopipe::Model>>,
+        runtime: Arc<StdMutex<ParakeetRuntime>>,
         vocabulary: Vec<VocabularyEntry>,
     },
     #[cfg(feature = "parakeet-mlx")]
@@ -703,27 +715,22 @@ impl TranscriptionSession {
             }
 
             #[cfg(feature = "parakeet")]
-            Self::Parakeet { model, .. } => {
-                let mut engine = model.lock().map_err(|e| anyhow!("stt model lock: {}", e))?;
+            Self::Parakeet { runtime, .. } => {
+                let mut engine = runtime
+                    .lock()
+                    .map_err(|e| anyhow!("stt model lock: {}", e))?;
                 // parakeet's ONNX encoder supports up to ~50s but quality is best at <=30s.
                 // benchmarked: 30s hard chunks with no overlap gives 33.9% WER vs 34.5%
                 // with 1s overlap+LCS (the dedup algorithm eats correct words).
                 // this is a safety net — the reconciler already caps batches at 45s.
+                // Each chunk is one inference for DirectML recycling and recovery.
                 let chunk_samples = (sample_rate as usize) * 30;
                 if audio.len() <= chunk_samples {
-                    let opts = audiopipe::TranscribeOptions::default();
-                    let result = engine
-                        .transcribe_with_sample_rate(audio, sample_rate, opts)
-                        .map_err(|e| anyhow!("{}", e))?;
-                    Ok(result.text)
+                    engine.transcribe(audio, sample_rate)
                 } else {
                     let mut texts = Vec::new();
                     for chunk in audio.chunks(chunk_samples) {
-                        let opts = audiopipe::TranscribeOptions::default();
-                        let result = engine
-                            .transcribe_with_sample_rate(chunk, sample_rate, opts)
-                            .map_err(|e| anyhow!("{}", e))?;
-                        let text = result.text.trim().to_string();
+                        let text = engine.transcribe(chunk, sample_rate)?.trim().to_string();
                         if !text.is_empty() {
                             texts.push(text);
                         }
@@ -891,6 +898,9 @@ mod tests {
         );
         assert!(result.is_ok(), "{result:?}");
         assert_eq!(device, WhisperDevice::Cpu);
-        assert!(!Arc::ptr_eq(&ctx, &context), "the session moved to the shared CPU context");
+        assert!(
+            !Arc::ptr_eq(&ctx, &context),
+            "the session moved to the shared CPU context"
+        );
     }
 }

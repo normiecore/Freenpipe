@@ -427,7 +427,9 @@ pub fn open_state_with_recovery<C, S>(
         Ok(found) => found,
         Err(cpu_err) => {
             return Err(match gpu_error {
-                Some(e) => e.context(format!("CPU recovery after a GPU failure failed: {cpu_err}")),
+                Some(e) => e.context(format!(
+                    "CPU recovery after a GPU failure failed: {cpu_err}"
+                )),
                 None => cpu_err,
             })
         }
@@ -469,7 +471,9 @@ pub fn infer_with_recovery<Sess, T>(
     let built = match recover(session) {
         Ok(built) => built,
         Err(recovery_err) => {
-            error!("whisper: GPU inference failed and CPU recovery could not proceed: {recovery_err}");
+            error!(
+                "whisper: GPU inference failed and CPU recovery could not proceed: {recovery_err}"
+            );
             return Err(err);
         }
     };
@@ -585,7 +589,11 @@ mod tests {
     fn probe_runs_in_a_cpu_build() {
         // A Linux test build has no GPU backend compiled in: no devices and
         // no crash from the registry.
-        if cfg!(not(any(feature = "vulkan", feature = "cuda", target_os = "macos"))) {
+        if cfg!(not(any(
+            feature = "vulkan",
+            feature = "cuda",
+            target_os = "macos"
+        ))) {
             assert!(ggml_gpu_devices().is_empty());
         }
     }
@@ -645,7 +653,10 @@ mod tests {
                 Ok("never".to_string())
             })
             .unwrap_err();
-        assert!(err.to_string().contains("recovery model not cached"), "{err}");
+        assert!(
+            err.to_string().contains("recovery model not cached"),
+            "{err}"
+        );
     }
 
     /// Fake context: `gpu` contexts fail state creation when `broken`.
@@ -699,7 +710,11 @@ mod tests {
         )
         .unwrap();
         assert_eq!(again.device, WhisperDevice::Cpu);
-        assert_eq!(attempts.load(Ordering::SeqCst), 1, "only the CPU state is created");
+        assert_eq!(
+            attempts.load(Ordering::SeqCst),
+            1,
+            "only the CPU state is created"
+        );
     }
 
     #[test]
@@ -784,10 +799,16 @@ mod tests {
             runs: Vec::new(),
             fail_on_cpu: false,
         };
-        let text = infer_with_recovery(&mut session, |s| s.on_gpu, &latch, run, |s| {
-            s.on_gpu = false;
-            Ok(true)
-        })
+        let text = infer_with_recovery(
+            &mut session,
+            |s| s.on_gpu,
+            &latch,
+            run,
+            |s| {
+                s.on_gpu = false;
+                Ok(true)
+            },
+        )
         .unwrap();
         assert_eq!(text, "hello world");
         assert_eq!(session.runs, vec![true, false], "same audio, GPU then CPU");
@@ -802,9 +823,13 @@ mod tests {
             runs: Vec::new(),
             fail_on_cpu: true,
         };
-        let err = infer_with_recovery(&mut session, |s| s.on_gpu, &latch, run, |_| {
-            unreachable!("no recovery on CPU")
-        })
+        let err = infer_with_recovery(
+            &mut session,
+            |s| s.on_gpu,
+            &latch,
+            run,
+            |_| unreachable!("no recovery on CPU"),
+        )
         .unwrap_err();
         assert!(err.to_string().contains("cpu failure"));
         assert_eq!(session.runs, vec![false]);
@@ -819,12 +844,20 @@ mod tests {
             runs: Vec::new(),
             fail_on_cpu: false,
         };
-        let err = infer_with_recovery(&mut session, |s| s.on_gpu, &latch, run, |_| {
-            Err(anyhow!("recovery model not cached"))
-        })
+        let err = infer_with_recovery(
+            &mut session,
+            |s| s.on_gpu,
+            &latch,
+            run,
+            |_| Err(anyhow!("recovery model not cached")),
+        )
         .unwrap_err();
         assert!(err.to_string().contains("device lost"), "{err}");
-        assert_eq!(session.runs, vec![true], "no second run without a CPU state");
+        assert_eq!(
+            session.runs,
+            vec![true],
+            "no second run without a CPU state"
+        );
     }
 
     #[test]
@@ -835,13 +868,22 @@ mod tests {
             runs: Vec::new(),
             fail_on_cpu: true,
         };
-        let err = infer_with_recovery(&mut session, |s| s.on_gpu, &latch, run, |s| {
-            s.on_gpu = false;
-            Ok(false)
-        })
+        let err = infer_with_recovery(
+            &mut session,
+            |s| s.on_gpu,
+            &latch,
+            run,
+            |s| {
+                s.on_gpu = false;
+                Ok(false)
+            },
+        )
         .unwrap_err();
         let text = format!("{err:#}");
-        assert!(text.contains("cpu failure") && text.contains("device lost"), "{text}");
+        assert!(
+            text.contains("cpu failure") && text.contains("device lost"),
+            "{text}"
+        );
         assert_eq!(session.runs, vec![true, false], "exactly one retry");
     }
 }
