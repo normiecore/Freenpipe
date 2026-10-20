@@ -22,14 +22,17 @@
 //!   frame pool at the new size;
 //! - a removed or reset D3D11 device closes the session and drops the shared
 //!   device so the next session builds a fresh one;
-//! - hardware device creation falls back to the WARP software rasterizer,
-//!   and new sessions try hardware again once a minute while on WARP;
+//! - hardware device creation falls back to the WARP software rasterizer.
+//!   While on WARP, hardware is tried again at most once a minute (by new
+//!   sessions and by reads of running WARP sessions); once a hardware device
+//!   exists, each WARP session hands out its current frame, closes, and is
+//!   recreated on hardware by its next read (policy in [`warp_session_step`]);
 //! - a closed capture item (monitor unplugged, session invalidated) makes the
 //!   next read fail so the caller recreates the session or falls back to
 //!   per-frame capture (policy in [`classify_init_failure`]).
 //!
 //! The platform-independent parts (frame slot, pixel conversion, HRESULT and
-//! resize classification, the init-failure policy) live outside the
+//! resize classification, the init-failure and WARP policies) live outside the
 //! `cfg(windows)` module so they are unit-tested on every OS.
 
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -90,6 +93,89 @@ pub fn hardware_retry_due(last_attempt: Option<Instant>, now: Instant, interval:
         None => true,
         Some(at) => now.saturating_duration_since(at) >= interval,
     }
+}
+
+/// The shared D3D11 device cache as a session running on WARP sees it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SharedDevice {
+    /// Another thread holds the cache (it may be creating a device right now).
+    Busy,
+    /// No usable device is cached: none was created yet, or the cached one
+    /// was lost and is about to be replaced.
+    Empty,
+    /// The cache holds the WARP software device.
+    Warp,
+    /// The cache holds a hardware device that has not been lost.
+    Hardware,
+}
+
+/// What a WARP-backed session does after it handed a frame to its caller.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WarpSessionStep {
+    /// Keep capturing on WARP.
+    Stay,
+    /// The rate limit allows a hardware attempt: create a hardware device now
+    /// and move if that works.
+    ProbeHardware,
+    /// A working hardware device is cached: close this session so the
+    /// caller's next read recreates it on hardware. The frame just returned
+    /// still came from WARP, so the switch costs at most that next read.
+    MoveToHardware,
+}
+
+/// Decide whether a session that runs on WARP should move to hardware.
+///
+/// A cached hardware device (whoever created it) always wins. Otherwise a
+/// hardware attempt is made only when [`hardware_retry_due`] allows it, so
+/// all monitors together try at most once per `retry_interval`. A busy cache
+/// is never waited for: the session stays on WARP and asks again on its next
+/// read.
+pub fn warp_session_step(
+    shared: SharedDevice,
+    last_hardware_attempt: Option<Instant>,
+    now: Instant,
+    retry_interval: Duration,
+) -> WarpSessionStep {
+    match shared {
+        SharedDevice::Busy => WarpSessionStep::Stay,
+        SharedDevice::Hardware => WarpSessionStep::MoveToHardware,
+        SharedDevice::Empty | SharedDevice::Warp => {
+            if hardware_retry_due(last_hardware_attempt, now, retry_interval) {
+                WarpSessionStep::ProbeHardware
+            } else {
+                WarpSessionStep::Stay
+            }
+        }
+    }
+}
+
+/// The step after a [`WarpSessionStep::ProbeHardware`] attempt: move when the
+/// hardware device was created, otherwise stay on WARP until the next retry.
+pub fn after_hardware_probe(created: bool) -> WarpSessionStep {
+    if created {
+        WarpSessionStep::MoveToHardware
+    } else {
+        WarpSessionStep::Stay
+    }
+}
+
+/// End of the window in which hardware device creation is refused (see
+/// [`refuse_hardware_device_for`]). `None`: never refused.
+static HARDWARE_REFUSED_UNTIL: Mutex<Option<Instant>> = Mutex::new(None);
+
+/// Smoke-test hook: make hardware D3D11 device creation fail for `duration`
+/// from now, the way it does while a GPU driver is being installed. Capture
+/// then starts on WARP, and the move back to hardware can be watched on a real
+/// machine (`wgc_smoke --warp-first`). The engine never calls this.
+#[doc(hidden)]
+pub fn refuse_hardware_device_for(duration: Duration) {
+    *lock_recover(&HARDWARE_REFUSED_UNTIL) = Instant::now().checked_add(duration);
+}
+
+/// True while [`refuse_hardware_device_for`] is in effect.
+#[cfg_attr(not(target_os = "windows"), allow(dead_code))]
+fn hardware_device_refused(now: Instant) -> bool {
+    lock_recover(&HARDWARE_REFUSED_UNTIL).is_some_and(|until| now < until)
 }
 
 /// What to do after a persistent-session init attempt failed.
@@ -343,15 +429,16 @@ impl<T: Clone> FrameSlot<T> {
 #[cfg(target_os = "windows")]
 mod native {
     use super::{
-        bgra_to_rgba, hardware_retry_due, is_device_lost, lock_recover, mapped_len,
-        min_update_interval, pool_needs_recreate, timespan_ticks, FrameSlot, SlotError,
+        after_hardware_probe, bgra_to_rgba, hardware_device_refused, hardware_retry_due,
+        is_device_lost, lock_recover, mapped_len, min_update_interval, pool_needs_recreate,
+        timespan_ticks, warp_session_step, FrameSlot, SharedDevice, SlotError, WarpSessionStep,
         FRAME_POOL_BUFFERS, WARP_HARDWARE_RETRY,
     };
     use anyhow::{anyhow, bail, Context, Result};
     use image::{DynamicImage, RgbaImage};
     use once_cell::sync::Lazy;
     use std::sync::atomic::{AtomicU64, Ordering};
-    use std::sync::{Arc, Mutex};
+    use std::sync::{Arc, Mutex, TryLockError};
     use std::time::{Duration, Instant};
     use tracing::{debug, info, warn};
     use windows::core::{factory, IInspectable, Interface};
@@ -437,6 +524,9 @@ mod native {
         }
 
         fn create_with(driver: D3D_DRIVER_TYPE, kind: DeviceKind) -> Result<Self> {
+            if kind == DeviceKind::Hardware && hardware_device_refused(Instant::now()) {
+                bail!("hardware D3D11 device refused by the smoke-test hook");
+            }
             let mut device: Option<ID3D11Device> = None;
             let mut context: Option<ID3D11DeviceContext> = None;
             unsafe {
@@ -552,21 +642,7 @@ mod native {
                     WARP_HARDWARE_RETRY,
                 )
             {
-                cache.last_hardware_attempt = Some(Instant::now());
-                match D3DDevice::create_with(D3D_DRIVER_TYPE_HARDWARE, DeviceKind::Hardware) {
-                    Ok(hardware) => {
-                        info!(
-                            "hardware D3D11 device is available again; new WGC sessions leave WARP"
-                        );
-                        let hardware = Arc::new(hardware);
-                        cache.device = Some(hardware.clone());
-                        return Ok(hardware);
-                    }
-                    Err(e) => {
-                        debug!("hardware D3D11 device still unavailable: {:#}", e);
-                        return Ok(device);
-                    }
-                }
+                return Ok(try_hardware(&mut cache).unwrap_or(device));
             } else {
                 return Ok(device);
             }
@@ -592,6 +668,64 @@ mod native {
             .is_some_and(|d| Arc::ptr_eq(d, device))
         {
             cache.device = None;
+        }
+    }
+
+    /// One hardware attempt while capture runs on WARP (or nothing usable is
+    /// cached). The attempt is recorded for the rate limit; on success the
+    /// hardware device replaces whatever the cache held, so new sessions use
+    /// it and running WARP sessions move to it on their next read.
+    fn try_hardware(cache: &mut DeviceCache) -> Option<Arc<D3DDevice>> {
+        cache.last_hardware_attempt = Some(Instant::now());
+        match D3DDevice::create_with(D3D_DRIVER_TYPE_HARDWARE, DeviceKind::Hardware) {
+            Ok(hardware) => {
+                info!("hardware D3D11 device is available again; WGC sessions move off WARP");
+                let hardware = Arc::new(hardware);
+                cache.device = Some(hardware.clone());
+                Some(hardware)
+            }
+            Err(e) => {
+                debug!("hardware D3D11 device still unavailable: {:#}", e);
+                None
+            }
+        }
+    }
+
+    /// [`warp_session_step`] for a running WARP session, with the rate-limited
+    /// hardware attempt carried out when the policy asks for one. Never waits
+    /// for the cache lock: a busy cache means "stay on WARP for this frame".
+    fn warp_session_step_now() -> WarpSessionStep {
+        let mut cache = match DEVICE_CACHE.try_lock() {
+            Ok(guard) => guard,
+            Err(TryLockError::Poisoned(poisoned)) => poisoned.into_inner(),
+            Err(TryLockError::WouldBlock) => {
+                return warp_session_step(
+                    SharedDevice::Busy,
+                    None,
+                    Instant::now(),
+                    WARP_HARDWARE_RETRY,
+                );
+            }
+        };
+        let shared = match cache.device.as_ref() {
+            None => SharedDevice::Empty,
+            // A lost device gets replaced; it is no reason to stay or move.
+            Some(device) if device.lost().is_some() => SharedDevice::Empty,
+            Some(device) => match device.kind {
+                DeviceKind::Hardware => SharedDevice::Hardware,
+                DeviceKind::Warp => SharedDevice::Warp,
+            },
+        };
+        match warp_session_step(
+            shared,
+            cache.last_hardware_attempt,
+            Instant::now(),
+            WARP_HARDWARE_RETRY,
+        ) {
+            WarpSessionStep::ProbeHardware => {
+                after_hardware_probe(try_hardware(&mut cache).is_some())
+            }
+            step => step,
         }
     }
 
@@ -878,25 +1012,53 @@ mod native {
             };
 
             let mut readback = lock_recover(&self.readback);
-            if let Some((last_sequence, image)) = readback.last.as_ref() {
-                if *last_sequence == sequence {
-                    return Ok(image.clone());
-                }
-            }
-
-            match self.read_back(&mut readback, &latest) {
-                Ok(image) => {
-                    readback.last = Some((sequence, image.clone()));
-                    Ok(image)
-                }
-                Err(e) => {
-                    let hresult = e.downcast_ref::<windows::core::Error>().map(|w| w.code().0);
-                    match self.shared.close_if_device_lost(hresult) {
-                        Some(reason) => Err(e.context(reason)),
-                        None => Err(e),
+            let unchanged = match readback.last.as_ref() {
+                Some((last_sequence, image)) if *last_sequence == sequence => Some(image.clone()),
+                _ => None,
+            };
+            let image = match unchanged {
+                Some(image) => image,
+                None => match self.read_back(&mut readback, &latest) {
+                    Ok(image) => {
+                        readback.last = Some((sequence, image.clone()));
+                        image
                     }
-                }
+                    Err(e) => {
+                        let hresult = e.downcast_ref::<windows::core::Error>().map(|w| w.code().0);
+                        return match self.shared.close_if_device_lost(hresult) {
+                            Some(reason) => Err(e.context(reason)),
+                            None => Err(e),
+                        };
+                    }
+                },
+            };
+            // Not needed for the device check below, which may create a device.
+            drop(readback);
+
+            self.leave_warp_when_hardware_is_ready();
+            Ok(image)
+        }
+
+        /// Called after a WARP session handed out a frame: when a hardware
+        /// device is ready, close the session so the caller's next read
+        /// recreates it on hardware. The frame already read is returned as
+        /// usual, so the move costs at most that next read per monitor.
+        fn leave_warp_when_hardware_is_ready(&self) {
+            if self.shared.device.kind != DeviceKind::Warp {
+                return;
             }
+            if warp_session_step_now() != WarpSessionStep::MoveToHardware {
+                return;
+            }
+            if self.shared.slot.closed_reason().is_none() {
+                info!(
+                    "monitor {}: hardware D3D11 device is ready; restarting the WGC session on it after this WARP frame",
+                    self.monitor_id
+                );
+            }
+            self.shared
+                .slot
+                .close("moving from the WARP device to the hardware device");
         }
 
         fn read_back(
@@ -1099,6 +1261,156 @@ mod tests {
         assert!(hardware_retry_due(Some(now), now + interval, interval));
         // A clock that looks backwards never panics and never retries early.
         assert!(!hardware_retry_due(Some(now + interval), now, interval));
+    }
+
+    #[test]
+    fn warp_session_moves_as_soon_as_hardware_is_cached() {
+        let now = Instant::now();
+        let retry = WARP_HARDWARE_RETRY;
+        // Another session (or an earlier probe) already created the hardware
+        // device: move without waiting for the rate limit.
+        for last in [None, Some(now)] {
+            assert_eq!(
+                warp_session_step(SharedDevice::Hardware, last, now, retry),
+                WarpSessionStep::MoveToHardware
+            );
+        }
+    }
+
+    #[test]
+    fn warp_session_probes_only_when_the_retry_is_due() {
+        let now = Instant::now();
+        let retry = WARP_HARDWARE_RETRY;
+        for shared in [SharedDevice::Warp, SharedDevice::Empty] {
+            assert_eq!(
+                warp_session_step(shared, None, now, retry),
+                WarpSessionStep::ProbeHardware,
+                "{:?}: never tried",
+                shared
+            );
+            assert_eq!(
+                warp_session_step(shared, Some(now), now + retry / 2, retry),
+                WarpSessionStep::Stay,
+                "{:?}: tried half a minute ago",
+                shared
+            );
+            assert_eq!(
+                warp_session_step(shared, Some(now), now + retry, retry),
+                WarpSessionStep::ProbeHardware,
+                "{:?}: a minute has passed",
+                shared
+            );
+        }
+    }
+
+    #[test]
+    fn busy_cache_keeps_the_session_on_warp() {
+        let now = Instant::now();
+        for last in [None, Some(now)] {
+            assert_eq!(
+                warp_session_step(SharedDevice::Busy, last, now, WARP_HARDWARE_RETRY),
+                WarpSessionStep::Stay
+            );
+        }
+    }
+
+    #[test]
+    fn probe_outcome_decides_the_move() {
+        assert_eq!(after_hardware_probe(true), WarpSessionStep::MoveToHardware);
+        assert_eq!(after_hardware_probe(false), WarpSessionStep::Stay);
+    }
+
+    /// Plays the policy against a model of the shared cache and the engine's
+    /// read loop (a read of a closed session recreates it and returns that
+    /// session's first frame, as `SafeMonitor::capture_image` does).
+    #[test]
+    fn warp_sessions_return_to_hardware_with_one_restart_each() {
+        #[derive(Clone, Copy, PartialEq, Eq, Debug)]
+        enum Kind {
+            Warp,
+            Hardware,
+        }
+        struct Session {
+            kind: Kind,
+            closed: bool,
+            restarts: u32,
+            frames: u32,
+        }
+
+        let start = Instant::now();
+        let tick = Duration::from_secs(1);
+        let retry = WARP_HARDWARE_RETRY;
+        // The GPU driver comes back 90 s in, after the first retry failed.
+        let hardware_back_at = start + Duration::from_secs(90);
+
+        let mut cached = SharedDevice::Warp;
+        let mut last_attempt = Some(start);
+        let mut probes = Vec::new();
+        let mut sessions: Vec<Session> = (0..3)
+            .map(|_| Session {
+                kind: Kind::Warp,
+                closed: false,
+                restarts: 0,
+                frames: 0,
+            })
+            .collect();
+
+        for second in 0..240u32 {
+            let now = start + tick * second;
+            for session in sessions.iter_mut() {
+                if session.closed {
+                    session.kind = if cached == SharedDevice::Hardware {
+                        Kind::Hardware
+                    } else {
+                        Kind::Warp
+                    };
+                    session.closed = false;
+                    session.restarts += 1;
+                }
+                session.frames += 1;
+                if session.kind != Kind::Warp {
+                    continue;
+                }
+                let step = match warp_session_step(cached, last_attempt, now, retry) {
+                    WarpSessionStep::ProbeHardware => {
+                        last_attempt = Some(now);
+                        probes.push(second);
+                        let created = now >= hardware_back_at;
+                        if created {
+                            cached = SharedDevice::Hardware;
+                        }
+                        after_hardware_probe(created)
+                    }
+                    step => step,
+                };
+                if step == WarpSessionStep::MoveToHardware {
+                    session.closed = true;
+                }
+            }
+        }
+
+        // One probe a minute for all monitors together: the one at 60 s
+        // fails, the one at 120 s finds the driver back.
+        assert_eq!(probes, vec![60, 120]);
+        for (monitor, session) in sessions.iter().enumerate() {
+            assert_eq!(session.kind, Kind::Hardware, "monitor {}", monitor);
+            assert_eq!(session.restarts, 1, "monitor {} restarted once", monitor);
+            assert_eq!(
+                session.frames, 240,
+                "monitor {} never missed a read",
+                monitor
+            );
+        }
+    }
+
+    #[test]
+    fn hardware_refusal_hook_has_a_deadline() {
+        let now = Instant::now();
+        refuse_hardware_device_for(Duration::from_secs(30));
+        assert!(hardware_device_refused(now));
+        assert!(!hardware_device_refused(now + Duration::from_secs(31)));
+        refuse_hardware_device_for(Duration::ZERO);
+        assert!(!hardware_device_refused(Instant::now()));
     }
 
     #[test]

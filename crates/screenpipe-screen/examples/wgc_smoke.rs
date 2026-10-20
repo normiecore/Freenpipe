@@ -11,12 +11,20 @@
 //!
 //! ```text
 //! cargo run -p screenpipe-screen --example wgc_smoke --profile release-dev -- \
-//!     [--frames 10] [--interval-ms 300] [--out <dir>]
+//!     [--frames 10] [--interval-ms 300] [--out <dir>] [--warp-first]
 //! ```
 //!
 //! Exit code 0 when every monitor produced the requested number of non-black
 //! frames and both enumerations agree, 1 otherwise. On other platforms the
 //! example only prints a note and exits 0.
+//!
+//! `--warp-first` runs a different check instead: hardware D3D11 device
+//! creation is refused for the first few seconds (as during a GPU driver
+//! install), so every session starts on WARP. Each monitor is then read the
+//! way the engine reads it (a closed session is recreated inside the same
+//! read) until it runs on the hardware device again, which the one-minute
+//! retry allows about 60 s in. It passes when every monitor started on WARP,
+//! is back on hardware within 90 s and missed at most one read.
 
 #[cfg(not(target_os = "windows"))]
 fn main() {
@@ -60,15 +68,18 @@ mod windows_smoke {
     use super::{lit_fraction, MIN_LIT_FRACTION};
     use image::codecs::jpeg::JpegEncoder;
     use screenpipe_screen::monitor::{list_monitors_detailed, SafeMonitor};
-    use screenpipe_screen::wgc_capture::PersistentCapture;
+    use screenpipe_screen::wgc_capture::{
+        refuse_hardware_device_for, PersistentCapture, WARP_HARDWARE_RETRY,
+    };
     use std::path::PathBuf;
     use std::process::ExitCode;
-    use std::time::Duration;
+    use std::time::{Duration, Instant};
 
     struct Options {
         frames: u32,
         interval: Duration,
         out: PathBuf,
+        warp_first: bool,
     }
 
     fn parse_options() -> Result<Options, String> {
@@ -76,6 +87,7 @@ mod windows_smoke {
             frames: 10,
             interval: Duration::from_millis(300),
             out: std::env::temp_dir().join("freenpipe-wgc-smoke"),
+            warp_first: false,
         };
         let mut args = std::env::args().skip(1);
         while let Some(arg) = args.next() {
@@ -92,11 +104,11 @@ mod windows_smoke {
                     )
                 }
                 "--out" => options.out = PathBuf::from(value()?),
-                "-h" | "--help" => {
-                    return Err(
-                        "usage: wgc_smoke [--frames N] [--interval-ms MS] [--out DIR]".into(),
-                    )
-                }
+                "--warp-first" => options.warp_first = true,
+                "-h" | "--help" => return Err(
+                    "usage: wgc_smoke [--frames N] [--interval-ms MS] [--out DIR] [--warp-first]"
+                        .into(),
+                ),
                 other => return Err(format!("unknown argument {}", other)),
             }
         }
@@ -227,6 +239,125 @@ mod windows_smoke {
         good
     }
 
+    /// How long `--warp-first` refuses hardware devices. Short, so the first
+    /// rate-limited retry (one minute after the WARP device appeared) finds
+    /// the hardware device available.
+    const WARP_HOLD: Duration = Duration::from_secs(5);
+
+    /// How long `--warp-first` waits for every monitor to reach hardware.
+    const WARP_DEADLINE: Duration = Duration::from_secs(90);
+
+    /// One monitor under `--warp-first`.
+    struct WarpWatch {
+        id: u32,
+        capture: Option<PersistentCapture>,
+        started_on: Option<&'static str>,
+        on_hardware_after: Option<Duration>,
+        missed: u32,
+        restarts: u32,
+    }
+
+    impl WarpWatch {
+        /// One read the way `SafeMonitor::capture_image` does it on Windows:
+        /// a failing session is replaced and the new one's first frame is
+        /// returned from the same read.
+        fn read(&mut self) -> Result<(), String> {
+            if let Some(capture) = self.capture.as_ref() {
+                match capture.get_latest_image(Duration::from_millis(200)) {
+                    Ok(_) => return Ok(()),
+                    Err(e) => println!("monitor {}: session ended: {:#}", self.id, e),
+                }
+            }
+            if let Some(mut old) = self.capture.take() {
+                old.stop();
+                self.restarts += 1;
+            }
+            let capture = PersistentCapture::new(self.id).map_err(|e| format!("{:#}", e))?;
+            match capture.get_latest_image(Duration::from_millis(500)) {
+                Ok(_) => {
+                    self.capture = Some(capture);
+                    Ok(())
+                }
+                // Like the engine, a session without a first frame is dropped
+                // and the next read starts another one.
+                Err(e) => Err(format!("{:#}", e)),
+            }
+        }
+    }
+
+    /// The `--warp-first` check. See the module docs.
+    fn warp_first(monitors: &[SafeMonitor], interval: Duration) -> bool {
+        refuse_hardware_device_for(WARP_HOLD);
+        let start = Instant::now();
+        println!(
+            "hardware D3D11 devices refused for {:?}; hardware is retried {:?} after the WARP device was created",
+            WARP_HOLD, WARP_HARDWARE_RETRY
+        );
+        let mut watches: Vec<WarpWatch> = monitors
+            .iter()
+            .map(|m| WarpWatch {
+                id: m.id(),
+                capture: None,
+                started_on: None,
+                on_hardware_after: None,
+                missed: 0,
+                restarts: 0,
+            })
+            .collect();
+
+        while start.elapsed() < WARP_DEADLINE {
+            for watch in watches.iter_mut().filter(|w| w.on_hardware_after.is_none()) {
+                if let Err(e) = watch.read() {
+                    watch.missed += 1;
+                    println!("monitor {}: read without a frame: {}", watch.id, e);
+                }
+                let kind = watch.capture.as_ref().map(|c| c.device_kind());
+                if watch.started_on.is_none() {
+                    watch.started_on = kind;
+                    if let Some(kind) = kind {
+                        println!("monitor {}: started on the {} device", watch.id, kind);
+                    }
+                }
+                if kind == Some("hardware") {
+                    let after = start.elapsed();
+                    watch.on_hardware_after = Some(after);
+                    println!(
+                        "monitor {}: on the hardware device after {:.1} s ({} restart(s), {} read(s) without a frame)",
+                        watch.id,
+                        after.as_secs_f64(),
+                        watch.restarts,
+                        watch.missed
+                    );
+                }
+            }
+            if watches.iter().all(|w| w.on_hardware_after.is_some()) {
+                break;
+            }
+            std::thread::sleep(interval);
+        }
+
+        let mut ok = !watches.is_empty();
+        for watch in &watches {
+            let passed = watch.started_on == Some("warp")
+                && watch.on_hardware_after.is_some()
+                && watch.missed <= 1;
+            if !passed {
+                ok = false;
+                println!(
+                    "monitor {}: FAILED (started on {}, on hardware: {}, reads without a frame: {})",
+                    watch.id,
+                    watch.started_on.unwrap_or("no device"),
+                    watch
+                        .on_hardware_after
+                        .map(|d| format!("after {:.1} s", d.as_secs_f64()))
+                        .unwrap_or_else(|| format!("not within {:?}", WARP_DEADLINE)),
+                    watch.missed
+                );
+            }
+        }
+        ok
+    }
+
     pub fn run() -> ExitCode {
         let filter = tracing_subscriber::EnvFilter::try_from_default_env()
             .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info"));
@@ -261,19 +392,30 @@ mod windows_smoke {
                 return ExitCode::FAILURE;
             }
         };
-        println!(
-            "{} monitor(s); writing frames to {}",
-            monitors.len(),
-            options.out.display()
-        );
-
-        let ids_agree = compare_with_xcap(&monitors);
-        let mut all_good = ids_agree;
-        for monitor in &monitors {
-            if smoke_monitor(monitor, &options) < options.frames {
-                all_good = false;
-            }
+        if options.warp_first {
+            println!(
+                "{} monitor(s); checking the move from WARP back to hardware",
+                monitors.len()
+            );
+        } else {
+            println!(
+                "{} monitor(s); writing frames to {}",
+                monitors.len(),
+                options.out.display()
+            );
         }
+
+        let all_good = if options.warp_first {
+            warp_first(&monitors, options.interval)
+        } else {
+            let mut all_good = compare_with_xcap(&monitors);
+            for monitor in &monitors {
+                if smoke_monitor(monitor, &options) < options.frames {
+                    all_good = false;
+                }
+            }
+            all_good
+        };
 
         if all_good {
             println!("PASS");

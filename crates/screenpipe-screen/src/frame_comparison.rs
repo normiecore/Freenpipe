@@ -13,7 +13,10 @@
 //!    luma thumbnail sampled straight from the source pixels. Its buffer is
 //!    reserved with `Vec::try_reserve_exact`; when that fails the frame counts as
 //!    unchanged and a rate-limited warning carries `source_width`,
-//!    `source_height` and `failures`, instead of the process aborting.
+//!    `source_height` and `failures`, instead of the process aborting. A frame
+//!    whose size cannot give a thumbnail at all (a zero dimension, or a size
+//!    no buffer can hold) also counts as unchanged, but is counted and logged
+//!    on its own (`degenerate_frames`), not as memory pressure.
 //!
 //! ## CPU Impact (benchmarked on trader 3-monitor setup: 2×5120x1440 + 2560x1440)
 //!
@@ -44,11 +47,13 @@ use image::imageops::FilterType;
 use image::{DynamicImage, GenericImageView, GrayImage};
 use image_compare::Metric;
 use std::hash::{DefaultHasher, Hash, Hasher};
-use tracing::{debug, warn};
+use tracing::{debug, info, warn};
 
-/// How often a repeated thumbnail failure is logged. The first failure is
-/// always logged; after that one line per this many failures keeps a machine
-/// under memory pressure from flooding the log once per captured frame.
+/// How often a repeated skipped frame is logged, counted separately for
+/// allocation failures and for degenerate frames. The first one is always
+/// logged; after that one line per this many keeps a machine under memory
+/// pressure (or a capture source stuck on empty frames) from flooding the log
+/// once per captured frame.
 const THUMBNAIL_FAILURE_LOG_EVERY: u64 = 100;
 
 /// Configuration for frame comparison optimizations.
@@ -131,7 +136,8 @@ impl FrameComparisonConfig {
 pub enum ThumbnailError {
     /// The source image has a zero dimension.
     EmptySource,
-    /// `width * height` does not fit in `usize`.
+    /// The thumbnail would need more bytes than any buffer can hold
+    /// (`width * height` overflows `usize` or exceeds `isize::MAX`).
     SizeOverflow,
     /// The pixel buffer could not be reserved (`Vec::try_reserve_exact` failed).
     AllocationFailed,
@@ -139,11 +145,19 @@ pub enum ThumbnailError {
     SizeMismatch,
 }
 
+impl ThumbnailError {
+    /// True only when memory ran short. Degenerate sizes say something about
+    /// the frame, not about memory, and are counted apart.
+    pub fn is_memory_pressure(self) -> bool {
+        matches!(self, ThumbnailError::AllocationFailed)
+    }
+}
+
 impl std::fmt::Display for ThumbnailError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let text = match self {
-            ThumbnailError::EmptySource => "source image has a zero dimension",
-            ThumbnailError::SizeOverflow => "thumbnail size overflows usize",
+            ThumbnailError::EmptySource => "frame has a zero width or height",
+            ThumbnailError::SizeOverflow => "thumbnail size is larger than any buffer can hold",
             ThumbnailError::AllocationFailed => "thumbnail buffer allocation failed",
             ThumbnailError::SizeMismatch => "grayscale thumbnails differ in size",
         };
@@ -158,6 +172,11 @@ impl std::error::Error for ThumbnailError {}
 type ThumbnailAllocator = fn(usize) -> Result<Vec<u8>, ThumbnailError>;
 
 fn reserve_thumbnail_buffer(len: usize) -> Result<Vec<u8>, ThumbnailError> {
+    // A `Vec` never holds more than `isize::MAX` bytes; asking for more is a
+    // size problem, not a sign of memory pressure.
+    if len > isize::MAX as usize {
+        return Err(ThumbnailError::SizeOverflow);
+    }
     let mut buf = Vec::new();
     buf.try_reserve_exact(len)
         .map_err(|_| ThumbnailError::AllocationFailed)?;
@@ -269,8 +288,8 @@ fn hash_thumbnail(thumb: &GrayImage) -> u64 {
     hasher.finish()
 }
 
-/// True for the failures that get a log line: the first, then every
-/// [`THUMBNAIL_FAILURE_LOG_EVERY`]th.
+/// True for the skipped frames that get a log line: the first, then every
+/// [`THUMBNAIL_FAILURE_LOG_EVERY`]th (each kind keeps its own count).
 fn should_log_thumbnail_failure(failures: u64) -> bool {
     failures == 1 || failures.is_multiple_of(THUMBNAIL_FAILURE_LOG_EVERY)
 }
@@ -279,8 +298,9 @@ fn should_log_thumbnail_failure(failures: u64) -> bool {
 ///
 /// Every frame is reduced to a small grayscale thumbnail (one byte per pixel)
 /// before it is hashed or compared, and only that thumbnail is kept as the
-/// baseline. When the thumbnail cannot be allocated the frame is reported as
-/// unchanged (`0.0`) and the previous baseline is kept.
+/// baseline. When the thumbnail cannot be allocated, or the frame's size
+/// cannot give one, the frame is reported as unchanged (`0.0`) and the
+/// previous baseline is kept.
 #[derive(Debug)]
 pub struct FrameComparer {
     config: FrameComparisonConfig,
@@ -289,6 +309,7 @@ pub struct FrameComparer {
     comparison_count: u64,
     hash_hits: u64,
     thumbnail_failures: u64,
+    degenerate_frames: u64,
     allocator: ThumbnailAllocator,
 }
 
@@ -306,6 +327,7 @@ impl FrameComparer {
             comparison_count: 0,
             hash_hits: 0,
             thumbnail_failures: 0,
+            degenerate_frames: 0,
             allocator,
         }
     }
@@ -344,7 +366,8 @@ impl FrameComparer {
     ///
     /// # Returns
     /// * `0.0` - Frames are identical (hash match or visual comparison), or
-    ///   the thumbnail could not be allocated (treated as "no change")
+    ///   no thumbnail could be made (allocation failure or degenerate frame
+    ///   size, treated as "no change")
     /// * `0.0 - 1.0` - Difference score (higher = more different)
     /// * `1.0` - First frame (no previous to compare) or completely different
     pub fn compare(&mut self, current_image: &DynamicImage) -> f64 {
@@ -355,7 +378,7 @@ impl FrameComparer {
         let thumbnail = match gray_thumbnail(current_image, thumb_w, thumb_h, self.allocator) {
             Ok(t) => t,
             Err(e) => {
-                self.record_thumbnail_failure(source_width, source_height, e);
+                self.record_skipped_frame(source_width, source_height, e);
                 return 0.0;
             }
         };
@@ -390,7 +413,7 @@ impl FrameComparer {
                 | ThumbnailError::SizeOverflow
                 | ThumbnailError::EmptySource),
             ) => {
-                self.record_thumbnail_failure(source_width, source_height, e);
+                self.record_skipped_frame(source_width, source_height, e);
                 return 0.0;
             }
             Err(ThumbnailError::SizeMismatch) => {
@@ -432,22 +455,39 @@ impl FrameComparer {
         self.previous_thumbnail = Some(thumbnail);
     }
 
-    fn record_thumbnail_failure(
+    /// Count and (rate-limited) log a frame that got no thumbnail. Only an
+    /// allocation failure is memory pressure; a degenerate frame size has its
+    /// own counter and a neutral message.
+    fn record_skipped_frame(
         &mut self,
         source_width: u32,
         source_height: u32,
         reason: ThumbnailError,
     ) {
-        self.thumbnail_failures += 1;
-        let failures = self.thumbnail_failures;
-        if should_log_thumbnail_failure(failures) {
-            warn!(
-                source_width,
-                source_height,
-                failures,
-                %reason,
-                "frame diff skipped because no thumbnail buffer was available; frame counted as unchanged"
-            );
+        if reason.is_memory_pressure() {
+            self.thumbnail_failures += 1;
+            let failures = self.thumbnail_failures;
+            if should_log_thumbnail_failure(failures) {
+                warn!(
+                    source_width,
+                    source_height,
+                    failures,
+                    %reason,
+                    "frame diff skipped because no thumbnail buffer was available; frame counted as unchanged"
+                );
+            }
+        } else {
+            self.degenerate_frames += 1;
+            let degenerate_frames = self.degenerate_frames;
+            if should_log_thumbnail_failure(degenerate_frames) {
+                info!(
+                    source_width,
+                    source_height,
+                    degenerate_frames,
+                    %reason,
+                    "frame diff skipped for a frame whose size gives no thumbnail; frame counted as unchanged"
+                );
+            }
         }
     }
 
@@ -468,6 +508,7 @@ impl FrameComparer {
                 0.0
             },
             thumbnail_failures: self.thumbnail_failures,
+            degenerate_frames: self.degenerate_frames,
         }
     }
 
@@ -484,8 +525,12 @@ pub struct FrameComparisonStats {
     pub total_comparisons: u64,
     pub hash_hits: u64,
     pub hash_hit_rate: f64,
-    /// Frames whose thumbnail could not be allocated (reported as unchanged).
+    /// Frames whose thumbnail buffer could not be allocated, i.e. memory
+    /// pressure (reported as unchanged).
     pub thumbnail_failures: u64,
+    /// Frames whose size gives no thumbnail: a zero width or height, or more
+    /// pixels than a buffer can hold (reported as unchanged).
+    pub degenerate_frames: u64,
 }
 
 /// Keeps a metric inside `[0, 1]` and turns NaN or infinity into an error, so
@@ -824,6 +869,7 @@ mod tests {
         assert_eq!(comparer.compare(&white), 0.0);
         let stats = comparer.stats();
         assert_eq!(stats.thumbnail_failures, 2);
+        assert_eq!(stats.degenerate_frames, 0);
         assert_eq!(stats.total_comparisons, 2);
         assert_eq!(stats.hash_hits, 0);
         assert!(comparer.previous_thumbnail.is_none());
@@ -896,22 +942,57 @@ mod tests {
     }
 
     #[test]
-    fn real_try_reserve_failure_is_an_error_not_an_abort() {
+    fn thumbnail_beyond_any_buffer_is_a_size_error() {
         let image = create_solid_image(4, 4, 1, 2, 3);
-        // On 64-bit targets u32::MAX squared fits in usize but is far beyond
-        // what try_reserve_exact can hand out; on 32-bit targets it overflows.
+        // u32::MAX squared is above isize::MAX on 64-bit targets and
+        // overflows usize on 32-bit ones: no buffer can hold it either way.
         let err = gray_thumbnail(&image, u32::MAX, u32::MAX, reserve_thumbnail_buffer)
             .expect_err("an impossible thumbnail must fail");
-        assert!(matches!(
-            err,
-            ThumbnailError::AllocationFailed | ThumbnailError::SizeOverflow
-        ));
+        assert_eq!(err, ThumbnailError::SizeOverflow);
+        assert!(!err.is_memory_pressure());
+    }
+
+    /// 2^31 x 2^31 bytes (4 EiB) is a valid `Vec` capacity on 64-bit targets
+    /// but more than any address space, so the allocator itself refuses it.
+    #[cfg(target_pointer_width = "64")]
+    const UNALLOCATABLE_SIDE: u32 = 1 << 31;
+
+    #[test]
+    #[cfg(target_pointer_width = "64")]
+    fn real_allocation_failure_is_an_error_not_an_abort() {
+        let image = create_solid_image(4, 4, 1, 2, 3);
+        let err = gray_thumbnail(
+            &image,
+            UNALLOCATABLE_SIDE,
+            UNALLOCATABLE_SIDE,
+            reserve_thumbnail_buffer,
+        )
+        .expect_err("a 4 EiB thumbnail cannot be allocated");
+        assert_eq!(err, ThumbnailError::AllocationFailed);
+        assert!(err.is_memory_pressure());
     }
 
     #[test]
+    #[cfg(target_pointer_width = "64")]
     fn legacy_fixed_size_that_cannot_be_allocated_reports_no_change() {
-        // End to end through the default allocator: a nonsensical legacy fixed
-        // size makes try_reserve fail on every frame.
+        // End to end through the default allocator: a legacy fixed size the
+        // allocator cannot satisfy fails on every frame as memory pressure.
+        let config = FrameComparisonConfig {
+            downscale_factor: 0,
+            comparison_width: UNALLOCATABLE_SIDE,
+            comparison_height: UNALLOCATABLE_SIDE,
+            ..Default::default()
+        };
+        let mut comparer = FrameComparer::new(config);
+        let image = create_solid_image(64, 64, 100, 100, 100);
+        assert_eq!(comparer.compare(&image), 0.0);
+        assert_eq!(comparer.compare(&image), 0.0);
+        assert_eq!(comparer.stats().thumbnail_failures, 2);
+        assert_eq!(comparer.stats().degenerate_frames, 0);
+    }
+
+    #[test]
+    fn legacy_fixed_size_beyond_any_buffer_is_degenerate() {
         let config = FrameComparisonConfig {
             downscale_factor: 0,
             comparison_width: u32::MAX,
@@ -922,7 +1003,86 @@ mod tests {
         let image = create_solid_image(64, 64, 100, 100, 100);
         assert_eq!(comparer.compare(&image), 0.0);
         assert_eq!(comparer.compare(&image), 0.0);
-        assert_eq!(comparer.stats().thumbnail_failures, 2);
+        assert_eq!(comparer.stats().degenerate_frames, 2);
+        assert_eq!(
+            comparer.stats().thumbnail_failures,
+            0,
+            "not memory pressure"
+        );
+    }
+
+    /// Formatted log output of everything `run` logs at info level or above
+    /// on this thread.
+    fn capture_logs(run: impl FnOnce()) -> String {
+        use std::sync::{Arc, Mutex};
+
+        #[derive(Clone)]
+        struct Sink(Arc<Mutex<Vec<u8>>>);
+        impl std::io::Write for Sink {
+            fn write(&mut self, data: &[u8]) -> std::io::Result<usize> {
+                self.0.lock().unwrap().extend_from_slice(data);
+                Ok(data.len())
+            }
+            fn flush(&mut self) -> std::io::Result<()> {
+                Ok(())
+            }
+        }
+
+        let sink = Sink(Arc::new(Mutex::new(Vec::new())));
+        let writer = sink.clone();
+        let subscriber = tracing_subscriber::fmt()
+            .with_writer(move || writer.clone())
+            .with_ansi(false)
+            .with_max_level(tracing::Level::INFO)
+            .finish();
+        tracing::subscriber::with_default(subscriber, run);
+        let bytes = sink.0.lock().unwrap().clone();
+        String::from_utf8(bytes).unwrap()
+    }
+
+    #[test]
+    fn degenerate_frames_are_not_logged_as_memory_pressure() {
+        let mut comparer = FrameComparer::new(FrameComparisonConfig::default());
+        let empty = DynamicImage::ImageRgb8(RgbImage::new(0, 0));
+        let logs = capture_logs(|| {
+            for _ in 0..3 {
+                assert_eq!(comparer.compare(&empty), 0.0);
+            }
+        });
+        let stats = comparer.stats();
+        assert_eq!(stats.degenerate_frames, 3);
+        assert_eq!(stats.thumbnail_failures, 0);
+        assert!(!logs.contains("no thumbnail buffer"), "{}", logs);
+        assert_eq!(
+            logs.matches("frame whose size gives no thumbnail").count(),
+            1,
+            "first one logged, the rest rate-limited: {}",
+            logs
+        );
+        assert!(logs.contains("degenerate_frames=1"), "{}", logs);
+        assert!(logs.contains("zero width or height"), "{}", logs);
+    }
+
+    #[test]
+    fn allocation_failures_are_logged_as_memory_pressure() {
+        let mut comparer =
+            FrameComparer::with_allocator(FrameComparisonConfig::default(), failing_allocator);
+        let image = create_solid_image(64, 64, 1, 2, 3);
+        let logs = capture_logs(|| {
+            for _ in 0..3 {
+                assert_eq!(comparer.compare(&image), 0.0);
+            }
+        });
+        assert_eq!(comparer.stats().thumbnail_failures, 3);
+        assert_eq!(comparer.stats().degenerate_frames, 0);
+        assert_eq!(
+            logs.matches("no thumbnail buffer was available").count(),
+            1,
+            "first one logged, the rest rate-limited: {}",
+            logs
+        );
+        assert!(logs.contains("failures=1"), "{}", logs);
+        assert!(!logs.contains("gives no thumbnail"), "{}", logs);
     }
 
     #[test]
@@ -1039,11 +1199,14 @@ mod tests {
     }
 
     #[test]
-    fn zero_sized_frame_is_a_failure_not_a_panic() {
+    fn zero_sized_frame_is_degenerate_not_a_panic() {
         let mut comparer = FrameComparer::new(FrameComparisonConfig::default());
         let empty = DynamicImage::ImageRgb8(RgbImage::new(0, 0));
         assert_eq!(comparer.compare(&empty), 0.0);
-        assert_eq!(comparer.stats().thumbnail_failures, 1);
+        assert_eq!(comparer.stats().degenerate_frames, 1);
+        assert_eq!(comparer.stats().thumbnail_failures, 0);
+        // A real frame afterwards becomes the first baseline.
+        assert_eq!(comparer.compare(&create_solid_image(8, 8, 9, 9, 9)), 1.0);
     }
 
     #[test]
