@@ -11,6 +11,7 @@
 
 pub mod bash_env;
 pub mod cli_runtime;
+pub mod extensions_manifest;
 pub mod pi;
 
 use anyhow::Result;
