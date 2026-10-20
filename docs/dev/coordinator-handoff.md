@@ -6,7 +6,7 @@ Updated 2026-10-20 evening. Git, PR heads and CI are the source of truth; this f
 
 - Waves 0 and 1 are merged (18 WPs). Wave 1 integration (runbook 4.7) has not been recorded yet: it needs a
   full Linux build of main and was held for disk.
-- Wave 2 core merged: W2-05, W2-12, W2-13, W2-16, W2-17, W2-18, W2-19, W2-22, W2-26 (28/155 overall).
+- Wave 2 core merged: W2-05, W2-12, W2-13, W2-16, W2-17, W2-18, W2-19, W2-22, W2-26 (27/155 overall).
 - Open: W2-08 (PR #24, approved; CI re-running after the schema-test fix 0ee4802), W2-23 (PR #27, approved,
   CI pending). Building: W2-27 + W2-11, W2-10 + W3-30.
 - Core set still to start (decision 6): W2-01, W2-04, W2-09, W3-25, then the wave 3/4 core WPs as their
