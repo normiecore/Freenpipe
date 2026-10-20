@@ -423,3 +423,19 @@ async fn transcript_order_and_list_q_over_meeting_app() {
     assert_eq!(list.as_array().unwrap().len(), 1);
     assert_eq!(list[0]["id"], id);
 }
+
+#[test]
+fn bundled_meeting_summary_pipe_saves_through_the_summary_endpoint() {
+    let content = include_str!("../../screenpipe-core/assets/pipes/meeting-summary/pipe.md");
+    let (config, body) = screenpipe_core::pipes::parse_frontmatter(content).unwrap();
+    assert!(config.enabled);
+    assert!(config
+        .trigger
+        .as_ref()
+        .is_some_and(|t| t.events.iter().any(|e| e == "meeting_ended")));
+    // No vendor preset: the run uses the user's own default AI preset.
+    assert!(config.preset.is_empty(), "{:?}", config.preset);
+    assert!(body.contains("/meetings/<ID>/summary"));
+    assert!(body.contains("## Summary"));
+    assert!(!body.contains("PATCH"));
+}

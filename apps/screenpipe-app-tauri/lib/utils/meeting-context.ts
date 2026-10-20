@@ -517,9 +517,10 @@ function markdownImageDataUrlRegex(): RegExp {
  *   - the bundled meeting-summary pipe (background event-triggered path) —
  *     keep the wording in sync with crates/screenpipe-core/assets/pipes/meeting-summary/pipe.md
  *
- * The agent decides whether to PATCH. Empty transcript / nothing worth saving
- * → say so out loud, skip the PATCH. Useful summary → append under "## Summary"
- * preserving the user's existing notes via the same endpoint the autosave uses.
+ * The agent decides whether to save. Empty transcript / nothing worth saving
+ * → say so out loud, skip the save. Useful summary → POST it to
+ * /meetings/:id/summary, which writes the note's "## Summary" section on the
+ * server and keeps the user's existing notes.
  */
 export function buildMeetingSummarizeInstructions(
   meetingId: number | string,
@@ -531,18 +532,18 @@ export function buildMeetingSummarizeInstructions(
     `meeting id: ${meetingId}`,
     `primary transcript source: GET "http://localhost:3030/meetings/${meetingId}/transcript" and use each row's "transcript", "speakerName", "capturedAt", and "source" fields. sort rows by capturedAt before summarizing.`,
     `fallback transcript source: /search?content_type=audio for the meeting time window. audio rows use content.transcription (not content.text); content.text may be missing for audio and should not be treated as an empty transcript.`,
-    `if your summary is worth saving, append it to the meeting note (and refresh the title in the same call) via:`,
-    `  curl -s -X PATCH "http://localhost:3030/meetings/${meetingId}" \\`,
+    `if your summary is worth saving, store it (and optionally a new title) with the summary endpoint:`,
+    `  curl -s -X POST "http://localhost:3030/meetings/${meetingId}/summary" \\`,
     `    -H "Authorization: Bearer $SCREENPIPE_LOCAL_API_KEY" \\`,
     `    -H "Content-Type: application/json" \\`,
-    `    -d '{"title": "<NEW_TITLE_OR_OMIT>", "note": "<EXISTING_NOTE>\\n\\n## Summary\\n<YOUR_SUMMARY>"}'`,
-    `replace <EXISTING_NOTE> with the meeting's current notes (shown above as "notes:" — empty string if none) so you don't overwrite the user's work; just append your summary under a "## Summary" heading. for the title: if the current "title:" is missing, generic ("untitled", "meeting", just the app name) or doesn't capture what actually happened, replace it with a 5-8 word plain-english title (no quotes, no "meeting about…" prefix) — otherwise omit the field so a user-set title is left alone. if there's nothing useful to summarize (empty transcript, irrelevant audio), say so out loud and skip the PATCH — don't write a placeholder.`,
+    `    --data-binary @body.json`,
+    `body.json is {"summary": "<YOUR_SUMMARY>", "title": "<NEW_TITLE_OR_OMIT>"}; write it with a JSON encoder so quotes and line breaks are escaped. send only the summary markdown (no "## Summary" heading needed, and never "#"/"##" headings inside it): the server replaces an earlier "## Summary" section or adds one, and leaves the rest of the user's notes alone. include "title" only if the current "title:" is missing, generic ("untitled", "meeting", just the app name) or doesn't fit what happened — then a plain 3-8 word title without quotes; otherwise leave it out so a title the user chose stays. a 400 reply means the text was empty or read like an error; fix it and try once more. if there's nothing useful to summarize (empty transcript, irrelevant audio), say so and skip the save — don't store a placeholder.`,
   ];
 
   if (options?.followUpAsk) {
     lines.push(
       ``,
-      `after the PATCH, ask the user — in one short message — whether they'd like you to (a) update speaker assignments for any of the audio segments above, or (b) push this summary into one of the apps they were using during the meeting (use the "apps used during meeting" + "tabs/docs visited" sections to list 2-3 plausible targets like Notion, Linear, GitHub, etc.). don't act on either until they reply.`,
+      `after saving, ask the user — in one short message — whether they'd like you to (a) update speaker assignments for any of the audio segments above, or (b) push this summary into one of the apps they were using during the meeting (use the "apps used during meeting" + "tabs/docs visited" sections to list 2-3 plausible targets like Notion, Linear, GitHub, etc.). don't act on either until they reply.`,
     );
   }
 
