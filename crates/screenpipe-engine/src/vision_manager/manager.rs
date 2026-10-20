@@ -6,13 +6,15 @@
 
 use anyhow::Result;
 use dashmap::DashMap;
+use once_cell::sync::Lazy;
 use screenpipe_db::DatabaseManager;
-use screenpipe_screen::monitor::{get_monitor_by_id, list_monitors};
+use screenpipe_screen::monitor::{get_monitor_by_id, list_monitors, SafeMonitor};
 use screenpipe_screen::PipelineMetrics;
+use std::collections::{BTreeMap, HashSet};
 use std::sync::atomic::AtomicBool;
-use std::sync::Arc;
+use std::sync::{Arc, Weak};
 use tokio::runtime::Handle;
-use tokio::sync::{watch, RwLock};
+use tokio::sync::{watch, Mutex, RwLock};
 use tokio::task::JoinHandle;
 use tracing::{debug, error, info, warn};
 
@@ -112,6 +114,13 @@ pub struct VisionManager {
     /// Set when the user's monitor allowlist matched zero connected displays and
     /// we fell back to recording every monitor. Clears the filter for hot-plug too.
     stale_allowlist_fallback: Arc<AtomicBool>,
+    /// Monitors the user paused from the recording popover, plus the latest
+    /// enumeration. Process-wide by default so pauses outlive this manager
+    /// (capture restarts, DRM and schedule pauses, engine respawns).
+    device_control: Arc<VisionDeviceControl>,
+    /// Serializes starting, stopping, pausing and resuming single monitors,
+    /// so a pause can never race a watcher restart of the same monitor.
+    monitor_ops: Mutex<()>,
 }
 
 impl VisionManager {
@@ -163,7 +172,49 @@ impl VisionManager {
             focus_controller,
             high_fps_controller: None,
             stale_allowlist_fallback: Arc::new(AtomicBool::new(false)),
+            device_control: VisionDeviceControl::global(),
+            monitor_ops: Mutex::new(()),
         }
+    }
+
+    /// Use a dedicated pause registry instead of the process-wide one.
+    /// Tests use this to keep their state apart.
+    pub fn with_device_control(mut self, control: Arc<VisionDeviceControl>) -> Self {
+        self.device_control = control;
+        self
+    }
+
+    /// The pause registry this manager honours.
+    pub fn device_control(&self) -> &Arc<VisionDeviceControl> {
+        &self.device_control
+    }
+
+    /// Database the capture loops write to.
+    pub(crate) fn db(&self) -> &Arc<DatabaseManager> {
+        &self.db
+    }
+
+    /// True when the user paused this monitor from the recording popover.
+    pub fn is_user_paused(&self, monitor_id: u32) -> bool {
+        self.device_control.is_paused(monitor_id)
+    }
+
+    /// True when a capture task for this monitor exists and has not exited.
+    pub fn is_monitor_recording(&self, monitor_id: u32) -> bool {
+        self.recording_tasks
+            .get(&monitor_id)
+            .map(|task| !task.is_finished())
+            .unwrap_or(false)
+    }
+
+    /// Record a fresh enumeration: carries pauses over to monitors that came
+    /// back under a new id and refreshes what `/vision/device/status` lists.
+    pub fn publish_monitors(&self, monitors: &[SafeMonitor]) {
+        let summaries = monitors
+            .iter()
+            .map(|m| MonitorSummary::from_monitor(m, self.is_monitor_allowed(m)))
+            .collect();
+        self.device_control.publish_monitors(summaries);
     }
 
     /// Set the hot frame cache so captures push frames into it. Pass `None` to
@@ -249,6 +300,9 @@ impl VisionManager {
         // Get all monitors and start recording on each (filtered by user selection)
         let monitors = list_monitors().await;
         let total_monitors = monitors.len();
+        self.publish_monitors(&monitors);
+        let mut selected = 0usize;
+        let mut selected_paused = 0usize;
         for monitor in monitors {
             if !self.is_monitor_allowed(&monitor) {
                 info!(
@@ -258,7 +312,16 @@ impl VisionManager {
                 );
                 continue;
             }
+            selected += 1;
             let monitor_id = monitor.id();
+            if self.is_user_paused(monitor_id) {
+                selected_paused += 1;
+                info!(
+                    monitor_id,
+                    "vision start: leaving monitor {} idle, the user paused it", monitor_id
+                );
+                continue;
+            }
             if let Err(e) = self.start_monitor(monitor_id).await {
                 warn!(
                     "Failed to start recording on monitor {}: {:?}",
@@ -268,6 +331,14 @@ impl VisionManager {
         }
 
         let mut task_count = self.recording_tasks.len();
+        if all_paused_by_user(task_count, selected, selected_paused) {
+            info!(
+                "VisionManager is running with no capture task: the user paused \
+                 every one of the {} selected monitor(s)",
+                selected
+            );
+            return Ok(());
+        }
         if task_count == 0 && total_monitors > 0 && !self.config.use_all_monitors {
             warn!(
                 "VisionManager: allowlist {:?} matched 0/{} display(s) — \
@@ -276,8 +347,16 @@ impl VisionManager {
             );
             self.stale_allowlist_fallback
                 .store(true, std::sync::atomic::Ordering::Relaxed);
-            for monitor in list_monitors().await {
+            let fallback_monitors = list_monitors().await;
+            self.publish_monitors(&fallback_monitors);
+            let fallback_total = fallback_monitors.len();
+            let mut fallback_paused = 0usize;
+            for monitor in fallback_monitors {
                 let monitor_id = monitor.id();
+                if self.is_user_paused(monitor_id) {
+                    fallback_paused += 1;
+                    continue;
+                }
                 if let Err(e) = self.start_monitor(monitor_id).await {
                     warn!(
                         "Failed to start recording on monitor {} during stale-id fallback: {:?}",
@@ -293,6 +372,14 @@ impl VisionManager {
                 );
                 return Ok(());
             }
+            if all_paused_by_user(task_count, fallback_total, fallback_paused) {
+                info!(
+                    "VisionManager is running on the stale monitor_ids fallback with no \
+                     capture task: the user paused all {} connected monitor(s)",
+                    fallback_total
+                );
+                return Ok(());
+            }
             self.stale_allowlist_fallback
                 .store(false, std::sync::atomic::Ordering::Relaxed);
         }
@@ -301,6 +388,16 @@ impl VisionManager {
             // Roll status back so the next .start() attempt isn't blocked by the
             // idempotency guard above.
             *self.status.write().await = VisionManagerStatus::Stopped;
+            if total_monitors == 0 {
+                warn!(
+                    "VisionManager: the OS reported no displays, so nothing was started; \
+                     the monitor watcher keeps retrying and works out why (displays \
+                     asleep, a failed enumeration, or screen recording permission revoked)"
+                );
+                return Err(anyhow::anyhow!(
+                    "no displays enumerated (0 started); the monitor watcher will retry"
+                ));
+            }
             warn!(
                 "VisionManager: no monitors matched the allowed list \
                  ({} enumerated, 0 started) — stale monitor_ids?",
@@ -367,8 +464,23 @@ impl VisionManager {
         Ok(())
     }
 
-    /// Start recording on a specific monitor
+    /// Start recording on a specific monitor. A monitor the user paused is
+    /// left alone (returns Ok without starting anything).
     pub async fn start_monitor(&self, monitor_id: u32) -> Result<()> {
+        let _ops = self.monitor_ops.lock().await;
+        self.start_monitor_locked(monitor_id).await
+    }
+
+    /// [`Self::start_monitor`] for callers that already hold `monitor_ops`.
+    async fn start_monitor_locked(&self, monitor_id: u32) -> Result<()> {
+        if self.is_user_paused(monitor_id) {
+            info!(
+                monitor_id,
+                "not starting vision capture on monitor {}: it is paused by the user", monitor_id
+            );
+            return Ok(());
+        }
+
         // Check if already recording
         if self.recording_tasks.contains_key(&monitor_id) {
             debug!("Monitor {} is already recording", monitor_id);
@@ -575,6 +687,44 @@ impl VisionManager {
 
     /// Stop recording on a specific monitor
     pub async fn stop_monitor(&self, monitor_id: u32) -> Result<()> {
+        let _ops = self.monitor_ops.lock().await;
+        self.stop_monitor_locked(monitor_id).await
+    }
+
+    /// Pause a monitor at the user's request: it joins the paused set first
+    /// (so no watcher pass can restart it), then its capture task stops.
+    pub async fn pause_monitor(&self, monitor_id: u32) -> Result<()> {
+        let _ops = self.monitor_ops.lock().await;
+        if self.device_control.mark_paused(monitor_id) {
+            info!(monitor_id, "user paused vision capture on monitor {}", monitor_id);
+        }
+        self.stop_monitor_locked(monitor_id).await
+    }
+
+    /// Resume a monitor the user paused. The pause is lifted first; when the
+    /// manager is running the monitor starts right away, otherwise it starts
+    /// with the next `start()`.
+    pub async fn resume_monitor(&self, monitor_id: u32) -> Result<(), DeviceControlError> {
+        let _ops = self.monitor_ops.lock().await;
+        if self.device_control.clear_paused(monitor_id) {
+            info!(monitor_id, "user resumed vision capture on monitor {}", monitor_id);
+        }
+        if *self.status.read().await != VisionManagerStatus::Running {
+            return Ok(());
+        }
+        let monitor = get_monitor_by_id(monitor_id)
+            .await
+            .ok_or(DeviceControlError::NotFound(monitor_id))?;
+        if !self.is_monitor_allowed(&monitor) {
+            return Err(DeviceControlError::NotSelected(monitor_id));
+        }
+        self.start_monitor_locked(monitor_id)
+            .await
+            .map_err(DeviceControlError::Failed)
+    }
+
+    /// [`Self::stop_monitor`] for callers that already hold `monitor_ops`.
+    async fn stop_monitor_locked(&self, monitor_id: u32) -> Result<()> {
         // Stop the HD recorder first. Aborting drops its ffmpeg stdin, which
         // sends EOF so ffmpeg finalizes the .mp4 (moov atom) on its own.
         if let Some((_, hd_handle)) = self.hd_recording_tasks.remove(&monitor_id) {
@@ -648,6 +798,7 @@ impl VisionManager {
     /// Shutdown the VisionManager
     pub async fn shutdown(&self) -> Result<()> {
         info!("Shutting down VisionManager");
+        self.device_control.detach(self);
         // Signal the frame-linker actor to stop. Drops of the cloned
         // senders held by recorder/capture loops will also close the
         // channel; either path exits the actor cleanly.
@@ -655,6 +806,339 @@ impl VisionManager {
             .store(true, std::sync::atomic::Ordering::Relaxed);
         self.stop().await
     }
+}
+
+/// True when a start attempt left no task running only because the user
+/// paused every candidate monitor. Starting nothing is then the intended
+/// state, not a failure.
+fn all_paused_by_user(task_count: usize, candidates: usize, paused: usize) -> bool {
+    task_count == 0 && candidates > 0 && paused == candidates
+}
+
+// ---------------------------------------------------------------------------
+// Per-monitor user pause (`/vision/device/*`)
+// ---------------------------------------------------------------------------
+
+/// A monitor as the latest enumeration saw it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MonitorSummary {
+    pub id: u32,
+    pub stable_id: String,
+    pub name: String,
+    pub x: i32,
+    pub y: i32,
+    pub width: u32,
+    pub height: u32,
+    pub is_primary: bool,
+    /// Passes the user's monitor selection (`VisionManager::is_monitor_allowed`).
+    pub selected: bool,
+}
+
+impl MonitorSummary {
+    pub fn from_monitor(monitor: &SafeMonitor, selected: bool) -> Self {
+        Self {
+            id: monitor.id(),
+            stable_id: monitor.stable_id(),
+            name: monitor.name().to_string(),
+            x: monitor.x(),
+            y: monitor.y(),
+            width: monitor.width(),
+            height: monitor.height(),
+            is_primary: monitor.is_primary(),
+            selected,
+        }
+    }
+}
+
+/// Recording state of one monitor, as `/vision/device/status` reports it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MonitorDeviceState {
+    pub id: u32,
+    pub name: String,
+    /// A capture task is running and the monitor is not paused.
+    pub active: bool,
+    /// The user paused this monitor.
+    pub user_disabled: bool,
+}
+
+/// Why a pause or resume request was refused.
+#[derive(Debug)]
+pub enum DeviceControlError {
+    /// No connected monitor has this id.
+    NotFound(u32),
+    /// The monitor is connected but excluded by the user's monitor selection.
+    NotSelected(u32),
+    /// Starting or stopping the capture task failed.
+    Failed(anyhow::Error),
+}
+
+impl std::fmt::Display for DeviceControlError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            DeviceControlError::NotFound(id) => write!(f, "monitor {} not found", id),
+            DeviceControlError::NotSelected(id) => write!(
+                f,
+                "monitor {} is not selected for recording in the monitor settings",
+                id
+            ),
+            DeviceControlError::Failed(e) => write!(f, "{:#}", e),
+        }
+    }
+}
+
+impl std::error::Error for DeviceControlError {}
+
+#[derive(Default)]
+struct DeviceControlState {
+    /// Paused monitor id -> its `stable_id` when last enumerated (None when
+    /// the monitor was paused before any enumeration saw it).
+    paused: BTreeMap<u32, Option<String>>,
+    /// Latest enumeration, in the order the OS reported it.
+    monitors: Vec<MonitorSummary>,
+    /// The manager that currently owns capture, if any.
+    manager: Option<Weak<VisionManager>>,
+}
+
+/// Which monitors the user paused from the recording popover or tray.
+///
+/// The pause is a user decision, so it lives outside any single
+/// [`VisionManager`]: managers come and go (capture session restarts, DRM and
+/// work-hours pauses, engine respawns) while the process keeps running, and
+/// every new manager honours the same set. Nothing is written to disk, so a
+/// fresh process starts with every monitor unpaused.
+///
+/// Pauses are keyed by numeric monitor id, the id the API uses. When a paused
+/// monitor disappears and a monitor with the same `stable_id` shows up under a
+/// new id (Windows hands out a new `HMONITOR` after a reconnect), the pause
+/// moves to the new id, so hot-plugging a paused display keeps it paused.
+#[derive(Default)]
+pub struct VisionDeviceControl {
+    state: std::sync::Mutex<DeviceControlState>,
+}
+
+static GLOBAL_DEVICE_CONTROL: Lazy<Arc<VisionDeviceControl>> =
+    Lazy::new(|| Arc::new(VisionDeviceControl::new()));
+
+impl VisionDeviceControl {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// The registry shared by every manager and the HTTP routes in this process.
+    pub fn global() -> Arc<Self> {
+        GLOBAL_DEVICE_CONTROL.clone()
+    }
+
+    fn lock(&self) -> std::sync::MutexGuard<'_, DeviceControlState> {
+        // The state stays consistent across a panic (every update is a
+        // single map or vector assignment), so recover from poisoning.
+        self.state.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    pub fn is_paused(&self, monitor_id: u32) -> bool {
+        self.lock().paused.contains_key(&monitor_id)
+    }
+
+    /// Paused monitor ids, ascending.
+    pub fn paused_ids(&self) -> Vec<u32> {
+        self.lock().paused.keys().copied().collect()
+    }
+
+    /// Add a monitor to the paused set. Returns false when it already was.
+    pub fn mark_paused(&self, monitor_id: u32) -> bool {
+        let mut state = self.lock();
+        let stable_id = state
+            .monitors
+            .iter()
+            .find(|m| m.id == monitor_id)
+            .map(|m| m.stable_id.clone());
+        match state.paused.get_mut(&monitor_id) {
+            Some(existing) => {
+                if stable_id.is_some() {
+                    *existing = stable_id;
+                }
+                false
+            }
+            None => {
+                state.paused.insert(monitor_id, stable_id);
+                true
+            }
+        }
+    }
+
+    /// Remove a monitor from the paused set. Returns false when it was not paused.
+    pub fn clear_paused(&self, monitor_id: u32) -> bool {
+        self.lock().paused.remove(&monitor_id).is_some()
+    }
+
+    /// Store a fresh enumeration and carry pauses over to monitors that came
+    /// back under a new id. Returns the `(old_id, new_id)` moves it made.
+    pub fn publish_monitors(&self, monitors: Vec<MonitorSummary>) -> Vec<(u32, u32)> {
+        let mut state = self.lock();
+        let moves = carry_pauses_over(&mut state.paused, &monitors);
+        state.monitors = monitors;
+        drop(state);
+        for (old_id, new_id) in &moves {
+            info!(
+                old_id,
+                new_id,
+                "monitor {} reappeared as monitor {}; it stays paused by the user",
+                old_id,
+                new_id
+            );
+        }
+        moves
+    }
+
+    /// The latest enumeration.
+    pub fn monitors(&self) -> Vec<MonitorSummary> {
+        self.lock().monitors.clone()
+    }
+
+    fn find_monitor(&self, monitor_id: u32) -> Option<MonitorSummary> {
+        self.lock()
+            .monitors
+            .iter()
+            .find(|m| m.id == monitor_id)
+            .cloned()
+    }
+
+    /// Make `manager` the one pause and resume requests act on.
+    pub fn attach(&self, manager: &Arc<VisionManager>) {
+        self.lock().manager = Some(Arc::downgrade(manager));
+    }
+
+    /// Forget `manager` if it is the attached one.
+    pub fn detach(&self, manager: &VisionManager) {
+        let mut state = self.lock();
+        let attached = state
+            .manager
+            .as_ref()
+            .map(|weak| std::ptr::eq(weak.as_ptr(), manager))
+            .unwrap_or(false);
+        if attached {
+            state.manager = None;
+        }
+    }
+
+    /// The attached manager, while it is alive.
+    pub fn manager(&self) -> Option<Arc<VisionManager>> {
+        self.lock().manager.as_ref().and_then(Weak::upgrade)
+    }
+
+    /// One row per selected monitor of the latest enumeration.
+    pub fn status(&self) -> Vec<MonitorDeviceState> {
+        let (monitors, paused, manager) = {
+            let state = self.lock();
+            let paused: HashSet<u32> = state.paused.keys().copied().collect();
+            let manager = state.manager.as_ref().and_then(Weak::upgrade);
+            (state.monitors.clone(), paused, manager)
+        };
+        monitors
+            .into_iter()
+            .filter(|m| m.selected)
+            .map(|m| {
+                let user_disabled = paused.contains(&m.id);
+                let recording = manager
+                    .as_ref()
+                    .map(|vm| vm.is_monitor_recording(m.id))
+                    .unwrap_or(false);
+                MonitorDeviceState {
+                    id: m.id,
+                    name: m.name,
+                    active: recording && !user_disabled,
+                    user_disabled,
+                }
+            })
+            .collect()
+    }
+
+    fn knows_monitor(&self, monitor_id: u32) -> bool {
+        self.is_paused(monitor_id) || self.find_monitor(monitor_id).is_some()
+    }
+
+    /// Pause a monitor at the user's request and stop its capture.
+    pub async fn pause_monitor(&self, monitor_id: u32) -> Result<(), DeviceControlError> {
+        let manager = self.manager();
+        let recording = manager
+            .as_ref()
+            .map(|vm| vm.is_monitor_recording(monitor_id))
+            .unwrap_or(false);
+        if !recording && !self.knows_monitor(monitor_id) {
+            return Err(DeviceControlError::NotFound(monitor_id));
+        }
+        match manager {
+            Some(vm) => vm
+                .pause_monitor(monitor_id)
+                .await
+                .map_err(DeviceControlError::Failed),
+            None => {
+                if self.mark_paused(monitor_id) {
+                    info!(
+                        monitor_id,
+                        "user paused vision capture on monitor {} (capture not running)",
+                        monitor_id
+                    );
+                }
+                Ok(())
+            }
+        }
+    }
+
+    /// Lift a user pause and start the monitor again when capture is running.
+    pub async fn resume_monitor(&self, monitor_id: u32) -> Result<(), DeviceControlError> {
+        match self.manager() {
+            Some(vm) => vm.resume_monitor(monitor_id).await,
+            None => {
+                let known = self.knows_monitor(monitor_id);
+                if self.clear_paused(monitor_id) {
+                    info!(
+                        monitor_id,
+                        "user resumed vision capture on monitor {} (capture not running)",
+                        monitor_id
+                    );
+                    Ok(())
+                } else if known {
+                    Ok(())
+                } else {
+                    Err(DeviceControlError::NotFound(monitor_id))
+                }
+            }
+        }
+    }
+}
+
+/// Keep pauses attached to the right monitors after a re-enumeration:
+/// refresh the remembered `stable_id` of every paused monitor that is still
+/// present, then move the pause of each paused id that vanished to a present,
+/// unpaused monitor with the same `stable_id`.
+fn carry_pauses_over(
+    paused: &mut BTreeMap<u32, Option<String>>,
+    monitors: &[MonitorSummary],
+) -> Vec<(u32, u32)> {
+    for monitor in monitors {
+        if let Some(stable_id) = paused.get_mut(&monitor.id) {
+            *stable_id = Some(monitor.stable_id.clone());
+        }
+    }
+    let present: HashSet<u32> = monitors.iter().map(|m| m.id).collect();
+    let vanished: Vec<(u32, String)> = paused
+        .iter()
+        .filter(|(id, _)| !present.contains(id))
+        .filter_map(|(id, stable_id)| stable_id.clone().map(|s| (*id, s)))
+        .collect();
+    let mut moves = Vec::new();
+    for (old_id, stable_id) in vanished {
+        let target = monitors
+            .iter()
+            .find(|m| m.stable_id == stable_id && !paused.contains_key(&m.id));
+        if let Some(target) = target {
+            paused.remove(&old_id);
+            paused.insert(target.id, Some(stable_id));
+            moves.push((old_id, target.id));
+        }
+    }
+    moves
 }
 
 #[cfg(test)]
@@ -737,8 +1221,203 @@ mod tests {
             "expected Err when no monitors are connected, got: {:?}",
             result
         );
+        // Zero enumerated displays has its own error, not the stale-allowlist one.
+        let message = format!("{:#}", result.unwrap_err());
+        assert!(message.contains("no displays enumerated"), "{message}");
         assert_eq!(vm.status().await, VisionManagerStatus::Stopped);
         assert_eq!(vm.recording_tasks.len(), 0);
+    }
+
+    fn summary(id: u32, stable_id: &str, selected: bool) -> MonitorSummary {
+        MonitorSummary {
+            id,
+            stable_id: stable_id.to_string(),
+            name: format!("Display {id}"),
+            x: 0,
+            y: 0,
+            width: 1920,
+            height: 1080,
+            is_primary: id == 1,
+            selected,
+        }
+    }
+
+    /// A capture task stand-in that runs until aborted.
+    fn idle_task() -> JoinHandle<()> {
+        tokio::spawn(async {
+            tokio::time::sleep(std::time::Duration::from_secs(3600)).await;
+        })
+    }
+
+    #[test]
+    fn all_paused_by_user_only_when_every_candidate_is_paused() {
+        assert!(all_paused_by_user(0, 2, 2));
+        assert!(!all_paused_by_user(0, 2, 1), "one unpaused monitor failed");
+        assert!(!all_paused_by_user(1, 2, 2), "a task is running");
+        assert!(!all_paused_by_user(0, 0, 0), "nothing was a candidate");
+    }
+
+    #[test]
+    fn pauses_follow_a_monitor_that_returns_under_a_new_id() {
+        let control = VisionDeviceControl::new();
+        control.publish_monitors(vec![summary(10, "DELL_2560x1440_0,0", true)]);
+        assert!(control.mark_paused(10));
+        assert!(!control.mark_paused(10), "already paused");
+
+        // Unplugged: the pause stays on the old id.
+        assert!(control.publish_monitors(vec![]).is_empty());
+        assert_eq!(control.paused_ids(), vec![10]);
+
+        // Plugged back in under a new HMONITOR: the pause moves with it.
+        let moves = control.publish_monitors(vec![
+            summary(1, "BUILTIN_1920x1080_2560,0", true),
+            summary(42, "DELL_2560x1440_0,0", true),
+        ]);
+        assert_eq!(moves, vec![(10, 42)]);
+        assert_eq!(control.paused_ids(), vec![42]);
+        assert!(control.is_paused(42));
+        assert!(!control.is_paused(1));
+    }
+
+    #[test]
+    fn pauses_do_not_move_onto_an_already_paused_or_different_monitor() {
+        let mut paused = BTreeMap::new();
+        paused.insert(5, Some("A_1x1_0,0".to_string()));
+        paused.insert(6, Some("B_1x1_0,0".to_string()));
+        paused.insert(7, None);
+        // 5 vanished; its stable id now belongs to 6 which is already paused.
+        // 7 was paused before any enumeration saw it and has no stable id.
+        let moves = carry_pauses_over(
+            &mut paused,
+            &[summary(6, "A_1x1_0,0", true), summary(8, "C_1x1_0,0", true)],
+        );
+        assert!(moves.is_empty());
+        assert_eq!(paused.keys().copied().collect::<Vec<_>>(), vec![5, 6, 7]);
+        // The present paused monitor's stable id was refreshed.
+        assert_eq!(paused[&6].as_deref(), Some("A_1x1_0,0"));
+    }
+
+    #[test]
+    fn status_reports_selected_monitors_with_pause_state() {
+        let control = VisionDeviceControl::new();
+        control.publish_monitors(vec![
+            summary(1, "A", true),
+            summary(2, "B", true),
+            summary(3, "C", false),
+        ]);
+        control.mark_paused(2);
+        control.mark_paused(3);
+        let status = control.status();
+        assert_eq!(
+            status,
+            vec![
+                MonitorDeviceState {
+                    id: 1,
+                    name: "Display 1".into(),
+                    active: false,
+                    user_disabled: false,
+                },
+                MonitorDeviceState {
+                    id: 2,
+                    name: "Display 2".into(),
+                    active: false,
+                    user_disabled: true,
+                },
+            ]
+        );
+    }
+
+    #[tokio::test]
+    async fn pause_stops_the_task_and_blocks_restarts_until_resumed() {
+        let control = Arc::new(VisionDeviceControl::new());
+        let vm = Arc::new(
+            make_vm_with_monitor_ids(vec![])
+                .await
+                .with_device_control(control.clone()),
+        );
+        control.attach(&vm);
+        control.publish_monitors(vec![summary(1, "A", true), summary(2, "B", true)]);
+        vm.recording_tasks.insert(1, idle_task());
+        vm.recording_tasks.insert(2, idle_task());
+
+        let active: Vec<u32> = control
+            .status()
+            .iter()
+            .filter(|m| m.active)
+            .map(|m| m.id)
+            .collect();
+        assert_eq!(active, vec![1, 2]);
+
+        control.pause_monitor(1).await.expect("pause");
+        assert!(vm.is_user_paused(1));
+        assert!(!vm.recording_tasks.contains_key(&1), "task stopped");
+        assert!(vm.recording_tasks.contains_key(&2), "other monitor untouched");
+        let row = control.status().into_iter().find(|m| m.id == 1).unwrap();
+        assert!(row.user_disabled && !row.active);
+
+        // Watcher-style restart attempts are refused while paused.
+        vm.start_monitor(1).await.expect("start of a paused monitor is a no-op");
+        assert!(!vm.recording_tasks.contains_key(&1));
+
+        // The manager is not running, so resume only lifts the pause; the
+        // monitor starts with the next start().
+        control.resume_monitor(1).await.expect("resume");
+        assert!(!vm.is_user_paused(1));
+        assert!(!vm.recording_tasks.contains_key(&1));
+
+        // Unknown monitors are refused.
+        assert!(matches!(
+            control.pause_monitor(77).await,
+            Err(DeviceControlError::NotFound(77))
+        ));
+
+        if let Some((_, task)) = vm.recording_tasks.remove(&2) {
+            task.abort();
+        }
+    }
+
+    #[tokio::test]
+    async fn pauses_outlive_the_manager_that_recorded_them() {
+        let control = Arc::new(VisionDeviceControl::new());
+        control.publish_monitors(vec![summary(1, "A", true)]);
+        {
+            let vm = Arc::new(
+                make_vm_with_monitor_ids(vec![])
+                    .await
+                    .with_device_control(control.clone()),
+            );
+            control.attach(&vm);
+            control.pause_monitor(1).await.unwrap();
+            vm.shutdown().await.unwrap();
+            assert!(control.manager().is_none(), "shutdown detaches the manager");
+        }
+        // A new manager (capture restart or engine respawn) sees the pause.
+        let vm = make_vm_with_monitor_ids(vec![])
+            .await
+            .with_device_control(control.clone());
+        assert!(vm.is_user_paused(1));
+        vm.start_monitor(1).await.unwrap();
+        assert!(vm.recording_tasks.is_empty());
+    }
+
+    #[tokio::test]
+    async fn detach_ignores_a_manager_that_is_not_attached() {
+        let control = Arc::new(VisionDeviceControl::new());
+        let first = Arc::new(
+            make_vm_with_monitor_ids(vec![])
+                .await
+                .with_device_control(control.clone()),
+        );
+        let second = Arc::new(
+            make_vm_with_monitor_ids(vec![])
+                .await
+                .with_device_control(control.clone()),
+        );
+        control.attach(&first);
+        control.attach(&second);
+        control.detach(&first);
+        let attached = control.manager().expect("second stays attached");
+        assert!(Arc::ptr_eq(&attached, &second));
     }
 
     /// Verify that stop_monitor completes promptly when the task finishes normally.

@@ -6,5 +6,8 @@
 mod manager;
 mod monitor_watcher;
 
-pub use manager::{VisionManager, VisionManagerConfig, VisionManagerStatus};
+pub use manager::{
+    DeviceControlError, MonitorDeviceState, MonitorSummary, VisionDeviceControl, VisionManager,
+    VisionManagerConfig, VisionManagerStatus,
+};
 pub use monitor_watcher::{start_monitor_watcher, stop_monitor_watcher};

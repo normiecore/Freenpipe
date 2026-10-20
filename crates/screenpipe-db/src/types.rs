@@ -867,6 +867,9 @@ pub struct InsertUiEvent {
     pub element_description: Option<String>,
     pub element_automation_id: Option<String>,
     pub element_bounds: Option<String>,
+    /// Compact JSON array, outermost first, of `{"role", "name"?}` objects for
+    /// the containers of the element the event hit (`ui_events.element_ancestors`).
+    pub element_ancestors: Option<String>,
     pub frame_id: Option<i64>,
 }
 

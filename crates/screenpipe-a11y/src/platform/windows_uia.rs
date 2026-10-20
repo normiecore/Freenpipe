@@ -8,7 +8,10 @@
 //! event-driven capture.
 
 use crate::config::UiCaptureConfig;
-use crate::events::{AccessibilityNode, ElementBounds, ElementContext, WindowTreeSnapshot};
+use crate::events::{
+    ancestors_root_first, AccessibilityNode, ElementAncestor, ElementBounds, ElementContext,
+    RawAncestor, WindowTreeSnapshot, MAX_ELEMENT_ANCESTORS,
+};
 use chrono::Utc;
 use crossbeam_channel::Sender;
 use parking_lot::Mutex;
@@ -41,6 +44,13 @@ use windows::Win32::UI::WindowsAndMessaging::{
 };
 
 const LOCKED_SCREEN_UIA_BACKOFF: Duration = Duration::from_millis(1000);
+
+/// Longest time a click spends climbing the UIA parent chain. Some providers
+/// answer slowly; the walk keeps what it has when the budget runs out.
+const ANCESTOR_WALK_BUDGET: Duration = Duration::from_millis(40);
+
+/// Class name of the UIA root (desktop) element. The walk stops below it.
+const DESKTOP_ROOT_CLASS: &str = "#32769";
 
 /// Returns true if the user has produced a mouse/keyboard event within
 /// `pause_extraction_on_input_ms`. The UIA worker uses this to skip tree captures during
@@ -461,16 +471,68 @@ impl UiaContext {
         }
     }
 
-    /// Get element at screen position using ElementFromPoint
-    fn element_from_point(&self, x: i32, y: i32) -> Option<ElementContext> {
+    /// Get element at screen position using ElementFromPoint, with the chain
+    /// of containers it sits in.
+    ///
+    /// Uses the element-scope request: a click needs the hit element's own
+    /// properties plus a live reference to climb from, not its subtree.
+    fn element_from_point(
+        &self,
+        x: i32,
+        y: i32,
+        config: &UiCaptureConfig,
+    ) -> Option<ElementContext> {
         unsafe {
             let point = POINT { x, y };
             let element = self
                 .automation
-                .ElementFromPointBuildCache(point, &self.cache_request)
+                .ElementFromPointBuildCache(point, &self.walker_cache_request)
                 .ok()?;
-            Some(self.element_to_context(&element))
+            let mut ctx = self.element_to_context(&element);
+            ctx.ancestors = self.element_ancestors(&element, config);
+            Some(ctx)
         }
+    }
+
+    /// Climb from `element` with the control-view walker and return its
+    /// containers, outermost first, stopping below the desktop root. Bounded
+    /// by depth and time. Elements UIA marks as password never contribute a
+    /// name.
+    fn element_ancestors(
+        &self,
+        element: &IUIAutomationElement,
+        config: &UiCaptureConfig,
+    ) -> Vec<ElementAncestor> {
+        let started = Instant::now();
+        let mut nearest_first: Vec<RawAncestor> = Vec::new();
+        let mut current = element.clone();
+        while nearest_first.len() < MAX_ELEMENT_ANCESTORS && started.elapsed() < ANCESTOR_WALK_BUDGET
+        {
+            let parent = unsafe {
+                self.tree_walker
+                    .GetParentElementBuildCache(&current, &self.walker_cache_request)
+            };
+            let parent = match parent {
+                Ok(parent) => parent,
+                Err(_) => break,
+            };
+            if self.get_cached_string(&parent, UIA_ClassNamePropertyId).as_deref()
+                == Some(DESKTOP_ROOT_CLASS)
+            {
+                break;
+            }
+            let role = self.get_control_type_name(&parent);
+            let is_password = self.get_cached_bool(&parent, UIA_IsPasswordPropertyId)
+                || config.is_password_field(Some(&role), None);
+            let name = self.get_cached_string(&parent, UIA_NamePropertyId);
+            nearest_first.push(RawAncestor {
+                role,
+                name,
+                is_password,
+            });
+            current = parent;
+        }
+        ancestors_root_first(nearest_first)
     }
 
     /// Get the currently focused element
@@ -488,7 +550,12 @@ impl UiaContext {
     fn element_to_context(&self, element: &IUIAutomationElement) -> ElementContext {
         let role = self.get_control_type_name(element);
         let name = self.get_cached_string(element, UIA_NamePropertyId);
-        let value = self.get_cached_string(element, UIA_ValueValuePropertyId);
+        // Never keep the text of a field UIA marks as a password.
+        let value = if self.get_cached_bool(element, UIA_IsPasswordPropertyId) {
+            None
+        } else {
+            self.get_cached_string(element, UIA_ValueValuePropertyId)
+        };
         let automation_id = self.get_cached_string(element, UIA_AutomationIdPropertyId);
         let bounds = self.get_cached_bounds(element);
 
@@ -499,6 +566,7 @@ impl UiaContext {
             description: None,
             automation_id,
             bounds,
+            ancestors: Vec::new(),
         }
     }
 
@@ -784,7 +852,7 @@ pub fn run_uia_thread(
             std::mem::take(&mut *queue)
         };
         for req in clicks {
-            if let Some(ctx) = uia.element_from_point(req.x, req.y) {
+            if let Some(ctx) = uia.element_from_point(req.x, req.y, &config) {
                 let _ = element_tx.try_send((req, ctx));
             }
         }
@@ -1482,7 +1550,7 @@ mod tests {
                 .expect("GetCursorPos failed");
         }
 
-        let ctx = uia.element_from_point(point.x, point.y);
+        let ctx = uia.element_from_point(point.x, point.y, &UiCaptureConfig::default());
         assert!(ctx.is_some(), "No element at cursor position");
 
         let ctx = ctx.unwrap();
