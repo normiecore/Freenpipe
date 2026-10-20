@@ -2,39 +2,39 @@
 
 > Generated file: the merger routine regenerates it with `python3 tools/plan/status.py --write`. Do not edit it by hand. The plan is [PLAN.md](PLAN.md); the process is [docs/dev/cloud-runbook.md](../dev/cloud-runbook.md).
 
-Generated 2026-10-20T09:56:40Z from `origin/main` (latest code commit `b3d3c31`). GitHub data: available (via gh).
+Generated 2026-10-20T10:47:55Z from `origin/main` (latest code commit `bc50aaf`). GitHub data: available (via gh).
 
 ## Progress
 
-**17 of 155 work packages merged (11.0%)**: 1 in review, 2 claimed, 31 ready, 104 blocked.
+**18 of 155 work packages merged (11.6%)**: 2 in review, 1 claimed, 30 ready, 104 blocked.
 
 | Wave | Theme | Merged | In review | Claimed | Ready | Blocked | Progress |
 |---|---|---|---|---|---|---|---|
 | 0 | Foundation: build, ee/ stubs, de-cloud, rebrand | 13/13 | 0 | 0 | 0 | 0 | `##########` 100% |
-| 1 | Cross-cutting foundations: schema v2.7, settings schema, integration seams | 4/5 | 1 | 0 | 0 | 0 | `########--` 80% |
-| 2 | Engine data layer and core backends | 0/27 | 0 | 2 | 25 | 0 | `----------` 0% |
+| 1 | Cross-cutting foundations: schema v2.7, settings schema, integration seams | 5/5 | 0 | 0 | 0 | 0 | `##########` 100% |
+| 2 | Engine data layer and core backends | 0/27 | 2 | 1 | 24 | 0 | `----------` 0% |
 | 3 | Feature backends (search, pipes, connections, capture, audio) | 0/31 | 0 | 0 | 6 | 25 | `----------` 0% |
 | 4 | Advanced backends, agents runtime, app shell | 0/22 | 0 | 0 | 0 | 22 | `----------` 0% |
 | 5 | Feature UIs and second-tier backends | 0/24 | 0 | 0 | 0 | 24 | `----------` 0% |
 | 6 | Agent/workflow UIs, piggyback, hybrid bulk | 0/21 | 0 | 0 | 0 | 21 | `----------` 0% |
 | 7 | Hybrid lifecycle, overlays, chat follow-ups | 0/9 | 0 | 0 | 0 | 9 | `----------` 0% |
 | 8 | Final UI pieces and surface audit | 0/3 | 0 | 0 | 0 | 3 | `----------` 0% |
-| all | | 17/155 | 1 | 2 | 31 | 104 | `#---------` 11.0% |
+| all | | 18/155 | 2 | 1 | 30 | 104 | `#---------` 11.6% |
 
-CI on main (merge gate on the latest non-status commit `b3d3c31`): **pending** (test-windows: in_progress; waiting for windows, linux, gates)
+CI on main (merge gate on the latest non-status commit `bc50aaf`): **pending** (test-windows: in_progress; trufflehog: in_progress; waiting for windows, linux, gates)
 
 ## In review
 
 | WP | PR | Head | CI | Review | Mergeable | Worker |
 |---|---|---|---|---|---|---|
-| W1-04 | [#16](https://github.com/normiecore/Freenpipe/pull/16) | `0e6d7ff` | pending (test-windows: queued; trufflehog: queued; waiting for windows, linux, gates) | pending | yes | - |
+| W2-12 | [#18](https://github.com/normiecore/Freenpipe/pull/18) | `aa519e0` | pending (linux: in_progress; test-windows: in_progress; windows: in_progress) | pending | unknown | - |
+| W2-16 | [#17](https://github.com/normiecore/Freenpipe/pull/17) | `2820664` | pending (gates: in_progress; linux: in_progress; test-windows: in_progress; windows: in_progress) | pending | unknown | - |
 
 ## Claimed
 
 | WP | Worker | Last commit (UTC) | Work commits | State |
 |---|---|---|---|---|
-| W2-12 | unknown | 2026-10-20T09:54:18Z | 1 | active |
-| W2-16 | unknown | 2026-10-20T09:55:28Z | 4 | active |
+| W2-26 | unknown | 2026-10-20T10:37:51Z | 2 | active |
 
 ## Ready, in plan order
 
@@ -63,7 +63,6 @@ CI on main (merge gate on the latest non-status commit `b3d3c31`): **pending** (
 | W2-23 | 2 | L | Pi runtime 0.84.1, isolated config, baseline bun, compaction patch |
 | W2-24 | 2 | M | Engine local stubs: attribution headers, telemetry no-op routes, local data-sync |
 | W2-25 | 2 | L | Frontend stack refresh and browser-dev mock runtime |
-| W2-26 | 2 | L | App engine supervision: auto-respawn, port-conflict classification, safe relaunch |
 | W2-27 | 2 | L | App startup hardening: argv helper modes, autostart, focus handoff, env, AVX2, WER, opener |
 | W3-10 | 3 | L | PII redaction surfaces v2 |
 | W3-18 | 3 | L | Notifications v2 backend on :11435 |
@@ -118,6 +117,8 @@ Recorded 2026-10-20 on main `4d052c5`, which carries all 13 wave 0 work packages
 - Run the local harness checks (W0-01 `/health`, W0-02 log scan, W0-06 and W0-08 live calls) when disk allows a main-checkout engine build.
 - Review-time follow-ups are listed in `docs/dev/coordinator-handoff.md`.
 
+Complete waves awaiting the integration checklist: 1.
+
 ## Board
 
 ### Wave 0: Foundation: build, ee/ stubs, de-cloud, rebrand (13/13 merged)
@@ -138,14 +139,14 @@ Recorded 2026-10-20 on main `4d052c5`, which carries all 13 wave 0 work packages
 | W0-12 | M | merged | Rebrand user-visible identity to Freenpipe | merge `06383cc` |
 | W0-13 | M | merged | Vendor git dependencies into third_party/ | merge `d482528` |
 
-### Wave 1: Cross-cutting foundations: schema v2.7, settings schema, integration seams (4/5 merged)
+### Wave 1: Cross-cutting foundations: schema v2.7, settings schema, integration seams (5/5 merged)
 
 | WP | Size | Status | Title | Detail |
 |---|---|---|---|---|
 | W1-01 | L | merged | Schema v2.7.104: 28 migrations and ocr_text retirement | merge `0ca3a2b` |
 | W1-02 | L | merged | Settings schema v2 and store compatibility | merge `5d279d8` |
 | W1-03 | M | merged | Integration seams, stub modules and shared constants | merge `b3d3c31` |
-| W1-04 | S | in_review | Enterprise and plan-gate no-op surface | PR #16: CI pending, review pending |
+| W1-04 | S | merged | Enterprise and plan-gate no-op surface | merge `1bdc390` |
 | W1-05 | M | merged | Licence gating for commercial builds | merge `40c94a6` |
 
 ### Wave 2: Engine data layer and core backends (0/27 merged)
@@ -163,11 +164,11 @@ Recorded 2026-10-20 on main `4d052c5`, which carries all 13 wave 0 work packages
 | W2-09 | M | ready | Response formats, calendar time literals, tag autocomplete |  |
 | W2-10 | L | ready | Frame media routes: thumbnail, preview samples, preview media, typed errors, auth |  |
 | W2-11 | L | ready | Per-monitor vision control and display layout persistence |  |
-| W2-12 | L | claimed | Native WinRT/D3D11 Windows Graphics Capture and frame-diff hardening | unknown, last commit 2026-10-20T09:54:18Z |
+| W2-12 | L | in_review | Native WinRT/D3D11 Windows Graphics Capture and frame-diff hardening | PR #18: CI pending, review pending |
 | W2-13 | L | ready | Health v2, vision metrics and recording coverage |  |
 | W2-14 | L | ready | Resource monitor v2: process tree, breakdown, leak trend |  |
 | W2-15 | L | ready | Snapshot compaction v2 and suspend/lock awareness |  |
-| W2-16 | L | claimed | Speakers v2: samples, search paging, merge integrity, reassign v2 | unknown, last commit 2026-10-20T09:55:28Z |
+| W2-16 | L | in_review | Speakers v2: samples, search paging, merge integrity, reassign v2 | PR #17: CI pending, review pending |
 | W2-17 | L | ready | Stream-scoped live speakers and strict meeting-segment mapping |  |
 | W2-18 | L | ready | Windows WASAPI loopback engine and exe-based audio exclusions |  |
 | W2-19 | L | ready | GPU runtimes and bundled models: Vulkan whisper, DirectML, install layout |  |
@@ -177,7 +178,7 @@ Recorded 2026-10-20 on main `4d052c5`, which carries all 13 wave 0 work packages
 | W2-23 | L | ready | Pi runtime 0.84.1, isolated config, baseline bun, compaction patch |  |
 | W2-24 | M | ready | Engine local stubs: attribution headers, telemetry no-op routes, local data-sync |  |
 | W2-25 | L | ready | Frontend stack refresh and browser-dev mock runtime |  |
-| W2-26 | L | ready | App engine supervision: auto-respawn, port-conflict classification, safe relaunch |  |
+| W2-26 | L | claimed | App engine supervision: auto-respawn, port-conflict classification, safe relaunch | unknown, last commit 2026-10-20T10:37:51Z |
 | W2-27 | L | ready | App startup hardening: argv helper modes, autostart, focus handoff, env, AVX2, WER, opener |  |
 
 ### Wave 3: Feature backends (search, pipes, connections, capture, audio) (0/31 merged)
