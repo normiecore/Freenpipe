@@ -4,10 +4,12 @@
 //! One bounded teardown for every way the app ends, and a safe relaunch.
 //!
 //! Quit (tray), the `RunEvent::Exit` path and a safe relaunch all run the
-//! same [`teardown`]: stop capture, shut the engine down (pipe scheduler and
-//! audio manager, 15 s for audio), wait for the engine's HTTP runtime to drain,
-//! close the SQLite pools, and stop the Pi agent sessions. Every step has its
-//! own time limit, clipped to an overall budget. A late HTTP drain, pool
+//! same [`teardown`]: stop capture, shut the engine down (background workers,
+//! pipe scheduler and audio manager, 15 s for audio, and any engine another
+//! task is starting or stopping at that moment), wait for the engine's HTTP
+//! runtime to drain, close the engine's read pool (its write pool goes with the
+//! database manager once that drains), and stop the Pi agent sessions. Every
+//! step has its own time limit, clipped to an overall budget. A late HTTP drain, pool
 //! close or Pi stop is only logged: capture and audio are already stopped, so
 //! the app leaves normally (status 0, through Tauri where it can). Only a
 //! capture or engine step that did not stop in time ends the process with
@@ -32,6 +34,7 @@
 //! this module starts the replacement itself and force-exits.
 
 use crate::recording::RecordingState;
+use crate::server_core::{AUDIO_SHUTDOWN_LIMIT, BACKGROUND_WORKER_GRACE};
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -198,21 +201,31 @@ fn spawn_pending_restart(context: &str) {
 pub struct TeardownBudget {
     pub overall: Duration,
     pub capture: Duration,
-    /// Pipe scheduler, background workers and the audio manager (whose own
-    /// shutdown is capped at 15 s inside `ServerCore::shutdown`).
+    /// `ServerCore::shutdown`: background workers (their grace,
+    /// [`BACKGROUND_WORKER_GRACE`]), the pipe scheduler (aborted, normally at
+    /// once) and the audio manager (capped at [`AUDIO_SHUTDOWN_LIMIT`]), plus
+    /// a respawn or start that is bringing an engine up or down meanwhile.
     pub engine: Duration,
     /// Engine HTTP runtime and remaining tasks letting go of the database.
     pub http_drain: Duration,
+    /// Closing the engine's read pool.
     pub pools: Duration,
     pub pi: Duration,
 }
 
+/// Room the engine step leaves for the pipe scheduler's stop on top of the
+/// workers' grace and the audio cap. Its abort normally lands at once.
+const SCHEDULER_STOP_ALLOWANCE: Duration = Duration::from_secs(1);
+
 impl Default for TeardownBudget {
     fn default() -> Self {
+        let engine = BACKGROUND_WORKER_GRACE + AUDIO_SHUTDOWN_LIMIT + SCHEDULER_STOP_ALLOWANCE;
         Self {
-            overall: Duration::from_secs(25),
+            // Capture and the engine at their limits still leave a little
+            // room for the drain; the later steps are not critical.
+            overall: Duration::from_secs(29),
             capture: Duration::from_secs(6),
-            engine: Duration::from_secs(17),
+            engine,
             http_drain: Duration::from_secs(3),
             pools: Duration::from_secs(3),
             pi: Duration::from_secs(3),
@@ -422,17 +435,27 @@ async fn teardown(app: &tauri::AppHandle, reason: &str, budget: TeardownBudget) 
     // Keep the read pool so it can be closed explicitly once the engine is gone.
     let mut read_pool = None;
     run_step(&mut report, "engine", budget.engine, deadline, async {
-        let Some(server) = server_arc else {
-            return StepOutcome::Skipped;
+        let core = match server_arc {
+            Some(server) => server.lock().await.take(),
+            None => None,
         };
-        let core = server.lock().await.take();
-        match core {
+        let stopped_here = match core {
             Some(core) => {
                 read_pool = Some(core.db.pool.clone());
                 crate::recording::shutdown_server_core(core).await;
-                StepOutcome::Done
+                true
             }
-            None => StepOutcome::Skipped,
+            None => false,
+        };
+        // A watchdog respawn, or a start that was under way when the quit
+        // began, may be stopping or retiring another generation right now.
+        // Leaving before it is done would exit with its capture or audio
+        // still running, so wait for it within this step's limit.
+        let waited = crate::recording::wait_for_engine_transitions().await;
+        if stopped_here || waited {
+            StepOutcome::Done
+        } else {
+            StepOutcome::Skipped
         }
     })
     .await;
@@ -452,11 +475,16 @@ async fn teardown(app: &tauri::AppHandle, reason: &str, budget: TeardownBudget) 
     )
     .await;
 
+    // The write pool is private to the database manager and closes with it,
+    // which is what a finished drain observed.
+    let drained = report.steps.last().map_or(false, |s| {
+        s.name == "http_drain" && s.outcome == StepOutcome::Done
+    });
     run_step(&mut report, "sqlite_pools", budget.pools, deadline, async {
         match read_pool.take() {
             Some(pool) => {
                 pool.close().await;
-                info!("all SQLite pools of the engine are closed");
+                info!("{}", pools_closed_message(drained));
                 StepOutcome::Done
             }
             None => StepOutcome::Skipped,
@@ -482,6 +510,17 @@ async fn teardown(app: &tauri::AppHandle, reason: &str, budget: TeardownBudget) 
     }
     log_teardown_result(&report, budget.overall);
     report
+}
+
+/// What the `sqlite_pools` step can say once it closed the read pool. The
+/// write pool is closed only when the database manager is gone, which the
+/// `http_drain` step observes (`drained`).
+fn pools_closed_message(drained: bool) -> &'static str {
+    if drained {
+        "all SQLite pools of the engine are closed (read pool closed here, write pool with the database manager)"
+    } else {
+        "engine read pool closed; the write pool stays open while something still holds the database manager (see http_drain)"
+    }
 }
 
 /// Log the teardown's closing line (see [`teardown_result_line`]).
@@ -1260,13 +1299,29 @@ mod tests {
     }
 
     #[test]
-    fn default_budget_covers_the_audio_shutdown_and_fits_overall() {
+    fn default_budget_covers_the_engine_shutdown_and_fits_overall() {
         let b = TeardownBudget::default();
-        // ServerCore::shutdown caps the audio manager at 15 s.
-        assert!(b.engine > Duration::from_secs(15));
+        // ServerCore::shutdown waits up to the workers' grace, then stops the
+        // scheduler, then gives the audio manager up to its own cap. A slow
+        // audio stop that still succeeds must not look like a critical
+        // overrun.
+        assert_eq!(BACKGROUND_WORKER_GRACE, Duration::from_secs(5));
+        assert_eq!(AUDIO_SHUTDOWN_LIMIT, Duration::from_secs(15));
+        assert!(b.engine > BACKGROUND_WORKER_GRACE + AUDIO_SHUTDOWN_LIMIT);
+        assert_eq!(b.engine, Duration::from_secs(21));
         assert_eq!(b.http_drain, Duration::from_secs(3));
+        // Capture and the engine at their own limits still fit the budget.
+        assert!(b.overall >= b.capture + b.engine);
         assert!(b.overall >= b.engine + b.http_drain);
-        assert!(b.overall + GUARD_MARGIN <= Duration::from_secs(30));
+        assert_eq!(b.overall + GUARD_MARGIN, Duration::from_secs(32));
+    }
+
+    #[test]
+    fn the_pool_line_claims_every_pool_closed_only_after_a_drain() {
+        assert!(pools_closed_message(true).starts_with("all SQLite pools of the engine are closed"));
+        let late = pools_closed_message(false);
+        assert!(late.starts_with("engine read pool closed;"), "{late}");
+        assert!(!late.contains("all SQLite pools"), "{late}");
     }
 
     #[tokio::test]
@@ -1362,8 +1417,8 @@ mod tests {
             Some("teardown step http_drain hit its own 3000ms limit; moving on")
         );
         assert_eq!(
-            step_overrun_message("engine", StepOutcome::OutOfBudget, ms(1500), ms(17000)).as_deref(),
-            Some("teardown step engine cut off by the overall budget after 1500ms (its own limit is 17000ms)")
+            step_overrun_message("engine", StepOutcome::OutOfBudget, ms(1500), ms(21000)).as_deref(),
+            Some("teardown step engine cut off by the overall budget after 1500ms (its own limit is 21000ms)")
         );
         assert_eq!(
             step_overrun_message("pi", StepOutcome::OutOfBudget, Duration::ZERO, ms(3000)).as_deref(),
@@ -1382,7 +1437,7 @@ mod tests {
     #[test]
     fn the_closing_line_tells_a_step_limit_from_the_overall_budget() {
         use StepOutcome::*;
-        let overall = Duration::from_secs(25);
+        let overall = TeardownBudget::default().overall;
 
         let clean = report(&[("capture", Done), ("engine", Done), ("pi", Skipped)]);
         let (late, line) = teardown_result_line(&clean, overall);
@@ -1417,7 +1472,7 @@ mod tests {
         assert!(late);
         assert!(
             line.starts_with(
-                "pre-exit teardown ran out of its 25s overall budget after 0ms (cut off: engine,http_drain; over their own limit: pi): "
+                "pre-exit teardown ran out of its 29s overall budget after 0ms (cut off: engine,http_drain; over their own limit: pi): "
             ),
             "{line}"
         );

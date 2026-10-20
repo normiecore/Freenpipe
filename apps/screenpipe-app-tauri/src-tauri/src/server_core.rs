@@ -31,6 +31,13 @@ pub const STARTUP_AUTH_STATUS_ENV: &str = "SCREENPIPE_STARTUP_AUTHENTICATION_STA
 /// Freenpipe has no account check, so the status is always "not required".
 pub const STARTUP_AUTH_NOT_REQUIRED: &str = "not_required";
 
+/// How long [`ServerCore::shutdown`] waits for the background workers before
+/// aborting them. The exit teardown's engine limit is built from this and
+/// [`AUDIO_SHUTDOWN_LIMIT`].
+pub const BACKGROUND_WORKER_GRACE: Duration = Duration::from_secs(5);
+/// Cap on the audio manager's shutdown inside [`ServerCore::shutdown`].
+pub const AUDIO_SHUTDOWN_LIMIT: Duration = Duration::from_secs(15);
+
 /// Publish the startup-auth status before the engine and pipes start, so
 /// they and every child process inherit it. No network is involved.
 pub fn export_startup_auth_status() {
@@ -940,7 +947,7 @@ impl ServerCore {
 
         // Registered background workers get the same early signal.
         self.background_workers
-            .shutdown(Duration::from_secs(5))
+            .shutdown(BACKGROUND_WORKER_GRACE)
             .await;
 
         // Stop pipe scheduler
@@ -954,10 +961,13 @@ impl ServerCore {
 
         // Shut down audio manager (releases ggml Metal resources)
         info!("Shutting down audio manager...");
-        match tokio::time::timeout(Duration::from_secs(15), self.audio_manager.shutdown()).await {
+        match tokio::time::timeout(AUDIO_SHUTDOWN_LIMIT, self.audio_manager.shutdown()).await {
             Ok(Ok(())) => info!("Audio manager shut down cleanly"),
             Ok(Err(e)) => warn!("Audio manager shutdown error: {:?}", e),
-            Err(_) => warn!("Audio manager shutdown timed out after 15s"),
+            Err(_) => warn!(
+                "Audio manager shutdown timed out after {}s",
+                AUDIO_SHUTDOWN_LIMIT.as_secs()
+            ),
         }
     }
 }

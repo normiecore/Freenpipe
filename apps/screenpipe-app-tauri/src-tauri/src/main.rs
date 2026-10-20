@@ -1293,6 +1293,10 @@ async fn app_main() {
                 std::thread::Builder::new()
                     .name("screenpipe-server".to_string())
                     .spawn(move || {
+                        // A panic before the start is over must not leave
+                        // `is_starting` set, or the watchdog waits on it forever.
+                        let mut start_guard =
+                            crate::recording::StartPanicGuard::new(is_starting_clone.clone());
                         let server_runtime = tokio::runtime::Builder::new_multi_thread()
                             .worker_threads(16)
                             .thread_name("screenpipe-worker")
@@ -1401,50 +1405,29 @@ async fn app_main() {
                                 owned_browser.clone(),
                             );
 
-                            // Phase 1: Start server core
-                            let server = match server_core::ServerCore::start(
+                            // Phase 1 (server core) and phase 2 (capture),
+                            // shared with spawn_screenpipe: a pause or quit made
+                            // meanwhile wins, and a capture failure keeps the
+                            // server so pipes/search work.
+                            let outcome = crate::recording::start_generation(
                                 &config,
                                 on_pipe_output,
                                 Some(owned_browser),
                                 cloud_token_arc.clone(),
+                                &server_arc,
+                                &capture_arc,
                             )
-                            .await
-                            {
-                                Ok(s) => s,
-                                Err(e) => {
-                                    error!("Failed to start server core: {}", e);
-                                    is_starting_clone.store(false, std::sync::atomic::Ordering::SeqCst);
-                                    return;
-                                }
-                            };
-
-                            // Phase 2: Start capture session
-                            let capture = match capture_session::CaptureSession::start(&server, &config, true).await {
-                                Ok(c) => c,
-                                Err(e) => {
-                                    error!("Failed to start capture: {}", e);
-                                    // Store server anyway so pipes/search work
-                                    let mut guard = server_arc.lock().await;
-                                    *guard = Some(server);
-                                    drop(guard);
-                                    is_starting_clone.store(false, std::sync::atomic::Ordering::SeqCst);
-                                    return;
-                                }
-                            };
-
-                            info!("Server + capture started successfully on dedicated runtime");
-                            {
-                                let mut guard = server_arc.lock().await;
-                                *guard = Some(server);
-                            }
-                            {
-                                let mut guard = capture_arc.lock().await;
-                                *guard = Some(capture);
+                            .await;
+                            start_guard.disarm();
+                            if !outcome.is_running() {
+                                is_starting_clone.store(false, std::sync::atomic::Ordering::SeqCst);
                             }
 
                             // Keep runtime alive as long as server exists;
                             // a retired generation wakes it at once.
-                            crate::recording::hold_engine_generation(server_arc).await;
+                            if outcome.keeps_engine() {
+                                crate::recording::hold_engine_generation(server_arc).await;
+                            }
                         });
                         crate::recording::stop_engine_runtime(server_runtime);
                     })

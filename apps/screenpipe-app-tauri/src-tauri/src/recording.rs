@@ -541,6 +541,10 @@ pub async fn spawn_screenpipe(
     app: tauri::AppHandle,
     _override_args: Option<Vec<String>>,
 ) -> Result<(), String> {
+    // The user (or the frontend on their behalf) asked for recording. Only
+    // the user-facing entry points set the intent; the watchdog's respawn
+    // shares `start_engine` and must never turn a pause back on.
+    crate::health::set_recording_intended(true);
     start_engine(state, app)
         .await
         .map_err(StartError::into_message)
@@ -573,12 +577,21 @@ impl From<String> for StartError {
 /// The body of `spawn_screenpipe`. The error says whether this start was
 /// blocked by a held API port, so a caller (the watchdog's respawn) never
 /// has to read shared state that an earlier or concurrent start wrote.
+///
+/// Leaves the recording intent alone: capture is started (and kept) only
+/// while the intent is on, checked again when the new session is stored, so
+/// a pause made while this runs always wins.
 pub(crate) async fn start_engine(
     state: State<'_, RecordingState>,
     app: tauri::AppHandle,
 ) -> Result<(), StartError> {
     info!("spawn_screenpipe: starting server + capture");
-    crate::health::set_recording_intended(true);
+    if crate::relaunch::is_shutting_down() {
+        info!("spawn_screenpipe: the app is quitting; not starting the engine");
+        return Err(StartError::Other(
+            "the app is quitting; the engine is not started".to_string(),
+        ));
+    }
 
     // --- Cooldown enforcement ---
     let now_epoch = std::time::SystemTime::now()
@@ -950,51 +963,22 @@ pub(crate) async fn start_engine(
             };
 
             server_runtime.block_on(async move {
-                // Phase 1: Start server
-                let server = match ServerCore::start(
+                // Phase 1 (server core) and phase 2 (capture), shared with
+                // the boot-time engine thread in main.rs.
+                let outcome = start_generation(
                     &recording_config,
                     on_pipe_output,
                     Some(owned_browser),
                     cloud_token_arc.clone(),
+                    &server_arc,
+                    &capture_arc,
                 )
-                .await
-                {
-                    Ok(s) => s,
-                    Err(e) => {
-                        error!("Failed to start server core: {}", e);
-                        let _ = result_tx.send(Err(e));
-                        return;
-                    }
-                };
-
-                // Phase 2: Start capture
-                let capture = match CaptureSession::start(&server, &recording_config, true).await {
-                    Ok(c) => c,
-                    Err(e) => {
-                        error!("Failed to start capture session: {}", e);
-                        // Server started but capture failed — store server anyway
-                        // so pipes/search still work
-                        {
-                            let mut guard = server_arc.lock().await;
-                            *guard = Some(server);
-                        }
-                        let _ = result_tx.send(Err(e));
-                        return;
-                    }
-                };
-
-                info!("Server + capture started successfully on dedicated runtime");
-                {
-                    let mut guard = server_arc.lock().await;
-                    *guard = Some(server);
+                .await;
+                let keeps_engine = outcome.keeps_engine();
+                let _ = result_tx.send(outcome.into_result());
+                if keeps_engine {
+                    hold_engine_generation(server_arc).await;
                 }
-                {
-                    let mut guard = capture_arc.lock().await;
-                    *guard = Some(capture);
-                }
-                let _ = result_tx.send(Ok(()));
-
-                hold_engine_generation(server_arc).await;
             });
             stop_engine_runtime(server_runtime);
         })
@@ -1057,6 +1041,13 @@ async fn start_capture_internal(
         // A concurrent start_capture beat us to it.
         state.is_starting.store(false, Ordering::SeqCst);
         info!("Capture already started by concurrent caller");
+        return Ok(());
+    }
+    // A pause (or a quit) since this start began wins. Checked under the
+    // capture lock, which `stop_capture` takes only after clearing the intent.
+    if !capture_wanted() {
+        state.is_starting.store(false, Ordering::SeqCst);
+        info!("recording was paused while the start was under way; not starting capture");
         return Ok(());
     }
 
@@ -1125,9 +1116,287 @@ pub(crate) fn stop_engine_runtime(runtime: tokio::runtime::Runtime) {
     info!("engine generation runtime stopped");
 }
 
+/// Engine generations in flight: started but not yet in state (from the
+/// moment `ServerCore::start` returns until the core is stored or stopped
+/// again), or being shut down by [`shutdown_server_core`]. The exit teardown
+/// waits for this to reach zero, so the app never leaves while another task
+/// (a watchdog respawn, a start that was under way when the quit began) still
+/// has an engine's capture or audio running.
+static ENGINE_TRANSITIONS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
+/// One engine generation in flight (see [`ENGINE_TRANSITIONS`]) for as long
+/// as it lives; a panic that unwinds through it ends it too.
+pub(crate) struct EngineTransition(());
+
+impl EngineTransition {
+    pub(crate) fn begin() -> Self {
+        ENGINE_TRANSITIONS.fetch_add(1, Ordering::SeqCst);
+        EngineTransition(())
+    }
+}
+
+impl Drop for EngineTransition {
+    fn drop(&mut self) {
+        ENGINE_TRANSITIONS.fetch_sub(1, Ordering::SeqCst);
+    }
+}
+
+fn engine_transitions() -> usize {
+    ENGINE_TRANSITIONS.load(Ordering::SeqCst)
+}
+
+/// Wait until no engine generation is being brought up or taken down. True
+/// when there was one to wait for. The caller bounds the wait.
+pub(crate) async fn wait_for_engine_transitions() -> bool {
+    let pending = engine_transitions();
+    if pending == 0 {
+        return false;
+    }
+    info!("waiting for {pending} engine generation(s) that are starting or stopping");
+    while engine_transitions() > 0 {
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    info!("no engine generation is starting or stopping any more");
+    true
+}
+
+/// Capture may be started (or kept): the user has not paused recording and
+/// no quit or relaunch is under way.
+fn capture_wanted() -> bool {
+    crate::health::recording_intended() && !crate::relaunch::is_shutting_down()
+}
+
+/// What an engine thread does with the generation it just started.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum InstallDecision {
+    /// A quit or relaunch began: stop the capture (if any) and the core again.
+    Retire,
+    /// Store the core; stop the capture, if one was started, because the
+    /// user paused recording meanwhile.
+    EngineOnly,
+    /// Store both.
+    EngineAndCapture,
+}
+
+/// Pure rule behind [`install_generation`]: a pause or a quit made while the
+/// engine was starting always wins over the start.
+fn install_decision(shutting_down: bool, intended: bool, has_capture: bool) -> InstallDecision {
+    if shutting_down {
+        InstallDecision::Retire
+    } else if has_capture && intended {
+        InstallDecision::EngineAndCapture
+    } else {
+        InstallDecision::EngineOnly
+    }
+}
+
+/// Where a just-started generation ended up.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Installed {
+    /// The core is in state, and so is its capture session when `capture`.
+    Running { capture: bool },
+    /// A quit or relaunch began meanwhile; everything was stopped again.
+    Retired,
+}
+
+/// Put a just-started core (and its capture session, if one was started)
+/// in state. Both slots are locked while deciding (capture first, the state's
+/// lock order), and `stop_capture` and the teardown change the intent or the
+/// quit flag before they take those locks. So a pause or quit either finds
+/// what is stored here and stops it, or happened first and is seen here.
+async fn install_generation(
+    server_arc: &Arc<Mutex<Option<ServerCore>>>,
+    capture_arc: &Arc<Mutex<Option<CaptureSession>>>,
+    server: ServerCore,
+    capture: Option<CaptureSession>,
+) -> Installed {
+    let mut capture_guard = capture_arc.lock().await;
+    let mut server_guard = server_arc.lock().await;
+    match install_decision(
+        crate::relaunch::is_shutting_down(),
+        crate::health::recording_intended(),
+        capture.is_some(),
+    ) {
+        InstallDecision::Retire => {
+            drop(server_guard);
+            drop(capture_guard);
+            warn!("a quit or relaunch began while the engine was starting; stopping the new engine again");
+            // The caller's EngineTransition (and the one inside
+            // shutdown_server_core) keeps the exit teardown waiting for this.
+            if let Some(capture) = capture {
+                capture.stop().await;
+            }
+            shutdown_server_core(server).await;
+            Installed::Retired
+        }
+        InstallDecision::EngineOnly => {
+            *server_guard = Some(server);
+            drop(server_guard);
+            if let Some(capture) = capture {
+                info!("recording was paused while the engine was starting; stopping the new capture session");
+                // Still under the capture lock, as in stop_capture, so a
+                // resume cannot start a second session while this one stops.
+                capture.stop().await;
+            }
+            Installed::Running { capture: false }
+        }
+        InstallDecision::EngineAndCapture => {
+            *server_guard = Some(server);
+            drop(server_guard);
+            *capture_guard = capture;
+            Installed::Running { capture: true }
+        }
+    }
+}
+
+/// How an engine thread's start ended.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum GenerationStart {
+    /// The core is in state, with its capture session when `capture` (none
+    /// when recording was paused while the engine started).
+    Running { capture: bool },
+    /// The core is in state but capture could not start. Pipes, search and
+    /// the HTTP API stay up: the thread keeps the runtime running.
+    CaptureFailed(String),
+    /// `ServerCore::start` failed; nothing is in state.
+    Failed(String),
+    /// A quit or relaunch began; whatever was started has been stopped again.
+    Retired,
+}
+
+impl GenerationStart {
+    /// The core is in state, so the thread must keep its runtime running
+    /// ([`hold_engine_generation`]).
+    pub(crate) fn keeps_engine(&self) -> bool {
+        matches!(
+            self,
+            GenerationStart::Running { .. } | GenerationStart::CaptureFailed(_)
+        )
+    }
+
+    pub(crate) fn is_running(&self) -> bool {
+        matches!(self, GenerationStart::Running { .. })
+    }
+
+    /// The result `spawn_screenpipe` reports.
+    fn into_result(self) -> Result<(), String> {
+        match self {
+            GenerationStart::Running { .. } => Ok(()),
+            GenerationStart::CaptureFailed(e) | GenerationStart::Failed(e) => Err(e),
+            GenerationStart::Retired => {
+                Err("the app is quitting; the engine that was starting was stopped again".into())
+            }
+        }
+    }
+}
+
+/// Phase 1 (`ServerCore::start`) and phase 2 (capture) of an engine thread,
+/// for the boot-time thread in `main.rs` and the ones `spawn_screenpipe`
+/// starts. Runs on the generation's own runtime. Capture is started only
+/// while recording is wanted, and the result is stored through
+/// [`install_generation`], so neither a pause nor a quit made meanwhile is
+/// ever overridden.
+pub(crate) async fn start_generation(
+    config: &RecordingConfig,
+    on_pipe_output: Option<screenpipe_core::pipes::OnPipeOutputLine>,
+    owned_browser: Option<Arc<screenpipe_connect::connections::browser::OwnedBrowser>>,
+    cloud_token: Arc<arc_swap::ArcSwap<Option<String>>>,
+    server_arc: &Arc<Mutex<Option<ServerCore>>>,
+    capture_arc: &Arc<Mutex<Option<CaptureSession>>>,
+) -> GenerationStart {
+    if crate::relaunch::is_shutting_down() {
+        info!("the app is quitting; not starting the engine");
+        return GenerationStart::Retired;
+    }
+    let server = match ServerCore::start(config, on_pipe_output, owned_browser, cloud_token).await {
+        Ok(s) => s,
+        Err(e) => {
+            error!("Failed to start server core: {}", e);
+            return GenerationStart::Failed(e);
+        }
+    };
+    let _in_flight = EngineTransition::begin();
+
+    let mut capture_error = None;
+    let capture = if capture_wanted() {
+        match CaptureSession::start(&server, config, true).await {
+            Ok(c) => Some(c),
+            Err(e) => {
+                error!("Failed to start capture session: {}", e);
+                capture_error = Some(e);
+                None
+            }
+        }
+    } else {
+        info!(
+            "recording was paused (or a quit began) while the engine started; not starting capture"
+        );
+        None
+    };
+
+    match install_generation(server_arc, capture_arc, server, capture).await {
+        Installed::Retired => GenerationStart::Retired,
+        Installed::Running { capture } => match capture_error {
+            Some(e) => {
+                // Keep the server (and, in the caller, its runtime) so pipes,
+                // search and the API keep working while capture is down.
+                warn!("server kept running without capture so pipes and search keep working");
+                GenerationStart::CaptureFailed(e)
+            }
+            None => {
+                if capture {
+                    info!("Server + capture started successfully on dedicated runtime");
+                } else {
+                    info!("Server started on dedicated runtime; capture stays off while recording is paused");
+                }
+                GenerationStart::Running { capture }
+            }
+        },
+    }
+}
+
+/// Armed while a boot-time engine thread starts. If that thread panics
+/// before [`StartPanicGuard::disarm`], the start flag it set is cleared and
+/// the boot recorded as failed: otherwise the watchdog would take the dead
+/// start for one still in progress and never respawn the engine.
+pub(crate) struct StartPanicGuard {
+    flag: Option<Arc<AtomicBool>>,
+    report: fn(&str) -> bool,
+}
+
+impl StartPanicGuard {
+    pub(crate) fn new(flag: Arc<AtomicBool>) -> Self {
+        StartPanicGuard {
+            flag: Some(flag),
+            report: crate::health::fail_boot_if_pending,
+        }
+    }
+
+    /// The start is over (either way). A later panic leaves the flag alone:
+    /// a newer start may own it by then.
+    pub(crate) fn disarm(&mut self) {
+        self.flag = None;
+    }
+}
+
+impl Drop for StartPanicGuard {
+    fn drop(&mut self) {
+        let Some(flag) = self.flag.take() else {
+            return;
+        };
+        if std::thread::panicking() {
+            const MSG: &str = "the engine start thread panicked";
+            error!("{MSG}; clearing its start flag");
+            flag.store(false, Ordering::SeqCst);
+            (self.report)(MSG);
+        }
+    }
+}
+
 /// Shut a `ServerCore` down and record it as retired, so the next generation
 /// waits for it to drain before opening the database again.
 pub(crate) async fn shutdown_server_core(server: ServerCore) {
+    let _in_flight = EngineTransition::begin();
     {
         let mut retired = RETIRED_GENERATIONS
             .lock()
@@ -1417,5 +1686,121 @@ mod respawn_tests {
             StartError::PortHeld("held".into()).into_message(),
             "held".to_string()
         );
+    }
+
+    #[test]
+    fn a_new_generation_never_overrides_a_pause_or_a_quit() {
+        use InstallDecision::*;
+        // A quit or relaunch began while the engine was starting: whatever
+        // was started is stopped again, intent or not.
+        assert_eq!(install_decision(true, true, true), Retire);
+        assert_eq!(install_decision(true, true, false), Retire);
+        assert_eq!(install_decision(true, false, true), Retire);
+        // Paused while capture was starting: the engine stays up, the new
+        // capture session is stopped instead of stored.
+        assert_eq!(install_decision(false, false, true), EngineOnly);
+        // No session to store (paused before capture, or capture failed).
+        assert_eq!(install_decision(false, true, false), EngineOnly);
+        assert_eq!(install_decision(false, false, false), EngineOnly);
+        // Only a start nobody paused or quit during records.
+        assert_eq!(install_decision(false, true, true), EngineAndCapture);
+    }
+
+    #[test]
+    fn a_capture_failure_keeps_the_engine_and_its_runtime() {
+        let failed = GenerationStart::CaptureFailed("no monitors matched".into());
+        assert!(failed.keeps_engine());
+        assert!(!failed.is_running());
+        assert_eq!(failed.into_result(), Err("no monitors matched".to_string()));
+
+        let paused = GenerationStart::Running { capture: false };
+        assert!(paused.keeps_engine());
+        assert!(paused.is_running());
+        assert_eq!(paused.into_result(), Ok(()));
+
+        for gone in [
+            GenerationStart::Failed("db".into()),
+            GenerationStart::Retired,
+        ] {
+            assert!(!gone.keeps_engine(), "{gone:?}");
+            assert!(!gone.is_running(), "{gone:?}");
+            assert!(gone.into_result().is_err());
+        }
+    }
+
+    #[tokio::test]
+    async fn the_teardown_can_wait_for_an_engine_that_is_starting_or_stopping() {
+        // Only this test creates transitions.
+        assert!(!wait_for_engine_transitions().await, "nothing in flight");
+        let in_flight = EngineTransition::begin();
+        assert_eq!(engine_transitions(), 1);
+        let begun = Instant::now();
+        let release = tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(150)).await;
+            drop(in_flight);
+        });
+        assert!(wait_for_engine_transitions().await);
+        assert!(begun.elapsed() >= Duration::from_millis(100));
+        release.await.unwrap();
+        assert_eq!(engine_transitions(), 0);
+
+        // A panic that unwinds through a transition ends it as well.
+        let joined = std::thread::spawn(|| {
+            let _in_flight = EngineTransition::begin();
+            panic!("engine thread panicked mid-start");
+        })
+        .join();
+        assert!(joined.is_err());
+        assert_eq!(engine_transitions(), 0);
+    }
+
+    static PANIC_REPORTS: AtomicUsize = AtomicUsize::new(0);
+
+    fn count_report(_: &str) -> bool {
+        PANIC_REPORTS.fetch_add(1, Ordering::SeqCst);
+        true
+    }
+
+    fn guard(flag: &Arc<AtomicBool>) -> StartPanicGuard {
+        StartPanicGuard {
+            flag: Some(flag.clone()),
+            report: count_report,
+        }
+    }
+
+    #[test]
+    fn a_boot_thread_that_panics_mid_start_clears_its_start_flag() {
+        let flag = Arc::new(AtomicBool::new(true));
+        let armed = guard(&flag);
+        let joined = std::thread::spawn(move || {
+            let _guard = armed;
+            panic!("ServerCore::start panicked");
+        })
+        .join();
+        assert!(joined.is_err());
+        assert!(
+            !flag.load(Ordering::SeqCst),
+            "the watchdog must not wait on a dead start"
+        );
+        assert_eq!(PANIC_REPORTS.load(Ordering::SeqCst), 1);
+
+        // Once the start is over the flag belongs to whoever set it next.
+        let flag = Arc::new(AtomicBool::new(true));
+        let mut finished = guard(&flag);
+        let joined = std::thread::spawn(move || {
+            finished.disarm();
+            let _guard = finished;
+            panic!("after the start");
+        })
+        .join();
+        assert!(joined.is_err());
+        assert!(flag.load(Ordering::SeqCst));
+
+        // An ordinary return leaves it to the start path, which clears it
+        // itself where the base code did.
+        let flag = Arc::new(AtomicBool::new(true));
+        drop(guard(&flag));
+        assert!(flag.load(Ordering::SeqCst));
+        assert_eq!(PANIC_REPORTS.load(Ordering::SeqCst), 1);
     }
 }
