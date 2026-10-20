@@ -454,8 +454,10 @@ mod tests {
             ..base.clone()
         };
         assert_ne!(g, rewritten.generation());
+        // One microsecond, not one nanosecond: Windows keeps SystemTime in 100 ns ticks,
+        // so a 1 ns step is rounded away there (NTFS mtimes have the same resolution).
         let touched = SourceStamp {
-            modified: Some(t + Duration::from_nanos(1)),
+            modified: Some(t + Duration::from_micros(1)),
             ..base.clone()
         };
         assert_ne!(g, touched.generation());
