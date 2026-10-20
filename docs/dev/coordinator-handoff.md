@@ -6,10 +6,12 @@ Updated 2026-10-20 evening. Git, PR heads and CI are the source of truth; this f
 
 - Waves 0 and 1 are merged (18 WPs). Wave 1 integration (runbook 4.7) has not been recorded yet: it needs a
   full Linux build of main and was held for disk.
-- Wave 2 core merged: W2-05, W2-12, W2-13, W2-16, W2-17, W2-18, W2-19, W2-22, W2-23, W2-26 (28/155 overall).
-- Open: W2-08 (PR #24, approved; CI re-running after the schema-test fix 0ee4802). Building: W2-27 + W2-11,
-  W2-10 + W3-30.
-- Core set still to start (decision 6): W2-01, W2-04, W2-09, W3-25, then the wave 3/4 core WPs as their
+- Wave 2 core merged: W2-05, W2-08, W2-12, W2-13, W2-16, W2-17, W2-18, W2-19, W2-22, W2-23, W2-26
+  (29/155 overall).
+- Open: W2-10 (PR #28, approved; doc nits and a merge of main pushed by the coordinator, CI), W2-11 (PR #30,
+  approved, CI), W3-30 (PR #29, fix round running: low-disk escape hatch and the two settings switches).
+  Building: W2-27, W2-01, W2-09 + W2-04.
+- Core set still to start (decision 6): W3-25, W4-05, W3-14, then the wave 3/4 core WPs as their
   dependencies merge.
 
 ## How work runs
@@ -38,6 +40,8 @@ Updated 2026-10-20 evening. Git, PR heads and CI are the source of truth; this f
   export/adapter/`SCREENPIPE_DIRECTML` checks (W2-19 open question 16): route them through the same policy
   (W4-15) or ship the redactor on CPU.
 - Trademark: the CLI binary is still named `screenpipe`.
+- W2-10 follow-up: with tower_http debug logging on, `?token=` frame URLs put the local API key in the logs
+  (the app's filter sets `tower_http=error`); strip the query in the TraceLayer span.
 - W2-23 follow-ups (PR #27, approval comment 6302600646): Clear Cache still deletes the user's global
   `~/.pi/agent` (W8-02); a failed tree swap plus a failed restore during a Pi rebuild leaves node_modules
   missing until the next start; seed and settings writes can race on first start (the engine starts the pipe
