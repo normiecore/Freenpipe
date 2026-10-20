@@ -66,6 +66,7 @@ mod owned_browser_cookies;
 mod permissions;
 mod pi;
 mod pi_command_queue;
+mod pi_extensions_manifest;
 mod pipe_suggestions_scheduler;
 mod recording;
 mod remote_sync_commands;
@@ -128,6 +129,42 @@ mod skills;
 mod specta_bindings;
 mod vault;
 mod viewer;
+
+// Planned feature modules, declared up front as empty files so the work that
+// fills one does not have to edit this list (docs/clean-room/PLAN.md section 5).
+mod activity_history;
+mod ai_tools;
+mod brain_views;
+mod chat_control;
+mod coding_workspace;
+mod cpu_compat;
+mod data_sync;
+mod db_relaunch;
+mod db_self_heal;
+mod db_wedge;
+mod disk_pressure;
+mod external_chat_import;
+mod first_run_summary;
+mod localization;
+mod native_timeline;
+mod overlay_health;
+mod pi_acp;
+mod pi_extension_packages;
+mod port_conflict;
+mod portable_mcp;
+mod power_awake;
+mod provider_automations;
+mod relaunch;
+mod screen_capture_protection;
+mod search_only;
+mod starred_sessions;
+mod storage_migration;
+mod wer;
+mod workflow_skill;
+mod workflow_video;
+mod workflow_video_cli;
+mod workflows_media;
+mod workflows_runtime;
 
 #[cfg(target_os = "macos")]
 static MIC_FOCUS_CAPTURE_RESTART: AtomicBool = AtomicBool::new(false);

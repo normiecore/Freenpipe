@@ -954,65 +954,18 @@ fn ensure_screenpipe_skill(project_dir: &str) -> Result<(), String> {
         .map_err(|e| format!("Failed to install screenpipe skills: {}", e))
 }
 
-/// Install or remove the web-search extension. Searches go to the user's AI
-/// gateway (`{gateway}/web-search`), so the tool is offered only to the
-/// gateway-backed provider and only when a gateway is configured.
-fn ensure_web_search_extension(
-    project_dir: &str,
+/// Whether a chat session gets the web-search extension. Searches go to the
+/// user's AI gateway (`{gateway}/web-search`), so the tool is offered only to
+/// the gateway-backed provider and only when a gateway is configured.
+fn chat_web_search_wanted(
     provider_config: Option<&PiProviderConfig>,
     gateway_configured: bool,
-) -> Result<(), String> {
-    let ext_dir = std::path::Path::new(project_dir)
-        .join(".pi")
-        .join("extensions");
-    let ext_path = ext_dir.join("web-search.ts");
-
+) -> bool {
     let is_gateway_provider = match provider_config {
         Some(config) => matches!(config.provider.as_str(), "screenpipe-cloud" | "pi"),
         None => true, // no preset = the gateway provider
     };
-
-    if is_gateway_provider && gateway_configured {
-        std::fs::create_dir_all(&ext_dir)
-            .map_err(|e| format!("Failed to create extensions dir: {}", e))?;
-
-        let ext_content = include_str!("../assets/extensions/web-search.ts");
-        std::fs::write(&ext_path, ext_content)
-            .map_err(|e| format!("Failed to write web-search extension: {}", e))?;
-
-        debug!("Web search extension installed at {:?}", ext_path);
-    } else if ext_path.exists() {
-        std::fs::remove_file(&ext_path)
-            .map_err(|e| format!("Failed to remove web-search extension: {}", e))?;
-
-        info!(
-            "Web search extension removed (provider {:?}, gateway configured: {})",
-            provider_config.map(|c| &c.provider),
-            gateway_configured
-        );
-    }
-
-    Ok(())
-}
-
-/// Install the MCP bridge extension. Registers proxy tools that route
-/// `mcp_call` / `mcp_list_tools` requests through the local
-/// `/mcp-servers/*` API. Always installed — does nothing when zero
-/// servers are registered.
-fn ensure_mcp_bridge_extension(project_dir: &str) -> Result<(), String> {
-    let ext_dir = std::path::Path::new(project_dir)
-        .join(".pi")
-        .join("extensions");
-    std::fs::create_dir_all(&ext_dir)
-        .map_err(|e| format!("Failed to create extensions dir: {}", e))?;
-
-    let ext_path = ext_dir.join("mcp-bridge.ts");
-    let ext_content = include_str!("../assets/extensions/mcp-bridge.ts");
-    std::fs::write(&ext_path, ext_content)
-        .map_err(|e| format!("Failed to write mcp-bridge extension: {}", e))?;
-
-    debug!("mcp-bridge extension installed at {:?}", ext_path);
-    Ok(())
+    is_gateway_provider && gateway_configured
 }
 
 /// Configuration for which AI provider Pi should use
@@ -1415,11 +1368,13 @@ pub async fn pi_start_inner(
     let _ = user_token;
     let gateway = crate::ai_gateway::gateway_access(&app);
 
-    // Install web-search extension only for gateway presets with a gateway
-    ensure_web_search_extension(&project_dir, provider_config.as_ref(), gateway.is_some())?;
-
-    // MCP bridge: lets the agent reach user-registered MCP servers.
-    ensure_mcp_bridge_extension(&project_dir)?;
+    // Bundled chat extensions (pi_extensions_manifest.rs): the MCP bridge,
+    // which lets the agent reach user-registered MCP servers, and web-search
+    // for gateway presets with a gateway.
+    crate::pi_extensions_manifest::sync_chat_extensions(
+        std::path::Path::new(&project_dir),
+        chat_web_search_wanted(provider_config.as_ref(), gateway.is_some()),
+    )?;
 
     // Ensure Pi is configured with the user's provider
     ensure_pi_config(gateway.as_ref(), provider_config.as_ref()).await?;
@@ -3571,17 +3526,24 @@ error: InstallFailed extracting tarball"#;
     #[test]
     fn test_web_search_extension_needs_a_gateway() {
         let dir = tempfile::tempdir().unwrap();
-        let project = dir.path().to_string_lossy().to_string();
         let ext = dir.path().join(".pi").join("extensions").join("web-search.ts");
         let pc = make_provider_config("screenpipe-cloud", "auto");
+        let sync = |provider: &PiProviderConfig, gateway: bool| {
+            crate::pi_extensions_manifest::sync_chat_extensions(
+                dir.path(),
+                super::chat_web_search_wanted(Some(provider), gateway),
+            )
+            .unwrap()
+        };
 
-        super::ensure_web_search_extension(&project, Some(&pc), false).unwrap();
+        sync(&pc, false);
         assert!(!ext.exists());
-        super::ensure_web_search_extension(&project, Some(&pc), true).unwrap();
+        sync(&pc, true);
         assert!(ext.exists());
         let ollama = make_provider_config("native-ollama", "llama3");
-        super::ensure_web_search_extension(&project, Some(&ollama), true).unwrap();
+        sync(&ollama, true);
         assert!(!ext.exists());
+        assert!(super::chat_web_search_wanted(None, true));
     }
 
     #[tokio::test]
