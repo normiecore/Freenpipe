@@ -392,6 +392,12 @@ pub fn check_directml_module(
     }
 }
 
+/// The Microsoft Basic Render Driver (WARP) by its PCI ids, counted as a
+/// software adapter even when DXGI does not flag it as one.
+pub fn is_basic_render_driver(vendor_id: u32, device_id: u32) -> bool {
+    vendor_id == 0x1414 && device_id == 0x8c
+}
+
 /// Enumerate DXGI adapters and run the Direct3D 12 checks on each.
 #[cfg(windows)]
 pub fn probe_adapters() -> Result<Vec<AdapterInfo>, String> {
@@ -428,7 +434,8 @@ pub fn probe_adapters() -> Result<Vec<AdapterInfo>, String> {
                 .unwrap_or(desc.Description.len());
             let name = String::from_utf16_lossy(&desc.Description[..name_len]);
             let flags = desc.Flags;
-            let software = flags & (DXGI_ADAPTER_FLAG_SOFTWARE.0 as u32) != 0;
+            let software = flags & (DXGI_ADAPTER_FLAG_SOFTWARE.0 as u32) != 0
+                || is_basic_render_driver(desc.VendorId, desc.DeviceId);
             let remote = flags & (DXGI_ADAPTER_FLAG_REMOTE.0 as u32) != 0;
 
             let d3d12 = if software || remote {
@@ -766,6 +773,14 @@ mod tests {
             select_adapter(&[warp, rdp, broken, good.clone()]),
             Some(&good)
         );
+    }
+
+    #[test]
+    fn basic_render_driver_is_recognised_by_its_ids() {
+        assert!(is_basic_render_driver(0x1414, 0x8c));
+        // Other Microsoft adapters (for example Hyper-V video) and real GPUs.
+        assert!(!is_basic_render_driver(0x1414, 0x5353));
+        assert!(!is_basic_render_driver(0x10de, 0x8c));
     }
 
     #[test]
