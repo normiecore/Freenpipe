@@ -34,4 +34,23 @@ if git -C "$wt" rev-parse -q --verify "refs/remotes/origin/$br" >/dev/null &&
    [ "$(git -C "$wt" rev-parse HEAD)" != "$(git -C "$wt" rev-parse "origin/$br")" ]; then
   git -C "$wt" merge -q --ff-only "origin/$br"
 fi
+# The app crate needs the Linux sidecars and the ../out placeholder that bootstrap.sh puts in the
+# coordinator checkout; they are gitignored, so a fresh worktree lacks them.
+tauri="$wt/apps/screenpipe-app-tauri/src-tauri"
+if [ -d "$tauri" ]; then
+  if [ ! -e "$tauri/ffmpeg/ffmpeg" ] && command -v ffmpeg >/dev/null 2>&1; then
+    mkdir -p "$tauri/ffmpeg"
+    ln -sf "$(command -v ffmpeg)" "$tauri/ffmpeg/ffmpeg"
+    if command -v ffprobe >/dev/null 2>&1; then ln -sf "$(command -v ffprobe)" "$tauri/ffmpeg/ffprobe"; fi
+  fi
+  if [ ! -e "$tauri/tesseract" ] && command -v tesseract >/dev/null 2>&1; then
+    ln -sf "$(command -v tesseract)" "$tauri/tesseract"
+  fi
+  if [ ! -e "$tauri/bun-x86_64-unknown-linux-gnu" ] && command -v bun >/dev/null 2>&1; then
+    cp "$(command -v bun)" "$tauri/bun-x86_64-unknown-linux-gnu" && chmod +x "$tauri/bun-x86_64-unknown-linux-gnu"
+  fi
+  if [ ! -e "$tauri/../out/index.html" ]; then
+    mkdir -p "$tauri/../out" && printf '<!doctype html><title>placeholder</title>\n' > "$tauri/../out/index.html"
+  fi
+fi
 echo "$wt"

@@ -65,6 +65,9 @@ pub struct ServerCore {
     /// `tokio::time::timeout` internally) panic with "A Tokio 1.x context
     /// was found, but it is being shutdown."
     redact_shutdown: Arc<Notify>,
+    /// Workers from the engine's background worker registry
+    /// (`screenpipe_engine::core`), stopped in `shutdown()`.
+    background_workers: screenpipe_engine::core::RunningWorkers,
 }
 
 impl ServerCore {
@@ -894,6 +897,11 @@ impl ServerCore {
             }
         }
 
+        // Workers registered in screenpipe_engine::core (none until a feature
+        // adds one). They live as long as the server core.
+        let background_workers =
+            screenpipe_engine::core::start_background_workers(db.clone(), local_data_dir.clone());
+
         Ok(Self {
             db,
             audio_manager,
@@ -908,6 +916,7 @@ impl ServerCore {
             port: config.port,
             local_api_key: config.api_auth_key.clone(),
             redact_shutdown,
+            background_workers,
         })
     }
 
@@ -923,6 +932,11 @@ impl ServerCore {
         // to land on a select! boundary and exit cleanly.
         self.redact_shutdown.notify_waiters();
         info!("Signaled redaction workers to shut down");
+
+        // Registered background workers get the same early signal.
+        self.background_workers
+            .shutdown(Duration::from_secs(5))
+            .await;
 
         // Stop pipe scheduler
         {

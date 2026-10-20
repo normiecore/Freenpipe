@@ -544,7 +544,7 @@ impl SCServer {
                 axum::http::header::CONTENT_TYPE,
                 axum::http::header::CACHE_CONTROL,
             ]);
-        let server = Server::axum()
+        let mut server = Server::axum()
             .get("/search", search)
             .get("/audio/list", api_list_audio_devices)
             .get("/vision/list", api_list_monitors)
@@ -643,12 +643,22 @@ impl SCServer {
             .post("/data/checkpoint", checkpoint_handler)
             .get("/data/backup", backup_handler)
             .route_yaml_spec("/openapi.yaml")
-            .route_json_spec("/openapi.json")
-            .freeze();
+            .route_json_spec("/openapi.json");
+
+        // Feature route modules (routes/ext.rs) are mounted here, once. Their
+        // documented paths join the same spec, so /openapi.json covers them.
+        let feature_routes = crate::routes::ext::feature_routes();
+        if let Err(collision) =
+            crate::routes::ext::extend_spec(&mut server.openapi, &feature_routes)
+        {
+            panic!("{collision}");
+        }
+        let server = server.freeze();
 
         // Build the main router with all routes
         let router = Router::new()
             .merge(server.into_router())
+            .merge(crate::routes::ext::into_router(feature_routes))
             // Vision status endpoint (not in OpenAPI spec — no State param)
             .route("/vision/status", get(api_vision_status))
             // Vision/audio pipeline metrics (not in OpenAPI spec — external types)
@@ -882,6 +892,10 @@ impl SCServer {
             router
         };
 
+        // Request-wide middleware owned by feature modules; pass-through until
+        // those features land (routes/request_origin.rs, routes/search_only.rs).
+        let origin_state = app_state.clone();
+
         // NOTE: websockets and sse is not supported by openapi so we move it down here
         router
             .route("/stream/frames", get(stream_frames_handler))
@@ -936,6 +950,10 @@ impl SCServer {
             .layer(axum::middleware::from_fn_with_state(
                 app_state.clone(),
                 crate::routes::vault::vault_lock_middleware,
+            ))
+            .layer(axum::middleware::from_fn_with_state(
+                app_state.clone(),
+                crate::routes::search_only::search_only_layer,
             ))
             .layer(axum::middleware::from_fn(
                 move |req: axum::extract::Request, next: axum::middleware::Next| {
@@ -1067,6 +1085,10 @@ impl SCServer {
                     },
                 )
             })
+            .layer(axum::middleware::from_fn_with_state(
+                origin_state,
+                crate::routes::request_origin::request_origin_layer,
+            ))
             .layer(cors)
             .layer(TraceLayer::new_for_http().make_span_with(DefaultMakeSpan::default()))
     }
