@@ -891,10 +891,6 @@ fn default_true() -> bool {
     true
 }
 
-fn default_false() -> bool {
-    false
-}
-
 fn default_overlay_size() -> String {
     "small".to_string()
 }
