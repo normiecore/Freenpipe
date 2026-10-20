@@ -97,42 +97,15 @@ const STALE_LOCK_AGE: Duration = Duration::from_secs(10 * 60);
 /// Code about to start Pi never waits (see [`ensure_config_dir`]).
 const LOCK_WAIT: Duration = Duration::from_secs(10);
 
-/// Provider names the runtime writes itself for the AI gateway. They are
-/// never carried over from the global config: an entry written there by an
-/// older screenpipe points at the vendor's hosted gateway.
+/// Provider names the runtime writes itself for the AI gateway (`screenpipe`)
+/// or that name the vendor's hosted providers (`screenpipe-cloud`,
+/// `screenpipe-tinfoil`, ...). They are never carried over from the global
+/// config: an entry screenpipe wrote there points at the vendor's hosted
+/// gateway, and Freenpipe writes its own gateway entry from the gateway the
+/// user configured.
 fn is_gateway_provider(name: &str) -> bool {
+    let name = name.trim().to_ascii_lowercase();
     name == "screenpipe" || name.starts_with("screenpipe-")
-}
-
-/// Hosts of the vendor's hosted services. A global provider entry pointing at
-/// one of them (or a subdomain) is not carried over: Freenpipe never sends
-/// data there.
-const VENDOR_HOSTS: &[&str] = &["screenpi.pe", "screenpipe.com", "mediar.ai"];
-
-/// The host part of a URL such as `https://user@api.example.com:8443/v1`,
-/// lowercased.
-fn url_host(url: &str) -> String {
-    let rest = url.trim();
-    let rest = rest.split_once("://").map(|(_, r)| r).unwrap_or(rest);
-    let authority = rest.split(['/', '?', '#']).next().unwrap_or("");
-    let host_port = authority.rsplit('@').next().unwrap_or("");
-    let host = if let Some(bracketed) = host_port.strip_prefix('[') {
-        bracketed.split(']').next().unwrap_or("")
-    } else {
-        host_port.split(':').next().unwrap_or("")
-    };
-    host.trim_end_matches('.').to_ascii_lowercase()
-}
-
-/// Whether a models.json provider entry sends requests to a vendor host.
-fn points_at_vendor(entry: &Value) -> bool {
-    let Some(base) = entry.get("baseUrl").and_then(Value::as_str) else {
-        return false;
-    };
-    let host = url_host(base);
-    VENDOR_HOSTS
-        .iter()
-        .any(|v| host == *v || host.ends_with(&format!(".{v}")))
 }
 
 /// `<data dir>/pi-agent`.
@@ -536,9 +509,8 @@ fn lock_is_stale(lock: &Path) -> bool {
 /// `auth.json` (provider sign-ins), `trust.json` (trusted project folders),
 /// the `packages` list of `settings.json` (Pi packages the user installed),
 /// the user's own `models.json` providers (each one the isolated file lacks,
-/// except the gateway entries the runtime writes itself and any entry that
-/// points at a vendor host) and the `sessions/` tree, last because it can be
-/// large. The rest of the global `settings.json` is left out on purpose. The
+/// except the gateway entries, see [`is_gateway_provider`]) and the
+/// `sessions/` tree, last because it can be large. The rest of the global `settings.json` is left out on purpose. The
 /// `.migrated-from-global` marker is written even when there was no global
 /// config, so the check is a single file test afterwards.
 pub fn seed_from_global(config_dir: &Path, global_dir: Option<&Path>) -> Result<SeedReport> {
@@ -682,9 +654,8 @@ fn seed_settings_packages(global: &Path, local: &Path) -> Result<bool> {
 /// user's settings for a provider the runtime also writes (an `ollama` entry
 /// whose `baseUrl` points at another machine, an API key kept in the file).
 /// The runtime's own merge keeps such `baseUrl` and `apiKey` values. An entry
-/// the isolated file already has is never touched; gateway entries and
-/// entries pointing at a vendor host are skipped. Returns how many providers
-/// were added.
+/// the isolated file already has is never touched, and gateway entries are
+/// skipped. Returns how many providers were added.
 fn seed_models_providers(global: &Path, local: &Path) -> Result<usize> {
     let text = match std::fs::read_to_string(global) {
         Ok(t) => t,
@@ -697,9 +668,7 @@ fn seed_models_providers(global: &Path, local: &Path) -> Result<usize> {
     };
     let wanted: Vec<(&String, &Value)> = global_providers
         .iter()
-        .filter(|(name, entry)| {
-            entry.is_object() && !is_gateway_provider(name) && !points_at_vendor(entry)
-        })
+        .filter(|(name, entry)| entry.is_object() && !is_gateway_provider(name))
         .collect();
     if wanted.is_empty() {
         return Ok(0);
@@ -1076,7 +1045,7 @@ mod tests {
                 "ollama":{"baseUrl":"http://nas.local:11434/v1","models":[]},
                 "screenpipe":{"baseUrl":"https://gateway.example/v1","apiKey":"t"},
                 "screenpipe-tinfoil":{"baseUrl":"https://example.org/v1"},
-                "hosted":{"baseUrl":"https://API.screenpi.pe:443/v1"},
+                "Screenpipe-Cloud":{"baseUrl":"https://example.net/v1"},
                 "broken":"not an object"
             }}"#,
         )
@@ -1104,8 +1073,7 @@ mod tests {
             ]
         );
         assert!(config.join("sessions/--proj--/a.jsonl").exists());
-        // Only the user's own providers come over: no gateway entry, nothing
-        // pointing at a vendor host.
+        // Only the user's own providers come over: no gateway entry.
         let models = read_json_object(&config.join("models.json"));
         let names: Vec<&String> = models["providers"].as_object().unwrap().keys().collect();
         assert_eq!(names, vec!["groq", "ollama"]);
@@ -1173,30 +1141,24 @@ mod tests {
     }
 
     #[test]
-    fn vendor_hosts_are_recognised_in_provider_urls() {
-        for url in [
-            "https://screenpi.pe/v1",
-            "https://api.screenpi.pe/v1",
-            "HTTPS://Gateway.ScreenPipe.com:8443/v1/",
-            "https://user@x.mediar.ai/v1",
-            "https://screenpi.pe./v1",
+    fn gateway_provider_names_are_recognised() {
+        for name in [
+            "screenpipe",
+            "screenpipe-cloud",
+            "screenpipe-tinfoil",
+            " Screenpipe ",
         ] {
-            assert!(points_at_vendor(&json!({ "baseUrl": url })), "{url}");
+            assert!(is_gateway_provider(name), "{name}");
         }
-        for url in [
-            "http://localhost:11434/v1",
-            "https://api.groq.com/openai/v1",
-            "https://notscreenpi.pe/v1",
-            "https://screenpi.pe.example.org/v1",
-            "http://[::1]:8080/v1",
+        for name in [
+            "ollama",
+            "openai-byok",
+            "groq",
+            "my-screenpipe",
+            "screenpiped",
         ] {
-            assert!(!points_at_vendor(&json!({ "baseUrl": url })), "{url}");
+            assert!(!is_gateway_provider(name), "{name}");
         }
-        assert!(!points_at_vendor(&json!({ "apiKey": "x" })));
-        assert_eq!(url_host("http://[::1]:8080/v1"), "::1");
-        assert!(is_gateway_provider("screenpipe"));
-        assert!(is_gateway_provider("screenpipe-cloud"));
-        assert!(!is_gateway_provider("ollama"));
     }
 
     #[test]
