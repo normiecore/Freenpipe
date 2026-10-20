@@ -9,7 +9,7 @@ use crate::health::{
     get_audio_device_status, get_high_fps_status, get_recording_info, get_recording_status,
     set_high_fps_status, DeviceKind, HighFpsCacheEntry, RecordingStatus,
 };
-use crate::recording::{local_api_context_from_app, RecordingState};
+use crate::recording::local_api_context_from_app;
 use crate::store::{OnboardingStore, SettingsStore};
 use crate::updates::is_enterprise_build;
 use crate::window::ShowRewindWindow;
@@ -1289,44 +1289,11 @@ fn handle_menu_event(app_handle: &AppHandle, event: tauri::menu::MenuEvent) {
         }
         "quit" => {
             debug!("Quit requested");
-
-            // Signal that this is an intentional quit so the ExitRequested
-            // handler in main.rs won't prevent it.
-            QUIT_REQUESTED.store(true, Ordering::SeqCst);
-
-            // Stop recording before exiting
-            let app_handle_clone = app_handle.clone();
-            tauri::async_runtime::spawn(async move {
-                info!("Stopping screenpipe recording before quit...");
-                if let Some(recording_state) = app_handle_clone.try_state::<RecordingState>() {
-                    // Stop capture first (self-contained)
-                    if let Some(session) = recording_state.capture.lock().await.take() {
-                        session.stop().await;
-                    }
-                    // Then shutdown server
-                    if let Some(server) = recording_state.server.lock().await.take() {
-                        server.shutdown().await;
-                    }
-                    info!("Screenpipe server + recording stopped successfully");
-                }
-                info!("All tasks stopped, exiting process");
-                // Use _exit() instead of exit() to skip C++ atexit/static destructors.
-                // The whisper/ggml Metal GPU context registers a global destructor that
-                // asserts during teardown (ggml_metal_rsets_free), causing SIGABRT.
-                // We've already done our own cleanup above, so atexit handlers have
-                // nothing useful left to do.
-                #[cfg(unix)]
-                {
-                    extern "C" {
-                        fn _exit(status: i32) -> !;
-                    }
-                    unsafe {
-                        _exit(0);
-                    }
-                }
-                #[cfg(not(unix))]
-                app_handle_clone.exit(0);
-            });
+            // Shared bounded teardown (capture, engine, HTTP drain, SQLite
+            // pools, Pi), then exit. Sets QUIT_REQUESTED so the ExitRequested
+            // handler in main.rs lets the exit through; a second click while
+            // the teardown runs is ignored.
+            crate::relaunch::request_quit(app_handle.clone(), "tray");
         }
         _ => debug!("Unhandled menu event: {:?}", event.id()),
     }
