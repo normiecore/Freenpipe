@@ -8,17 +8,19 @@
 //! Pi is installed via bun and executed as a subprocess in "print" mode (`pi -p`).
 
 use super::extensions_manifest::{self, ExtensionConditions};
+use super::{bun_runtime, pi_install, pi_runtime};
 use super::{AgentExecutor, AgentOutput, ExecutionHandle};
 use anyhow::{anyhow, Result};
 use arc_swap::ArcSwap;
 use serde_json::json;
-use std::path::{Path, PathBuf};
+use std::path::Path;
+#[cfg(windows)]
+use std::path::PathBuf;
 use std::sync::Arc;
 use tracing::{debug, error, info, warn};
 
-const PI_PACKAGE: &str = "@earendil-works/pi-coding-agent@0.75.4";
-const PI_AI_PACKAGE: &str = "@earendil-works/pi-ai@0.75.4";
-const PI_NAMESPACE_DIR: &str = "@earendil-works";
+// The pinned Pi release, its install and its config directory live in
+// `pi_runtime`; installing and repairing it in `pi_install`.
 /// Gateway base argument meaning "use the user's AI gateway".
 ///
 /// Kept under its screenpipe name because pipe code passes it to
@@ -715,9 +717,11 @@ impl PiExecutor {
     /// Merge screenpipe provider (and optionally the pipe's own provider) into
     /// pi's existing config files.
     ///
-    /// Unlike the old `write_pi_config`, this preserves any existing providers
-    /// and auth credentials the user set up via `pi /login` or by editing
-    /// `~/.pi/agent/auth.json` directly.
+    /// The files live in Freenpipe's own Pi config directory
+    /// (`<data dir>/pi-agent/pi-config`, see [`pi_runtime::ensure_config_dir`]),
+    /// which is seeded once from the user's global Pi config. Existing
+    /// providers and credentials there (from `pi /login`, the global seed, or
+    /// manual edits of `auth.json`) are preserved.
     ///
     /// When a pipe uses a non-screenpipe provider (e.g. ollama, openai), pass
     /// the resolved `provider`, `model`, and optional `provider_url` so the
@@ -729,8 +733,28 @@ impl PiExecutor {
         model: Option<&str>,
         provider_url: Option<&str>,
     ) -> Result<()> {
-        let config_dir = get_pi_config_dir()?;
-        std::fs::create_dir_all(&config_dir)?;
+        let config_dir = pi_runtime::ensure_config_dir()?;
+        Self::ensure_pi_config_in(
+            &config_dir,
+            user_token,
+            api_url,
+            provider,
+            model,
+            provider_url,
+        )
+        .await
+    }
+
+    /// [`Self::ensure_pi_config`] for an explicit config directory.
+    pub async fn ensure_pi_config_in(
+        config_dir: &Path,
+        user_token: Option<&str>,
+        api_url: &str,
+        provider: Option<&str>,
+        model: Option<&str>,
+        provider_url: Option<&str>,
+    ) -> Result<()> {
+        std::fs::create_dir_all(config_dir)?;
 
         // -- models.json: merge our provider into existing config --
         // We read the existing file and merge to avoid a race condition where
@@ -848,9 +872,9 @@ impl PiExecutor {
                     });
 
                     // Field-level merge: preserve user-set baseUrl/apiKey when present
-                    // (e.g. jeffutter's `~/.pi/agent/models.json` "ollama" pointing at his
-                    // home server, or "openai-byok" with his real API key) and append our
-                    // model to `models[]` instead of clobbering the array.
+                    // (e.g. a `models.json` "ollama" entry pointing at a home server, or
+                    // "openai-byok" with a real API key) and append our model to
+                    // `models[]` instead of clobbering the array.
                     //
                     // Only overwrite a field when (a) the pipe explicitly provided it
                     // (e.g. `provider_url:` in pipe.md) or (b) no value exists yet.
@@ -900,8 +924,10 @@ impl PiExecutor {
                     }
 
                     info!(
-                        "pi config: merged provider '{}' (model '{}') into ~/.pi/agent/models.json",
-                        pi_provider_name, mdl
+                        "pi config: merged provider '{}' (model '{}') into {}",
+                        pi_provider_name,
+                        mdl,
+                        models_path.display()
                     );
                 }
             }
@@ -1104,6 +1130,10 @@ impl PiExecutor {
         // After the BASH_ENV/PATH setup above so it extends that PATH.
         crate::agents::cli_runtime::apply_to_tokio_command(&mut cmd);
 
+        // Freenpipe's own Pi config directory and Pi's runtime switches.
+        let config_dir = pi_runtime::ensure_config_dir()?;
+        pi_runtime::apply_to_tokio_command(&mut cmd, &config_dir);
+
         cmd.stdout(std::process::Stdio::piped());
         cmd.stderr(std::process::Stdio::piped());
 
@@ -1131,6 +1161,7 @@ impl PiExecutor {
         }
 
         let output = child.wait_with_output().await?;
+        note_pi_exit(output.status.code());
         let stdout = String::from_utf8_lossy(&output.stdout).to_string();
         let stderr = String::from_utf8_lossy(&output.stderr).to_string();
 
@@ -1161,6 +1192,7 @@ impl PiExecutor {
         continue_session: bool,
         pipe_system_prompt: Option<&str>,
         session_owner: Option<&str>,
+        thinking_level: Option<&str>,
     ) -> Result<AgentOutput> {
         let mut cmd = build_async_command(pi_path);
         cmd.current_dir(working_dir);
@@ -1179,6 +1211,11 @@ impl PiExecutor {
         // Pi's internal system prompt + this appended text form the cached prefix.
         if let Some(sys) = pipe_system_prompt {
             cmd.arg("--append-system-prompt").arg(sys);
+        }
+        // The pipe's `effort:` as Pi's thinking level. Pi lowers it for
+        // models that do not reason.
+        if let Some(level) = pi_thinking_level(thinking_level) {
+            cmd.arg("--thinking").arg(level);
         }
         cmd.arg("-p").arg(prompt);
 
@@ -1253,6 +1290,10 @@ impl PiExecutor {
         // Bundled CLI: SCREENPIPE_CLI plus a `screenpipe` launcher on PATH.
         // After the BASH_ENV/PATH setup above so it extends that PATH.
         crate::agents::cli_runtime::apply_to_tokio_command(&mut cmd);
+
+        // Freenpipe's own Pi config directory and Pi's runtime switches.
+        let config_dir = pi_runtime::ensure_config_dir()?;
+        pi_runtime::apply_to_tokio_command(&mut cmd, &config_dir);
 
         cmd.stdout(std::process::Stdio::piped());
         cmd.stderr(std::process::Stdio::piped());
@@ -1336,6 +1377,7 @@ impl PiExecutor {
         }
 
         let status = child.wait().await?;
+        note_pi_exit(status.code());
 
         // Read remaining stderr (lossy — same reason as stdout above)
         let mut stderr = if let Some(mut stderr_handle) = child.stderr.take() {
@@ -1490,6 +1532,7 @@ impl AgentExecutor for PiExecutor {
         continue_session: bool,
         pipe_system_prompt: Option<&str>,
         session_owner: Option<&str>,
+        thinking_level: Option<&str>,
     ) -> Result<AgentOutput> {
         let resolved_provider = provider.unwrap_or("screenpipe").to_string();
         self.require_gateway_for(&resolved_provider)?;
@@ -1529,8 +1572,10 @@ impl AgentExecutor for PiExecutor {
         })?;
 
         info!(
-            "pipe streaming using provider: {}, model: {}",
-            resolved_provider, resolved_model
+            "pipe streaming using provider: {}, model: {}, effort: {}",
+            resolved_provider,
+            resolved_model,
+            pi_thinking_level(thinking_level).unwrap_or("default")
         );
 
         let mut output = self
@@ -1546,6 +1591,7 @@ impl AgentExecutor for PiExecutor {
                 continue_session,
                 pipe_system_prompt,
                 session_owner,
+                thinking_level,
             )
             .await?;
 
@@ -1579,6 +1625,7 @@ impl AgentExecutor for PiExecutor {
                     continue_session,
                     pipe_system_prompt,
                     session_owner,
+                    thinking_level,
                 )
                 .await?;
         }
@@ -1627,6 +1674,7 @@ impl AgentExecutor for PiExecutor {
                     continue_session,
                     pipe_system_prompt,
                     session_owner,
+                    thinking_level,
                 )
                 .await?;
         }
@@ -1643,49 +1691,24 @@ impl AgentExecutor for PiExecutor {
     }
 
     async fn ensure_installed(&self) -> Result<()> {
-        if find_pi_executable().is_some() {
-            // Check if local install matches expected version; upgrade if stale
-            if !is_local_pi_version_current() {
-                info!("pi version mismatch — upgrading to {}", PI_PACKAGE);
-                // Fall through to install
-            } else {
-                debug!("pi already installed");
-                return Ok(());
+        // Install, upgrade or repair the managed runtime (pinned release,
+        // baseline bun where needed, runtime patch). Shared with the desktop
+        // app, which calls the same procedure at start.
+        let install_dir = pi_runtime::install_dir();
+        let result = tokio::task::spawn_blocking(move || {
+            pi_install::ensure_current(&install_dir, find_stock_bun_executable())
+        })
+        .await
+        .map_err(|e| anyhow!("pi install task failed: {e}"))?;
+        match result {
+            Ok(outcome) => {
+                debug!("pi runtime: {:?}", outcome);
+                Ok(())
             }
-        }
-
-        let bun = find_bun_executable()
-            .ok_or_else(|| anyhow!("bun not found — install from https://bun.sh"))?;
-
-        let install_dir = pi_local_install_dir()
-            .ok_or_else(|| anyhow!("cannot determine home directory for Pi install"))?;
-
-        std::fs::create_dir_all(&install_dir)?;
-
-        info!("installing pi into {} via bun …", install_dir.display());
-
-        // Seed package.json with overrides to fix lru-cache resolution on Windows
-        seed_pi_package_json(&install_dir);
-
-        let mut cmd = std::process::Command::new(&bun);
-        cmd.current_dir(&install_dir)
-            .args(["add", PI_PACKAGE, PI_AI_PACKAGE, "@anthropic-ai/sdk"]);
-
-        #[cfg(windows)]
-        {
-            use std::os::windows::process::CommandExt;
-            const CREATE_NO_WINDOW: u32 = 0x08000000;
-            cmd.creation_flags(CREATE_NO_WINDOW);
-        }
-
-        let output = cmd.output()?;
-        if output.status.success() {
-            info!("pi installed successfully into {}", install_dir.display());
-            Ok(())
-        } else {
-            let stderr = String::from_utf8_lossy(&output.stderr);
-            error!("pi installation failed: {}", stderr);
-            Err(anyhow!("pi installation failed: {}", stderr))
+            Err(e) => {
+                error!("pi installation failed: {}", e);
+                Err(anyhow!("pi installation failed: {}", e))
+            }
         }
     }
 
@@ -1702,12 +1725,32 @@ impl AgentExecutor for PiExecutor {
 // Helpers (extracted from apps/screenpipe-app-tauri/src-tauri/src/pi.rs)
 // ---------------------------------------------------------------------------
 
-fn get_pi_config_dir() -> Result<PathBuf> {
-    let home = dirs::home_dir().ok_or_else(|| anyhow!("could not find home directory"))?;
-    Ok(home.join(".pi").join("agent"))
+/// Pi's `--thinking` value for a requested level, or `None` to leave Pi's
+/// default. Pipes ask for `low`, `medium` or `high`; Pi's other levels are
+/// accepted too. Anything else is ignored rather than failing the run.
+pub fn pi_thinking_level(requested: Option<&str>) -> Option<&'static str> {
+    const LEVELS: &[&str] = &["off", "minimal", "low", "medium", "high", "xhigh", "max"];
+    let wanted = requested?.trim().to_ascii_lowercase();
+    LEVELS.iter().copied().find(|level| *level == wanted)
 }
 
+/// A Pi process that died with an illegal instruction ran on a bun its CPU
+/// cannot execute: remember that, so the next start uses the baseline build.
+fn note_pi_exit(code: Option<i32>) {
+    if bun_runtime::is_illegal_instruction_exit(code) {
+        warn!("pi exited with STATUS_ILLEGAL_INSTRUCTION (0xC000001D)");
+        bun_runtime::handle_stock_bun_crash(&pi_runtime::install_dir());
+    }
+}
+
+/// The bun to run: the stock bun ([`find_stock_bun_executable`]), or bun's
+/// baseline build on a Windows x64 machine that needs it and has it.
 pub fn find_bun_executable() -> Option<String> {
+    bun_runtime::select_bun(&pi_runtime::install_dir(), find_stock_bun_executable())
+}
+
+/// The bun shipped next to the executable, or a user-installed one.
+pub fn find_stock_bun_executable() -> Option<String> {
     // Check next to our own executable (bundled bun)
     if let Ok(exe_path) = std::env::current_exe() {
         if let Some(exe_folder) = exe_path.parent() {
@@ -1738,139 +1781,10 @@ pub fn find_bun_executable() -> Option<String> {
     paths.into_iter().find(|p| std::path::Path::new(p).exists())
 }
 
-/// Returns the screenpipe-managed pi install directory (`~/.screenpipe/pi-agent/` or SCREENPIPE_DATA_DIR/pi-agent).
-fn pi_local_install_dir() -> Option<PathBuf> {
-    Some(crate::paths::default_screenpipe_data_dir().join("pi-agent"))
-}
-
-/// Check whether the locally-installed Pi version matches `PI_PACKAGE`.
-fn is_local_pi_version_current() -> bool {
-    let dir = match pi_local_install_dir() {
-        Some(d) => d,
-        None => return false,
-    };
-    let pkg_json = dir
-        .join("node_modules")
-        .join(PI_NAMESPACE_DIR)
-        .join("pi-coding-agent")
-        .join("package.json");
-    let contents = match std::fs::read_to_string(&pkg_json) {
-        Ok(c) => c,
-        Err(_) => return false,
-    };
-    let parsed: serde_json::Value = match serde_json::from_str(&contents) {
-        Ok(v) => v,
-        Err(_) => return false,
-    };
-    let installed = match parsed.get("version").and_then(|v| v.as_str()) {
-        Some(v) => v,
-        None => return false,
-    };
-    // PI_PACKAGE is "<scope>/pi-coding-agent@<ver>" — extract version after last '@'
-    let expected = PI_PACKAGE.rsplit('@').next().unwrap_or("");
-    if installed != expected {
-        info!(
-            "local pi version {} differs from expected {}",
-            installed, expected
-        );
-        return false;
-    }
-    true
-}
-
-/// Seed the pi-agent package.json with overrides + strip legacy deps.
-/// `hosted-git-info` requires `lru-cache@^10`, but bun on Windows can hoist
-/// an ESM-only lru-cache@7.x that breaks CJS `require()`. Also drops any
-/// stale `@mariozechner/*` keys carried over from before the upstream
-/// namespace rename (issue #3527).
-fn seed_pi_package_json(install_dir: &Path) {
-    let pkg_path = install_dir.join("package.json");
-    let expected_overrides = json!({
-        "hosted-git-info": {
-            "lru-cache": "^10.0.0"
-        }
-    });
-    if pkg_path.exists() {
-        let read_result = std::fs::read_to_string(&pkg_path);
-        let parse_result = read_result
-            .as_ref()
-            .ok()
-            .and_then(|c| serde_json::from_str::<serde_json::Value>(c).ok());
-        // Detect corruption: a partial bun-install write can leave NUL bytes
-        // in package.json (SCREENPIPE-APP-AR — bun then errors at SyntaxError).
-        // Read failures and parse failures land here too. Wipe and re-seed
-        // rather than silently exiting and letting the next `bun install`
-        // re-fail on the same garbled file.
-        let corrupted = parse_result.is_none()
-            || read_result
-                .as_ref()
-                .map(|c| c.contains('\0'))
-                .unwrap_or(true);
-        if corrupted {
-            warn!(
-                "pi-agent package.json at {} is unreadable or corrupted — re-seeding",
-                pkg_path.display()
-            );
-            let _ = std::fs::remove_file(&pkg_path);
-            let _ = std::fs::remove_file(install_dir.join("bun.lock"));
-            let _ = std::fs::remove_file(install_dir.join("bun.lockb"));
-            // Fall through to the fresh-seed path below.
-        } else if let Some(mut pkg) = parse_result {
-            let mut changed = false;
-            if let Some(obj) = pkg.as_object_mut() {
-                if obj.get("overrides") != Some(&expected_overrides) {
-                    obj.insert("overrides".to_string(), expected_overrides.clone());
-                    changed = true;
-                }
-                if let Some(deps_obj) = obj.get_mut("dependencies").and_then(|d| d.as_object_mut())
-                {
-                    let legacy: Vec<String> = deps_obj
-                        .keys()
-                        .filter(|k| k.starts_with("@mariozechner/"))
-                        .cloned()
-                        .collect();
-                    for k in &legacy {
-                        deps_obj.remove(k);
-                        changed = true;
-                    }
-                }
-            }
-            if changed {
-                if let Ok(new_contents) = serde_json::to_string_pretty(&pkg) {
-                    let _ = std::fs::write(&pkg_path, new_contents);
-                    let _ = std::fs::remove_file(install_dir.join("bun.lock"));
-                    let _ = std::fs::remove_file(install_dir.join("bun.lockb"));
-                    info!("Patched pi-agent package.json (overrides + legacy dep cleanup)");
-                }
-            }
-            return;
-        }
-    }
-    let pkg_json = json!({
-        "overrides": {
-            "hosted-git-info": {
-                "lru-cache": "^10.0.0"
-            }
-        }
-    });
-    match std::fs::write(
-        &pkg_path,
-        serde_json::to_string_pretty(&pkg_json).unwrap_or_default(),
-    ) {
-        Ok(_) => info!("Seeded pi-agent package.json with lru-cache overrides"),
-        Err(e) => warn!("Failed to seed pi-agent package.json: {}", e),
-    }
-}
 
 /// Find the JS entrypoint for the locally-installed pi package.
 fn find_local_pi_entrypoint() -> Option<String> {
-    let dir = pi_local_install_dir()?;
-    let cli_js = dir
-        .join("node_modules")
-        .join(PI_NAMESPACE_DIR)
-        .join("pi-coding-agent")
-        .join("dist")
-        .join("cli.js");
+    let cli_js = pi_runtime::cli_entrypoint(&pi_runtime::install_dir());
     if cli_js.exists() {
         Some(cli_js.to_string_lossy().to_string())
     } else {
@@ -2130,61 +2044,79 @@ pub fn kill_process_group(pid: u32) -> Result<()> {
     Ok(())
 }
 
-/// Find a bash executable on Windows. Returns None on non-Windows platforms
-/// (where bash is always available). Checks:
-/// 1. Our bundled PortableGit in %LOCALAPPDATA%\screenpipe\git-portable\
-/// 2. Standard Git for Windows install
-/// 3. bash.exe on PATH (Git Bash, MSYS2, WSL, etc.)
+/// Find a working bash on Windows for Pi's bash tool. Returns None on
+/// non-Windows platforms (where bash is always available).
+///
+/// Candidates, in order: the PortableGit the runtime manages under
+/// `%LOCALAPPDATA%\screenpipe\git-portable`, the usual Git for Windows
+/// locations, then whatever `where bash` lists. WSL launchers and Store app
+/// aliases are skipped, and each candidate must answer a short startup probe
+/// before it is used (see [`super::bash_probe`]). The answer is cached for
+/// the process; a candidate that failed its probe is not tried again.
 #[cfg(windows)]
 pub fn find_bash_executable() -> Option<String> {
-    // 1. Bundled PortableGit in screenpipe's data directory
-    if let Some(local_app_data) = std::env::var_os("LOCALAPPDATA") {
-        let bundled = PathBuf::from(&local_app_data)
-            .join("screenpipe")
-            .join("git-portable")
-            .join("bin")
-            .join("bash.exe");
-        if bundled.exists() {
-            info!("Found bundled bash at: {}", bundled.display());
-            return Some(bundled.to_string_lossy().to_string());
+    use super::bash_probe;
+    use std::collections::HashSet;
+    use std::sync::Mutex;
+
+    static CHOSEN: Mutex<Option<PathBuf>> = Mutex::new(None);
+    static REJECTED: Mutex<Option<HashSet<PathBuf>>> = Mutex::new(None);
+
+    if let Some(chosen) = CHOSEN.lock().ok().and_then(|c| c.clone()) {
+        if chosen.is_file() {
+            return Some(chosen.to_string_lossy().to_string());
         }
     }
 
-    // 2. Standard Git for Windows locations
-    let standard_paths = [
-        r"C:\Program Files\Git\bin\bash.exe",
-        r"C:\Program Files (x86)\Git\bin\bash.exe",
-    ];
-    for p in &standard_paths {
-        if Path::new(p).exists() {
-            info!("Found system bash at: {}", p);
-            return Some(p.to_string());
-        }
-    }
+    let local_app_data = std::env::var_os("LOCALAPPDATA").map(PathBuf::from);
+    let mut program_files: Vec<PathBuf> = ["ProgramW6432", "ProgramFiles", "ProgramFiles(x86)"]
+        .iter()
+        .filter_map(|name| std::env::var_os(name).map(PathBuf::from))
+        .collect();
+    program_files.push(PathBuf::from(r"C:\Program Files"));
+    program_files.push(PathBuf::from(r"C:\Program Files (x86)"));
 
-    // 3. Try `where bash` on PATH
-    {
+    let where_output = {
         use std::os::windows::process::CommandExt;
         const CREATE_NO_WINDOW: u32 = 0x08000000;
-        if let Ok(output) = std::process::Command::new("where")
+        std::process::Command::new("where")
             .arg("bash")
             .creation_flags(CREATE_NO_WINDOW)
             .output()
-        {
-            if output.status.success() {
-                let stdout = String::from_utf8_lossy(&output.stdout);
-                if let Some(line) = stdout.lines().next() {
-                    let path = line.trim().to_string();
-                    if !path.is_empty() && Path::new(&path).exists() {
-                        info!("Found bash on PATH: {}", path);
-                        return Some(path);
-                    }
-                }
+            .ok()
+            .filter(|o| o.status.success())
+            .map(|o| String::from_utf8_lossy(&o.stdout).into_owned())
+            .unwrap_or_default()
+    };
+
+    for candidate in
+        bash_probe::candidate_paths(local_app_data.as_deref(), &program_files, &where_output)
+    {
+        if !candidate.is_file() {
+            continue;
+        }
+        let already_rejected = REJECTED
+            .lock()
+            .ok()
+            .map(|r| r.as_ref().is_some_and(|set| set.contains(&candidate)))
+            .unwrap_or(false);
+        if already_rejected {
+            continue;
+        }
+        if bash_probe::probe(&candidate, bash_probe::PROBE_TIMEOUT) {
+            info!("Using bash at: {}", candidate.display());
+            if let Ok(mut chosen) = CHOSEN.lock() {
+                *chosen = Some(candidate.clone());
             }
+            return Some(candidate.to_string_lossy().to_string());
+        }
+        warn!("Skipping bash at {}: it did not answer the startup probe", candidate.display());
+        if let Ok(mut rejected) = REJECTED.lock() {
+            rejected.get_or_insert_with(HashSet::new).insert(candidate);
         }
     }
 
-    debug!("No bash executable found on Windows");
+    debug!("No working bash executable found on Windows");
     None
 }
 
@@ -2397,6 +2329,20 @@ fn download_portable_git() -> std::result::Result<String, String> {
     Ok(final_bash.to_string_lossy().to_string())
 }
 
+/// Tell Pi which bash to run (`shellPath` in its settings), so it does not
+/// pick a WSL launcher or an app alias with its own lookup.
+#[cfg(windows)]
+fn record_pi_shell_path(bash_exe: &Path) {
+    match pi_runtime::ensure_config_dir() {
+        Ok(dir) => {
+            if let Err(e) = pi_runtime::write_shell_path(&dir, bash_exe) {
+                warn!("failed to write Pi shellPath setting: {:#}", e);
+            }
+        }
+        Err(e) => warn!("Pi config dir unavailable for shellPath: {:#}", e),
+    }
+}
+
 /// Global guard: ensures only one download runs at a time and caches the result.
 /// `None` inside means download was attempted but failed.
 #[cfg(windows)]
@@ -2411,6 +2357,7 @@ pub fn ensure_bash_available() -> Option<String> {
     // Fast path: if bash is already on disk, return immediately without touching OnceLock.
     // This avoids caching a stale "not found" from a previous failed attempt.
     if let Some(bash_path) = find_bash_executable() {
+        record_pi_shell_path(Path::new(&bash_path));
         return Path::new(&bash_path)
             .parent()
             .map(|d| d.to_string_lossy().to_string());
@@ -2423,6 +2370,7 @@ pub fn ensure_bash_available() -> Option<String> {
             match download_portable_git() {
                 Ok(bash_path) => {
                     info!("PortableGit installed, bash available at: {}", bash_path);
+                    record_pi_shell_path(Path::new(&bash_path));
                     Path::new(&bash_path)
                         .parent()
                         .map(|d| d.to_string_lossy().to_string())
@@ -2615,8 +2563,11 @@ mod tests {
 
     #[tokio::test]
     async fn test_ensure_pi_config_adds_ollama_provider() {
-        // Call ensure_pi_config with ollama provider info
-        PiExecutor::ensure_pi_config(
+        // Call ensure_pi_config with ollama provider info, in a temp config dir
+        let tmp = tempfile::tempdir().unwrap();
+        let config_dir = tmp.path().join("pi-agent").join("pi-config");
+        PiExecutor::ensure_pi_config_in(
+            &config_dir,
             None,
             SCREENPIPE_API_URL,
             Some("ollama"),
@@ -2627,7 +2578,6 @@ mod tests {
         .expect("ensure_pi_config should succeed");
 
         // Read models.json and verify ollama provider was added
-        let config_dir = get_pi_config_dir().unwrap();
         let models_path = config_dir.join("models.json");
         let content = std::fs::read_to_string(&models_path).unwrap();
         let config: serde_json::Value = serde_json::from_str(&content).unwrap();
@@ -2704,42 +2654,89 @@ mod tests {
         assert_eq!(exec_b.current_user_token(), None);
     }
 
-    /// Regression guard for SCREENPIPE-APP-AR: a corrupted package.json
-    /// (NUL bytes from a partial bun-install write) used to silently exit
-    /// `seed_pi_package_json` and leave bun looping on the same broken file.
-    #[test]
-    fn seed_pi_package_json_recovers_from_nul_byte_corruption() {
-        let dir = tempfile::tempdir().expect("tempdir");
-        let pkg_path = dir.path().join("package.json");
-        let lock_path = dir.path().join("bun.lock");
-
-        // Simulate the observed corruption: garbled package name + NUL padding
-        // (matches the actual bytes from `Pi background install failed`).
+    #[tokio::test]
+    async fn models_json_merge_keeps_user_entries_and_rebuilds_corrupt_files() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path();
         std::fs::write(
-            &pkg_path,
-            b"{\n  \"dependencies\": {\n    \"@mariozech\0\0\0\0\0\0\0\0\0\0\0\0",
+            dir.join("models.json"),
+            r#"{"providers":{"groq":{"baseUrl":"https://g","api":"openai-completions","apiKey":"GROQ","models":[{"id":"x"}]},"ollama":{"baseUrl":"http://home:11434/v1","models":[{"id":"old"}]}}}"#,
         )
-        .expect("write corrupt pkg");
-        std::fs::write(&lock_path, b"stale-lock").expect("write stale lock");
+        .unwrap();
+        PiExecutor::ensure_pi_config_in(
+            dir,
+            None,
+            SCREENPIPE_API_URL,
+            Some("ollama"),
+            Some("qwen3:8b"),
+            None,
+        )
+        .await
+        .unwrap();
+        let config: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(dir.join("models.json")).unwrap())
+                .unwrap();
+        // A provider the runtime does not manage is kept as it was.
+        assert_eq!(config["providers"]["groq"]["apiKey"], "GROQ");
+        // The user's own baseUrl wins when the pipe gives none; models append.
+        assert_eq!(
+            config["providers"]["ollama"]["baseUrl"],
+            "http://home:11434/v1"
+        );
+        let ids: Vec<&str> = config["providers"]["ollama"]["models"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(|m| m["id"].as_str())
+            .collect();
+        assert_eq!(ids, vec!["old", "qwen3:8b"]);
 
-        seed_pi_package_json(dir.path());
+        // A custom provider without a baseUrl is skipped, never written empty.
+        PiExecutor::ensure_pi_config_in(
+            dir,
+            None,
+            SCREENPIPE_API_URL,
+            Some("my-proxy"),
+            Some("m"),
+            None,
+        )
+        .await
+        .unwrap();
+        let config: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(dir.join("models.json")).unwrap())
+                .unwrap();
+        assert!(config["providers"].get("my-proxy").is_none());
 
-        let contents = std::fs::read_to_string(&pkg_path).expect("re-seeded pkg readable");
-        assert!(
-            !contents.contains('\0'),
-            "re-seeded package.json must not contain NUL bytes; got: {:?}",
-            contents
+        // A corrupt file is rebuilt.
+        std::fs::write(dir.join("models.json"), b"{\"providers\": \0\0").unwrap();
+        PiExecutor::ensure_pi_config_in(
+            dir,
+            None,
+            SCREENPIPE_API_URL,
+            Some("ollama"),
+            Some("qwen3:8b"),
+            None,
+        )
+        .await
+        .unwrap();
+        let config: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(dir.join("models.json")).unwrap())
+                .unwrap();
+        assert_eq!(
+            config["providers"]["ollama"]["baseUrl"],
+            "http://localhost:11434/v1"
         );
-        let parsed: serde_json::Value =
-            serde_json::from_str(&contents).expect("re-seeded pkg must parse");
-        assert!(
-            parsed.get("overrides").is_some(),
-            "re-seeded pkg must include the lru-cache overrides"
-        );
-        assert!(
-            !lock_path.exists(),
-            "stale bun.lock must be cleared so bun re-resolves from the fresh manifest"
-        );
+    }
+
+    #[test]
+    fn pipe_effort_becomes_pi_thinking_level() {
+        assert_eq!(pi_thinking_level(Some("low")), Some("low"));
+        assert_eq!(pi_thinking_level(Some("Medium")), Some("medium"));
+        assert_eq!(pi_thinking_level(Some(" high ")), Some("high"));
+        assert_eq!(pi_thinking_level(Some("xhigh")), Some("xhigh"));
+        assert_eq!(pi_thinking_level(Some("extreme")), None);
+        assert_eq!(pi_thinking_level(Some("")), None);
+        assert_eq!(pi_thinking_level(None), None);
     }
 
     #[test]

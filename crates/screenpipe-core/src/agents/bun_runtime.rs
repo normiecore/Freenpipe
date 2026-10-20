@@ -21,6 +21,7 @@
 
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Mutex;
 
 use anyhow::{anyhow, Context, Result};
 use sha2::{Digest, Sha256};
@@ -183,6 +184,33 @@ pub fn select_bun(install_dir: &Path, stock: Option<String>) -> Option<String> {
     stock
 }
 
+static BASELINE_FETCH_STARTED: AtomicBool = AtomicBool::new(false);
+
+/// React to a stock bun that died with an illegal instruction: remember it
+/// and, on Windows x64, fetch the baseline build in the background (once per
+/// process) so the next start of Pi uses it.
+pub fn handle_stock_bun_crash(install_dir: &Path) {
+    record_stock_bun_crash(install_dir);
+    if !cfg!(all(windows, target_arch = "x86_64")) || baseline_bun_path(install_dir).is_file() {
+        return;
+    }
+    if BASELINE_FETCH_STARTED.swap(true, Ordering::SeqCst) {
+        return;
+    }
+    let dir = install_dir.to_path_buf();
+    let spawned = std::thread::Builder::new()
+        .name("bun-baseline".to_string())
+        .spawn(move || {
+            if let Err(e) = ensure_baseline_bun(&dir) {
+                warn!("bun: could not set up the baseline build: {:#}", e);
+                BASELINE_FETCH_STARTED.store(false, Ordering::SeqCst);
+            }
+        });
+    if spawned.is_err() {
+        BASELINE_FETCH_STARTED.store(false, Ordering::SeqCst);
+    }
+}
+
 /// Lower-case hex SHA-256 of `bytes`.
 pub fn sha256_hex(bytes: &[u8]) -> String {
     let digest = Sha256::digest(bytes);
@@ -196,12 +224,20 @@ pub fn sha256_hex(bytes: &[u8]) -> String {
 /// Make sure the baseline build is unpacked, downloading it if needed.
 /// Blocking: call it from a background thread. Returns the `bun.exe` path.
 pub fn ensure_baseline_bun(install_dir: &Path) -> Result<PathBuf> {
+    // One download at a time in this process; the staging directory is named
+    // after the process id.
+    static BASELINE_LOCK: Mutex<()> = Mutex::new(());
+
     let exe = baseline_bun_path(install_dir);
     if exe.is_file() {
         return Ok(exe);
     }
     if !cfg!(all(windows, target_arch = "x86_64")) {
         return Err(anyhow!("the baseline bun build is only used on Windows x64"));
+    }
+    let _guard = BASELINE_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+    if exe.is_file() {
+        return Ok(exe);
     }
     let root = baseline_root(install_dir);
     std::fs::create_dir_all(install_dir.join(BASELINE_DIR_NAME))?;
@@ -437,5 +473,9 @@ mod tests {
     fn no_download_is_attempted_off_windows() {
         let dir = tempfile::tempdir().unwrap();
         assert!(ensure_baseline_bun(dir.path()).is_err());
+        // A crash report only leaves the marker behind.
+        handle_stock_bun_crash(dir.path());
+        assert!(dir.path().join(STOCK_BUN_CRASH_MARKER).exists());
+        assert!(!dir.path().join(BASELINE_DIR_NAME).exists());
     }
 }

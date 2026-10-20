@@ -8,6 +8,7 @@
 
 use crate::ai_gateway::GatewayAccess;
 use screenpipe_core::agents::pi::{ensure_model_listed, screenpipe_cloud_models};
+use screenpipe_core::agents::{bun_runtime, pi_install, pi_runtime};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use specta::Type;
@@ -103,7 +104,7 @@ fn flush_pending_text_delta(
     }
 }
 use std::path::{Path, PathBuf};
-use std::process::{Child, ChildStdin, Command, Output, Stdio};
+use std::process::{Child, ChildStdin, Command, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use tauri::Emitter;
@@ -293,9 +294,9 @@ fn check_package_bin(pkg_dir: std::path::PathBuf, bin_name: &str) -> Option<Stri
     }
 }
 
-const PI_PACKAGE: &str = "@earendil-works/pi-coding-agent@0.75.4";
-const PI_AI_PACKAGE: &str = "@earendil-works/pi-ai@0.75.4";
-const PI_NAMESPACE_DIR: &str = "@earendil-works";
+// The pinned Pi release, the install procedure and the isolated config
+// directory are shared with the engine: screenpipe-core's `pi_runtime` and
+// `pi_install`.
 
 /// Error returned when a chat asks for the gateway-backed provider but the
 /// user has not configured an AI gateway.
@@ -412,6 +413,7 @@ impl PiManager {
                         "Pi process (pid {}) has exited with status: {}",
                         pid, status
                     );
+                    note_pi_exit(status.code());
                     self.child = None;
                     self.stdin = None;
                     false
@@ -473,10 +475,20 @@ impl PiManager {
     }
 }
 
-/// Get the Pi config directory (~/.pi/agent)
+/// Freenpipe's own Pi config directory (`<data dir>/pi-agent/pi-config`),
+/// seeded once from the user's global Pi config. See `pi_runtime`.
 fn get_pi_config_dir() -> Result<PathBuf, String> {
-    let home_dir = dirs::home_dir().ok_or_else(|| "Could not find home directory".to_string())?;
-    Ok(home_dir.join(".pi").join("agent"))
+    pi_runtime::ensure_config_dir().map_err(|e| format!("Pi config directory: {e:#}"))
+}
+
+/// A Pi process that died with an illegal instruction ran on a bun its CPU
+/// cannot execute: remember that and fetch bun's baseline build, so the next
+/// start of the chat uses it.
+fn note_pi_exit(code: Option<i32>) {
+    if bun_runtime::is_illegal_instruction_exit(code) {
+        warn!("Pi exited with STATUS_ILLEGAL_INSTRUCTION (0xC000001D): switching to the baseline bun build");
+        bun_runtime::handle_stock_bun_crash(&pi_runtime::install_dir());
+    }
 }
 
 /// Parse the output of `where pi` on Windows, preferring .cmd files
@@ -505,366 +517,49 @@ fn parse_where_output(stdout: &str) -> Option<String> {
     None
 }
 
-/// Find pi executable
-/// Returns the screenpipe-managed pi install directory (`~/.screenpipe/pi-agent/`).
+/// The managed Pi install directory (`<data dir>/pi-agent/`).
 fn pi_local_install_dir() -> Option<PathBuf> {
-    Some(screenpipe_core::paths::default_screenpipe_data_dir().join("pi-agent"))
+    Some(pi_runtime::install_dir())
 }
 
+#[cfg(test)]
 fn pi_package_dir(install_dir: &Path) -> PathBuf {
-    install_dir
-        .join("node_modules")
-        .join(PI_NAMESPACE_DIR)
-        .join("pi-coding-agent")
+    pi_runtime::package_dir(install_dir)
 }
 
-/// Seed the pi-agent package.json with overrides and dependencies to fix resolution.
-/// `hosted-git-info` requires `lru-cache@^10`, but bun on Windows can hoist
-/// an ESM-only lru-cache@7.x that breaks CJS `require()`.
-/// `@earendil-works/pi-ai` and `@anthropic-ai/sdk` are transitive deps that
-/// bun on Windows fails to hoist into the top-level node_modules, so we
-/// pin them as direct deps. Writing these before `bun add` ensures correct
-/// versions are used.
-///
-/// Also strips legacy `@mariozechner/*` keys (the namespace was renamed
-/// upstream — see issue #3527) so installs migrating from 2.4.258 and
-/// earlier don't carry stale entries.
-fn seed_pi_package_json(install_dir: &std::path::Path) {
-    let pkg_path = install_dir.join("package.json");
-    // Force-pin the current expected versions even when package.json already
-    // exists. Earlier this only *added* missing fields, which left stale
-    // version ranges in place after a pi-coding-agent bump. The 0.60.0 → 0.73.1
-    // jump silently leaves users on the old `^0.33.1` anthropic-sdk range that
-    // bun cannot reconcile with the new pi-ai's `^0.91.1` requirement →
-    // pi process dies 2s after spawn, supervisor gives up after 18 retries,
-    // main app exits with code 255. macOS Enterprise v2.4.244 hit this on
-    // every upgrade from 243.
-    let expected_sdk = json!("^0.91.1");
-    let expected_pi_version = json!(PI_PACKAGE.rsplit('@').next().unwrap_or(""));
-    let expected_pi_ai_version = json!(PI_AI_PACKAGE.rsplit('@').next().unwrap_or(""));
-    let expected_cross_spawn = json!("^7.0.6");
-    let expected_overrides = json!({
-        "hosted-git-info": {
-            "lru-cache": "^10.0.0"
-        }
-    });
-
-    if pkg_path.exists() {
-        match std::fs::read_to_string(&pkg_path)
-            .ok()
-            .and_then(|contents| serde_json::from_str::<serde_json::Value>(&contents).ok())
-        {
-            Some(mut pkg) => {
-                let mut changed = false;
-                let mut removed_legacy = 0usize;
-                if let Some(obj) = pkg.as_object_mut() {
-                    if obj.get("overrides") != Some(&expected_overrides) {
-                        obj.insert("overrides".to_string(), expected_overrides.clone());
-                        changed = true;
-                    }
-                    let deps = obj.entry("dependencies").or_insert_with(|| json!({}));
-                    if let Some(deps_obj) = deps.as_object_mut() {
-                        let legacy_keys: Vec<String> = deps_obj
-                            .keys()
-                            .filter(|k| k.starts_with("@mariozechner/"))
-                            .cloned()
-                            .collect();
-                        for k in &legacy_keys {
-                            deps_obj.remove(k);
-                            changed = true;
-                        }
-                        removed_legacy = legacy_keys.len();
-                        if deps_obj.get("@anthropic-ai/sdk") != Some(&expected_sdk) {
-                            deps_obj.insert("@anthropic-ai/sdk".to_string(), expected_sdk.clone());
-                            changed = true;
-                        }
-                        if deps_obj.get("@earendil-works/pi-coding-agent")
-                            != Some(&expected_pi_version)
-                        {
-                            deps_obj.insert(
-                                "@earendil-works/pi-coding-agent".to_string(),
-                                expected_pi_version.clone(),
-                            );
-                            changed = true;
-                        }
-                        if deps_obj.get("@earendil-works/pi-ai") != Some(&expected_pi_ai_version) {
-                            deps_obj.insert(
-                                "@earendil-works/pi-ai".to_string(),
-                                expected_pi_ai_version.clone(),
-                            );
-                            changed = true;
-                        }
-                        if deps_obj.get("cross-spawn") != Some(&expected_cross_spawn) {
-                            deps_obj
-                                .insert("cross-spawn".to_string(), expected_cross_spawn.clone());
-                            changed = true;
-                        }
-                    }
-                }
-                if changed {
-                    if let Ok(new_contents) = serde_json::to_string_pretty(&pkg) {
-                        let _ = std::fs::write(&pkg_path, new_contents);
-                        // bun.lock pins the old transitive tree — must be
-                        // dropped so the next `bun install` re-resolves
-                        // against the corrected ranges.
-                        let _ = std::fs::remove_file(install_dir.join("bun.lock"));
-                        let _ = std::fs::remove_file(install_dir.join("bun.lockb"));
-                        info!(
-                            "Patched pi-agent package.json (pins: pi {}, anthropic sdk {}, pi-ai {}, cross-spawn {}; dropped {} legacy @mariozechner deps)",
-                            expected_pi_version,
-                            expected_sdk,
-                            expected_pi_ai_version,
-                            expected_cross_spawn,
-                            removed_legacy
-                        );
-                    }
-                }
-                return;
-            }
-            None => {
-                warn!(
-                    "pi-agent package.json at {} is unreadable or corrupted — re-seeding",
-                    pkg_path.display()
-                );
-                let _ = std::fs::remove_file(&pkg_path);
-                let _ = std::fs::remove_file(install_dir.join("bun.lock"));
-                let _ = std::fs::remove_file(install_dir.join("bun.lockb"));
-            }
-        }
-    }
-    let pkg_json = json!({
-        "dependencies": {
-            "@anthropic-ai/sdk": expected_sdk,
-            "@earendil-works/pi-coding-agent": expected_pi_version,
-            "@earendil-works/pi-ai": expected_pi_ai_version,
-            "cross-spawn": expected_cross_spawn,
-        },
-        "overrides": {
-            "hosted-git-info": {
-                "lru-cache": "^10.0.0"
-            }
-        }
-    });
-    match std::fs::write(
-        &pkg_path,
-        serde_json::to_string_pretty(&pkg_json).unwrap_or_default(),
-    ) {
-        Ok(_) => info!("Seeded pi-agent package.json with direct deps + overrides"),
-        Err(e) => warn!("Failed to seed pi-agent package.json: {}", e),
-    }
-}
-
-/// Check if the locally-installed pi version matches the expected version.
-fn is_local_pi_version_current(install_dir: &std::path::Path) -> bool {
-    let pkg_json = pi_package_dir(install_dir).join("package.json");
-    let contents = match std::fs::read_to_string(&pkg_json) {
-        Ok(c) => c,
-        Err(_) => return false,
-    };
-    let parsed: serde_json::Value = match serde_json::from_str(&contents) {
-        Ok(v) => v,
-        Err(_) => return false,
-    };
-    let installed = match parsed.get("version").and_then(|v| v.as_str()) {
-        Some(v) => v,
-        None => return false,
-    };
-    // PI_PACKAGE is "<scope>/pi-coding-agent@<ver>" — extract version after last '@'
-    let expected = PI_PACKAGE.rsplit('@').next().unwrap_or("");
-    if installed != expected {
-        info!(
-            "local pi version {} differs from expected {}",
-            installed, expected
-        );
-        return false;
-    }
-    true
-}
-
+#[cfg(test)]
 fn node_module_package_dir(base_dir: &Path, package_name: &str) -> PathBuf {
-    let mut package_dir = base_dir.join("node_modules");
-    for segment in package_name.split('/') {
-        package_dir.push(segment);
-    }
-    package_dir
+    pi_runtime::node_module_dir(base_dir, package_name)
 }
 
-fn resolve_node_module_package_from(
-    start_dir: &Path,
-    stop_dir: &Path,
-    package_name: &str,
-) -> Option<PathBuf> {
-    let mut cursor = start_dir.to_path_buf();
-    loop {
-        let package_dir = node_module_package_dir(&cursor, package_name);
-        if package_dir.join("package.json").exists() {
-            return Some(package_dir);
-        }
-        if cursor == stop_dir || !cursor.pop() {
-            break;
-        }
-    }
-    None
-}
-
+/// Why the managed install cannot be used as it is, or `None` when it is
+/// the pinned release with its dependencies (see `pi_install::install_state`).
 fn local_pi_install_integrity_error(install_dir: &Path) -> Option<String> {
-    let pi_dir = pi_package_dir(install_dir);
-    let cli_js = pi_dir.join("dist").join("cli.js");
-    if !cli_js.exists() {
-        return Some(format!("missing Pi entrypoint at {}", cli_js.display()));
-    }
-
-    if !is_local_pi_version_current(install_dir) {
-        return Some(format!("Pi package version is not {}", PI_PACKAGE));
-    }
-
-    let resolve_start = pi_dir.join("dist");
-    for package_name in ["@earendil-works/pi-ai", "@anthropic-ai/sdk", "cross-spawn"] {
-        if resolve_node_module_package_from(&resolve_start, install_dir, package_name).is_none() {
-            return Some(format!(
-                "missing Pi dependency {} from {}",
-                package_name,
-                pi_dir.display()
-            ));
-        }
-    }
-
-    None
+    pi_install::install_state(install_dir).problem()
 }
 
-fn clear_pi_install_artifacts(install_dir: &Path) {
-    let _ = std::fs::remove_dir_all(install_dir.join("node_modules"));
-    let _ = std::fs::remove_file(install_dir.join("bun.lock"));
-    let _ = std::fs::remove_file(install_dir.join("bun.lockb"));
-    let _ = std::fs::remove_file(install_dir.join("package-lock.json"));
-}
-
-fn apply_no_window(_cmd: &mut Command) {
-    #[cfg(windows)]
-    {
-        use std::os::windows::process::CommandExt;
-        const CREATE_NO_WINDOW: u32 = 0x08000000;
-        _cmd.creation_flags(CREATE_NO_WINDOW);
-    }
-}
-
-fn run_command_output(mut cmd: Command) -> Result<Output, String> {
-    apply_no_window(&mut cmd);
-    cmd.output().map_err(|e| format!("failed to spawn: {}", e))
-}
-
-fn format_install_failure(tool: &str, output: &Output) -> String {
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    let details = if !stderr.trim().is_empty() {
-        truncate_stderr(&stderr)
-    } else {
-        truncate_stderr(&stdout)
-    };
-    format!(
-        "{} install failed (exit {}). stderr: {}",
-        tool,
-        output
-            .status
-            .code()
-            .map(|c| c.to_string())
-            .unwrap_or_else(|| "signal".to_string()),
-        details
-    )
-}
-
+#[cfg(test)]
 fn should_retry_install_with_npm(stderr: &str) -> bool {
-    let lower = stderr.to_lowercase();
-    lower.contains("eperm")
-        && (lower.contains("ntsetinformationfile")
-            || lower.contains("cache dir")
-            || lower.contains("extracting tarball")
-            || lower.contains("moving"))
+    pi_install::should_retry_with_npm(stderr)
 }
 
-fn npm_install_command(install_dir: &Path) -> Command {
-    #[cfg(windows)]
-    {
-        let mut cmd = Command::new("cmd.exe");
-        cmd.args(["/C", "npm", "install", "--no-audit", "--no-fund"])
-            .current_dir(install_dir);
-        cmd
-    }
-
-    #[cfg(not(windows))]
-    {
-        let mut cmd = Command::new("npm");
-        cmd.args(["install", "--no-audit", "--no-fund"])
-            .current_dir(install_dir);
-        cmd
-    }
-}
-
-fn verify_pi_package_install(install_dir: &Path) -> Result<(), String> {
-    match local_pi_install_integrity_error(install_dir) {
-        Some(error) => Err(format!(
-            "Pi install completed but dependency verification failed: {}",
-            error
-        )),
-        None => Ok(()),
-    }
-}
-
-fn run_pi_package_install(install_dir: &Path, bun: &str) -> Result<(), String> {
-    let cache_dir = install_dir.join(".bun-cache");
-    let _ = std::fs::create_dir_all(&cache_dir);
-
-    let mut bun_cmd = Command::new(bun);
-    bun_cmd
-        .current_dir(install_dir)
-        .env("BUN_INSTALL_CACHE_DIR", &cache_dir)
-        .args(["install"]);
-
-    match run_command_output(bun_cmd) {
-        Ok(output) if output.status.success() => verify_pi_package_install(install_dir),
-        Ok(output) => {
-            let stderr = String::from_utf8_lossy(&output.stderr).to_string();
-            let stdout = String::from_utf8_lossy(&output.stdout).to_string();
-            let combined_output = format!("{}\n{}", stderr, stdout);
-            let bun_failure = format_install_failure("bun", &output);
-            if should_retry_install_with_npm(&combined_output) {
-                warn!(
-                    "Pi bun install hit cache/EPERM failure; retrying with npm: {}",
-                    bun_failure
-                );
-                match run_command_output(npm_install_command(install_dir)) {
-                    Ok(npm_output) if npm_output.status.success() => {
-                        verify_pi_package_install(install_dir)
-                    }
-                    Ok(npm_output) => Err(format!(
-                        "{}; npm fallback also failed: {}",
-                        bun_failure,
-                        format_install_failure("npm", &npm_output)
-                    )),
-                    Err(e) => Err(format!(
-                        "{}; npm fallback could not run: {}",
-                        bun_failure, e
-                    )),
-                }
-            } else {
-                Err(bun_failure)
-            }
+/// Install, upgrade or repair the managed runtime with `stock_bun` (the
+/// shared procedure in `pi_install`, which also sets up the baseline bun
+/// where needed and applies the runtime patch).
+fn ensure_pi_runtime(install_dir: &Path, stock_bun: Option<String>) -> Result<(), String> {
+    match pi_install::ensure_current(install_dir, stock_bun) {
+        Ok(outcome) => {
+            info!("Pi runtime ready ({:?}) in {}", outcome, install_dir.display());
+            Ok(())
         }
-        Err(e) => Err(format!("could not spawn bun: {}", e)),
+        Err(e) => Err(e),
     }
-}
-
-fn repair_local_pi_install(install_dir: &Path, bun: &str, reason: &str) -> Result<(), String> {
-    warn!("Repairing local pi-agent install: {}", reason);
-    clear_pi_install_artifacts(install_dir);
-    seed_pi_package_json(install_dir);
-    run_pi_package_install(install_dir, bun)
 }
 
 /// Find the JS entrypoint for the locally-installed pi package.
 fn find_local_pi_entrypoint() -> Option<String> {
     let dir = pi_local_install_dir()?;
-    let cli_js = pi_package_dir(&dir).join("dist").join("cli.js");
+    let cli_js = pi_runtime::cli_entrypoint(&dir);
     if cli_js.exists() {
         Some(cli_js.to_string_lossy().to_string())
     } else {
@@ -1565,43 +1260,9 @@ pub async fn pi_start_inner(
                         }
                         info!("Injected bash dir into PATH for pi: {}", bash_dir);
 
-                        // Write shellPath into Pi's settings.json so Pi uses this
-                        // exact bash instead of its own resolution logic (which may
-                        // find a WSL stub or Windows App Alias on machines without
-                        // Git for Windows).
-                        let bash_exe = Path::new(&bash_dir).join("bash.exe");
-                        if bash_exe.exists() {
-                            if let Ok(config_dir) = get_pi_config_dir() {
-                                let settings_path = config_dir.join("settings.json");
-                                let mut settings: serde_json::Value = if settings_path.exists() {
-                                    std::fs::read_to_string(&settings_path)
-                                        .ok()
-                                        .and_then(|c| serde_json::from_str(&c).ok())
-                                        .unwrap_or_else(|| json!({}))
-                                } else {
-                                    json!({})
-                                };
-                                if let Some(obj) = settings.as_object_mut() {
-                                    obj.insert(
-                                        "shellPath".to_string(),
-                                        json!(bash_exe.to_string_lossy()),
-                                    );
-                                }
-                                let _ = std::fs::create_dir_all(&config_dir);
-                                if let Err(e) = std::fs::write(
-                                    &settings_path,
-                                    serde_json::to_string_pretty(&settings).unwrap_or_default(),
-                                ) {
-                                    warn!("failed to write Pi shellPath setting: {}", e);
-                                } else {
-                                    info!(
-                                        "Set Pi shellPath to {} in {:?}",
-                                        bash_exe.display(),
-                                        settings_path
-                                    );
-                                }
-                            }
-                        }
+                        // ensure_bash_available also records this bash as
+                        // Pi's `shellPath`, so Pi never falls back to a WSL
+                        // launcher or an app alias.
                     }
                     None => {
                         warn!("bash not available — Pi's bash tool may fail on Windows");
@@ -1691,6 +1352,11 @@ pub async fn pi_start_inner(
     // Bundled CLI for the agent: SCREENPIPE_CLI plus a `screenpipe` launcher
     // ahead of the PATH set above.
     screenpipe_core::agents::cli_runtime::apply_to_command(&mut cmd);
+
+    // Freenpipe's own Pi config directory and Pi's runtime switches
+    // (PI_CODING_AGENT_DIR, PI_SKIP_VERSION_CHECK, JITI_TRY_NATIVE, ...).
+    let pi_config_dir = get_pi_config_dir()?;
+    pi_runtime::apply_to_command(&mut cmd, &pi_config_dir);
 
     // Pass the user's API key as env var for non-screenpipe providers
     if let Some(ref config) = provider_config {
@@ -2100,6 +1766,15 @@ pub async fn pi_start_inner(
                     Ok(Some(status)) => {
                         let code = status.code().unwrap_or(-1);
                         error!("Pi process exited immediately with code {} — check 'Pi stderr:' warnings above for details (bun path: {})", code, bun_path);
+                        if bun_runtime::is_illegal_instruction_exit(status.code()) {
+                            note_pi_exit(status.code());
+                            m.child = None;
+                            m.stdin = None;
+                            return Err(format!(
+                                "Pi could not start: this processor cannot run the bun build at {}. Freenpipe is fetching bun's baseline build; start the chat again in a minute.",
+                                bun_path
+                            ));
+                        }
                         m.child = None;
                         m.stdin = None;
                         let install_hint = take_pi_install_error()
@@ -2622,7 +2297,8 @@ pub async fn pi_update_config(
 pub async fn pi_install(app: AppHandle) -> Result<(), String> {
     info!("Installing pi via bun...");
 
-    let bun = find_bun_executable().ok_or("Could not find bun. Install from https://bun.sh")?;
+    let stock_bun =
+        find_stock_bun_executable().ok_or("Could not find bun. Install from https://bun.sh")?;
 
     let install_dir =
         pi_local_install_dir().ok_or("Cannot determine home directory for Pi install")?;
@@ -2631,8 +2307,7 @@ pub async fn pi_install(app: AppHandle) -> Result<(), String> {
 
     let app_handle = app.clone();
     std::thread::spawn(move || {
-        seed_pi_package_json(&install_dir);
-        match run_pi_package_install(&install_dir, &bun) {
+        match ensure_pi_runtime(&install_dir, Some(stock_bun)) {
             Ok(()) => {
                 info!("Pi installed successfully");
                 let _ = app_handle.emit("pi_installed", true);
@@ -2658,8 +2333,14 @@ pub async fn cleanup_pi(state: &PiState) {
     }
 }
 
-/// Find bun executable (shared by pi_install and ensure_pi_installed_background)
+/// The bun that runs Pi: the stock bun, or bun's baseline build on a
+/// Windows x64 machine that needs it and has it (`bun_runtime::select_bun`).
 fn find_bun_executable() -> Option<String> {
+    bun_runtime::select_bun(&pi_runtime::install_dir(), find_stock_bun_executable())
+}
+
+/// Find the stock bun (bundled next to the app, else user-installed).
+fn find_stock_bun_executable() -> Option<String> {
     // First check next to our own executable (bundled bun in AppData/Local/screenpipe/)
     if let Ok(exe_path) = std::env::current_exe() {
         if let Some(exe_folder) = exe_path.parent() {
@@ -2722,150 +2403,28 @@ pub fn ensure_pi_installed_background() {
             });
     }
 
-    // If Pi is already installed locally, check if it needs dependency fixes,
-    // a version upgrade, or a repair after a partial/interrupted install.
-    if find_local_pi_entrypoint().is_some() {
-        if let Some(install_dir) = pi_local_install_dir() {
-            if let Some(integrity_error) = local_pi_install_integrity_error(&install_dir) {
-                if let Some(bun) = find_bun_executable() {
-                    let _ = std::thread::Builder::new()
-                        .name("pi-repair".to_string())
-                        .spawn(move || {
-                            match repair_local_pi_install(&install_dir, &bun, &integrity_error) {
-                                Ok(()) => info!("Pi repair install successful"),
-                                Err(e) => {
-                                    error!("Pi repair install failed: {}", e);
-                                    set_pi_install_error(e);
-                                }
-                            }
-                            PI_INSTALL_DONE.store(true, Ordering::SeqCst);
-                        });
-                } else {
-                    set_pi_install_error(format!(
-                        "Pi install is corrupt ({}) and bundled bun was not found",
-                        integrity_error
-                    ));
-                    PI_INSTALL_DONE.store(true, Ordering::SeqCst);
-                }
-                return;
-            }
-
-            let pkg_path = install_dir.join("package.json");
-            let pkg_contents = pkg_path
-                .exists()
-                .then(|| std::fs::read_to_string(&pkg_path).ok())
-                .flatten()
-                .unwrap_or_default();
-            let needs_lru_fix = !pkg_contents.is_empty() && !pkg_contents.contains("overrides");
-            let needs_anthropic_sdk =
-                !pkg_contents.is_empty() && !pkg_contents.contains("@anthropic-ai/sdk");
-            let needs_upgrade = !is_local_pi_version_current(&install_dir);
-
-            if needs_lru_fix || needs_anthropic_sdk || needs_upgrade {
-                if needs_lru_fix {
-                    info!("Pi installed but missing lru-cache overrides — patching");
-                }
-                if needs_anthropic_sdk {
-                    info!("Pi installed but missing @anthropic-ai/sdk dependency — patching");
-                }
-                if needs_upgrade {
-                    info!(
-                        "Pi version mismatch — upgrading to {} in background",
-                        PI_PACKAGE
-                    );
-                }
-                seed_pi_package_json(&install_dir);
-                // Drop bun.lock whenever ANY patch fires — a stale lockfile
-                // pins the resolved tree to the prior version graph, so a
-                // version bump without lockfile invalidation leaves bun
-                // reinstalling the same broken set.
-                if needs_lru_fix || needs_anthropic_sdk || needs_upgrade {
-                    let _ = std::fs::remove_file(install_dir.join("bun.lock"));
-                    let _ = std::fs::remove_file(install_dir.join("bun.lockb"));
-                }
-                // Run upgrade/reinstall in background but do NOT set PI_INSTALL_DONE
-                // until it completes — otherwise pi_start will launch the stale version
-                // while node_modules is being overwritten, causing import errors.
-                if let Some(bun) = find_bun_executable() {
-                    let _ = std::thread::Builder::new()
-                        .name("pi-upgrade".to_string())
-                        .spawn(move || {
-                            match run_pi_package_install(&install_dir, &bun) {
-                                Ok(()) => {
-                                    info!("Pi upgrade/fix: install successful");
-                                }
-                                Err(e) => {
-                                    error!("Pi upgrade/fix: install failed: {}", e);
-                                    set_pi_install_error(e);
-                                }
-                            }
-                            PI_INSTALL_DONE.store(true, Ordering::SeqCst);
-                        });
-                } else {
-                    PI_INSTALL_DONE.store(true, Ordering::SeqCst);
-                }
-            } else {
-                debug!("Pi already installed locally, skipping background install");
-                PI_INSTALL_DONE.store(true, Ordering::SeqCst);
-            }
-        } else {
-            PI_INSTALL_DONE.store(true, Ordering::SeqCst);
-        }
-        return;
-    }
-
+    // Install, upgrade or repair the managed runtime (pinned Pi release,
+    // baseline bun on CPUs without AVX2, runtime patch) on a thread of its
+    // own. `pi_start` waits for PI_INSTALL_DONE before it gives up on a
+    // missing Pi, so it is set on every path, failures and panics included.
     match std::thread::Builder::new()
         .name("pi-install".to_string())
         .spawn(move || {
             let result = std::panic::catch_unwind(|| {
-                let bun = match find_bun_executable() {
-                    Some(b) => b,
-                    None => {
-                        warn!("Bun not found at any known path, cannot install Pi. Checked: bundled exe dir, ~/.bun/bin/bun.exe, ~/AppData/Local/bun/bin/bun.exe");
-                        return;
-                    }
-                };
-
-                let install_dir = match pi_local_install_dir() {
-                    Some(d) => d,
-                    None => {
-                        warn!("Cannot determine home directory for Pi install");
-                        return;
-                    }
-                };
-
-                if let Err(e) = std::fs::create_dir_all(&install_dir) {
-                    warn!("Failed to create Pi install dir {}: {}", install_dir.display(), e);
+                let Some(install_dir) = pi_local_install_dir() else {
+                    warn!("Cannot determine the Pi install directory");
                     return;
-                }
-
-                info!(
-                    "Pi not found — installing into {} via bundled package manager",
-                    install_dir.display()
-                );
-
-                // Seed package.json with overrides to fix lru-cache resolution on Windows
-                seed_pi_package_json(&install_dir);
-
-                match run_pi_package_install(&install_dir, &bun) {
-                    Ok(()) => {
-                        info!("Pi installed successfully into {}", install_dir.display());
-                    }
-                    Err(e) => {
-                        error!("Pi background install failed: {}", e);
-                        set_pi_install_error(e);
-                    }
+                };
+                if let Err(e) = ensure_pi_runtime(&install_dir, find_stock_bun_executable()) {
+                    error!("Pi background install failed: {}", e);
+                    set_pi_install_error(e);
                 }
             });
-
             if let Err(e) = result {
                 error!("Pi background install panicked (non-fatal): {:?}", e);
             }
-
-            // Always mark done, even on failure, so pi_start stops waiting
             PI_INSTALL_DONE.store(true, Ordering::SeqCst);
-        })
-    {
+        }) {
         Ok(_) => { /* thread running */ }
         Err(e) => {
             error!("Failed to spawn pi-install thread (non-fatal): {}", e);
@@ -2880,6 +2439,7 @@ mod tests {
     use super::parse_where_output;
     #[cfg(not(windows))]
     use super::{find_bun_executable, find_pi_executable};
+    use screenpipe_core::agents::pi_runtime;
     use serde_json::{json, Value};
     use std::io::{BufRead, BufReader, Write};
     use std::process::{Command, Stdio};
@@ -2904,7 +2464,7 @@ mod tests {
         write_package_json(
             &pi_dir,
             "@earendil-works/pi-coding-agent",
-            super::PI_PACKAGE.rsplit('@').next().unwrap_or(""),
+            pi_runtime::PI_VERSION,
         );
         let dist = pi_dir.join("dist");
         std::fs::create_dir_all(&dist).expect("create dist");
@@ -2945,7 +2505,7 @@ mod tests {
         write_package_json(
             &super::node_module_package_dir(install_dir, "@earendil-works/pi-ai"),
             "@earendil-works/pi-ai",
-            super::PI_AI_PACKAGE.rsplit('@').next().unwrap_or(""),
+            pi_runtime::PI_VERSION,
         );
         write_package_json(
             &super::node_module_package_dir(install_dir, "@anthropic-ai/sdk"),

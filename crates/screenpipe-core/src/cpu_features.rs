@@ -58,8 +58,8 @@ pub fn avx2_usable(snapshot: CpuidSnapshot) -> bool {
 pub fn read_cpuid_snapshot() -> CpuidSnapshot {
     use std::arch::x86_64::{__cpuid, __cpuid_count};
 
-    // SAFETY: CPUID is available on every x86_64 processor.
-    let leaf0 = unsafe { __cpuid(0) };
+    // CPUID exists on every x86_64 processor (the intrinsic is safe).
+    let leaf0 = __cpuid(0);
     let max_leaf = leaf0.eax;
     if max_leaf < 1 {
         return CpuidSnapshot {
@@ -67,11 +67,9 @@ pub fn read_cpuid_snapshot() -> CpuidSnapshot {
             ..Default::default()
         };
     }
-    // SAFETY: leaf 1 exists (max_leaf >= 1).
-    let leaf1 = unsafe { __cpuid(1) };
+    let leaf1 = __cpuid(1);
     let leaf7_ebx = if max_leaf >= 7 {
-        // SAFETY: leaf 7 exists (max_leaf >= 7).
-        unsafe { __cpuid_count(7, 0) }.ebx
+        __cpuid_count(7, 0).ebx
     } else {
         0
     };

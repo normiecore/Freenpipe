@@ -10,9 +10,14 @@
 //! implementations without touching any pipe code.
 
 pub mod bash_env;
+pub mod bash_probe;
+pub mod bun_runtime;
 pub mod cli_runtime;
 pub mod extensions_manifest;
 pub mod pi;
+pub mod pi_compaction;
+pub mod pi_install;
+pub mod pi_runtime;
 
 use anyhow::Result;
 use std::path::Path;
@@ -91,6 +96,10 @@ pub trait AgentExecutor: Send + Sync {
         // doesn't set it; only the pi executor (which spawns the subprocess)
         // acts on it.
         _session_owner: Option<&str>,
+        // How hard the agent should think: the pipe's `effort:` (`low`,
+        // `medium`, `high`). Pi gets it as `--thinking`; agents without such
+        // a setting, and the fallback below, ignore it.
+        _thinking_level: Option<&str>,
     ) -> Result<AgentOutput> {
         let output = self
             .run(
