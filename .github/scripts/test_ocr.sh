@@ -21,7 +21,7 @@ for i in $(seq 1 $MAX_RETRIES); do
   ps -p $(cat screenpipe.pid) -o %cpu,%mem,cmd || true
 
   # Check for OCR text
-  OCR_TEXT=$(sqlite3 $HOME/.screenpipe/db.sqlite "SELECT full_text FROM frames WHERE full_text IS NOT NULL;" 2>/dev/null || echo "")
+  OCR_TEXT=$(sqlite3 $HOME/.screenpipe/db.sqlite "SELECT text FROM ocr_text;" 2>/dev/null || echo "")
 
   if echo "$OCR_TEXT" | grep -qi "Hello, Screenpipe OCR"; then
     OCR_FOUND=true
@@ -39,7 +39,7 @@ if [ "$OCR_FOUND" = true ]; then
 else
   echo "OCR test failed: Text was not recognized after ${MAX_RETRIES} attempts"
   echo "Final OCR text in database:"
-  sqlite3 $HOME/.screenpipe/db.sqlite "SELECT full_text FROM frames WHERE full_text IS NOT NULL;" 2>/dev/null | head -20 || echo "(empty)"
+  sqlite3 $HOME/.screenpipe/db.sqlite "SELECT text FROM ocr_text;" 2>/dev/null | head -20 || echo "(empty)"
   echo ""
   echo "Last 100 lines of log:"
   tail -n 100 screenpipe_output.log

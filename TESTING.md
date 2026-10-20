@@ -532,11 +532,11 @@ Note: `"terminal"` matches `WindowsTerminal.exe` but NOT `cmd.exe` or `powershel
 - [ ] **Chrome/Edge full accessibility** — open Chrome or Edge, browse a page. search returns full page content from accessibility tree, not just limited UI elements.
 - [ ] **VS Code full accessibility** — open VS Code with a file. search returns full code content and UI elements from accessibility tree.
 - [ ] **Game/no-a11y OCR fallback** — open an app with poor accessibility. OCR should run and extract text from screenshot.
-- [ ] **OCR stored on frames** — `/search?content_type=ocr` returns an empty `ocr_engine` (the engine is no longer recorded); OCR'd frames carry word boxes in `frames.text_json`.
+- [ ] **OCR engine name** — query DB: OCR entries should have engine `WindowsNative` (not `AppleNative`).
 - [ ] **Failed OCR = no noise** — if OCR fails for a terminal, the frame should have NULL text, not chrome like "System Minimize Restore Close".
 - [ ] **Non-terminal chrome-only** — rare case where a normal app returns only chrome from accessibility. stored as-is (acceptable, no OCR fallback triggered).
 - [ ] **Empty accessibility + empty OCR** — app with no tree text and OCR failure. frame stored with NULL text. no crash.
-- [ ] **OCR text lands on frames** — `SELECT COUNT(*) FROM frames WHERE text_json IS NOT NULL` should be non-zero after a few minutes of OCR-heavy use (terminals) on Windows, and `SELECT name FROM sqlite_master WHERE name LIKE 'ocr_text%'` returns nothing (the table was retired by migration 20260613130000).
+- [ ] **ocr_text table populated** — `SELECT COUNT(*) FROM ocr_text` should be non-zero after a few minutes of use on Windows.
 
 #### Windows text extraction — untested / unknown apps
 

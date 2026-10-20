@@ -1371,7 +1371,7 @@ async fn fetch_ocr_snippets(api: &LocalApiContext) -> Vec<String> {
     let resp = api
         .apply_auth(client.post(api.url("/raw_sql")))
         .json(&serde_json::json!({
-            "query": "SELECT SUBSTR(f.full_text, 1, 150) as snippet FROM frames f WHERE datetime(f.timestamp) > datetime('now', '-15 minutes') AND LENGTH(f.full_text) > 20 ORDER BY RANDOM() LIMIT 5"
+            "query": "SELECT SUBSTR(ot.text, 1, 150) as snippet FROM ocr_text ot JOIN frames f ON ot.frame_id = f.id WHERE datetime(f.timestamp) > datetime('now', '-15 minutes') AND LENGTH(ot.text) > 20 ORDER BY RANDOM() LIMIT 5"
         }))
         .timeout(std::time::Duration::from_secs(5))
         .send()
