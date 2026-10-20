@@ -493,6 +493,8 @@ impl RecordingConfig {
         output_path: PathBuf,
         audio_devices: Vec<String>,
     ) -> AudioManagerBuilder {
+        // `/health` reports the mode the running audio manager was built with.
+        crate::routes::health::publish_audio_capture_mode(self.audio_capture_mode);
         AudioManagerBuilder::new()
             .is_disabled(self.disable_audio)
             .audio_chunk_duration(Duration::from_secs(self.audio_chunk_duration))
@@ -521,6 +523,8 @@ impl RecordingConfig {
         output_path: String,
         vision_metrics: Arc<PipelineMetrics>,
     ) -> VisionManagerConfig {
+        // `/health` reports `screenshots_disabled_by_config` from this.
+        crate::routes::health::publish_screenshots_disabled(self.disable_screenshots);
         VisionManagerConfig {
             output_path,
             ignored_windows: self.ignored_windows.clone(),
