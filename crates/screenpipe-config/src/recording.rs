@@ -7,7 +7,9 @@
 use serde::{Deserialize, Serialize};
 
 use crate::url_rules::{DomainRule, UrlRule};
-use crate::{AecFlags, AecMode, AudioCaptureMode, RecordingDetail, SemanticContextMode, SettingsPlatform};
+use crate::{
+    AecFlags, AecMode, AudioCaptureMode, RecordingDetail, SemanticContextMode, SettingsPlatform,
+};
 
 /// Custom vocabulary entry for transcription biasing and word replacement.
 #[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq)]
@@ -1170,7 +1172,11 @@ mod tests {
         let text = serde_json::to_string(&settings).unwrap();
         let value: serde_json::Value = serde_json::from_str(&text).unwrap();
         let keys: Vec<&String> = value.as_object().unwrap().keys().collect();
-        assert_eq!(keys.len(), SCHEMA_V2_KEYS.len(), "unexpected key set: {keys:?}");
+        assert_eq!(
+            keys.len(),
+            SCHEMA_V2_KEYS.len(),
+            "unexpected key set: {keys:?}"
+        );
         for key in SCHEMA_V2_KEYS {
             assert!(value.get(*key).is_some(), "missing {key}");
         }
@@ -1191,7 +1197,11 @@ mod tests {
         }
 
         let loaded = crate::lenient::from_value_lenient::<StoreShape>(original.clone()).unwrap();
-        assert!(loaded.rejected.is_empty(), "rejected: {:?}", loaded.rejected);
+        assert!(
+            loaded.rejected.is_empty(),
+            "rejected: {:?}",
+            loaded.rejected
+        );
         let store = loaded.value;
         let s = &store.recording;
 
@@ -1199,7 +1209,10 @@ mod tests {
         assert!(s.experimental_meeting_piggyback);
         assert!(s.always_record_bluetooth_mic);
         assert_eq!(s.aec_mode, "windows");
-        assert_eq!(s.effective_aec_mode(SettingsPlatform::Windows), AecMode::Windows);
+        assert_eq!(
+            s.effective_aec_mode(SettingsPlatform::Windows),
+            AecMode::Windows
+        );
         assert_eq!(s.effective_aec_mode(SettingsPlatform::Macos), AecMode::Off);
         assert!(s.disable_screenshots);
         assert!(!s.enable_semantic_context);
@@ -1207,14 +1220,25 @@ mod tests {
         assert_eq!(s.effective_capture_max_width(), Some(2560));
         assert_eq!(s.ignored_urls.len(), 2);
         assert_eq!(s.ignored_urls[0], UrlRule::Legacy("bank.example".into()));
-        assert!(s.ignored_urls[1].as_domain_rule().unwrap().include_subdomains);
+        assert!(
+            s.ignored_urls[1]
+                .as_domain_rule()
+                .unwrap()
+                .include_subdomains
+        );
         assert_eq!(s.included_urls[0].domain, "docs.example.org");
         assert!(s.enhanced_incognito_detection);
         assert!(s.disable_click_capture);
         assert!(!s.redact_agent_session_secrets);
         assert_eq!(
             s.pii_redaction_columns.as_deref(),
-            Some(&["accessibility_text".to_string(), "ui_element_value".into(), "browser_url".into()][..])
+            Some(
+                &[
+                    "accessibility_text".to_string(),
+                    "ui_element_value".into(),
+                    "browser_url".into()
+                ][..]
+            )
         );
         assert!(s.pii_redaction_pseudonyms);
         assert_eq!(s.recording_detail(), RecordingDetail::MoreDetail);
@@ -1239,7 +1263,10 @@ mod tests {
     #[test]
     fn missing_v2_keys_take_their_defaults() {
         let s: RecordingSettings = serde_json::from_str("{}").unwrap();
-        assert_eq!(s.audio_capture_mode, "always", "unset means always-on capture");
+        assert_eq!(
+            s.audio_capture_mode, "always",
+            "unset means always-on capture"
+        );
         assert!(s.experimental_meeting_piggyback);
         assert!(!s.always_record_bluetooth_mic);
         assert!(!s.screenpipe_aec_enabled);
@@ -1275,8 +1302,14 @@ mod tests {
         let legacy: RecordingSettings =
             serde_json::from_value(serde_json::json!({"windowsInputAecEnabled": true})).unwrap();
         assert_eq!(legacy.aec_mode, "off");
-        assert_eq!(legacy.effective_aec_mode(SettingsPlatform::Windows), AecMode::Windows);
-        assert_eq!(legacy.effective_aec_mode(SettingsPlatform::Linux), AecMode::Off);
+        assert_eq!(
+            legacy.effective_aec_mode(SettingsPlatform::Windows),
+            AecMode::Windows
+        );
+        assert_eq!(
+            legacy.effective_aec_mode(SettingsPlatform::Linux),
+            AecMode::Off
+        );
 
         // An explicit mode wins over stale booleans.
         let explicit: RecordingSettings = serde_json::from_value(serde_json::json!({
@@ -1284,7 +1317,10 @@ mod tests {
             "windowsInputAecEnabled": true
         }))
         .unwrap();
-        assert_eq!(explicit.effective_aec_mode(SettingsPlatform::Windows), AecMode::Screenpipe);
+        assert_eq!(
+            explicit.effective_aec_mode(SettingsPlatform::Windows),
+            AecMode::Screenpipe
+        );
     }
 
     #[test]
@@ -1296,7 +1332,10 @@ mod tests {
         assert!(!s.screenpipe_aec_enabled && !s.macos_input_vpio_enabled);
 
         s.set_aec_mode(AecMode::Macos, SettingsPlatform::Windows);
-        assert_eq!(s.aec_mode, "off", "an OS canceller of another platform is off");
+        assert_eq!(
+            s.aec_mode, "off",
+            "an OS canceller of another platform is off"
+        );
         assert!(!s.windows_input_aec_enabled);
 
         s.set_aec_mode(AecMode::Screenpipe, SettingsPlatform::Linux);

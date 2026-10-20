@@ -711,7 +711,10 @@ mod tests {
             std::sync::Arc::new(PipelineMetrics::new()),
         );
 
-        assert_eq!(config.ignored_urls, vec!["https://private.example".to_string()]);
+        assert_eq!(
+            config.ignored_urls,
+            vec!["https://private.example".to_string()]
+        );
         assert_eq!(config.ignored_url_rules, settings.ignored_urls);
         assert_eq!(vision.ignored_urls, config.ignored_urls);
         assert_eq!(vision.output_path, "capture-output");
@@ -775,7 +778,10 @@ mod tests {
         assert!(c.enhanced_incognito_detection);
         assert!(c.disable_click_capture);
         assert!(!c.redact_agent_session_secrets);
-        assert_eq!(c.pii_redaction_columns.as_deref(), Some(&["browser_url".to_string()][..]));
+        assert_eq!(
+            c.pii_redaction_columns.as_deref(),
+            Some(&["browser_url".to_string()][..])
+        );
         assert!(c.pii_redaction_pseudonyms);
     }
 

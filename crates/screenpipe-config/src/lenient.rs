@@ -31,7 +31,9 @@ pub struct Lenient<T> {
 ///
 /// The fast path is a single strict parse. Only when that fails is each entry
 /// probed on its own, so the cost is paid by broken stores alone.
-pub fn from_value_lenient<T: DeserializeOwned>(value: Value) -> Result<Lenient<T>, serde_json::Error> {
+pub fn from_value_lenient<T: DeserializeOwned>(
+    value: Value,
+) -> Result<Lenient<T>, serde_json::Error> {
     let first_error = match serde_json::from_value::<T>(value.clone()) {
         Ok(parsed) => {
             return Ok(Lenient {

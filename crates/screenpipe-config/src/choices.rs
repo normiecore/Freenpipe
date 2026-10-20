@@ -254,11 +254,23 @@ mod tests {
 
     #[test]
     fn audio_capture_mode_parses_and_falls_back() {
-        assert_eq!(AudioCaptureMode::from_setting("meetings-only"), AudioCaptureMode::MeetingsOnly);
-        assert_eq!(AudioCaptureMode::from_setting("disabled"), AudioCaptureMode::Disabled);
-        assert_eq!(AudioCaptureMode::from_setting("always"), AudioCaptureMode::Always);
+        assert_eq!(
+            AudioCaptureMode::from_setting("meetings-only"),
+            AudioCaptureMode::MeetingsOnly
+        );
+        assert_eq!(
+            AudioCaptureMode::from_setting("disabled"),
+            AudioCaptureMode::Disabled
+        );
+        assert_eq!(
+            AudioCaptureMode::from_setting("always"),
+            AudioCaptureMode::Always
+        );
         assert_eq!(AudioCaptureMode::from_setting(""), AudioCaptureMode::Always);
-        assert_eq!(AudioCaptureMode::from_setting("sometimes"), AudioCaptureMode::Always);
+        assert_eq!(
+            AudioCaptureMode::from_setting("sometimes"),
+            AudioCaptureMode::Always
+        );
         for mode in [
             AudioCaptureMode::Always,
             AudioCaptureMode::MeetingsOnly,
@@ -294,31 +306,67 @@ mod tests {
             windows_input_aec_enabled: true,
             ..AecFlags::default()
         };
-        assert_eq!(AecMode::from_flags(win, SettingsPlatform::Windows), AecMode::Windows);
-        assert_eq!(AecMode::from_flags(win, SettingsPlatform::Macos), AecMode::Off);
+        assert_eq!(
+            AecMode::from_flags(win, SettingsPlatform::Windows),
+            AecMode::Windows
+        );
+        assert_eq!(
+            AecMode::from_flags(win, SettingsPlatform::Macos),
+            AecMode::Off
+        );
         let mac = AecFlags {
             macos_input_vpio_enabled: true,
             screenpipe_aec_enabled: true,
             ..AecFlags::default()
         };
-        assert_eq!(AecMode::from_flags(mac, SettingsPlatform::Macos), AecMode::Macos);
-        assert_eq!(AecMode::from_flags(mac, SettingsPlatform::Linux), AecMode::Screenpipe);
+        assert_eq!(
+            AecMode::from_flags(mac, SettingsPlatform::Macos),
+            AecMode::Macos
+        );
+        assert_eq!(
+            AecMode::from_flags(mac, SettingsPlatform::Linux),
+            AecMode::Screenpipe
+        );
     }
 
     #[test]
     fn recording_detail_intervals() {
-        assert_eq!(RecordingDetail::from_setting("auto").fixed_interval_ms(), None);
-        assert_eq!(RecordingDetail::from_setting("low_impact").fixed_interval_ms(), Some(5_000));
-        assert_eq!(RecordingDetail::from_setting("balanced").fixed_interval_ms(), Some(2_000));
-        assert_eq!(RecordingDetail::from_setting("more_detail").fixed_interval_ms(), Some(1_000));
+        assert_eq!(
+            RecordingDetail::from_setting("auto").fixed_interval_ms(),
+            None
+        );
+        assert_eq!(
+            RecordingDetail::from_setting("low_impact").fixed_interval_ms(),
+            Some(5_000)
+        );
+        assert_eq!(
+            RecordingDetail::from_setting("balanced").fixed_interval_ms(),
+            Some(2_000)
+        );
+        assert_eq!(
+            RecordingDetail::from_setting("more_detail").fixed_interval_ms(),
+            Some(1_000)
+        );
         assert_eq!(RecordingDetail::from_setting("max"), RecordingDetail::Auto);
     }
 
     #[test]
     fn semantic_mode_accepts_both_spellings() {
-        assert_eq!(SemanticContextMode::from_setting("computerUse"), SemanticContextMode::ComputerUse);
-        assert_eq!(SemanticContextMode::from_setting("computer_use"), SemanticContextMode::ComputerUse);
-        assert_eq!(SemanticContextMode::ComputerUse.engine_str(), "computer_use");
-        assert_eq!(SemanticContextMode::from_setting("nope"), SemanticContextMode::Memory);
+        assert_eq!(
+            SemanticContextMode::from_setting("computerUse"),
+            SemanticContextMode::ComputerUse
+        );
+        assert_eq!(
+            SemanticContextMode::from_setting("computer_use"),
+            SemanticContextMode::ComputerUse
+        );
+        assert_eq!(
+            SemanticContextMode::ComputerUse.engine_str(),
+            "computer_use"
+        );
+        assert_eq!(
+            SemanticContextMode::from_setting("nope"),
+            SemanticContextMode::Memory
+        );
     }
 }
