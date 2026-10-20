@@ -3,10 +3,12 @@
 # https://github.com/normiecore/Freenpipe
 """Free disk in the shared cargo target dir without disturbing running builds.
 
-Cargo hashes workspace crates by their source path, so every WP worktree builds its own copy of the
-Freenpipe crates into the shared target dir. Once a worktree is removed those copies are dead. This
-script deletes them (found through the dep-info files that name their sources), plus linked test and
-binary executables older than --exe-age minutes, which nothing else links against.
+A worktree's own builds of the Freenpipe crates (see cargo-wt.py) are dead once the worktree is
+removed. Builds of the app workspace name their sources by absolute path, so their dep-info files show
+which worktree made them; this script deletes those whose worktree is gone. It also deletes linked test
+and binary executables older than --exe-age minutes, which nothing links against, and with
+--stale-hours H the Freenpipe crate artifacts nobody has rebuilt for H hours (a build that still needs
+one rebuilds it).
 
     python3 tools/cloud/prune-target.py            # report only
     python3 tools/cloud/prune-target.py --delete
@@ -23,6 +25,7 @@ ap = argparse.ArgumentParser()
 ap.add_argument("--delete", action="store_true")
 ap.add_argument("--exe-age", type=int, default=45, help="minutes since an executable was last linked")
 ap.add_argument("--target", default=os.environ.get("CARGO_TARGET_DIR", os.path.join(state, "target")))
+ap.add_argument("--stale-hours", type=float, default=0, help="also drop Freenpipe crate artifacts older than this")
 a = ap.parse_args()
 
 debug = os.path.join(a.target, "debug")
@@ -52,6 +55,22 @@ if os.path.isdir(deps_dir):
         if "." not in name and os.path.isfile(p) and os.access(p, os.X_OK):
             if (time.time() - os.path.getmtime(p)) / 60 > a.exe_age:
                 paths.append(p)
+
+
+if a.stale_hours > 0:
+    cutoff = time.time() - a.stale_hours * 3600
+    for sub in ("deps", ".fingerprint"):
+        base = os.path.join(debug, sub)
+        if not os.path.isdir(base):
+            continue
+        for name in os.listdir(base):
+            if name.startswith(("screenpipe", "libscreenpipe")):
+                p = os.path.join(base, name)
+                try:
+                    if os.path.getmtime(p) < cutoff:
+                        paths.append(p)
+                except OSError:
+                    pass
 
 
 def size_of(p):
