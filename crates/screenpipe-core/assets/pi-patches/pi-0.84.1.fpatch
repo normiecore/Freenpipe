@@ -1,0 +1,162 @@
+# Freenpipe — local-first screen & audio memory (fork of screenpipe @ 892199f, MIT)
+# https://github.com/normiecore/Freenpipe
+#
+# Freenpipe runtime patch for Pi 0.84.1 (context compaction and transport errors).
+#
+# Applied by crates/screenpipe-core/src/agents/pi_compaction.rs to the Pi packages
+# installed under <data dir>/pi-agent/node_modules. The format:
+#
+#   target <package> <version>      the patch applies only to these releases
+#   module <package> <path>         freenpipe-compaction.js is written here
+#   file <package> <path> <sha256>  a file to edit and its stock SHA-256
+#   hunk <id>                       an edit in the file named above, then
+#   @@@ find                        the exact stock text (must occur once),
+#   @@@ replace                     its replacement, which must contain the
+#   @@@ end                         marker "freenpipe-patch:<id>"
+#
+# Lines between "@@@" lines are taken literally. Elsewhere, blank lines and
+# lines starting with "#" are ignored. A file whose content matches neither its
+# stock hash nor a fully patched state is left alone and the patch is skipped.
+#
+# The hooks only call into freenpipe-compaction.js; the behaviour lives there.
+
+target @earendil-works/pi-coding-agent 0.84.1
+target @earendil-works/pi-ai 0.84.1
+module @earendil-works/pi-coding-agent dist/core/compaction/freenpipe-compaction.js
+
+file @earendil-works/pi-coding-agent dist/core/agent-session.js 91e72d5497f665e731cbd79da6a6e826d8cae7d2ce156a7dee39f8ca205e32c8
+
+hunk agent-session-import-v1
+@@@ find
+import { calculateContextTokens, collectEntriesForBranchSummary, compact, estimateContextTokens, estimateTokens, generateBranchSummary, prepareCompaction, shouldCompact, } from "./compaction/index.js";
+@@@ replace
+import { calculateContextTokens, collectEntriesForBranchSummary, compact, estimateContextTokens, estimateTokens, generateBranchSummary, prepareCompaction, shouldCompact, } from "./compaction/index.js";
+import * as fpCompaction from "./compaction/freenpipe-compaction.js"; // freenpipe-patch:agent-session-import-v1
+@@@ end
+
+hunk proactive-compaction-v1
+@@@ find
+            const previousSnapshot = await previousPrepareNextTurnWithContext?.(turn, signal);
+            const previousContext = previousSnapshot?.context ?? turn.context;
+@@@ replace
+            const previousSnapshot = await previousPrepareNextTurnWithContext?.(turn, signal);
+            // freenpipe-patch:proactive-compaction-v1
+            const previousContext = await fpCompaction.afterToolStep(this, turn, previousSnapshot?.context ?? turn.context, { estimateContextTokens, estimateTokens });
+@@@ end
+
+hunk sized-settings-check-v1
+@@@ find
+    async _checkCompaction(assistantMessage, skipAbortedCheck = true) {
+        const settings = this.settingsManager.getCompactionSettings();
+@@@ replace
+    async _checkCompaction(assistantMessage, skipAbortedCheck = true) {
+        // freenpipe-patch:sized-settings-check-v1
+        const settings = fpCompaction.settingsForSession(this, this.settingsManager.getCompactionSettings(), { estimateTokens });
+@@@ end
+
+hunk sized-settings-run-v1
+@@@ find
+    async _runAutoCompaction(reason, willRetry) {
+        const settings = this.settingsManager.getCompactionSettings();
+@@@ replace
+    async _runAutoCompaction(reason, willRetry) {
+        // freenpipe-patch:sized-settings-run-v1
+        const settings = fpCompaction.settingsForSession(this, this.settingsManager.getCompactionSettings(), { estimateTokens });
+@@@ end
+
+hunk compaction-failure-v1
+@@@ find
+            const errorMessage = error instanceof Error ? error.message : "compaction failed";
+@@@ replace
+            const errorMessage = error instanceof Error ? error.message : "compaction failed";
+            fpCompaction.noteCompactionFailure(this, errorMessage); // freenpipe-patch:compaction-failure-v1
+@@@ end
+
+file @earendil-works/pi-coding-agent dist/core/compaction/compaction.js fcb12f1eb4d38578978e1a8e3e382a3fccfd5e0ccf87bc86979a9a8d9c145c7b
+
+hunk compaction-import-v1
+@@@ find
+import { computeFileLists, createFileOps, extractFileOpsFromMessage, formatFileOperations, SUMMARIZATION_SYSTEM_PROMPT, serializeConversation, } from "./utils.js";
+@@@ replace
+import { computeFileLists, createFileOps, extractFileOpsFromMessage, formatFileOperations, SUMMARIZATION_SYSTEM_PROMPT, serializeConversation, } from "./utils.js";
+import { checkSummary as fpCheckSummary } from "./freenpipe-compaction.js"; // freenpipe-patch:compaction-import-v1
+@@@ end
+
+hunk summary-check-v1
+@@@ find
+        throw new Error(`Summarization failed: ${response.errorMessage || "Unknown error"}`);
+    }
+@@@ replace
+        throw new Error(`Summarization failed: ${response.errorMessage || "Unknown error"}`);
+    }
+    fpCheckSummary(response, "history"); // freenpipe-patch:summary-check-v1
+@@@ end
+
+hunk turn-prefix-check-v1
+@@@ find
+        throw new Error(`Turn prefix summarization failed: ${response.errorMessage || "Unknown error"}`);
+    }
+@@@ replace
+        throw new Error(`Turn prefix summarization failed: ${response.errorMessage || "Unknown error"}`);
+    }
+    fpCheckSummary(response, "turn-prefix"); // freenpipe-patch:turn-prefix-check-v1
+@@@ end
+
+file @earendil-works/pi-coding-agent dist/core/compaction/utils.js eba26429c8ed717754bcdc3c1164715b1d2f2d68655530cf1e0df975c18f6891
+
+hunk utils-import-v1
+@@@ find
+import { contentText } from "@earendil-works/pi-ai";
+@@@ replace
+import { contentText } from "@earendil-works/pi-ai";
+import { serializeConversationRecords as fpSerializeRecords } from "./freenpipe-compaction.js"; // freenpipe-patch:utils-import-v1
+@@@ end
+
+hunk summary-records-v1
+@@@ find
+export function serializeConversation(messages) {
+@@@ replace
+export function serializeConversation(messages) {
+    return fpSerializeRecords(messages); // freenpipe-patch:summary-records-v1
+@@@ end
+
+file @earendil-works/pi-ai dist/utils/error-body.js 3fbe4d7fdaa35ef2a65bd8d84f83317d774ad49db9403b00ef663a09ce1d454b
+
+hunk transport-cause-helper-v1
+@@@ find
+export function normalizeProviderError(error) {
+@@@ replace
+// freenpipe-patch:transport-cause-helper-v1
+// Network failures surface as generic text ("fetch failed", "terminated",
+// "Connection error.") while the useful part, the socket or TLS error code,
+// sits on error.cause. Append recognised codes so logs and the retry check
+// can see them.
+const FP_TRANSPORT_CODES = new Set(["ECONNRESET", "ECONNREFUSED", "ECONNABORTED", "ETIMEDOUT", "EPIPE", "ENOTFOUND", "EAI_AGAIN", "EHOSTUNREACH", "ENETUNREACH", "ENETDOWN", "EPROTO", "UND_ERR_SOCKET", "UND_ERR_CONNECT_TIMEOUT", "UND_ERR_HEADERS_TIMEOUT", "UND_ERR_BODY_TIMEOUT", "UND_ERR_CLOSED", "CERT_HAS_EXPIRED", "UNABLE_TO_VERIFY_LEAF_SIGNATURE", "SELF_SIGNED_CERT_IN_CHAIN", "DEPTH_ZERO_SELF_SIGNED_CERT", "ERR_TLS_CERT_ALTNAME_INVALID"]);
+function fpWithTransportCause(error, message) {
+    try {
+        const codes = [];
+        let current = error;
+        for (let depth = 0; current && typeof current === "object" && depth < 6; depth++) {
+            const code = current.code;
+            if (typeof code === "string" && FP_TRANSPORT_CODES.has(code) && !codes.includes(code)) codes.push(code);
+            current = current.cause;
+        }
+        const text = typeof message === "string" ? message : String(message);
+        const missing = codes.filter((code) => !text.includes(code));
+        return missing.length > 0 ? `${text} (${missing.join(", ")})` : text;
+    }
+    catch {
+        return message;
+    }
+}
+export function normalizeProviderError(error) {
+@@@ end
+
+hunk transport-cause-v1
+@@@ find
+        message: error.message,
+        messageCarriesBody,
+@@@ replace
+        message: fpWithTransportCause(error, error.message), // freenpipe-patch:transport-cause-v1
+        messageCarriesBody,
+@@@ end
