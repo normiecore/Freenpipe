@@ -9,7 +9,10 @@ use screenpipe_audio::meeting_streaming::MeetingStreamingConfig;
 use screenpipe_audio::transcription::deepgram::DeepgramTranscriptionConfig;
 use screenpipe_audio::transcription::VocabularyEntry;
 use screenpipe_audio::vad::VadEngineEnum;
-use screenpipe_config::{ChannelConfig, DbConfig};
+use screenpipe_config::{
+    AecMode, AudioCaptureMode, ChannelConfig, DbConfig, DomainRule, RecordingDetail,
+    SemanticContextMode, SettingsPlatform, UrlRule,
+};
 use screenpipe_core::Language;
 use screenpipe_screen::PipelineMetrics;
 use std::path::PathBuf;
@@ -73,15 +76,39 @@ pub struct RecordingConfig {
     pub windows_input_aec_enabled: bool,
     /// Use Apple VoiceProcessingIO on the default macOS microphone when supported.
     pub macos_input_vpio_enabled: bool,
+    /// Run the built-in software echo canceller on microphone audio.
+    pub screenpipe_aec_enabled: bool,
+    /// Echo-cancellation mode that applies on this platform. The three
+    /// booleans above are derived from it (see
+    /// `RecordingSettings::effective_aec_mode`).
+    pub aec_mode: AecMode,
+    /// When audio devices are recorded (`audioCaptureMode`).
+    pub audio_capture_mode: AudioCaptureMode,
+    /// During a meeting, follow the meeting app's own audio
+    /// (`experimentalMeetingPiggyback`).
+    pub experimental_meeting_piggyback: bool,
+    /// Keep a Bluetooth headset microphone open outside meetings
+    /// (`alwaysRecordBluetoothMic`).
+    pub always_record_bluetooth_mic: bool,
     pub monitor_ids: Vec<String>,
     pub use_all_monitors: bool,
 
     // Filters
     pub ignored_windows: Vec<String>,
     pub included_windows: Vec<String>,
+    /// Block-list entries as plain patterns, for the matchers that only
+    /// understand strings. Structured rules map to their domain, which can
+    /// only block more, never less (see `UrlRule::legacy_pattern`).
     pub ignored_urls: Vec<String>,
+    /// The block list as stored: legacy strings and structured domain rules.
+    pub ignored_url_rules: Vec<UrlRule>,
+    /// Website allow list (`includedUrls`). Empty = every site may be recorded.
+    pub included_urls: Vec<DomainRule>,
     /// Automatically detect and skip incognito / private browsing windows.
     pub ignore_incognito_windows: bool,
+    /// macOS: ask supported browsers whether a window is private
+    /// (`enhancedIncognitoDetection`). No effect elsewhere.
+    pub enhanced_incognito_detection: bool,
     /// Pause all screen capture when a DRM streaming app (Netflix, etc.) is focused.
     pub pause_on_drm_content: bool,
     /// Skip persisting clipboard rows/content in the UI recorder. Clipboard
@@ -93,6 +120,9 @@ pub struct RecordingConfig {
     /// wake event-driven capture, and the a11y tree + OCR still capture on-screen text. See
     /// `RecordingSettings.disable_keyboard_capture`.
     pub disable_keyboard_capture: bool,
+    /// Skip persisting mouse-click rows in the UI recorder
+    /// (`disableClickCapture`).
+    pub disable_click_capture: bool,
     pub languages: Vec<Language>,
 
     // Cloud/auth
@@ -137,6 +167,31 @@ pub struct RecordingConfig {
     /// Persisted power mode preference ("auto", "performance", "battery_saver").
     /// Restored from settings on startup so the user's choice survives app restarts.
     pub power_mode: Option<String>,
+
+    /// Keep accessibility text and frame metadata but store no screenshot
+    /// images (`disableScreenshots`).
+    pub disable_screenshots: bool,
+    /// Width cap applied at capture time (`captureMaxWidth`); `None` derives
+    /// the cap from `video_quality`.
+    pub capture_max_width: Option<u32>,
+    /// Scroll-snapshot cadence (`recordingDetail`).
+    pub recording_detail: RecordingDetail,
+    /// Keep the computer awake while recording (`keepComputerAwake`).
+    pub keep_computer_awake: bool,
+    /// Local semantic parsing of captured content (`enableSemanticContext`).
+    pub enable_semantic_context: bool,
+    /// What semantic parsing is tuned for (`semanticContextMode`).
+    pub semantic_context_mode: SemanticContextMode,
+
+    /// Mask secrets in local agent session transcripts
+    /// (`redactAgentSessionSecrets`).
+    pub redact_agent_session_secrets: bool,
+    /// Captured fields the AI redaction workers rewrite
+    /// (`piiRedactionColumns`); `None` = the built-in set.
+    pub pii_redaction_columns: Option<Vec<String>>,
+    /// Stable per-install pseudonyms instead of bare placeholders
+    /// (`piiRedactionPseudonyms`).
+    pub pii_redaction_pseudonyms: bool,
 
     /// Database configuration (pool sizes, mmap, cache) derived from device tier.
     pub db_config: DbConfig,
@@ -236,6 +291,9 @@ impl RecordingConfig {
         // so the audio recording loop can read it without holding a config reference.
         screenpipe_config::set_record_while_locked(settings.record_while_locked);
 
+        let aec_mode = settings.effective_aec_mode(SettingsPlatform::current());
+        let aec_flags = aec_mode.flags();
+
         Self {
             audio_chunk_duration: settings.audio_chunk_duration.max(0) as u64,
             port: settings.port,
@@ -271,17 +329,26 @@ impl RecordingConfig {
             audio_devices: settings.audio_devices.clone(),
             use_system_default_audio: settings.use_system_default_audio,
             experimental_coreaudio_system_audio: settings.experimental_coreaudio_system_audio,
-            windows_input_aec_enabled: settings.windows_input_aec_enabled,
-            macos_input_vpio_enabled: settings.macos_input_vpio_enabled,
+            windows_input_aec_enabled: aec_flags.windows_input_aec_enabled,
+            macos_input_vpio_enabled: aec_flags.macos_input_vpio_enabled,
+            screenpipe_aec_enabled: aec_flags.screenpipe_aec_enabled,
+            aec_mode,
+            audio_capture_mode: settings.audio_capture_mode(),
+            experimental_meeting_piggyback: settings.experimental_meeting_piggyback,
+            always_record_bluetooth_mic: settings.always_record_bluetooth_mic,
             monitor_ids: settings.monitor_ids.clone(),
             use_all_monitors: settings.use_all_monitors,
             ignored_windows: settings.ignored_windows.clone(),
             included_windows: settings.included_windows.clone(),
-            ignored_urls: settings.ignored_urls.clone(),
+            ignored_urls: settings.ignored_url_patterns(),
+            ignored_url_rules: settings.ignored_urls.clone(),
+            included_urls: settings.included_urls.clone(),
             ignore_incognito_windows: settings.ignore_incognito_windows,
+            enhanced_incognito_detection: settings.enhanced_incognito_detection,
             pause_on_drm_content: settings.pause_on_drm_content,
             disable_clipboard_capture: settings.disable_clipboard_capture,
             disable_keyboard_capture: settings.disable_keyboard_capture,
+            disable_click_capture: settings.disable_click_capture,
             languages: settings
                 .languages
                 .iter()
@@ -320,6 +387,15 @@ impl RecordingConfig {
                 .collect(),
             batch_max_duration_secs: settings.batch_max_duration_secs.filter(|&v| v > 0),
             power_mode: settings.power_mode.clone(),
+            disable_screenshots: settings.disable_screenshots,
+            capture_max_width: settings.effective_capture_max_width(),
+            recording_detail: settings.recording_detail(),
+            keep_computer_awake: settings.keep_computer_awake,
+            enable_semantic_context: settings.enable_semantic_context,
+            semantic_context_mode: settings.semantic_context_mode(),
+            redact_agent_session_secrets: settings.redact_agent_session_secrets,
+            pii_redaction_columns: settings.pii_redaction_columns.clone(),
+            pii_redaction_pseudonyms: settings.pii_redaction_pseudonyms,
             db_config: settings
                 .device_tier
                 .as_deref()
@@ -614,7 +690,7 @@ mod tests {
         let settings = screenpipe_config::RecordingSettings {
             ignored_windows: vec!["Streaming App".to_string()],
             included_windows: vec!["Editor".to_string()],
-            ignored_urls: vec!["https://private.example".to_string()],
+            ignored_urls: vec!["https://private.example".into()],
             ignore_incognito_windows: true,
             pause_on_drm_content: true,
             monitor_ids: vec!["MONITOR-1".to_string()],
@@ -635,7 +711,9 @@ mod tests {
             std::sync::Arc::new(PipelineMetrics::new()),
         );
 
-        assert_eq!(config.ignored_urls, settings.ignored_urls);
+        assert_eq!(config.ignored_urls, vec!["https://private.example".to_string()]);
+        assert_eq!(config.ignored_url_rules, settings.ignored_urls);
+        assert_eq!(vision.ignored_urls, config.ignored_urls);
         assert_eq!(vision.output_path, "capture-output");
         assert_eq!(vision.ignored_windows, settings.ignored_windows);
         assert_eq!(vision.included_windows, settings.included_windows);
@@ -650,6 +728,71 @@ mod tests {
         assert_eq!(vision.min_capture_interval_ms, Some(120));
         assert_eq!(vision.capture_on_keystroke, Some(true));
         assert_eq!(vision.capture_on_clipboard, Some(true));
+    }
+
+    #[test]
+    fn settings_v2_keys_reach_the_engine_config() {
+        let settings: screenpipe_config::RecordingSettings = serde_json::from_value(serde_json::json!({
+            "audioCaptureMode": "meetings-only",
+            "experimentalMeetingPiggyback": false,
+            "alwaysRecordBluetoothMic": true,
+            "aecMode": "screenpipe",
+            "disableScreenshots": true,
+            "captureMaxWidth": 1280,
+            "recordingDetail": "balanced",
+            "keepComputerAwake": true,
+            "enableSemanticContext": false,
+            "semanticContextMode": "computerUse",
+            "ignoredUrls": [
+                "bank.example",
+                {"domain": "Mail.Example.com", "includeSubdomains": true, "excludedSubdomains": []}
+            ],
+            "includedUrls": [{"domain": "docs.example.org"}],
+            "enhancedIncognitoDetection": true,
+            "disableClickCapture": true,
+            "redactAgentSessionSecrets": false,
+            "piiRedactionColumns": ["browser_url"],
+            "piiRedactionPseudonyms": true
+        }))
+        .unwrap();
+
+        let c = build(&settings);
+        assert_eq!(c.audio_capture_mode, AudioCaptureMode::MeetingsOnly);
+        assert!(!c.experimental_meeting_piggyback);
+        assert!(c.always_record_bluetooth_mic);
+        assert_eq!(c.aec_mode, AecMode::Screenpipe);
+        assert!(c.screenpipe_aec_enabled);
+        assert!(!c.windows_input_aec_enabled && !c.macos_input_vpio_enabled);
+        assert!(c.disable_screenshots);
+        assert_eq!(c.capture_max_width, Some(1280));
+        assert_eq!(c.recording_detail, RecordingDetail::Balanced);
+        assert!(c.keep_computer_awake);
+        assert!(!c.enable_semantic_context);
+        assert_eq!(c.semantic_context_mode, SemanticContextMode::ComputerUse);
+        assert_eq!(c.ignored_urls, vec!["bank.example", "mail.example.com"]);
+        assert_eq!(c.ignored_url_rules.len(), 2);
+        assert_eq!(c.included_urls[0].domain, "docs.example.org");
+        assert!(c.enhanced_incognito_detection);
+        assert!(c.disable_click_capture);
+        assert!(!c.redact_agent_session_secrets);
+        assert_eq!(c.pii_redaction_columns.as_deref(), Some(&["browser_url".to_string()][..]));
+        assert!(c.pii_redaction_pseudonyms);
+    }
+
+    #[test]
+    fn legacy_aec_flag_still_applies_on_its_platform() {
+        let settings = screenpipe_config::RecordingSettings {
+            windows_input_aec_enabled: true,
+            ..Default::default()
+        };
+        let c = build(&settings);
+        let expected = if cfg!(target_os = "windows") {
+            AecMode::Windows
+        } else {
+            AecMode::Off
+        };
+        assert_eq!(c.aec_mode, expected);
+        assert_eq!(c.windows_input_aec_enabled, cfg!(target_os = "windows"));
     }
 
     fn langs(items: &[&str]) -> Vec<String> {

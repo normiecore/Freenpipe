@@ -35,6 +35,26 @@ impl DomainRule {
     pub fn normalized_domain(&self) -> String {
         normalize_host(&self.domain)
     }
+
+    /// Build a rule from a short text form, as typed on a command line:
+    /// `example.com` covers that host only, `*.example.com` covers it and
+    /// every host below it. Returns `None` for an empty host.
+    pub fn from_pattern(pattern: &str) -> Option<Self> {
+        let trimmed = pattern.trim();
+        let (host, include_subdomains) = match trimmed.strip_prefix("*.") {
+            Some(rest) => (rest, true),
+            None => (trimmed, false),
+        };
+        let domain = normalize_host(host);
+        if domain.is_empty() {
+            return None;
+        }
+        Some(Self {
+            domain,
+            include_subdomains,
+            excluded_subdomains: Vec::new(),
+        })
+    }
 }
 
 /// One entry of the `ignoredUrls` list: a legacy pattern string or a
@@ -138,6 +158,18 @@ mod tests {
         ]);
         let rules: Vec<UrlRule> = serde_json::from_value(stored.clone()).unwrap();
         assert_eq!(serde_json::to_value(&rules).unwrap(), stored);
+    }
+
+    #[test]
+    fn command_line_patterns_become_domain_rules() {
+        let exact = DomainRule::from_pattern(" Docs.Example.org ").unwrap();
+        assert_eq!(exact.domain, "docs.example.org");
+        assert!(!exact.include_subdomains);
+        let wide = DomainRule::from_pattern("*.example.com.").unwrap();
+        assert_eq!(wide.domain, "example.com");
+        assert!(wide.include_subdomains);
+        assert!(DomainRule::from_pattern("  ").is_none());
+        assert!(DomainRule::from_pattern("*.").is_none());
     }
 
     #[test]

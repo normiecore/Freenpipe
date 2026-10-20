@@ -92,12 +92,20 @@ pub struct RecordingSettings {
     #[serde(rename = "useSystemDefaultAudio")]
     pub use_system_default_audio: bool,
 
-    /// macOS 14.4+: capture system audio with the CoreAudio process tap
-    /// rather than ScreenCaptureKit. On by default, matching current
-    /// upstream behaviour (stores are switched over once by the
-    /// `coreaudioTapMigrationV3` step). When the tap cannot be created the
-    /// recorder falls back to ScreenCaptureKit on its own. Ignored on other
-    /// platforms.
+    /// Experimental: capture System Audio via the CoreAudio Process Tap API
+    /// (macOS 14.4+) instead of ScreenCaptureKit. The tap sidesteps SCK's
+    /// display-enumeration failures after sleep/wake and the GPU/compositor
+    /// wake overhead, but it cannot see audio rendered through a
+    /// VoiceProcessing AudioUnit (Zoom / Google Meet / Microsoft Teams all
+    /// use one for echo cancellation), so on meeting audio it silently
+    /// captures zeroed buffers even though tap creation succeeds.
+    ///
+    /// Default `false` (see `default_experimental_coreaudio_system_audio`).
+    /// SCK captures at the display compositor, which does see VoiceProcessing
+    /// output, so it is the right default for anyone on calls. Users who hit
+    /// SCK's sleep/wake display-enumeration bug can still opt in; when the tap
+    /// is on and creation fails (permission, macOS <14.4, OS quirk), stream.rs
+    /// falls back to the SCK path automatically. Ignored on non-macOS platforms.
     #[serde(
         rename = "experimentalCoreaudioSystemAudio",
         default = "default_experimental_coreaudio_system_audio"
@@ -625,10 +633,26 @@ impl RecordingSettings {
     }
 
     /// The echo-cancellation mode that can run on `platform`.
+    ///
+    /// `aecMode` decides when it names a canceller. When it is `"off"` (or
+    /// unreadable) the three booleans still count: stores written before
+    /// `aecMode` existed carry the choice there, and a store that has the
+    /// mode keeps the booleans in step with it, so nothing turns on that the
+    /// user did not choose.
     pub fn effective_aec_mode(&self, platform: SettingsPlatform) -> AecMode {
-        AecMode::parse(&self.aec_mode)
-            .unwrap_or(AecMode::Off)
-            .for_platform(platform)
+        match AecMode::parse(&self.aec_mode).unwrap_or(AecMode::Off) {
+            AecMode::Off => AecMode::from_flags(self.aec_flags(), platform),
+            mode => mode.for_platform(platform),
+        }
+    }
+
+    /// The three stored AEC booleans.
+    pub fn aec_flags(&self) -> AecFlags {
+        AecFlags {
+            screenpipe_aec_enabled: self.screenpipe_aec_enabled,
+            macos_input_vpio_enabled: self.macos_input_vpio_enabled,
+            windows_input_aec_enabled: self.windows_input_aec_enabled,
+        }
     }
 
     /// Set `aecMode` and the three AEC booleans together, validated for
@@ -680,7 +704,7 @@ impl Default for RecordingSettings {
             meeting_live_transcription_provider: "selected-engine".to_string(),
             audio_devices: vec![],
             use_system_default_audio: true,
-            experimental_coreaudio_system_audio: default_experimental_coreaudio_system_audio(),
+            experimental_coreaudio_system_audio: false,
             experimental_meeting_piggyback: true,
             always_record_bluetooth_mic: false,
             windows_input_aec_enabled: false,
@@ -766,9 +790,15 @@ fn default_true() -> bool {
     true
 }
 
-/// On, as in current upstream releases (see the field documentation).
+/// Default `false` — the Process Tap can't see audio rendered through
+/// VoiceProcessing AudioUnits (Zoom / Google Meet / Microsoft Teams all
+/// use one for echo cancellation), so for meeting audio it silently
+/// captures zeroed buffers even though the tap creation succeeds. SCK
+/// captures at the display compositor which *does* see VoiceProcessing
+/// output, so it's the right default for every user who uses call apps.
+/// Users who hit SCK's sleep/wake display-enumeration bug can still opt in.
 fn default_experimental_coreaudio_system_audio() -> bool {
-    true
+    false
 }
 
 /// Missing `audioCaptureMode` keeps the historical always-on behaviour.
@@ -1234,7 +1264,27 @@ mod tests {
         let s = RecordingSettings::default();
         assert!(s.use_pii_removal);
         assert!(s.filter_music);
-        assert!(s.experimental_coreaudio_system_audio);
+        // Kept off on purpose: the base macOS capture path still loses
+        // meeting audio through the process tap (see W1-02 open questions).
+        assert!(!s.experimental_coreaudio_system_audio);
+    }
+
+    #[test]
+    fn aec_mode_falls_back_to_legacy_flags() {
+        // A store from before `aecMode`: only the Windows boolean is set.
+        let legacy: RecordingSettings =
+            serde_json::from_value(serde_json::json!({"windowsInputAecEnabled": true})).unwrap();
+        assert_eq!(legacy.aec_mode, "off");
+        assert_eq!(legacy.effective_aec_mode(SettingsPlatform::Windows), AecMode::Windows);
+        assert_eq!(legacy.effective_aec_mode(SettingsPlatform::Linux), AecMode::Off);
+
+        // An explicit mode wins over stale booleans.
+        let explicit: RecordingSettings = serde_json::from_value(serde_json::json!({
+            "aecMode": "screenpipe",
+            "windowsInputAecEnabled": true
+        }))
+        .unwrap();
+        assert_eq!(explicit.effective_aec_mode(SettingsPlatform::Windows), AecMode::Screenpipe);
     }
 
     #[test]
