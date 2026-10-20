@@ -93,6 +93,28 @@ pub fn frame_status(
     }
 }
 
+/// Whether vision frames have stopped landing while capture attempts go on.
+/// "Landing" is a DB write or a dedup skip (`last_land_ts`). An attempt in
+/// the last `window_secs` with no landing for longer than that is a stall;
+/// so is a pipeline that has attempted captures for the whole warm-up plus
+/// one window without a single frame landing. Callers gate this on vision
+/// being enabled and past its warm-up.
+pub fn vision_writes_stalled(
+    now_ts: u64,
+    last_attempt_ts: u64,
+    last_land_ts: u64,
+    uptime_secs: f64,
+    window_secs: u64,
+) -> bool {
+    let attempting = last_attempt_ts > 0 && now_ts.saturating_sub(last_attempt_ts) < window_secs;
+    let not_landing = if last_land_ts > 0 {
+        now_ts.saturating_sub(last_land_ts) > window_secs
+    } else {
+        uptime_secs > (STARTUP_GRACE_SECS + window_secs) as f64
+    };
+    attempting && not_landing
+}
+
 /// Why screen recording is in the state it is in. First match wins.
 pub fn vision_reason(i: &VisionReasonInputs) -> &'static str {
     if i.vision_disabled {
@@ -374,6 +396,8 @@ pub struct ReasonInputs<'a> {
     pub frame_status: FrameStatus,
     pub vision_reason: &'a str,
     pub vision_write_stalled: bool,
+    /// The classified cause of a vision stall, as one sentence.
+    pub vision_stall_cause: Option<&'a str>,
     /// Vision checks are past their warm-up (uptime > 120 s).
     pub vision_warmed_up: bool,
     pub frame_drop_rate: f64,
@@ -424,6 +448,10 @@ pub fn unhealthy_reasons(i: &ReasonInputs<'_>) -> Vec<UnhealthyReason> {
                 Some(REMEDY_RESTART),
             ),
         };
+        let message = match (code, i.vision_stall_cause) {
+            ("vision_capture_stalled", Some(cause)) => format!("{} ({})", message, cause),
+            _ => message.to_string(),
+        };
         out.push(UnhealthyReason::new(
             code,
             "vision",
@@ -433,11 +461,15 @@ pub fn unhealthy_reasons(i: &ReasonInputs<'_>) -> Vec<UnhealthyReason> {
         ));
     }
     if i.vision_write_stalled {
+        let message = "screen capture is running but its frames are not being saved";
         out.push(UnhealthyReason::new(
             "vision_write_stalled",
             "vision",
             SEVERITY_ERROR,
-            "screen capture is running but its frames are not being saved",
+            match i.vision_stall_cause {
+                Some(cause) => format!("{} ({})", message, cause),
+                None => message.to_string(),
+            },
             Some(REMEDY_DISK),
         ));
     }
@@ -741,6 +773,7 @@ mod tests {
             frame_status: FrameStatus::Ok,
             vision_reason: "ok",
             vision_write_stalled: false,
+            vision_stall_cause: None,
             vision_warmed_up: true,
             frame_drop_rate: 0.0,
             avg_db_latency_ms: 20.0,
@@ -788,6 +821,41 @@ mod tests {
         assert_eq!(reasons[0].code, "vision_permission_denied");
         assert_eq!(reasons[0].severity, "error");
         assert!(reasons[0].remediation.is_some());
+    }
+
+    #[test]
+    fn stall_cause_is_appended_to_the_stall_messages() {
+        let mut i = healthy_reasons();
+        i.frame_status = FrameStatus::Stale;
+        i.vision_reason = "capture_stalled";
+        i.vision_stall_cause = Some("the loop stopped");
+        let reasons = unhealthy_reasons(&i);
+        assert_eq!(reasons[0].code, "vision_capture_stalled");
+        assert!(reasons[0].message.ends_with("(the loop stopped)"));
+
+        let mut i = healthy_reasons();
+        i.vision_reason = "capture_stalled";
+        i.vision_write_stalled = true;
+        i.vision_stall_cause = Some("writes never finish");
+        let reasons = unhealthy_reasons(&i);
+        assert_eq!(reasons.len(), 1);
+        assert_eq!(reasons[0].code, "vision_write_stalled");
+        assert!(reasons[0].message.ends_with("(writes never finish)"));
+    }
+
+    #[test]
+    fn write_stall_needs_current_attempts_and_no_recent_landing() {
+        let now = 10_000;
+        // Attempting, last landing 61 s ago: stalled.
+        assert!(vision_writes_stalled(now, now - 2, now - 61, 900.0, 60));
+        // Landing 60 s ago is still within the window.
+        assert!(!vision_writes_stalled(now, now - 2, now - 60, 900.0, 60));
+        // No current attempt: not a write stall (frame_status covers it).
+        assert!(!vision_writes_stalled(now, now - 60, now - 500, 900.0, 60));
+        assert!(!vision_writes_stalled(now, 0, now - 500, 900.0, 60));
+        // Never landed: a stall only after warm-up plus one window.
+        assert!(!vision_writes_stalled(now, now - 1, 0, 180.0, 60));
+        assert!(vision_writes_stalled(now, now - 1, 0, 180.5, 60));
     }
 
     #[test]

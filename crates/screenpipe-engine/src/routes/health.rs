@@ -946,6 +946,47 @@ async fn get_audio_reconciliation_backlog(
     result
 }
 
+/// One WARN line describing a vision stall: the suspected cause, how long
+/// nothing has landed, the loop heartbeat age, the lifetime counters, what
+/// the attempts since the last landed frame ended in, and the pool figures.
+fn log_vision_stall(
+    state: &AppState,
+    cause: screenpipe_screen::metrics::VisionStallCause,
+    snap: &screenpipe_screen::MetricsSnapshot,
+    since: &screenpipe_screen::metrics::AttemptOutcomes,
+    now_ts: u64,
+) {
+    let age = |ts: u64| {
+        if ts == 0 {
+            "never".to_string()
+        } else {
+            format!("{}s ago", now_ts.saturating_sub(ts))
+        }
+    };
+    let (rs, ri, ws, wi) = state.db.pool_stats();
+    warn!(
+        "health_check: vision stalled ({}): {} | last frame saved {}, capture heartbeat {} | lifetime: attempts={}, persisted={}, dedup={}, silent_loss={} | since last saved frame: attempts={}, timed_out={}, errors={}, skipped={}, unaccounted={} | pool: read={}/{} idle, write={}/{} idle ({})",
+        cause.as_str(),
+        cause.describe(),
+        age(snap.last_db_write_ts),
+        age(snap.last_capture_loop_heartbeat_ts),
+        snap.capture_attempts,
+        snap.frames_db_written,
+        snap.dedup_skips,
+        snap.silent_loss,
+        since.capture_attempts,
+        since.frames_dropped_timeout,
+        since.frames_dropped_error,
+        since.frames_skipped,
+        screenpipe_screen::metrics::silent_loss(since),
+        ri,
+        rs,
+        wi,
+        ws,
+        suspected_stall_cause(ri, wi),
+    );
+}
+
 async fn health_check_inner(state: &Arc<AppState>) -> HealthCheckResponse {
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -1063,75 +1104,20 @@ async fn health_check_inner(state: &Arc<AppState>) -> HealthCheckResponse {
     // tolerate adaptive FPS (0.1-0.5 fps) and brief DB contention spikes.
     let threshold_secs = 60u64;
 
-    // Detect DB write stalls: capture loop is alive (heartbeat fresh) but DB
-    // writes have stopped. This indicates pool exhaustion or DB lock contention
-    // — data is being captured but silently lost.
-    let vision_db_write_stalled = if !state.vision_disabled
+    // Detect DB write stalls: capture attempts continue but no frame lands
+    // (written or deduplicated) any more, or none ever did after the warm-up.
+    // Data is being captured but silently lost; the cause is classified and
+    // logged further down, once the pause and write-queue state is known.
+    let vision_db_write_stalled = !state.vision_disabled
         && vision_snap.last_capture_attempt_ts > 0
         && vision_snap.uptime_secs > 120.0
-    {
-        let capture_fresh =
-            now_ts.saturating_sub(vision_snap.last_capture_attempt_ts) < threshold_secs;
-        // Require at least one successful DB write before flagging a stall.
-        // last_db_write_ts == 0 means "never written yet" (pipeline warming up),
-        // not "writes stopped" — same fix as audio side.
-        let db_stale = vision_snap.last_db_write_ts > 0
-            && now_ts.saturating_sub(vision_snap.last_db_write_ts) > threshold_secs;
-        let stalled = capture_fresh && db_stale;
-        if stalled {
-            // throttle to once per 60s to avoid log spam (health runs every ~1s)
-            static LAST_VISION_STALL_LOG: AtomicU64 = AtomicU64::new(0);
-            let prev = LAST_VISION_STALL_LOG.load(Ordering::Relaxed);
-            if now_ts.saturating_sub(prev) >= 60 {
-                LAST_VISION_STALL_LOG.store(now_ts, Ordering::Relaxed);
-                let (rs, ri, ws, wi) = state.db.pool_stats();
-                // last_db_write_ts only advances when a UNIQUE frame is
-                // actually inserted; dedup-skipped captures don't update it.
-                // So a long delta here typically means the screen is static
-                // (idle user, slide deck, video call, IDE waiting) — NOT a
-                // stuck pipeline. Phrase it that way to stop the false-alarm
-                // panic.
-                //
-                // Also surface lifetime counters so when the cause IS a real
-                // pipeline stall, the log alone is enough to pin which stage
-                // failed — without us having to email the user back asking
-                // for `sqlite3` row counts.
-                //
-                // The triage rule: `attempts - persisted - dedup_skips` is the
-                // silent-loss count over the whole session. If that number
-                // climbs while a stall warning is firing, frames are being
-                // captured but lost between attempt and write. If it stays
-                // flat, the stall is just dedup on a static screen.
-                //
-                //   attempts climbing, persisted climbing, dedup ≈ 0
-                //     → healthy active screen
-                //   attempts climbing, persisted ≈ flat, dedup climbing
-                //     → static screen / idle user (false alarm)
-                //   attempts climbing, persisted ≈ flat, dedup flat
-                //     → real silent loss between attempt and writer
-                //   attempts flat too
-                //     → capture itself paused (TCC revoke, display sleep)
-                let silent_loss = vision_snap
-                    .capture_attempts
-                    .saturating_sub(vision_snap.frames_db_written)
-                    .saturating_sub(vision_snap.dedup_skips);
-                warn!(
-                    "health_check: no unique vision frame in {}s (capture heartbeat {}s ago — usually means a static screen / idle user, not a pipeline stall) | lifetime: attempts={}, persisted={}, dedup={}, silent_loss={} | pool: read={}/{} idle, write={}/{} idle | suspected: {}",
-                    now_ts.saturating_sub(vision_snap.last_db_write_ts),
-                    now_ts.saturating_sub(vision_snap.last_capture_attempt_ts),
-                    vision_snap.capture_attempts,
-                    vision_snap.frames_db_written,
-                    vision_snap.dedup_skips,
-                    silent_loss,
-                    ri, rs, wi, ws,
-                    suspected_stall_cause(ri, wi),
-                );
-            }
-        }
-        stalled
-    } else {
-        false
-    };
+        && health_reasons::vision_writes_stalled(
+            now_ts,
+            vision_snap.last_capture_attempt_ts,
+            vision_snap.last_db_write_ts,
+            vision_snap.uptime_secs,
+            threshold_secs,
+        );
 
     let audio_db_write_stalled = if !state.audio_disabled
         && global_audio_active
@@ -1195,6 +1181,38 @@ async fn health_check_inner(state: &Arc<AppState>) -> HealthCheckResponse {
         threshold_secs,
     );
     let frame_status = frame_state.as_str();
+
+    // Database writes failing means nothing captured is being kept, whatever
+    // the capture loops report.
+    let write_queue = screenpipe_db::write_queue_health::write_queue_health();
+
+    // Name the likely cause of a vision stall, and log it (at most once a
+    // minute) with the counters needed to confirm it.
+    let vision_stall = (!state.vision_disabled
+        && (frame_state == health_reasons::FrameStatus::Stale || vision_db_write_stalled))
+        .then(|| {
+            let since = state.vision_metrics.outcomes_since_last_landing();
+            let age = |ts: u64| (ts > 0).then(|| now_ts.saturating_sub(ts));
+            let cause = screenpipe_screen::metrics::classify_vision_stall(
+                &screenpipe_screen::metrics::StallEvidence {
+                    since_landing: since,
+                    attempt_age_secs: age(vision_snap.last_capture_attempt_ts),
+                    heartbeat_age_secs: age(vision_snap.last_capture_loop_heartbeat_ts),
+                    stale_after_secs: threshold_secs,
+                    writer_failing: write_queue.degraded,
+                },
+            );
+            (cause, since)
+        });
+    if let Some((cause, since)) = &vision_stall {
+        static LAST_VISION_STALL_LOG: AtomicU64 = AtomicU64::new(0);
+        let prev = LAST_VISION_STALL_LOG.load(Ordering::Relaxed);
+        if now_ts.saturating_sub(prev) >= 60 {
+            LAST_VISION_STALL_LOG.store(now_ts, Ordering::Relaxed);
+            log_vision_stall(state, *cause, &vision_snap, since, now_ts);
+        }
+    }
+    let vision_stall_cause = vision_stall.map(|(cause, _)| cause);
 
     // Cross-check: if audio is enabled, uptime > 2 min, but zero chunks were ever
     // sent, the audio pipeline never started capturing (e.g. device retry loop).
@@ -1309,10 +1327,6 @@ async fn health_check_inner(state: &Arc<AppState>) -> HealthCheckResponse {
     } else {
         false
     };
-
-    // Database writes failing means nothing captured is being kept, whatever
-    // the capture loops report.
-    let write_queue = screenpipe_db::write_queue_health::write_queue_health();
 
     let (overall_status, message, verbose_instructions, status_code) = if (frame_status == "ok"
         || frame_status == "disabled")
@@ -1540,6 +1554,7 @@ async fn health_check_inner(state: &Arc<AppState>) -> HealthCheckResponse {
         frame_status: frame_state,
         vision_reason,
         vision_write_stalled: vision_db_write_stalled,
+        vision_stall_cause: vision_stall_cause.map(|c| c.describe()),
         vision_warmed_up: !state.vision_disabled && vision_snap.uptime_secs > 120.0,
         frame_drop_rate: vision_snap.frame_drop_rate,
         avg_db_latency_ms: vision_snap.avg_db_latency_ms,

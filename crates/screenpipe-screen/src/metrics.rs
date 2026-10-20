@@ -137,6 +137,10 @@ pub struct PipelineMetrics {
     /// Which stage each monitor's capture loop is in, and since when.
     pub loop_stages: LoopStageTracker,
 
+    /// Outcome counters as they stood when a frame last landed (written or
+    /// deduplicated), so a stall can be explained by what happened since.
+    landing_mark: LandingMark,
+
     // --- Rolling window for DB latency ---
     /// Recent DB write latencies in microseconds (rolling window, not lifetime accumulator).
     /// Prevents early spikes from permanently inflating the average.
@@ -177,6 +181,7 @@ impl PipelineMetrics {
             frames_corrupt_black: AtomicU64::new(0),
             frames_corrupt_green: AtomicU64::new(0),
             loop_stages: LoopStageTracker::new(),
+            landing_mark: LandingMark::default(),
             db_latency_window: Mutex::new(RollingLatencyWindow::new()),
         }
     }
@@ -236,6 +241,7 @@ impl PipelineMetrics {
             .as_secs();
         self.last_db_write_ts.store(now, Ordering::Relaxed);
         self.dedup_skips.fetch_add(1, Ordering::Relaxed);
+        self.mark_landing();
     }
 
     /// Record a frame inserted into DB.
@@ -256,6 +262,7 @@ impl PipelineMetrics {
             .unwrap()
             .as_secs();
         self.last_db_write_ts.store(now, Ordering::Relaxed);
+        self.mark_landing();
 
         // Record first frame time (only once — compare-and-swap from 0)
         if count == 0 {
@@ -321,6 +328,29 @@ impl PipelineMetrics {
             CorruptFrameKind::Black => self.frames_corrupt_black.fetch_add(1, Ordering::Relaxed),
             CorruptFrameKind::Green => self.frames_corrupt_green.fetch_add(1, Ordering::Relaxed),
         };
+    }
+
+    /// Current lifetime values of every counter an attempt can end in.
+    pub fn attempt_outcomes(&self) -> AttemptOutcomes {
+        AttemptOutcomes {
+            capture_attempts: self.capture_attempts.load(Ordering::Relaxed),
+            frames_db_written: self.frames_db_written.load(Ordering::Relaxed),
+            dedup_skips: self.dedup_skips.load(Ordering::Relaxed),
+            frames_dropped_timeout: self.frames_dropped_timeout.load(Ordering::Relaxed),
+            frames_dropped_error: self.frames_dropped_error.load(Ordering::Relaxed),
+            frames_skipped: self.frames_skipped.load(Ordering::Relaxed),
+        }
+    }
+
+    /// What capture attempts have ended in since a frame last landed (was
+    /// written or deduplicated); since start when nothing has landed yet.
+    /// This is the evidence for [`classify_vision_stall`].
+    pub fn outcomes_since_last_landing(&self) -> AttemptOutcomes {
+        self.attempt_outcomes().since(&self.landing_mark.load())
+    }
+
+    fn mark_landing(&self) {
+        self.landing_mark.store(&self.attempt_outcomes());
     }
 
     /// Record a pipeline stall.
@@ -534,6 +564,167 @@ pub fn silent_loss(outcomes: &AttemptOutcomes) -> u64 {
         .saturating_add(outcomes.frames_dropped_error)
         .saturating_add(outcomes.frames_skipped);
     outcomes.capture_attempts.saturating_sub(accounted)
+}
+
+impl AttemptOutcomes {
+    /// Counts accumulated after `earlier` (each counter saturates at zero).
+    pub fn since(&self, earlier: &AttemptOutcomes) -> AttemptOutcomes {
+        AttemptOutcomes {
+            capture_attempts: self
+                .capture_attempts
+                .saturating_sub(earlier.capture_attempts),
+            frames_db_written: self
+                .frames_db_written
+                .saturating_sub(earlier.frames_db_written),
+            dedup_skips: self.dedup_skips.saturating_sub(earlier.dedup_skips),
+            frames_dropped_timeout: self
+                .frames_dropped_timeout
+                .saturating_sub(earlier.frames_dropped_timeout),
+            frames_dropped_error: self
+                .frames_dropped_error
+                .saturating_sub(earlier.frames_dropped_error),
+            frames_skipped: self.frames_skipped.saturating_sub(earlier.frames_skipped),
+        }
+    }
+}
+
+/// [`AttemptOutcomes`] frozen at the last landing. Plain atomics: the six
+/// stores are not one transaction, which is fine for a diagnostic.
+#[derive(Debug, Default)]
+struct LandingMark {
+    capture_attempts: AtomicU64,
+    frames_db_written: AtomicU64,
+    dedup_skips: AtomicU64,
+    frames_dropped_timeout: AtomicU64,
+    frames_dropped_error: AtomicU64,
+    frames_skipped: AtomicU64,
+}
+
+impl LandingMark {
+    fn store(&self, o: &AttemptOutcomes) {
+        self.capture_attempts
+            .store(o.capture_attempts, Ordering::Relaxed);
+        self.frames_db_written
+            .store(o.frames_db_written, Ordering::Relaxed);
+        self.dedup_skips.store(o.dedup_skips, Ordering::Relaxed);
+        self.frames_dropped_timeout
+            .store(o.frames_dropped_timeout, Ordering::Relaxed);
+        self.frames_dropped_error
+            .store(o.frames_dropped_error, Ordering::Relaxed);
+        self.frames_skipped
+            .store(o.frames_skipped, Ordering::Relaxed);
+    }
+
+    fn load(&self) -> AttemptOutcomes {
+        AttemptOutcomes {
+            capture_attempts: self.capture_attempts.load(Ordering::Relaxed),
+            frames_db_written: self.frames_db_written.load(Ordering::Relaxed),
+            dedup_skips: self.dedup_skips.load(Ordering::Relaxed),
+            frames_dropped_timeout: self.frames_dropped_timeout.load(Ordering::Relaxed),
+            frames_dropped_error: self.frames_dropped_error.load(Ordering::Relaxed),
+            frames_skipped: self.frames_skipped.load(Ordering::Relaxed),
+        }
+    }
+}
+
+// --- Stall classification ------------------------------------------------
+
+/// What the counters say about why vision frames stopped landing.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum VisionStallCause {
+    /// No capture attempt within the stall window. `loop_turning` tells a
+    /// loop that still cycles (held back before it attempts anything) from
+    /// one that is stuck or gone.
+    NotAttempting { loop_turning: bool },
+    /// Attempts keep being made but end without any recorded outcome, so
+    /// the frames vanish before they reach the database writer.
+    LostBeforeWriter,
+    /// Attempts fail inside the capture backend (screenshot, accessibility
+    /// or OCR errors) or are rejected by the similarity check.
+    BackendRejecting,
+    /// Frames are handed to the writer but the write never completes: the
+    /// attempt runs into its deadline, or database write batches fail.
+    WriterNotCommitting,
+}
+
+impl VisionStallCause {
+    /// Short machine-friendly name, used in logs.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::NotAttempting { .. } => "not_attempting",
+            Self::LostBeforeWriter => "lost_before_writer",
+            Self::BackendRejecting => "backend_rejecting",
+            Self::WriterNotCommitting => "writer_not_committing",
+        }
+    }
+
+    /// One plain sentence for logs and `/health` messages.
+    pub fn describe(self) -> &'static str {
+        match self {
+            Self::NotAttempting { loop_turning: true } => {
+                "the capture loop is cycling but has stopped trying to take screenshots"
+            }
+            Self::NotAttempting {
+                loop_turning: false,
+            } => "the capture loop has stopped: no screenshot attempts and no loop heartbeat",
+            Self::LostBeforeWriter => {
+                "screenshots are attempted, yet none of them is handed to the database writer"
+            }
+            Self::BackendRejecting => {
+                "the capture backend keeps failing or rejecting the frames it is asked for"
+            }
+            Self::WriterNotCommitting => {
+                "frames get as far as the database writer, but their writes never finish"
+            }
+        }
+    }
+}
+
+/// Inputs to [`classify_vision_stall`].
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct StallEvidence {
+    /// Outcomes since the last landed frame ([`PipelineMetrics::outcomes_since_last_landing`]).
+    pub since_landing: AttemptOutcomes,
+    /// Seconds since the last capture attempt; `None` when there never was one.
+    pub attempt_age_secs: Option<u64>,
+    /// Seconds since the last capture-loop heartbeat; `None` when never.
+    pub heartbeat_age_secs: Option<u64>,
+    /// Age past which an attempt or heartbeat no longer counts as current.
+    pub stale_after_secs: u64,
+    /// Database write batches are failing (write queue degraded).
+    pub writer_failing: bool,
+}
+
+/// Name the most likely cause of a vision stall. Call it only once a stall
+/// was detected (nothing landed for the stall window).
+///
+/// No recent attempt means the loop is not attempting. Otherwise a failing
+/// database writer wins, and after that the outcome with the most attempts
+/// since the last landed frame decides: deadline overruns point at the
+/// writer, errors and similarity rejections at the capture backend, and
+/// attempts with no outcome at all at a loss before the writer. Ties go in
+/// that same order.
+pub fn classify_vision_stall(e: &StallEvidence) -> VisionStallCause {
+    let current = |age: Option<u64>| age.is_some_and(|a| a < e.stale_after_secs);
+    let s = &e.since_landing;
+    if !current(e.attempt_age_secs) || s.capture_attempts == 0 {
+        return VisionStallCause::NotAttempting {
+            loop_turning: current(e.heartbeat_age_secs),
+        };
+    }
+    if e.writer_failing {
+        return VisionStallCause::WriterNotCommitting;
+    }
+    let timed_out = s.frames_dropped_timeout;
+    let rejected = s.frames_dropped_error.saturating_add(s.frames_skipped);
+    let unaccounted = silent_loss(s);
+    if timed_out > 0 && timed_out >= rejected && timed_out >= unaccounted {
+        VisionStallCause::WriterNotCommitting
+    } else if rejected > 0 && rejected >= unaccounted {
+        VisionStallCause::BackendRejecting
+    } else {
+        VisionStallCause::LostBeforeWriter
+    }
 }
 
 /// Why a frame was rejected before it reached storage.
@@ -999,6 +1190,168 @@ mod tests {
             },
         ];
         assert_eq!(most_stuck_of(&reports).unwrap().monitor_id, 3);
+    }
+
+    #[test]
+    fn outcomes_since_landing_restart_at_each_write_or_dedup() {
+        let m = PipelineMetrics::new();
+        m.record_capture_attempt();
+        m.record_drop_error();
+        assert_eq!(m.outcomes_since_last_landing().capture_attempts, 1);
+        assert_eq!(m.outcomes_since_last_landing().frames_dropped_error, 1);
+
+        m.record_capture_attempt();
+        m.record_db_write(Duration::from_millis(3));
+        assert_eq!(m.outcomes_since_last_landing(), AttemptOutcomes::default());
+
+        m.record_capture_attempt();
+        m.record_drop_timeout();
+        m.record_capture_attempt();
+        let since = m.outcomes_since_last_landing();
+        assert_eq!(since.capture_attempts, 2);
+        assert_eq!(since.frames_dropped_timeout, 1);
+        assert_eq!(silent_loss(&since), 1);
+
+        m.record_dedup_skip();
+        assert_eq!(m.outcomes_since_last_landing(), AttemptOutcomes::default());
+        // Lifetime counters are untouched by the mark.
+        assert_eq!(m.attempt_outcomes().capture_attempts, 4);
+    }
+
+    fn evidence(since: AttemptOutcomes) -> StallEvidence {
+        StallEvidence {
+            since_landing: since,
+            attempt_age_secs: Some(2),
+            heartbeat_age_secs: Some(1),
+            stale_after_secs: 60,
+            writer_failing: false,
+        }
+    }
+
+    #[test]
+    fn stall_without_recent_attempts_is_not_attempting() {
+        let mut e = evidence(AttemptOutcomes {
+            capture_attempts: 3,
+            ..Default::default()
+        });
+        e.attempt_age_secs = Some(60);
+        assert_eq!(
+            classify_vision_stall(&e),
+            VisionStallCause::NotAttempting { loop_turning: true }
+        );
+        e.heartbeat_age_secs = Some(600);
+        assert_eq!(
+            classify_vision_stall(&e),
+            VisionStallCause::NotAttempting {
+                loop_turning: false
+            }
+        );
+        e.attempt_age_secs = None;
+        e.heartbeat_age_secs = None;
+        assert_eq!(
+            classify_vision_stall(&e),
+            VisionStallCause::NotAttempting {
+                loop_turning: false
+            }
+        );
+        // A fresh attempt timestamp with nothing counted since the landing
+        // (a race between the two reads) is not evidence of activity.
+        let e = evidence(AttemptOutcomes::default());
+        assert_eq!(
+            classify_vision_stall(&e),
+            VisionStallCause::NotAttempting { loop_turning: true }
+        );
+    }
+
+    #[test]
+    fn stall_cause_follows_the_dominant_outcome() {
+        let timeouts = AttemptOutcomes {
+            capture_attempts: 10,
+            frames_dropped_timeout: 6,
+            frames_dropped_error: 4,
+            ..Default::default()
+        };
+        assert_eq!(
+            classify_vision_stall(&evidence(timeouts)),
+            VisionStallCause::WriterNotCommitting
+        );
+        let errors = AttemptOutcomes {
+            capture_attempts: 10,
+            frames_dropped_timeout: 1,
+            frames_dropped_error: 7,
+            frames_skipped: 1,
+            ..Default::default()
+        };
+        assert_eq!(
+            classify_vision_stall(&evidence(errors)),
+            VisionStallCause::BackendRejecting
+        );
+        let vanished = AttemptOutcomes {
+            capture_attempts: 10,
+            frames_dropped_error: 2,
+            ..Default::default()
+        };
+        assert_eq!(
+            classify_vision_stall(&evidence(vanished)),
+            VisionStallCause::LostBeforeWriter
+        );
+        // Ties: writer before backend before loss.
+        let tie = AttemptOutcomes {
+            capture_attempts: 4,
+            frames_dropped_timeout: 2,
+            frames_dropped_error: 2,
+            ..Default::default()
+        };
+        assert_eq!(
+            classify_vision_stall(&evidence(tie)),
+            VisionStallCause::WriterNotCommitting
+        );
+        let tie = AttemptOutcomes {
+            capture_attempts: 4,
+            frames_dropped_error: 2,
+            ..Default::default()
+        };
+        assert_eq!(
+            classify_vision_stall(&evidence(tie)),
+            VisionStallCause::BackendRejecting
+        );
+    }
+
+    #[test]
+    fn a_failing_writer_explains_any_attempting_stall() {
+        let mut e = evidence(AttemptOutcomes {
+            capture_attempts: 5,
+            frames_dropped_error: 5,
+            ..Default::default()
+        });
+        e.writer_failing = true;
+        assert_eq!(
+            classify_vision_stall(&e),
+            VisionStallCause::WriterNotCommitting
+        );
+        // ...but not one where nothing is attempted.
+        e.attempt_age_secs = Some(120);
+        assert!(matches!(
+            classify_vision_stall(&e),
+            VisionStallCause::NotAttempting { .. }
+        ));
+    }
+
+    #[test]
+    fn stall_causes_have_distinct_names_and_sentences() {
+        let all = [
+            VisionStallCause::NotAttempting { loop_turning: true },
+            VisionStallCause::NotAttempting {
+                loop_turning: false,
+            },
+            VisionStallCause::LostBeforeWriter,
+            VisionStallCause::BackendRejecting,
+            VisionStallCause::WriterNotCommitting,
+        ];
+        let sentences: std::collections::HashSet<_> = all.iter().map(|c| c.describe()).collect();
+        assert_eq!(sentences.len(), all.len());
+        let names: std::collections::HashSet<_> = all.iter().map(|c| c.as_str()).collect();
+        assert_eq!(names.len(), 4);
     }
 
     #[test]
