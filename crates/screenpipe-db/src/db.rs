@@ -9936,9 +9936,10 @@ LIMIT ? OFFSET ?
         }
 
         let mut tx = self.begin_immediate_with_retry().await?;
-        let result = bind_meeting_segment_insert(INSERT_OR_IGNORE_MEETING_SEGMENT, meeting_id, segment)
-        .execute(&mut **tx.conn())
-        .await?;
+        let result =
+            bind_meeting_segment_insert(INSERT_OR_IGNORE_MEETING_SEGMENT, meeting_id, segment)
+                .execute(&mut **tx.conn())
+                .await?;
 
         let id = if result.rows_affected() == 0 {
             0
@@ -9981,8 +9982,8 @@ LIMIT ? OFFSET ?
                 continue;
             }
             let result = bind_meeting_segment_insert(INSERT_MEETING_SEGMENT, meeting_id, segment)
-            .execute(&mut **tx.conn())
-            .await?;
+                .execute(&mut **tx.conn())
+                .await?;
 
             if result.rows_affected() > 0 {
                 inserted += 1;

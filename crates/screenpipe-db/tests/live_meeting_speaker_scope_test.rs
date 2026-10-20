@@ -103,11 +103,13 @@ async fn transcription_row(
 }
 
 async fn speakers_of_chunk(db: &DatabaseManager, chunk_id: i64) -> Vec<Option<i64>> {
-    sqlx::query_scalar("SELECT speaker_id FROM audio_transcriptions WHERE audio_chunk_id = ?1 ORDER BY id")
-        .bind(chunk_id)
-        .fetch_all(&db.pool)
-        .await
-        .unwrap()
+    sqlx::query_scalar(
+        "SELECT speaker_id FROM audio_transcriptions WHERE audio_chunk_id = ?1 ORDER BY id",
+    )
+    .bind(chunk_id)
+    .fetch_all(&db.pool)
+    .await
+    .unwrap()
 }
 
 async fn segment_speaker(db: &DatabaseManager, segment_id: i64) -> Option<i64> {
@@ -225,7 +227,15 @@ async fn unscoped_inserts_read_as_legacy() {
         .await
         .unwrap();
     // A blank stream id (and session speaker) is treated like a missing one.
-    let blank = live_segment("  ", "blank", Some(" "), None, "output", "blank stream", base());
+    let blank = live_segment(
+        "  ",
+        "blank",
+        Some(" "),
+        None,
+        "output",
+        "blank stream",
+        base(),
+    );
     let blank = db
         .insert_live_meeting_transcript_segment(meeting_id, &blank)
         .await
@@ -281,7 +291,10 @@ async fn reconnected_streams_keep_both_turns_and_identities() {
         assert!(id > 0, "turn of stream {stream} must be stored");
     }
 
-    let segments = db.list_meeting_transcript_segments(meeting_id).await.unwrap();
+    let segments = db
+        .list_meeting_transcript_segments(meeting_id)
+        .await
+        .unwrap();
     let mut sessions: Vec<Option<String>> = segments
         .iter()
         .filter(|s| s.source == "live")
@@ -347,11 +360,22 @@ async fn guarded_backfill_assigns_a_clean_chunk() {
     transcription_row(&db, c, "first line", "whisper", "input", None, base()).await;
     transcription_row(&db, c, "second line", "whisper", "input", None, base()).await;
     // A diarization run that found one voice does not block it.
-    diarization(&db, c, &[("spk0", None, false), ("spk0", Some(alice), false)]).await;
+    diarization(
+        &db,
+        c,
+        &[("spk0", None, false), ("spk0", Some(alice), false)],
+    )
+    .await;
 
-    let written = db.assign_chunk_speaker_if_unambiguous(c, alice).await.unwrap();
+    let written = db
+        .assign_chunk_speaker_if_unambiguous(c, alice)
+        .await
+        .unwrap();
     assert_eq!(written, 2);
-    assert_eq!(speakers_of_chunk(&db, c).await, vec![Some(alice), Some(alice)]);
+    assert_eq!(
+        speakers_of_chunk(&db, c).await,
+        vec![Some(alice), Some(alice)]
+    );
 }
 
 #[tokio::test]
@@ -362,7 +386,16 @@ async fn guarded_backfill_skips_ambiguous_chunks() {
 
     // (a) another row of the chunk already names a different speaker.
     let labelled = chunk(&db, "output", base()).await;
-    transcription_row(&db, labelled, "known", "whisper", "output", Some(bob), base()).await;
+    transcription_row(
+        &db,
+        labelled,
+        "known",
+        "whisper",
+        "output",
+        Some(bob),
+        base(),
+    )
+    .await;
     transcription_row(&db, labelled, "unknown", "whisper", "output", None, base()).await;
 
     // (b) a diarization segment names a different speaker.
@@ -378,7 +411,12 @@ async fn guarded_backfill_skips_ambiguous_chunks() {
     // (c) one diarization run heard two different labels.
     let two_voices = chunk(&db, "output", base() + Duration::seconds(90)).await;
     transcription_row(&db, two_voices, "z", "whisper", "output", None, base()).await;
-    diarization(&db, two_voices, &[("spk0", None, false), ("spk1", None, false)]).await;
+    diarization(
+        &db,
+        two_voices,
+        &[("spk0", None, false), ("spk1", None, false)],
+    )
+    .await;
 
     for chunk_id in [labelled, named, overlapping, two_voices] {
         let written = db
@@ -387,7 +425,10 @@ async fn guarded_backfill_skips_ambiguous_chunks() {
             .unwrap();
         assert_eq!(written, 0, "chunk {chunk_id} is ambiguous");
     }
-    assert_eq!(speakers_of_chunk(&db, labelled).await, vec![Some(bob), None]);
+    assert_eq!(
+        speakers_of_chunk(&db, labelled).await,
+        vec![Some(bob), None]
+    );
     for chunk_id in [named, overlapping, two_voices] {
         assert_eq!(speakers_of_chunk(&db, chunk_id).await, vec![None]);
     }
@@ -443,17 +484,46 @@ async fn guarded_backfill_checks_live_evidence() {
 
     // One stream-scoped identity across the chunk: assigned.
     let single = chunk(&db, "output", t1).await;
-    live_pair(&db, meeting_id, single, "s1", Some("deepgram:s1:speaker:0"), "one a", t1).await;
-    live_pair(&db, meeting_id, single, "s1", Some("deepgram:s1:speaker:0"), "one b", t2).await;
+    live_pair(
+        &db,
+        meeting_id,
+        single,
+        "s1",
+        Some("deepgram:s1:speaker:0"),
+        "one a",
+        t1,
+    )
+    .await;
+    live_pair(
+        &db,
+        meeting_id,
+        single,
+        "s1",
+        Some("deepgram:s1:speaker:0"),
+        "one b",
+        t2,
+    )
+    .await;
     assert_eq!(
-        db.assign_chunk_speaker_if_unambiguous(single, alice).await.unwrap(),
+        db.assign_chunk_speaker_if_unambiguous(single, alice)
+            .await
+            .unwrap(),
         2
     );
 
     // Two identities of one stream: skipped.
     let mixed = chunk(&db, "output", t1 + Duration::minutes(1)).await;
     let m1 = t1 + Duration::minutes(1);
-    live_pair(&db, meeting_id, mixed, "s2", Some("deepgram:s2:speaker:0"), "mix a", m1).await;
+    live_pair(
+        &db,
+        meeting_id,
+        mixed,
+        "s2",
+        Some("deepgram:s2:speaker:0"),
+        "mix a",
+        m1,
+    )
+    .await;
     live_pair(
         &db,
         meeting_id,
@@ -469,30 +539,67 @@ async fn guarded_backfill_checks_live_evidence() {
     let reconnect = chunk(&db, "output", t1 + Duration::minutes(2)).await;
     let r1 = t1 + Duration::minutes(2);
     live_pair(&db, meeting_id, reconnect, "s3", None, "re a", r1).await;
-    live_pair(&db, meeting_id, reconnect, "s4", None, "re b", r1 + Duration::seconds(3)).await;
+    live_pair(
+        &db,
+        meeting_id,
+        reconnect,
+        "s4",
+        None,
+        "re b",
+        r1 + Duration::seconds(3),
+    )
+    .await;
 
     // A live row that matches no segment: skipped.
     let orphan = chunk(&db, "output", t1 + Duration::minutes(3)).await;
     let o1 = t1 + Duration::minutes(3);
-    live_pair(&db, meeting_id, orphan, "s5", Some("deepgram:s5:speaker:0"), "orph a", o1).await;
+    live_pair(
+        &db,
+        meeting_id,
+        orphan,
+        "s5",
+        Some("deepgram:s5:speaker:0"),
+        "orph a",
+        o1,
+    )
+    .await;
     transcription_row(&db, orphan, "no segment for me", "live", "output", None, o1).await;
 
     // Matched evidence already mapped to another global speaker: skipped.
     let conflicting = chunk(&db, "output", t1 + Duration::minutes(4)).await;
     let c1 = t1 + Duration::minutes(4);
-    live_pair(&db, meeting_id, conflicting, "s6", Some("deepgram:s6:speaker:0"), "conf a", c1).await;
-    sqlx::query("UPDATE meeting_transcript_segments SET speaker_id = ?1 WHERE transcript = 'conf a'")
-        .bind(bob)
-        .execute(&db.pool)
-        .await
-        .unwrap();
+    live_pair(
+        &db,
+        meeting_id,
+        conflicting,
+        "s6",
+        Some("deepgram:s6:speaker:0"),
+        "conf a",
+        c1,
+    )
+    .await;
+    sqlx::query(
+        "UPDATE meeting_transcript_segments SET speaker_id = ?1 WHERE transcript = 'conf a'",
+    )
+    .bind(bob)
+    .execute(&db.pool)
+    .await
+    .unwrap();
 
     // Evidence with no label at all cannot vouch for one speaker: skipped.
     let unlabelled = chunk(&db, "output", t1 + Duration::minutes(5)).await;
     let u1 = t1 + Duration::minutes(5);
     db.insert_live_meeting_transcript_segment(
         meeting_id,
-        &live_segment("s7", "deepgram:s7:turn:u", None, None, "output", "unl a", u1),
+        &live_segment(
+            "s7",
+            "deepgram:s7:turn:u",
+            None,
+            None,
+            "output",
+            "unl a",
+            u1,
+        ),
     )
     .await
     .unwrap();
@@ -569,12 +676,30 @@ async fn strict_mapping_uses_only_exact_live_mirrors() {
     // Same instant and text but the other direction: not a mirror.
     let flipped_at = base() + Duration::seconds(20);
     let flipped = insert_live(&db, meeting_id, "c", "input", "flipped text", flipped_at).await;
-    transcription_row(&db, c, "flipped text", "live", "output", Some(alice), flipped_at).await;
+    transcription_row(
+        &db,
+        c,
+        "flipped text",
+        "live",
+        "output",
+        Some(alice),
+        flipped_at,
+    )
+    .await;
 
     // Same instant and direction but different text: not a mirror.
     let edited_at = base() + Duration::seconds(30);
     let edited = insert_live(&db, meeting_id, "d", "output", "original", edited_at).await;
-    transcription_row(&db, c, "original!", "live", "output", Some(alice), edited_at).await;
+    transcription_row(
+        &db,
+        c,
+        "original!",
+        "live",
+        "output",
+        Some(alice),
+        edited_at,
+    )
+    .await;
 
     let mapped = db
         .backfill_meeting_segment_speakers(base() - Duration::hours(1), 15.0)
@@ -631,8 +756,26 @@ async fn strict_mapping_requires_a_single_distinct_speaker() {
     let split = insert_live(&db, meeting_id, "split", "output", "who said this", base()).await;
     let c1 = chunk(&db, "output", base()).await;
     let c2 = chunk(&db, "output", base() + Duration::seconds(1)).await;
-    transcription_row(&db, c1, "who said this", "live", "output", Some(alice), base()).await;
-    transcription_row(&db, c2, "who said this", "live", "output", Some(bob), base()).await;
+    transcription_row(
+        &db,
+        c1,
+        "who said this",
+        "live",
+        "output",
+        Some(alice),
+        base(),
+    )
+    .await;
+    transcription_row(
+        &db,
+        c2,
+        "who said this",
+        "live",
+        "output",
+        Some(bob),
+        base(),
+    )
+    .await;
 
     // Two mirrors that agree: mapped.
     let agreed_at = base() + Duration::seconds(5);
@@ -659,9 +802,17 @@ async fn timeline_live_rows_are_flagged_with_distinct_negative_ids() {
     let db = setup_db().await;
     let t = base();
     db.insert_video_chunk("v.mp4", "screen").await.unwrap();
-    db.insert_frame("screen", Some(t), None, Some("zoom.us"), Some("Zoom"), false, None)
-        .await
-        .unwrap();
+    db.insert_frame(
+        "screen",
+        Some(t),
+        None,
+        Some("zoom.us"),
+        Some("Zoom"),
+        false,
+        None,
+    )
+    .await
+    .unwrap();
 
     let meeting_id = meeting(&db).await;
     let mut segment_ids = Vec::new();
@@ -731,9 +882,17 @@ async fn timeline_marks_live_mirrors_but_not_background_rows() {
     let db = setup_db().await;
     let t = base();
     db.insert_video_chunk("v.mp4", "screen").await.unwrap();
-    db.insert_frame("screen", Some(t), None, Some("zoom.us"), Some("Zoom"), false, None)
-        .await
-        .unwrap();
+    db.insert_frame(
+        "screen",
+        Some(t),
+        None,
+        Some("zoom.us"),
+        Some("Zoom"),
+        false,
+        None,
+    )
+    .await
+    .unwrap();
     let c = chunk(&db, "output", t).await;
     transcription_row(&db, c, "mirrored meeting line", "live", "output", None, t).await;
     transcription_row(&db, c, "background line", "whisper", "output", None, t).await;

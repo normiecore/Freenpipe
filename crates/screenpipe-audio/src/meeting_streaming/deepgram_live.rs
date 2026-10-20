@@ -31,8 +31,8 @@ use crate::{
     core::device::DeviceType,
     meeting_streaming::{
         events::{
-            session_speaker_id, stream_turn_item_id, MeetingStreamingError,
-            MeetingTranscriptDelta, MeetingTranscriptFinal,
+            session_speaker_id, stream_turn_item_id, MeetingStreamingError, MeetingTranscriptDelta,
+            MeetingTranscriptFinal,
         },
         net::connect_websocket_with_ipv4_fallback,
         MeetingAudioFrame, MeetingStreamingConfig, MeetingStreamingProvider,
@@ -582,8 +582,7 @@ mod tests {
     #[test]
     fn final_carries_stream_scoped_speaker() {
         let value = results_payload("we ship on friday", true, 1.5, &[1, 1, 0]);
-        let Some(LiveTranscriptEvent::Final(event)) = to_event("s1", "output", None, &value)
-        else {
+        let Some(LiveTranscriptEvent::Final(event)) = to_event("s1", "output", None, &value) else {
             panic!("expected a final event");
         };
         assert_eq!(event.stream_id, "s1");
@@ -629,8 +628,7 @@ mod tests {
     #[test]
     fn local_speaker_name_labels_input_speaker_zero_only() {
         let value = results_payload("can you hear me", true, 0.0, &[0]);
-        let Some(LiveTranscriptEvent::Final(mic)) =
-            to_event("mic", "input", Some("Alex"), &value)
+        let Some(LiveTranscriptEvent::Final(mic)) = to_event("mic", "input", Some("Alex"), &value)
         else {
             panic!("expected a final event");
         };
@@ -640,8 +638,7 @@ mod tests {
             Some("deepgram:mic:speaker:0")
         );
 
-        let Some(LiveTranscriptEvent::Final(out)) =
-            to_event("sys", "output", Some("Alex"), &value)
+        let Some(LiveTranscriptEvent::Final(out)) = to_event("sys", "output", Some("Alex"), &value)
         else {
             panic!("expected a final event");
         };
@@ -651,8 +648,7 @@ mod tests {
     #[test]
     fn results_without_words_have_no_speaker() {
         let value = results_payload("hm", true, 0.0, &[]);
-        let Some(LiveTranscriptEvent::Final(event)) = to_event("s1", "output", None, &value)
-        else {
+        let Some(LiveTranscriptEvent::Final(event)) = to_event("s1", "output", None, &value) else {
             panic!("expected a final event");
         };
         assert_eq!(event.session_speaker_id, None);

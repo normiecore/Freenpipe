@@ -244,7 +244,9 @@ mod tests {
     fn minted_stream_ids_are_unique() {
         let ids: std::collections::HashSet<String> = (0..64).map(|_| mint_stream_id()).collect();
         assert_eq!(ids.len(), 64);
-        assert!(ids.iter().all(|id| !id.is_empty() && id != LEGACY_STREAM_ID));
+        assert!(ids
+            .iter()
+            .all(|id| !id.is_empty() && id != LEGACY_STREAM_ID));
     }
 
     #[test]
