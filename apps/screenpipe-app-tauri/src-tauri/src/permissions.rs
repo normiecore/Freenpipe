@@ -673,18 +673,21 @@ const CHROMIUM_BROWSERS: &[ChromiumBrowserInfo] = &[
     },
 ];
 
-/// Returns true on macOS 14.4+ where the CoreAudio Process Tap API is
-/// available. Used to gate the "experimental System Audio via CoreAudio"
-/// toggle — we don't show it on platforms where flipping it would be a
-/// no-op. False on Windows, Linux, and older macOS.
+/// Returns true where a per-app system-audio tap exists: macOS 14.4+
+/// (CoreAudio Process Tap) and Windows build 20348+ (per-process WASAPI
+/// loopback). Gates the audio exclusions panel, and on macOS the
+/// "experimental System Audio via CoreAudio" toggle. False on Linux, older
+/// macOS and older Windows builds.
 #[tauri::command(async)]
 #[specta::specta]
 pub fn check_coreaudio_process_tap_available() -> bool {
-    #[cfg(target_os = "macos")]
+    // macOS 14.4+ (CoreAudio Process Tap) and Windows build 20348+
+    // (per-process WASAPI loopback, which applies the audio exclusions).
+    #[cfg(any(target_os = "macos", target_os = "windows"))]
     {
         screenpipe_audio::core::process_tap::is_process_tap_available()
     }
-    #[cfg(not(target_os = "macos"))]
+    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
     {
         false
     }
