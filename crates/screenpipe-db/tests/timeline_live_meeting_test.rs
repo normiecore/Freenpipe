@@ -420,10 +420,12 @@ mod timeline_live_meeting_tests {
         );
     }
 
-    /// Once the engine-agnostic backfill has resolved a global `speaker_id` on the
-    /// covering audio (here pre-seeded), `backfill_meeting_segment_speakers` maps the
-    /// live segment onto it, and the Meeting view shows the global speaker's NAME
-    /// instead of Deepgram's free-text "speaker N".
+    /// The full chain: the live segment is mirrored onto its chunk, the guarded
+    /// chunk backfill gives the chunk's rows the speaker identified from its
+    /// audio, and `backfill_meeting_segment_speakers` then maps the segment
+    /// through its exact mirror, so the Meeting view shows the global speaker's
+    /// NAME instead of Deepgram's free-text "speaker N". A background row near
+    /// the segment is not enough on its own (strict mapping, audio-M01).
     #[tokio::test]
     async fn test_meeting_segment_speaker_backfill_resolves_global_id() {
         let db = setup_test_db().await;
@@ -472,6 +474,27 @@ mod timeline_live_meeting_tests {
         )
         .await
         .unwrap();
+
+        // Nearby background audio alone does not map the segment.
+        let mapped = db
+            .backfill_meeting_segment_speakers(base - Duration::hours(1), 15.0)
+            .await
+            .unwrap();
+        assert_eq!(mapped, 0, "no exact live mirror yet");
+
+        assert_eq!(
+            db.mirror_live_meeting_to_audio_transcriptions(meeting_id, 15.0)
+                .await
+                .unwrap(),
+            1
+        );
+        assert_eq!(
+            db.assign_chunk_speaker_if_unambiguous(chunk_id, speaker.id)
+                .await
+                .unwrap(),
+            1,
+            "the mirrored live row takes the chunk's speaker"
+        );
 
         let mapped = db
             .backfill_meeting_segment_speakers(base - Duration::hours(1), 15.0)
