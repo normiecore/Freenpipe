@@ -51,6 +51,22 @@ const MAX_VIDEO_WIDTH: u32 = 2560;
 /// zero-duration concat entries (which ffmpeg silently drops).
 const MIN_FRAME_DURATION_SECS: f64 = 0.04;
 
+/// Knobs for one export.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ExportOptions {
+    /// Mux the recording's audio into the video. When false the export is a
+    /// silent video and no audio chunk is read.
+    pub include_audio: bool,
+}
+
+impl Default for ExportOptions {
+    fn default() -> Self {
+        Self {
+            include_audio: true,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize)]
 pub struct MeetingExportSummary {
     pub output_path: String,
@@ -90,8 +106,18 @@ pub async fn export_meeting_to_mp4(
     meeting_id: i64,
     output_path: &Path,
 ) -> Result<MeetingExportSummary> {
+    export_meeting_to_mp4_with(db, meeting_id, output_path, &ExportOptions::default()).await
+}
+
+/// [`export_meeting_to_mp4`] with explicit [`ExportOptions`].
+pub async fn export_meeting_to_mp4_with(
+    db: &DatabaseManager,
+    meeting_id: i64,
+    output_path: &Path,
+    options: &ExportOptions,
+) -> Result<MeetingExportSummary> {
     let (start, end) = resolve_meeting_window(db, meeting_id).await?;
-    export_range_to_mp4(db, start, end, output_path)
+    export_range_to_mp4_with(db, start, end, output_path, options)
         .await
         .with_context(|| format!("exporting meeting {meeting_id}"))
 }
@@ -107,6 +133,17 @@ pub async fn export_range_to_mp4(
     start: DateTime<Utc>,
     end: DateTime<Utc>,
     output_path: &Path,
+) -> Result<MeetingExportSummary> {
+    export_range_to_mp4_with(db, start, end, output_path, &ExportOptions::default()).await
+}
+
+/// [`export_range_to_mp4`] with explicit [`ExportOptions`].
+pub async fn export_range_to_mp4_with(
+    db: &DatabaseManager,
+    start: DateTime<Utc>,
+    end: DateTime<Utc>,
+    output_path: &Path,
+    options: &ExportOptions,
 ) -> Result<MeetingExportSummary> {
     let ffmpeg_path = find_ffmpeg_path().ok_or_else(|| anyhow!("ffmpeg not found"))?;
     let ffprobe_path = get_ffprobe_path(&ffmpeg_path);
@@ -139,10 +176,14 @@ pub async fn export_range_to_mp4(
         ));
     }
 
-    let audio_all = db
-        .get_audio_chunks_in_range_for_export(start, end)
-        .await
-        .context("failed to query audio chunks")?;
+    let audio_all = if options.include_audio {
+        db.get_audio_chunks_in_range_for_export(start, end)
+            .await
+            .context("failed to query audio chunks")?
+    } else {
+        info!("export without audio requested; writing a silent video");
+        Vec::new()
+    };
 
     // 2. Decide target video dimensions from the first readable frame source.
     let (target_w, target_h) = {
@@ -712,6 +753,11 @@ async fn run_ffprobe(ffprobe_path: &Path, args: &[&str]) -> Result<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn export_options_include_audio_by_default() {
+        assert!(ExportOptions::default().include_audio);
+    }
 
     #[test]
     fn target_dims_caps_longest_edge_and_evens() {

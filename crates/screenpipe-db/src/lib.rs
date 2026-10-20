@@ -19,6 +19,7 @@ pub use db::{
     ImmediateTx, NewMeetingTranscriptSegment, LEGACY_MEETING_STREAM_ID,
     MEETING_END_REASON_AUTO_END, MEETING_END_REASON_EXPLICIT_STOP, MEETING_END_REASON_SHUTDOWN,
 };
+pub use ext::meetings_v2::{MEETING_DETECTION_SOURCE_ROOM_CHANGE, MEETING_END_REASON_ROOM_CHANGED};
 pub use text_normalizer::{expand_search_query, sanitize_fts5_query};
 pub use types::*;
 pub use write_queue::{request_write_pause, request_write_resume, SyncTable};
