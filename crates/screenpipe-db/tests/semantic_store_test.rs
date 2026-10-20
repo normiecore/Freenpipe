@@ -365,8 +365,8 @@ async fn frames_attach_in_batches() {
 
     // The buffer coalesces and flushes through the same path.
     let mut buffer = SemanticFrameAttachmentBuffer::new(2, Duration::from_secs(3600));
-    assert!(!buffer.push(f3, run_a.run_id));
-    assert!(buffer.push(f1, run_b.run_id));
+    assert!(!buffer.push(f3, run_a.run_id).unwrap());
+    assert!(buffer.push(f1, run_b.run_id).unwrap());
     assert_eq!(buffer.flush(&db).await.unwrap(), 2);
     assert!(buffer.is_empty());
     assert_eq!(
@@ -396,10 +396,108 @@ async fn frames_attach_in_batches() {
         .unwrap_err();
     assert!(err.is_invalid_input());
 
-    // Invalid entries are dropped from the buffer rather than retried forever.
-    buffer.push(-5, run_a.run_id);
-    assert!(buffer.flush(&db).await.unwrap_err().is_invalid_input());
+    // Invalid ids never enter the buffer, so they cannot cost the valid
+    // entries of the same batch at flush time.
+    assert!(buffer
+        .push(-5, run_a.run_id)
+        .unwrap_err()
+        .is_invalid_input());
     assert!(buffer.is_empty());
+}
+
+#[tokio::test]
+async fn buffer_flush_attaches_valid_entries_mixed_with_invalid_pushes() {
+    let (_dir, db) = open_db().await;
+    let run_a = db
+        .store_semantic_run(&new_run("a", vec![message("m", "a", "alpha", None)]))
+        .await
+        .unwrap();
+    let run_b = db
+        .store_semantic_run(&new_run("b", vec![message("m", "b", "beta", None)]))
+        .await
+        .unwrap();
+    let f1 = insert_frame(&db, 1).await;
+    let f2 = insert_frame(&db, 2).await;
+    let f3 = insert_frame(&db, 3).await;
+
+    let mut buffer = SemanticFrameAttachmentBuffer::new(100, Duration::from_secs(3600));
+    buffer.push(f1, run_a.run_id).unwrap();
+    assert!(buffer.push(0, run_a.run_id).unwrap_err().is_invalid_input());
+    buffer.push(f2, run_b.run_id).unwrap();
+    assert!(buffer.push(f3, -1).unwrap_err().is_invalid_input());
+    assert!(buffer
+        .push(-7, run_b.run_id)
+        .unwrap_err()
+        .is_invalid_input());
+    // A rejected push for a frame already queued keeps the queued entry.
+    assert!(buffer.push(f1, 0).unwrap_err().is_invalid_input());
+    buffer.push(f3, run_b.run_id).unwrap();
+    assert_eq!(buffer.len(), 3);
+
+    assert_eq!(buffer.flush(&db).await.unwrap(), 3);
+    assert!(buffer.is_empty());
+    for (frame, run) in [(f1, run_a.run_id), (f2, run_b.run_id), (f3, run_b.run_id)] {
+        let on_frame = db.get_semantic_run_for_frame(frame).await.unwrap().unwrap();
+        assert_eq!(on_frame.run.id, run, "frame {frame}");
+    }
+}
+
+#[tokio::test]
+async fn buffer_flush_requeues_the_batch_when_the_database_fails() {
+    let (_dir, db) = open_db().await;
+    let stored = db
+        .store_semantic_run(&new_run("a", vec![message("m", "a", "alpha", None)]))
+        .await
+        .unwrap();
+    let f1 = insert_frame(&db, 1).await;
+    let f2 = insert_frame(&db, 2).await;
+
+    let mut buffer = SemanticFrameAttachmentBuffer::new(100, Duration::from_secs(3600));
+    buffer.push(f1, stored.run_id).unwrap();
+    buffer.push(f2, stored.run_id).unwrap();
+
+    // Make the UPDATE fail inside SQLite, then lift the failure again.
+    sqlx::query(
+        "CREATE TRIGGER fp_test_block_attach BEFORE UPDATE OF semantic_run_id ON frames \
+         BEGIN SELECT RAISE(ABORT, 'attach blocked'); END",
+    )
+    .execute(&db.pool)
+    .await
+    .unwrap();
+    let err = buffer.flush(&db).await.unwrap_err();
+    assert!(matches!(err, SemanticStoreError::Database(_)), "{err}");
+    assert_eq!(buffer.len(), 2, "the whole batch is queued again");
+    // A push made after the failure wins over the requeued entry.
+    let other = db
+        .store_semantic_run(&new_run("b", vec![message("m", "b", "beta", None)]))
+        .await
+        .unwrap();
+    buffer.push(f2, other.run_id).unwrap();
+
+    sqlx::query("DROP TRIGGER fp_test_block_attach")
+        .execute(&db.pool)
+        .await
+        .unwrap();
+    assert_eq!(buffer.flush(&db).await.unwrap(), 2);
+    assert!(buffer.is_empty());
+    assert_eq!(
+        db.get_semantic_run_for_frame(f1)
+            .await
+            .unwrap()
+            .unwrap()
+            .run
+            .id,
+        stored.run_id
+    );
+    assert_eq!(
+        db.get_semantic_run_for_frame(f2)
+            .await
+            .unwrap()
+            .unwrap()
+            .run
+            .id,
+        other.run_id
+    );
 }
 
 #[tokio::test]
@@ -792,6 +890,56 @@ async fn alias_lookup_is_unique_per_source_and_normalized_label() {
     assert_eq!(stored_elsewhere.actors_created, 1);
     assert_eq!(count(&db, "SELECT COUNT(*) FROM semantic_actors").await, 2);
 
+    // A label with a leading NUL or only control characters must not reach
+    // the alias table's length checks and roll the run back.
+    let controls = new_run(
+        "frame-3",
+        vec![
+            message("m1", "6", "sixth", Some("\0Ada Lovelace")),
+            message("m2", "7", "seventh", Some("\u{1}\u{2}")),
+            message("m3", "8", "eighth", Some("\0")),
+            message("m4", "9", "ninth", Some("\u{202A}\u{202C}")),
+            message("m5", "10", "tenth", Some("\u{7}Grace\u{0} Hopper")),
+        ],
+    );
+    let stored_controls = db.store_semantic_run(&controls).await.unwrap();
+    assert!(stored_controls.created);
+    assert_eq!(stored_controls.items_inserted, 5);
+    assert_eq!(
+        stored_controls.actors_created, 1,
+        "only Grace Hopper is new"
+    );
+    assert_eq!(stored_controls.assignments_created, 2);
+    let ada = db
+        .find_semantic_actor_alias("chat.test", "\0ada lovelace")
+        .await
+        .unwrap()
+        .expect("NUL-prefixed label resolves to the existing alias");
+    assert_eq!(ada.id, alias.id);
+    let grace = db
+        .find_semantic_actor_alias("chat.test", "Grace Hopper")
+        .await
+        .unwrap()
+        .expect("alias");
+    assert_eq!(grace.source_label, "Grace Hopper");
+    assert_eq!(grace.observed_label, "Grace Hopper");
+    assert_eq!(
+        count(
+            &db,
+            "SELECT COUNT(*) FROM semantic_actor_aliases \
+             WHERE instr(source_label, char(0)) > 0 \
+                OR instr(observed_label, char(0)) > 0 \
+                OR instr(normalized_label, char(0)) > 0"
+        )
+        .await,
+        0
+    );
+    assert!(db
+        .find_semantic_actor_alias("chat.test", "\u{1}\u{2}")
+        .await
+        .unwrap()
+        .is_none());
+
     // The schema itself refuses a second alias for the same key.
     let dup = sqlx::query(
         "INSERT INTO semantic_actor_aliases \
@@ -827,6 +975,32 @@ async fn create_rename_and_search_actors() {
         .unwrap_err()
         .is_invalid_input());
     assert!(db.create_semantic_actor(&"n".repeat(256)).await.is_ok());
+    // Control characters are a client error, never a constraint failure.
+    let stripped = db.create_semantic_actor("\0Ada").await.unwrap();
+    assert_eq!(stripped.name, "Ada");
+    for bad in ["\u{1}\u{2}", "\0", "\u{200B}"] {
+        assert!(
+            db.create_semantic_actor(bad)
+                .await
+                .unwrap_err()
+                .is_invalid_input(),
+            "{bad:?}"
+        );
+        assert!(
+            db.rename_semantic_actor(created.id, bad)
+                .await
+                .unwrap_err()
+                .is_invalid_input(),
+            "{bad:?}"
+        );
+    }
+    let mut nul_key = new_run("nul-key", vec![message("m", "nk", "body", Some("Ada"))]);
+    nul_key.actor_source_key = Some("\0mail:work".into());
+    assert!(db
+        .store_semantic_run(&nul_key)
+        .await
+        .unwrap_err()
+        .is_invalid_input());
 
     tokio::time::sleep(Duration::from_millis(5)).await;
     let renamed = db

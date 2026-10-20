@@ -45,6 +45,7 @@
 //! store's own (500). Write methods run in one `BEGIN IMMEDIATE` transaction
 //! each and roll back on any error.
 
+use std::borrow::Cow;
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fmt;
 use std::time::{Duration, Instant};
@@ -77,7 +78,9 @@ pub const SEMANTIC_ACTOR_QUERY_MAX_CHARS: usize = 256;
 pub const SEMANTIC_MAX_PAGE: u32 = 1000;
 /// Default grace period for [`DatabaseManager::gc_semantic_projection`]. Runs
 /// younger than this are kept even when no frame points at them yet, because
-/// the worker attaches frames in batches after it stores the run.
+/// the worker attaches frames in batches after it stores the run. For
+/// periodic retention passes only; user-initiated deletes pass
+/// `Duration::ZERO`.
 pub const SEMANTIC_GC_DEFAULT_GRACE: Duration = Duration::from_secs(10 * 60);
 
 /// Rows deleted per GC transaction, so retention never holds the write lock
@@ -285,6 +288,11 @@ text_enum! {
 
 /// Pack tree node ids into the `semantic_run_items.source_node_ids` blob:
 /// each id as 4 little-endian bytes, in order.
+///
+/// This layout is inferred, not confirmed: the evidence only calls the
+/// column a packed blob of node ids. Until W2-06 or REA confirms screenpipe's
+/// layout (open question 2 in `docs/clean-room/open-questions/W2-05.md`),
+/// treat blobs written by another writer as opaque.
 pub fn encode_source_node_ids(ids: &[u32]) -> Vec<u8> {
     let mut out = Vec::with_capacity(ids.len() * 4);
     for id in ids {
@@ -294,8 +302,15 @@ pub fn encode_source_node_ids(ids: &[u32]) -> Vec<u8> {
 }
 
 /// Unpack a `source_node_ids` blob written by [`encode_source_node_ids`].
-/// Returns `None` when the length is not a multiple of 4 (a blob in some
-/// other encoding). An empty blob is an empty list.
+/// An empty blob is an empty list.
+///
+/// Returns `None` when the length is not a multiple of 4. That is the only
+/// check possible: a blob in another layout whose length happens to be a
+/// multiple of 4 (big-endian ids, pairs of 16-bit ids, varints that land on
+/// a 4-byte boundary) decodes to wrong ids without any error. Only decode
+/// blobs this store wrote, or once the layout is confirmed (see
+/// [`encode_source_node_ids`]); [`SemanticRunItemDetail::source_node_blob`]
+/// keeps the raw bytes for everything else.
 pub fn decode_source_node_ids(blob: &[u8]) -> Option<Vec<u32>> {
     if !blob.len().is_multiple_of(4) {
         return None;
@@ -307,18 +322,62 @@ pub fn decode_source_node_ids(blob: &[u8]) -> Option<Vec<u32>> {
     )
 }
 
-/// Characters that render as nothing and only get in the way of matching
-/// labels: zero-width space and joiners, word joiner, byte-order mark.
-fn is_invisible(c: char) -> bool {
-    matches!(c, '\u{200B}'..='\u{200D}' | '\u{2060}' | '\u{FEFF}')
+/// Control characters (Unicode category Cc) that are not whitespace: NUL and
+/// the rest of C0 and C1 apart from tab, line feed, vertical tab, form feed,
+/// carriage return and next line. None of them belong in a stored label, and
+/// NUL is harmful: SQLite's `length()` stops counting at the first NUL, so a
+/// label starting with one fails the alias and actor tables' length checks.
+fn is_non_whitespace_control(c: char) -> bool {
+    c.is_control() && !c.is_whitespace()
 }
 
-/// The display form of an actor label: invisible characters removed, runs of
-/// whitespace collapsed to one space, ends trimmed.
+/// Format characters that render as nothing and only get in the way of
+/// matching labels: soft hyphen, Arabic letter mark, Mongolian vowel
+/// separator, zero-width space and joiners, left-to-right and right-to-left
+/// marks, embeddings, overrides and isolates (chat apps wrap phone numbers
+/// and right-to-left names in these), word joiner and invisible operators,
+/// byte-order mark and interlinear annotation marks.
+fn is_invisible(c: char) -> bool {
+    matches!(
+        c,
+        '\u{00AD}'
+            | '\u{061C}'
+            | '\u{180E}'
+            | '\u{200B}'..='\u{200F}'
+            | '\u{202A}'..='\u{202E}'
+            | '\u{2060}'..='\u{2064}'
+            | '\u{2066}'..='\u{206F}'
+            | '\u{FEFF}'
+            | '\u{FFF9}'..='\u{FFFB}'
+    )
+}
+
+/// True for characters a label's display form drops.
+fn is_hidden(c: char) -> bool {
+    is_invisible(c) || is_non_whitespace_control(c)
+}
+
+/// `s` without NUL and the other non-whitespace control characters.
+fn strip_controls(s: &str) -> Cow<'_, str> {
+    if s.chars().any(is_non_whitespace_control) {
+        Cow::Owned(
+            s.chars()
+                .filter(|c| !is_non_whitespace_control(*c))
+                .collect(),
+        )
+    } else {
+        Cow::Borrowed(s)
+    }
+}
+
+/// The display form of an actor label: control characters other than
+/// whitespace (NUL included) and invisible format characters removed, runs
+/// of whitespace collapsed to one space, ends trimmed. Empty when the label
+/// has no visible characters, which the store treats as no label at all.
 pub fn display_semantic_actor_label(label: &str) -> String {
     let mut out = String::with_capacity(label.len());
     let mut pending_space = false;
-    for c in label.chars().filter(|c| !is_invisible(*c)) {
+    for c in label.chars().filter(|c| !is_hidden(*c)) {
         if c.is_whitespace() {
             pending_space = !out.is_empty();
         } else {
@@ -351,7 +410,8 @@ fn clip_chars(s: &str, max: usize) -> &str {
 /// Alias columns derived from one observed actor label.
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct AliasLabels {
-    /// The label as the parser emitted it, clipped to 256 characters.
+    /// The label as the parser emitted it minus non-whitespace control
+    /// characters, clipped to 256 characters.
     source_label: String,
     /// Display form, clipped to 256 characters; also the name of an actor the
     /// heuristic creates.
@@ -361,7 +421,10 @@ struct AliasLabels {
 }
 
 impl AliasLabels {
-    /// `None` when the label has no visible characters.
+    /// `None` when the label has no visible characters. Every field of a
+    /// `Some` is non-empty and free of NUL, and `observed_label` starts with
+    /// a visible character, so the alias row satisfies the schema's
+    /// `length()` and `length(trim())` checks.
     fn from_label(label: &str) -> Option<Self> {
         let display = display_semantic_actor_label(label);
         if display.is_empty() {
@@ -372,7 +435,7 @@ impl AliasLabels {
             .to_string();
         let normalized =
             clip_chars(&display.to_lowercase(), SEMANTIC_NORMALIZED_LABEL_MAX_CHARS).to_string();
-        let source = clip_chars(label, SEMANTIC_ACTOR_NAME_MAX_CHARS).to_string();
+        let source = clip_chars(&strip_controls(label), SEMANTIC_ACTOR_NAME_MAX_CHARS).to_string();
         Some(Self {
             source_label: source,
             observed_label: observed,
@@ -417,14 +480,23 @@ fn page(limit: u32, offset: u32) -> (i64, i64) {
     (limit.clamp(1, SEMANTIC_MAX_PAGE) as i64, offset as i64)
 }
 
-/// Validate and trim an actor name.
+/// Validate an actor name and return the form to store: non-whitespace
+/// control characters (NUL included) removed, ends trimmed. A name with no
+/// visible characters is rejected like an empty one, so a bad name is a 400
+/// and never reaches the table's `length(trim(name))` check.
 fn clean_actor_name(name: &str) -> Result<String> {
-    let trimmed = name.trim();
+    let stripped = strip_controls(name);
+    let trimmed = stripped.trim();
     let chars = trimmed.chars().count();
     if chars == 0 || chars > SEMANTIC_ACTOR_NAME_MAX_CHARS {
         return Err(SemanticStoreError::invalid(format!(
             "name must be between 1 and {SEMANTIC_ACTOR_NAME_MAX_CHARS} characters"
         )));
+    }
+    if display_semantic_actor_label(trimmed).is_empty() {
+        return Err(SemanticStoreError::invalid(
+            "name must contain a visible character",
+        ));
     }
     Ok(trimmed.to_string())
 }
@@ -956,6 +1028,27 @@ fn validate_new_run(run: &NewSemanticRun) -> Result<()> {
     if run.effective_actor_source_key().chars().count() > SEMANTIC_SOURCE_KEY_MAX_CHARS {
         return Err(SemanticStoreError::invalid(format!(
             "actor_source_key must be at most {SEMANTIC_SOURCE_KEY_MAX_CHARS} characters"
+        )));
+    }
+    // The source key is an identifier, so it is rejected rather than
+    // rewritten. A NUL in it would also fail the alias table's length check
+    // and roll the run back with an opaque constraint error.
+    if run
+        .effective_actor_source_key()
+        .chars()
+        .any(char::is_control)
+    {
+        let field = if run
+            .actor_source_key
+            .as_deref()
+            .is_some_and(|k| !k.trim().is_empty())
+        {
+            "actor_source_key"
+        } else {
+            "parser_id"
+        };
+        return Err(SemanticStoreError::invalid(format!(
+            "{field} must not contain control characters"
         )));
     }
 
@@ -1753,11 +1846,24 @@ impl DatabaseManager {
     /// of a few thousand rows per transaction.
     ///
     /// Runs younger than `grace` survive even when unreferenced, so a run the
-    /// worker stored but has not attached yet is not lost. Pass
-    /// `Duration::ZERO` to collect everything. Deleting a run removes its run
-    /// items (cascade); deleting an item removes its actor assignment
-    /// (cascade) and its FTS row (trigger). Actors and aliases are kept on
-    /// purpose. Call after frame retention or deletion passes.
+    /// worker stored but has not attached yet is not lost. Deleting a run
+    /// removes its run items (cascade); deleting an item removes its actor
+    /// assignment (cascade) and its FTS row (trigger). Actors and aliases are
+    /// kept on purpose.
+    ///
+    /// Which grace to pass depends on why frames went away:
+    ///
+    /// - Periodic retention passes (old frames aged out on a schedule) pass
+    ///   [`SEMANTIC_GC_DEFAULT_GRACE`]. That is what the grace is for: the
+    ///   worker may be holding a fresh run in its attachment buffer.
+    /// - User-initiated deletes (W3-09: delete-range, `delete_by_machine_id`)
+    ///   must pass `Duration::ZERO`, so the deleted frames' runs and items,
+    ///   and their text in the FTS index, are gone when the call returns
+    ///   instead of lingering until a later pass. The cost: a run the worker
+    ///   stored moments ago for a frame outside the deleted range, and has
+    ///   not attached yet, is collected too. Its pending attachment is then
+    ///   skipped (see [`Self::attach_semantic_runs_to_frames`]), so that one
+    ///   frame has no run until it is parsed again.
     pub async fn gc_semantic_projection(&self, grace: Duration) -> Result<SemanticGcStats> {
         let grace =
             chrono::Duration::from_std(grace).unwrap_or_else(|_| chrono::Duration::days(365 * 100));
@@ -2026,11 +2132,19 @@ impl SemanticFrameAttachmentBuffer {
         }
     }
 
-    /// Queue an attachment. Returns true when the buffer is due for a flush.
-    pub fn push(&mut self, frame_id: i64, run_id: i64) -> bool {
+    /// Queue an attachment. Returns whether the buffer is now due for a
+    /// flush.
+    ///
+    /// Ids must be positive, as [`DatabaseManager::attach_semantic_runs_to_frames`]
+    /// requires. An invalid pair is rejected here with
+    /// [`SemanticStoreError::InvalidInput`] and the buffer is left unchanged,
+    /// so one bad entry can never cost the rest of a batch at flush time.
+    pub fn push(&mut self, frame_id: i64, run_id: i64) -> Result<bool> {
+        require_positive("frame_id", frame_id)?;
+        require_positive("run_id", run_id)?;
         self.pending.insert(frame_id, run_id);
         self.oldest.get_or_insert_with(Instant::now);
-        self.is_due(Instant::now())
+        Ok(self.is_due(Instant::now()))
     }
 
     /// Frames waiting to be attached.
@@ -2066,9 +2180,13 @@ impl SemanticFrameAttachmentBuffer {
     }
 
     /// Write everything queued in one transaction and log the flush (at
-    /// debug level). When the database fails, the entries go back into the
-    /// buffer (a newer push for the same frame wins) so the next flush retries
-    /// them. Entries the store rejects as invalid are dropped.
+    /// debug level). Returns the number of frame rows updated; entries whose
+    /// run GC removed in the meantime are skipped, not counted.
+    ///
+    /// [`Self::push`] only queues valid ids, so a failed flush is a database
+    /// failure (locked, busy, I/O). The transaction then rolls back and every
+    /// entry goes back into the buffer, a newer push for the same frame
+    /// winning, so the next flush retries the whole batch.
     pub async fn flush(&mut self, db: &DatabaseManager) -> Result<u64> {
         if self.pending.is_empty() {
             return Ok(0);
@@ -2082,14 +2200,13 @@ impl SemanticFrameAttachmentBuffer {
                 );
                 Ok(updated)
             }
-            Err(e @ SemanticStoreError::Database(_)) => {
+            Err(e) => {
                 for a in &batch {
                     self.pending.entry(a.frame_id).or_insert(a.run_id);
                 }
                 self.oldest.get_or_insert_with(Instant::now);
                 Err(e)
             }
-            Err(e) => Err(e),
         }
     }
 }
@@ -2169,6 +2286,13 @@ mod tests {
         assert_eq!(decode_source_node_ids(&blob), Some(vec![1, 0x0102_0304]));
         assert_eq!(decode_source_node_ids(&[]), Some(vec![]));
         assert_eq!(decode_source_node_ids(&[1, 2, 3]), None);
+        // The length check is the only guard: a big-endian blob of the same
+        // length decodes without error to different ids. This is why the
+        // layout is recorded as an open interop question.
+        assert_eq!(
+            decode_source_node_ids(&[0, 0, 0, 1]),
+            Some(vec![0x0100_0000])
+        );
     }
 
     #[test]
@@ -2195,6 +2319,74 @@ mod tests {
         assert_eq!(labels.source_label, " Ünïcode  Name ");
         assert_eq!(labels.observed_label, "Ünïcode Name");
         assert_eq!(labels.normalized_label, "ünïcode name");
+    }
+
+    /// SQLite's `length()` of the stored text: characters before the first
+    /// NUL. Every alias column must come out at 1 or more.
+    fn sqlite_length(s: &str) -> usize {
+        s.chars().take_while(|c| *c != '\0').count()
+    }
+
+    #[test]
+    fn labels_drop_nul_and_other_control_characters() {
+        // A leading NUL used to reach the alias table and fail its length
+        // checks, rolling the whole run back.
+        let labels = AliasLabels::from_label("\0Ada").unwrap();
+        assert_eq!(labels.source_label, "Ada");
+        assert_eq!(labels.observed_label, "Ada");
+        assert_eq!(labels.normalized_label, "ada");
+        for column in [
+            &labels.source_label,
+            &labels.observed_label,
+            &labels.normalized_label,
+        ] {
+            assert!(sqlite_length(column) >= 1, "{column:?}");
+        }
+
+        // Only non-whitespace control characters: no visible label at all.
+        assert!(AliasLabels::from_label("\u{1}\u{2}").is_none());
+        assert!(AliasLabels::from_label("\0").is_none());
+        assert!(AliasLabels::from_label("\0 \u{7F}\u{9F}\u{200B}").is_none());
+        assert_eq!(display_semantic_actor_label("\u{1}\u{2}"), "");
+
+        // Controls inside a label vanish; whitespace controls still count as
+        // whitespace, both in the display form and kept in source_label.
+        let labels = AliasLabels::from_label("A\u{7}da\u{1B}\tLove\u{0}lace").unwrap();
+        assert_eq!(labels.source_label, "Ada\tLovelace");
+        assert_eq!(labels.observed_label, "Ada Lovelace");
+        assert_eq!(labels.normalized_label, "ada lovelace");
+
+        // Directional marks wrapped around a phone number or name are
+        // invisible: they neither form a label on their own nor split one
+        // alias into two.
+        assert!(AliasLabels::from_label("\u{202A}\u{202C}").is_none());
+        assert_eq!(
+            normalize_semantic_actor_label("\u{202A}+1 555 0100\u{202C}"),
+            normalize_semantic_actor_label("+1 555 0100")
+        );
+        assert_eq!(display_semantic_actor_label("\u{200F}Dana\u{00AD}"), "Dana");
+
+        // A long invisible prefix still leaves every column non-empty.
+        let padded = format!("{}\0Ada", "\u{200B}".repeat(300));
+        let labels = AliasLabels::from_label(&padded).unwrap();
+        assert_eq!(labels.source_label.chars().count(), 256);
+        assert_eq!(sqlite_length(&labels.source_label), 256);
+        assert_eq!(labels.observed_label, "Ada");
+    }
+
+    #[test]
+    fn actor_names_drop_controls_and_need_a_visible_character() {
+        assert_eq!(clean_actor_name("  Ada Lovelace ").unwrap(), "Ada Lovelace");
+        assert_eq!(clean_actor_name("\0Ada").unwrap(), "Ada");
+        assert_eq!(clean_actor_name("Ada\u{0}\u{1}").unwrap(), "Ada");
+        for bad in ["", "   ", "\u{1}\u{2}", "\0", "\u{200B}", "\u{1} \u{202A}"] {
+            let err = clean_actor_name(bad).unwrap_err();
+            assert!(err.is_invalid_input(), "{bad:?}: {err}");
+        }
+        assert!(clean_actor_name(&"n".repeat(257)).is_err());
+        // Controls do not count toward the limit.
+        let padded = format!("{}\u{1}", "n".repeat(256));
+        assert_eq!(clean_actor_name(&padded).unwrap().chars().count(), 256);
     }
 
     #[test]
@@ -2250,6 +2442,16 @@ mod tests {
         let mut long_key = run(vec![]);
         long_key.actor_source_key = Some("k".repeat(1025));
         assert!(validate_new_run(&long_key).is_err());
+
+        let mut nul_key = run(vec![]);
+        nul_key.actor_source_key = Some("\0slack:T123".into());
+        let err = validate_new_run(&nul_key).unwrap_err();
+        assert!(err.to_string().contains("actor_source_key"), "{err}");
+
+        let mut nul_parser = run(vec![]);
+        nul_parser.parser_id = "chat\u{1}".into();
+        let err = validate_new_run(&nul_parser).unwrap_err();
+        assert!(err.to_string().contains("parser_id"), "{err}");
     }
 
     #[test]
@@ -2266,11 +2468,11 @@ mod tests {
     fn attachment_buffer_coalesces_and_reports_due() {
         let mut buf = SemanticFrameAttachmentBuffer::new(3, Duration::from_secs(3600));
         assert!(!buf.is_due(Instant::now()));
-        assert!(!buf.push(1, 10));
-        assert!(!buf.push(1, 11));
+        assert!(!buf.push(1, 10).unwrap());
+        assert!(!buf.push(1, 11).unwrap());
         assert_eq!(buf.len(), 1);
-        assert!(!buf.push(2, 10));
-        assert!(buf.push(3, 10));
+        assert!(!buf.push(2, 10).unwrap());
+        assert!(buf.push(3, 10).unwrap());
         let batch = buf.take();
         assert_eq!(
             batch,
@@ -2292,7 +2494,38 @@ mod tests {
         assert!(buf.is_empty());
 
         let mut aged = SemanticFrameAttachmentBuffer::new(100, Duration::ZERO);
-        assert!(aged.push(5, 1));
+        assert!(aged.push(5, 1).unwrap());
+    }
+
+    #[test]
+    fn attachment_buffer_rejects_invalid_ids_and_keeps_valid_ones() {
+        let mut buf = SemanticFrameAttachmentBuffer::new(10, Duration::from_secs(3600));
+        assert!(!buf.push(1, 10).unwrap());
+        for (frame_id, run_id) in [(0, 10), (-5, 10), (2, 0), (2, -1)] {
+            let err = buf.push(frame_id, run_id).unwrap_err();
+            assert!(err.is_invalid_input(), "({frame_id}, {run_id}): {err}");
+        }
+        // A rejected push for a queued frame leaves its entry alone.
+        assert!(buf.push(1, -3).is_err());
+        assert!(!buf.push(3, 30).unwrap());
+        assert_eq!(
+            buf.take(),
+            vec![
+                SemanticFrameAttachment {
+                    frame_id: 1,
+                    run_id: 10
+                },
+                SemanticFrameAttachment {
+                    frame_id: 3,
+                    run_id: 30
+                },
+            ]
+        );
+        // Rejected pushes never start the age clock.
+        let mut aged = SemanticFrameAttachmentBuffer::new(100, Duration::ZERO);
+        assert!(aged.push(0, 1).is_err());
+        assert!(!aged.is_due(Instant::now()));
+        assert!(aged.is_empty());
     }
 
     #[test]
