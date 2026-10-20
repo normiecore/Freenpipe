@@ -443,8 +443,14 @@ fn like_contains_pattern(q: &str) -> String {
     out
 }
 
-fn placeholders(n: usize) -> String {
-    vec!["?"; n].join(", ")
+/// `?first, ?first+1, ...` for an `IN (...)` list of `n` values. Every
+/// placeholder in a statement must be numbered: sqlx fills unnumbered `?`
+/// from the first argument on, whatever numbered ones the statement has.
+fn numbered_placeholders(first: usize, n: usize) -> String {
+    (first..first + n)
+        .map(|i| format!("?{i}"))
+        .collect::<Vec<_>>()
+        .join(", ")
 }
 
 /// Timestamps this module writes use the same shape as the schema's
@@ -1072,7 +1078,7 @@ async fn aliases_for_actors(
         let sql = format!(
             "SELECT {ALIAS_COLUMNS} FROM semantic_actor_aliases \
              WHERE actor_id IN ({}) ORDER BY created_at, id",
-            placeholders(chunk.len())
+            numbered_placeholders(1, chunk.len())
         );
         let mut q = sqlx::query(sqlx::AssertSqlSafe(sql));
         for id in chunk {
@@ -1320,7 +1326,7 @@ async fn attach_tx(conn: &mut SqliteConnection, by_run: BTreeMap<i64, Vec<i64>>)
                 "UPDATE frames SET semantic_run_id = ?1 \
                  WHERE id IN ({}) \
                    AND EXISTS (SELECT 1 FROM semantic_runs WHERE id = ?1)",
-                placeholders(chunk.len())
+                numbered_placeholders(2, chunk.len())
             );
             let mut q = sqlx::query(sqlx::AssertSqlSafe(sql)).bind(run_id);
             for id in chunk {
@@ -2193,6 +2199,12 @@ mod tests {
     fn clip_respects_char_boundaries() {
         assert_eq!(clip_chars("héllo", 2), "hé");
         assert_eq!(clip_chars("hi", 5), "hi");
+    }
+
+    #[test]
+    fn in_list_placeholders_are_numbered() {
+        assert_eq!(numbered_placeholders(2, 3), "?2, ?3, ?4");
+        assert_eq!(numbered_placeholders(1, 1), "?1");
     }
 
     #[test]
