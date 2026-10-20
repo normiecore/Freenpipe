@@ -206,7 +206,10 @@ pub fn grant_data_dir_scopes(app: &tauri::AppHandle, dirs: &[PathBuf]) {
                 dir.display()
             );
         }
-        info!("data directory {} added to the webview scopes", dir.display());
+        info!(
+            "data directory {} added to the webview scopes",
+            dir.display()
+        );
     }
 }
 
@@ -229,7 +232,11 @@ pub fn report_refused_handoff(message: &str, autostart: bool) {
         use windows::Win32::UI::WindowsAndMessaging::{
             MessageBoxW, MB_ICONWARNING, MB_OK, MB_SETFOREGROUND, MESSAGEBOX_STYLE,
         };
-        let wide = |s: &str| s.encode_utf16().chain(std::iter::once(0)).collect::<Vec<u16>>();
+        let wide = |s: &str| {
+            s.encode_utf16()
+                .chain(std::iter::once(0))
+                .collect::<Vec<u16>>()
+        };
         let body = wide(&text);
         let title = wide(crate::brand::PRODUCT_NAME);
         // SAFETY: both strings are NUL-terminated and outlive the call.
@@ -277,7 +284,11 @@ mod tests {
         assert!(helper_mode_for(&args(&["app"]), TABLE).is_none());
         assert!(helper_mode_for(&args(&[]), TABLE).is_none());
         // Later positions are ordinary app arguments (a deep link, --autostart).
-        assert!(helper_mode_for(&args(&["app", "--autostart", "--screenpipe-portable-mcp"]), TABLE).is_none());
+        assert!(helper_mode_for(
+            &args(&["app", "--autostart", "--screenpipe-portable-mcp"]),
+            TABLE
+        )
+        .is_none());
         assert!(helper_mode_for(&args(&["app", "--screenpipe-portable-mcp=1"]), TABLE).is_none());
     }
 
@@ -285,11 +296,17 @@ mod tests {
     fn dispatch_runs_the_helper_with_the_remaining_arguments() {
         let before = CALLS.load(Ordering::SeqCst);
         assert_eq!(
-            dispatch_helper_mode(&args(&["app", "--screenpipe-portable-mcp", "a", "b"]), TABLE),
+            dispatch_helper_mode(
+                &args(&["app", "--screenpipe-portable-mcp", "a", "b"]),
+                TABLE
+            ),
             Some(12)
         );
         assert_eq!(CALLS.load(Ordering::SeqCst), before + 1);
-        assert_eq!(dispatch_helper_mode(&args(&["app", "freenpipe://x"]), TABLE), None);
+        assert_eq!(
+            dispatch_helper_mode(&args(&["app", "freenpipe://x"]), TABLE),
+            None
+        );
     }
 
     #[test]
@@ -298,8 +315,14 @@ mod tests {
         assert_eq!(acp_process_guard_unavailable(&[]), HELPER_USAGE_EXIT);
         assert_eq!(portable_mcp_unavailable(&args(&["x"])), HELPER_USAGE_EXIT);
         assert_eq!(render_workflow_video_unavailable(&[]), HELPER_USAGE_EXIT);
-        assert_eq!(render_workflow_video_unavailable(&args(&["/p"])), HELPER_USAGE_EXIT);
-        assert_eq!(render_workflow_video_unavailable(&args(&["/p", "/q"])), HELPER_USAGE_EXIT);
+        assert_eq!(
+            render_workflow_video_unavailable(&args(&["/p"])),
+            HELPER_USAGE_EXIT
+        );
+        assert_eq!(
+            render_workflow_video_unavailable(&args(&["/p", "/q"])),
+            HELPER_USAGE_EXIT
+        );
     }
 
     #[test]
@@ -311,11 +334,17 @@ mod tests {
         };
         assert_eq!(startup_window(done), StartupWindow::Home);
         assert_eq!(
-            startup_window(StartupInputs { autostart: true, ..done }),
+            startup_window(StartupInputs {
+                autostart: true,
+                ..done
+            }),
             StartupWindow::None(Autostart)
         );
         assert_eq!(
-            startup_window(StartupInputs { ui_hidden: true, ..done }),
+            startup_window(StartupInputs {
+                ui_hidden: true,
+                ..done
+            }),
             StartupWindow::None(HiddenUi)
         );
         assert_eq!(
@@ -360,7 +389,10 @@ mod tests {
             assert!(!skip_onboarding_requested(Some(value), &[]), "{value}");
         }
         assert!(!skip_onboarding_requested(None, &[]));
-        assert!(skip_onboarding_requested(None, &args(&["no-audio", "onboarding"])));
+        assert!(skip_onboarding_requested(
+            None,
+            &args(&["no-audio", "onboarding"])
+        ));
         assert!(!skip_onboarding_requested(None, &args(&["no-audio"])));
     }
 
@@ -371,12 +403,21 @@ mod tests {
         let custom = Path::new("/mnt/recordings");
         let nested = Path::new("/home/ada/.screenpipe/data");
         let lookalike = Path::new("/home/ada/.screenpipe-old");
-        assert_eq!(dirs_needing_scope(&[base, nested], &roots), Vec::<PathBuf>::new());
+        assert_eq!(
+            dirs_needing_scope(&[base, nested], &roots),
+            Vec::<PathBuf>::new()
+        );
         assert_eq!(
             dirs_needing_scope(&[base, custom, custom, lookalike], &roots),
-            vec![PathBuf::from("/mnt/recordings"), PathBuf::from("/home/ada/.screenpipe-old")]
+            vec![
+                PathBuf::from("/mnt/recordings"),
+                PathBuf::from("/home/ada/.screenpipe-old")
+            ]
         );
-        assert_eq!(dirs_needing_scope(&[custom], &[]), vec![PathBuf::from("/mnt/recordings")]);
+        assert_eq!(
+            dirs_needing_scope(&[custom], &[]),
+            vec![PathBuf::from("/mnt/recordings")]
+        );
     }
 }
 
@@ -407,7 +448,9 @@ mod capability_tests {
     #[test]
     fn opener_hands_prompts_to_coding_agents() {
         assert!(allowed("claude://claude.ai/new?q=summarise%20my%20day"));
-        assert!(allowed("cursor://anysphere.cursor-deeplink/prompt?text=fix%20the%20bug"));
+        assert!(allowed(
+            "cursor://anysphere.cursor-deeplink/prompt?text=fix%20the%20bug"
+        ));
         assert!(allowed("codex://threads/new?prompt=write%20tests"));
         assert!(allowed("obsidian://open?vault=notes&file=today"));
         assert!(allowed("https://github.com/normiecore/Freenpipe"));
@@ -418,7 +461,9 @@ mod capability_tests {
     fn opener_refuses_other_agent_links() {
         assert!(!allowed("claude://claude.ai/settings"));
         assert!(!allowed("claude://evil.example/new?q=x"));
-        assert!(!allowed("cursor://anysphere.cursor-deeplink/mcp/install?name=x"));
+        assert!(!allowed(
+            "cursor://anysphere.cursor-deeplink/mcp/install?name=x"
+        ));
         assert!(!allowed("codex://threads/42"));
         assert!(!allowed("file:///C:/Windows/System32/calc.exe"));
         assert!(!allowed("ms-settings:privacy"));

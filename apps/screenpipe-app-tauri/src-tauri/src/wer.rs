@@ -444,8 +444,7 @@ mod tests {
     #[test]
     fn layout_matches_the_helper_crate() {
         let helper = include_str!("../../../../crates/screenpipe-wer-helper/src/layout.rs");
-        assert!(helper
-            .contains(r#"pub const CONTEXT_MAGIC: u32 = u32::from_le_bytes(*b"FPWR");"#));
+        assert!(helper.contains(r#"pub const CONTEXT_MAGIC: u32 = u32::from_le_bytes(*b"FPWR");"#));
         assert!(helper.contains(&format!(
             "pub const CONTEXT_VERSION: u32 = {CONTEXT_VERSION};"
         )));
@@ -519,7 +518,10 @@ mod tests {
             &exe_dir.join("crash-dumps/Freenpipe-2-20261020T101600Z.dmp"),
             b"two",
         );
-        touch(&pending.join("Freenpipe-3-20261020T101700Z.dmp.partial"), b"busy");
+        touch(
+            &pending.join("Freenpipe-3-20261020T101700Z.dmp.partial"),
+            b"busy",
+        );
         let dead = pending.join("Freenpipe-4-20261019T101700Z.dmp.partial");
         touch(&dead, b"dead");
         set_age(&dead, STALE_PARTIAL_AGE + Duration::from_secs(60));

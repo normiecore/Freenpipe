@@ -1681,7 +1681,8 @@ impl SettingsStore {
     }
 
     pub fn audio_engine_resolution(&self) -> AudioEngineResolution {
-        let mut resolution = self.audio_engine_resolution_with(self.gateway_transcription_ready());
+        let mut resolution =
+            self.audio_engine_resolution_with(self.gateway_transcription_ready());
         crate::cpu_compat::apply_to_resolution(
             &mut resolution,
             crate::cpu_compat::compat_mode(),

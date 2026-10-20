@@ -38,7 +38,11 @@ pub fn resolve_data_dir(data_dir_setting: &str) -> (PathBuf, bool) {
         .ok()
         .filter(|v| !v.trim().is_empty())
         .map(PathBuf::from);
-    resolve_data_dir_with(data_dir_setting, env_override, default_screenpipe_data_dir())
+    resolve_data_dir_with(
+        data_dir_setting,
+        env_override,
+        default_screenpipe_data_dir(),
+    )
 }
 
 /// [`resolve_data_dir`] with its inputs spelled out (testable).

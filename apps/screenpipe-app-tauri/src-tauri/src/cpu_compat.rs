@@ -89,7 +89,11 @@ pub fn replacement_engine(engine: &str, compat: bool, parakeet: bool) -> Option<
     if !compat || !engine_needs_avx2(engine) {
         return None;
     }
-    Some(if parakeet { COMPAT_ENGINE } else { NO_LOCAL_ENGINE })
+    Some(if parakeet {
+        COMPAT_ENGINE
+    } else {
+        NO_LOCAL_ENGINE
+    })
 }
 
 /// Apply compatibility mode to an engine resolution: an engine that needs
@@ -186,9 +190,18 @@ mod tests {
 
     #[test]
     fn compat_mode_switches_to_parakeet() {
-        assert_eq!(replacement_engine("whisper-large-v3-turbo", true, true), Some("parakeet"));
-        assert_eq!(replacement_engine("qwen3-asr", true, true), Some("parakeet"));
-        assert_eq!(replacement_engine("qwen3-asr", true, false), Some("disabled"));
+        assert_eq!(
+            replacement_engine("whisper-large-v3-turbo", true, true),
+            Some("parakeet")
+        );
+        assert_eq!(
+            replacement_engine("qwen3-asr", true, true),
+            Some("parakeet")
+        );
+        assert_eq!(
+            replacement_engine("qwen3-asr", true, false),
+            Some("disabled")
+        );
         assert_eq!(replacement_engine("whisper-tiny", false, true), None);
         assert_eq!(replacement_engine("deepgram", true, true), None);
     }

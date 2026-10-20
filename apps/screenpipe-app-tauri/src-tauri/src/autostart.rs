@@ -129,7 +129,8 @@ mod platform {
     }
 
     fn expected_command() -> Result<String, String> {
-        let exe = std::env::current_exe().map_err(|e| format!("cannot resolve the executable: {e}"))?;
+        let exe =
+            std::env::current_exe().map_err(|e| format!("cannot resolve the executable: {e}"))?;
         Ok(run_command(&exe.display().to_string()))
     }
 
@@ -150,7 +151,9 @@ mod platform {
     }
 
     fn remove_entry(name: &str) -> Result<(), String> {
-        let key = match RegKey::predef(HKEY_CURRENT_USER).open_subkey_with_flags(RUN_KEY, KEY_SET_VALUE) {
+        let key = match RegKey::predef(HKEY_CURRENT_USER)
+            .open_subkey_with_flags(RUN_KEY, KEY_SET_VALUE)
+        {
             Ok(key) => key,
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(()),
             Err(e) => return Err(format!("cannot open the Run key: {e}")),
@@ -173,7 +176,9 @@ mod platform {
     /// Mark the entry enabled in Task Manager. Only for an explicit "on"
     /// from the user.
     fn approve(name: &str) {
-        let Ok(key) = RegKey::predef(HKEY_CURRENT_USER).open_subkey_with_flags(APPROVED_KEY, KEY_SET_VALUE) else {
+        let Ok(key) =
+            RegKey::predef(HKEY_CURRENT_USER).open_subkey_with_flags(APPROVED_KEY, KEY_SET_VALUE)
+        else {
             return;
         };
         let value = RegValue {
@@ -195,7 +200,11 @@ mod platform {
             }
         };
         let existing = read_entry(&name);
-        let action = startup_action(enabled, dev_isolation, entry_state(existing.as_deref(), &expected));
+        let action = startup_action(
+            enabled,
+            dev_isolation,
+            entry_state(existing.as_deref(), &expected),
+        );
         let result = match action {
             StartupAction::SkipDevIsolation => {
                 info!("autostart: skipping login entry registration under dev isolation (debug build)");
@@ -210,7 +219,9 @@ mod platform {
             Err(e) => warn!("autostart: {action:?} failed: {e}"),
         }
         if enabled && !dev_isolation && turned_off_in_task_manager(&name) {
-            info!("autostart is turned off in Task Manager's startup apps; keeping the user's choice");
+            info!(
+                "autostart is turned off in Task Manager's startup apps; keeping the user's choice"
+            );
         }
     }
 
@@ -225,7 +236,11 @@ mod platform {
         info!(
             "autostart {}: login entry {}",
             if enabled { "enabled" } else { "disabled" },
-            if read_entry(&name).is_some() { "present" } else { "absent" }
+            if read_entry(&name).is_some() {
+                "present"
+            } else {
+                "absent"
+            }
         );
         Ok(())
     }
@@ -286,7 +301,11 @@ mod tests {
     #[test]
     fn autostart_launch_is_recognised_after_the_program_name() {
         assert!(is_autostart_launch(&["C:\\Freenpipe.exe", "--autostart"]));
-        assert!(is_autostart_launch(&["/usr/bin/freenpipe", "--foo", "--autostart"]));
+        assert!(is_autostart_launch(&[
+            "/usr/bin/freenpipe",
+            "--foo",
+            "--autostart"
+        ]));
         assert!(!is_autostart_launch(&["--autostart"]));
         assert!(!is_autostart_launch(&["freenpipe", "--autostart=1"]));
         assert!(!is_autostart_launch::<&str>(&[]));
@@ -307,7 +326,10 @@ mod tests {
         assert_eq!(entry_state(None, &expected), EntryState::Missing);
         assert_eq!(entry_state(Some("  "), &expected), EntryState::Missing);
         assert_eq!(
-            entry_state(Some(r#""c:\apps\freenpipe\FREENPIPE.EXE" --autostart "#), &expected),
+            entry_state(
+                Some(r#""c:\apps\freenpipe\FREENPIPE.EXE" --autostart "#),
+                &expected
+            ),
             EntryState::Current
         );
         // What older builds wrote: unquoted, no argument.
@@ -339,9 +361,15 @@ mod tests {
 
     #[test]
     fn task_manager_state_is_read_from_the_first_byte() {
-        assert!(!approved_value_disabled(&[0x02, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]));
-        assert!(!approved_value_disabled(&[0x06, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]));
-        assert!(approved_value_disabled(&[0x03, 0x10, 0x20, 0, 0, 0, 0, 0, 0, 0, 0, 0]));
+        assert!(!approved_value_disabled(&[
+            0x02, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0
+        ]));
+        assert!(!approved_value_disabled(&[
+            0x06, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0
+        ]));
+        assert!(approved_value_disabled(&[
+            0x03, 0x10, 0x20, 0, 0, 0, 0, 0, 0, 0, 0, 0
+        ]));
         assert!(approved_value_disabled(&[0x07]));
         assert!(!approved_value_disabled(&[]));
     }

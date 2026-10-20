@@ -166,7 +166,10 @@ pub fn registered_schemes(deep_link: Option<&serde_json::Value>) -> Vec<String> 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum FocusRejection {
     /// Launched from another executable: another install or channel.
-    OtherExecutable { launch_exe: String, current_exe: String },
+    OtherExecutable {
+        launch_exe: String,
+        current_exe: String,
+    },
     /// The launching executable could not be resolved on disk.
     UnverifiableExecutable { launch_exe: String },
     /// A deep link for another build (or not a deep link at all).
@@ -177,7 +180,8 @@ impl FocusRejection {
     pub fn message(&self) -> String {
         match self {
             FocusRejection::OtherExecutable { .. } => {
-                "this handoff comes from a different executable; another install is already running".to_string()
+                "this handoff comes from a different executable; another install is already running"
+                    .to_string()
             }
             FocusRejection::UnverifiableExecutable { .. } => {
                 "the executable that sent this handoff could not be verified".to_string()
@@ -218,7 +222,11 @@ pub fn decide_focus(
     // Same executable, compared once both are resolved. A request without
     // `launch_exe` (the browser extension, a local script, an older build)
     // names no executable to compare; the deep-link checks below still apply.
-    if let Some(launch_exe) = payload.launch_exe.as_deref().filter(|s| !s.trim().is_empty()) {
+    if let Some(launch_exe) = payload
+        .launch_exe
+        .as_deref()
+        .filter(|s| !s.trim().is_empty())
+    {
         let Some(resolved) = canonicalize(std::path::Path::new(launch_exe)) else {
             return FocusDecision::Reject(FocusRejection::UnverifiableExecutable {
                 launch_exe: launch_exe.to_string(),
@@ -248,7 +256,11 @@ pub fn decide_focus(
             return FocusDecision::Reject(FocusRejection::ForeignDeepLink { scheme });
         }
     }
-    for arg in payload.args.iter().filter(|a| crate::brand::is_app_deep_link(a)) {
+    for arg in payload
+        .args
+        .iter()
+        .filter(|a| crate::brand::is_app_deep_link(a))
+    {
         let scheme = url_scheme(arg).unwrap_or_default();
         if !identity.accepts_scheme(&scheme) {
             return FocusDecision::Reject(FocusRejection::ForeignDeepLink { scheme });
@@ -591,7 +603,7 @@ pub async fn hand_off(payload: &FocusPayload, port: u16) -> Handoff {
         .await;
     match response {
         Ok(resp) if resp.status().is_success() => Handoff::Delivered,
-        Ok(resp) if resp.status() == StatusCode::FORBIDDEN => {
+        Ok(resp) if resp.status().as_u16() == StatusCode::FORBIDDEN.as_u16() => {
             let message = resp
                 .json::<serde_json::Value>()
                 .await
@@ -1013,7 +1025,14 @@ mod tests {
 
     #[test]
     fn local_hosts() {
-        for host in ["localhost", "LOCALHOST:11435", "127.0.0.1", "127.0.0.1:11436", "[::1]:80", "[::1]"] {
+        for host in [
+            "localhost",
+            "LOCALHOST:11435",
+            "127.0.0.1",
+            "127.0.0.1:11436",
+            "[::1]:80",
+            "[::1]",
+        ] {
             assert!(is_local_host(host), "{host}");
         }
         for host in [
@@ -1074,14 +1093,25 @@ mod tests {
 
     #[test]
     fn local_access_rules() {
-        assert_eq!(local_access("/notify", None, Some("localhost:11435")), LocalAccess::Allow);
+        assert_eq!(
+            local_access("/notify", None, Some("localhost:11435")),
+            LocalAccess::Allow
+        );
         assert_eq!(local_access("/notify", None, None), LocalAccess::Allow);
         assert_eq!(
-            local_access("/notify", Some("tauri://localhost"), Some("localhost:11435")),
+            local_access(
+                "/notify",
+                Some("tauri://localhost"),
+                Some("localhost:11435")
+            ),
             LocalAccess::Allow
         );
         assert_eq!(
-            local_access("/notify", Some("http://evil.example"), Some("127.0.0.1:11435")),
+            local_access(
+                "/notify",
+                Some("http://evil.example"),
+                Some("127.0.0.1:11435")
+            ),
             LocalAccess::ForeignOrigin("http://evil.example".into())
         );
         assert_eq!(
@@ -1090,11 +1120,19 @@ mod tests {
         );
         // Extension pages may only use /focus.
         assert_eq!(
-            local_access("/focus", Some("chrome-extension://abc"), Some("127.0.0.1:11435")),
+            local_access(
+                "/focus",
+                Some("chrome-extension://abc"),
+                Some("127.0.0.1:11435")
+            ),
             LocalAccess::Allow
         );
         assert_eq!(
-            local_access("/notify", Some("chrome-extension://abc"), Some("127.0.0.1:11435")),
+            local_access(
+                "/notify",
+                Some("chrome-extension://abc"),
+                Some("127.0.0.1:11435")
+            ),
             LocalAccess::ForeignOrigin("chrome-extension://abc".into())
         );
     }
@@ -1106,7 +1144,10 @@ mod tests {
         let list = serde_json::json!({ "desktop": [{ "schemes": ["Freenpipe-Beta"] }, { "schemes": ["freenpipe-beta", "x"] }] });
         assert_eq!(registered_schemes(Some(&list)), vec!["freenpipe-beta", "x"]);
         assert_eq!(registered_schemes(None), vec!["freenpipe"]);
-        assert_eq!(registered_schemes(Some(&serde_json::json!({}))), vec!["freenpipe"]);
+        assert_eq!(
+            registered_schemes(Some(&serde_json::json!({}))),
+            vec!["freenpipe"]
+        );
     }
 
     #[test]
@@ -1148,7 +1189,11 @@ mod tests {
     #[test]
     fn deep_links_of_other_builds_are_refused() {
         let me = identity(Some(PathBuf::from("/opt/f")));
-        for url in ["freenpipe-beta://settings", "https://example.test", "not a url"] {
+        for url in [
+            "freenpipe-beta://settings",
+            "https://example.test",
+            "not a url",
+        ] {
             let payload = FocusPayload {
                 deep_link_url: Some(url.into()),
                 ..Default::default()
@@ -1169,13 +1214,21 @@ mod tests {
             decide_focus(&in_args, &me, resolve_as_is),
             FocusDecision::Reject(FocusRejection::ForeignDeepLink { .. })
         ));
-        for url in ["freenpipe://frame/1", "FREENPIPE://x", "screenpipe://meeting/2"] {
+        for url in [
+            "freenpipe://frame/1",
+            "FREENPIPE://x",
+            "screenpipe://meeting/2",
+        ] {
             let payload = FocusPayload {
                 deep_link_url: Some(url.into()),
                 args: vec!["app".into(), url.into()],
                 ..Default::default()
             };
-            assert_eq!(decide_focus(&payload, &me, resolve_as_is), FocusDecision::Accept, "{url}");
+            assert_eq!(
+                decide_focus(&payload, &me, resolve_as_is),
+                FocusDecision::Accept,
+                "{url}"
+            );
         }
     }
 
@@ -1196,13 +1249,19 @@ mod tests {
             target: Some("browser_pairing".into()),
             ..Default::default()
         };
-        assert_eq!(decide_focus(&pairing, &me, resolve_as_is), FocusDecision::Accept);
+        assert_eq!(
+            decide_focus(&pairing, &me, resolve_as_is),
+            FocusDecision::Accept
+        );
         let plain = FocusPayload {
             args: vec!["/opt/f".into()],
             launch_exe: Some("/opt/f".into()),
             ..Default::default()
         };
-        assert_eq!(decide_focus(&plain, &me, resolve_as_is), FocusDecision::Accept);
+        assert_eq!(
+            decide_focus(&plain, &me, resolve_as_is),
+            FocusDecision::Accept
+        );
     }
 
     #[test]
@@ -1210,13 +1269,24 @@ mod tests {
         let args = vec!["app".to_string(), "freenpipe://frame/3".to_string()];
         let payload = handoff_payload(&args);
         assert_eq!(payload.args, args);
-        assert_eq!(payload.deep_link_url.as_deref(), Some("freenpipe://frame/3"));
+        assert_eq!(
+            payload.deep_link_url.as_deref(),
+            Some("freenpipe://frame/3")
+        );
         assert_eq!(
             payload.launch_exe,
-            std::env::current_exe().ok().map(|p| p.display().to_string())
+            std::env::current_exe()
+                .ok()
+                .map(|p| p.display().to_string())
         );
         let json = serde_json::to_value(&payload).unwrap();
-        for field in ["args", "deep_link_url", "target", "launch_exe", "launchd_job_label"] {
+        for field in [
+            "args",
+            "deep_link_url",
+            "target",
+            "launch_exe",
+            "launchd_job_label",
+        ] {
             assert!(json.get(field).is_some(), "{field}");
         }
     }
@@ -1358,7 +1428,10 @@ mod tests {
         assert_eq!(resp.status(), reqwest::StatusCode::FORBIDDEN);
         // A foreign preflight is refused before CORS can answer it.
         let resp = client()
-            .request(reqwest::Method::OPTIONS, format!("http://{}/focus", server.addr))
+            .request(
+                reqwest::Method::OPTIONS,
+                format!("http://{}/focus", server.addr),
+            )
             .header("Origin", "https://evil.example")
             .header("Access-Control-Request-Method", "POST")
             .send()
@@ -1383,7 +1456,12 @@ mod tests {
     #[tokio::test]
     async fn local_callers_are_served_with_cors_for_local_origins_only() {
         let server = control_server().await;
-        for origin in [None, Some("tauri://localhost"), Some("http://tauri.localhost"), Some("http://localhost:3000")] {
+        for origin in [
+            None,
+            Some("tauri://localhost"),
+            Some("http://tauri.localhost"),
+            Some("http://localhost:3000"),
+        ] {
             let mut request = client().get(format!("http://{}/ping", server.addr));
             if let Some(origin) = origin {
                 request = request.header("Origin", origin);
@@ -1433,6 +1511,9 @@ mod tests {
         let free = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap();
         let port = free.local_addr().unwrap().port();
         drop(free);
-        assert_eq!(hand_off(&FocusPayload::default(), port).await, Handoff::NoInstance);
+        assert_eq!(
+            hand_off(&FocusPayload::default(), port).await,
+            Handoff::NoInstance
+        );
     }
 }
