@@ -541,6 +541,42 @@ pub async fn spawn_screenpipe(
     app: tauri::AppHandle,
     _override_args: Option<Vec<String>>,
 ) -> Result<(), String> {
+    start_engine(state, app)
+        .await
+        .map_err(StartError::into_message)
+}
+
+/// Why [`start_engine`] did not bring the engine up.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum StartError {
+    /// This start's own port check found the API port held by another
+    /// process (see `port_conflict`).
+    PortHeld(String),
+    /// Any other failure.
+    Other(String),
+}
+
+impl StartError {
+    pub(crate) fn into_message(self) -> String {
+        match self {
+            StartError::PortHeld(msg) | StartError::Other(msg) => msg,
+        }
+    }
+}
+
+impl From<String> for StartError {
+    fn from(msg: String) -> Self {
+        StartError::Other(msg)
+    }
+}
+
+/// The body of `spawn_screenpipe`. The error says whether this start was
+/// blocked by a held API port, so a caller (the watchdog's respawn) never
+/// has to read shared state that an earlier or concurrent start wrote.
+pub(crate) async fn start_engine(
+    state: State<'_, RecordingState>,
+    app: tauri::AppHandle,
+) -> Result<(), StartError> {
     info!("spawn_screenpipe: starting server + capture");
     crate::health::set_recording_intended(true);
 
@@ -597,7 +633,7 @@ pub async fn spawn_screenpipe(
     if let Err(err) = require_app_entitlement(&store) {
         state.is_starting.store(false, Ordering::SeqCst);
         state.is_starting_capture.store(false, Ordering::SeqCst);
-        return Err(err);
+        return Err(err.into());
     }
     let port = store.recording.port;
     let health_url = format!("http://localhost:{}/health", port);
@@ -691,7 +727,7 @@ pub async fn spawn_screenpipe(
                 // The wedged start never reported; end its phase so the
                 // engine watchdog does not wait on it forever.
                 crate::health::fail_boot_if_pending(&msg);
-                return Err(msg);
+                return Err(msg.into());
             }
             tokio::time::sleep(std::time::Duration::from_millis(POLL_MS)).await;
         }
@@ -718,7 +754,7 @@ pub async fn spawn_screenpipe(
                     }
                     drop(capture_guard);
                     // Start capture on existing server
-                    return start_capture_internal(&state, &app).await;
+                    return start_capture_internal(&state, &app).await.map_err(StartError::from);
                 }
                 _ => {
                     warn!("Server exists but not responding, will do full restart");
@@ -767,7 +803,7 @@ pub async fn spawn_screenpipe(
         crate::health::set_recording_status(crate::health::RecordingStatus::Error);
         state.is_starting.store(false, Ordering::SeqCst);
         state.is_starting_capture.store(false, Ordering::SeqCst);
-        return Err(msg);
+        return Err(StartError::PortHeld(msg));
     }
 
     // Wait for port release
@@ -807,10 +843,10 @@ pub async fn spawn_screenpipe(
         // recording status indicator stops showing "Starting…" forever
         // when the user has clicked "click to record" with TCC denied.
         crate::health::set_recording_status(crate::health::RecordingStatus::Error);
-        return Err(
+        return Err(StartError::Other(
             "Screen recording permission required. Please grant permission and restart the app."
                 .to_string(),
-        );
+        ));
     }
 
     if !disable_audio && !permissions_check.microphone.permitted() {
@@ -956,24 +992,9 @@ pub async fn spawn_screenpipe(
                 }
                 let _ = result_tx.send(Ok(()));
 
-                // Keep runtime alive as long as server exists. A retired
-                // generation wakes this loop so the runtime stops at once.
-                loop {
-                    tokio::select! {
-                        _ = tokio::time::sleep(std::time::Duration::from_secs(5)) => {}
-                        _ = ENGINE_RETIRED.notified() => {}
-                    }
-                    let guard = server_arc.lock().await;
-                    if guard.is_none() {
-                        info!("Server removed from state, shutting down server thread");
-                        break;
-                    }
-                }
+                hold_engine_generation(server_arc).await;
             });
-            // Bounded: a stuck blocking task must not keep this generation's
-            // runtime (and the database handles its tasks hold) alive forever.
-            server_runtime.shutdown_timeout(ENGINE_RUNTIME_SHUTDOWN);
-            info!("engine generation runtime stopped");
+            stop_engine_runtime(server_runtime);
         })
     {
         let msg = format!("Failed to spawn server thread: {}", e);
@@ -982,13 +1003,12 @@ pub async fn spawn_screenpipe(
         crate::health::set_boot_error(&msg);
         state.is_starting.store(false, Ordering::SeqCst);
         state.is_starting_capture.store(false, Ordering::SeqCst);
-        return Err(msg);
+        return Err(msg.into());
     }
 
     match result_rx.await {
         Ok(Ok(())) => {
             info!("Screenpipe started successfully");
-            crate::port_conflict::clear_engine_block();
             let spawn_epoch = std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .unwrap_or_default()
@@ -1006,7 +1026,7 @@ pub async fn spawn_screenpipe(
             if e.contains("no monitors matched") {
                 crate::health::set_recording_status(crate::health::RecordingStatus::Error);
             }
-            Err(e)
+            Err(e.into())
         }
         Err(_) => {
             state.is_starting.store(false, Ordering::SeqCst);
@@ -1014,7 +1034,7 @@ pub async fn spawn_screenpipe(
             let msg = "Server startup channel dropped unexpectedly".to_string();
             // The engine thread ended (panicked) without reporting.
             crate::health::fail_boot_if_pending(&msg);
-            Err(msg)
+            Err(msg.into())
         }
     }
 }
@@ -1077,6 +1097,32 @@ static RETIRED_GENERATIONS: Lazy<std::sync::Mutex<Vec<Weak<screenpipe_db::Databa
 /// runtime stops right away instead of on its next poll.
 static ENGINE_RETIRED: Lazy<tokio::sync::Notify> = Lazy::new(tokio::sync::Notify::new);
 
+/// Keep an engine generation's runtime running while its `ServerCore` is in
+/// state, for every engine thread (the boot-time one in `main.rs` and the
+/// ones `spawn_screenpipe` starts). Returns once something took the core out
+/// (a shutdown, a respawn, the exit teardown): at once when that retires the
+/// generation, otherwise on the next 5 s check.
+pub(crate) async fn hold_engine_generation(server: Arc<Mutex<Option<ServerCore>>>) {
+    loop {
+        tokio::select! {
+            _ = tokio::time::sleep(Duration::from_secs(5)) => {}
+            _ = ENGINE_RETIRED.notified() => {}
+        }
+        if server.lock().await.is_none() {
+            info!("Server removed from state, shutting down server thread");
+            return;
+        }
+    }
+}
+
+/// Stop an engine generation's runtime once [`hold_engine_generation`]
+/// returned. Bounded: a stuck blocking task must not keep the runtime (and
+/// the database handles its tasks hold) alive forever.
+pub(crate) fn stop_engine_runtime(runtime: tokio::runtime::Runtime) {
+    runtime.shutdown_timeout(ENGINE_RUNTIME_SHUTDOWN);
+    info!("engine generation runtime stopped");
+}
+
 /// Shut a `ServerCore` down and record it as retired, so the next generation
 /// waits for it to drain before opening the database again.
 pub(crate) async fn shutdown_server_core(server: ServerCore) {
@@ -1131,6 +1177,16 @@ pub(crate) enum RespawnError {
     PortHeld(String),
     /// Any other start failure.
     Failed(String),
+}
+
+impl From<StartError> for RespawnError {
+    /// Only this start's own port check can make it `PortHeld`.
+    fn from(e: StartError) -> Self {
+        match e {
+            StartError::PortHeld(msg) => RespawnError::PortHeld(msg),
+            StartError::Other(msg) => RespawnError::Failed(msg),
+        }
+    }
 }
 
 /// Time limits for one watchdog respawn, so a wedged step can never leave
@@ -1208,12 +1264,9 @@ pub(crate) async fn respawn_engine(app: &tauri::AppHandle) -> Result<(), Respawn
     let result = bounded_respawn(
         stop_engine(&state),
         move || async move {
-            spawn_screenpipe(start_state, start_app, None)
+            start_engine(start_state, start_app)
                 .await
-                .map_err(|e| match crate::port_conflict::last_engine_block() {
-                    Some(_) => RespawnError::PortHeld(e),
-                    None => RespawnError::Failed(e),
-                })
+                .map_err(RespawnError::from)
         },
         RespawnLimits::default(),
     )

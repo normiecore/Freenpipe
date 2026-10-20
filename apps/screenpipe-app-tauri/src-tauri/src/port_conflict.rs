@@ -838,23 +838,12 @@ mod system {
 // App-facing entry points
 // ---------------------------------------------------------------------------
 
-/// The last outcome that kept the engine from starting, so the watchdog can
-/// tell "the port is taken" from other start failures.
-static LAST_ENGINE_BLOCK: Lazy<Mutex<Option<ReclaimOutcome>>> = Lazy::new(|| Mutex::new(None));
-
-pub fn last_engine_block() -> Option<ReclaimOutcome> {
-    LAST_ENGINE_BLOCK
-        .lock()
-        .unwrap_or_else(|e| e.into_inner())
-        .clone()
-}
-
-pub fn clear_engine_block() {
-    *LAST_ENGINE_BLOCK.lock().unwrap_or_else(|e| e.into_inner()) = None;
-}
-
 /// Check `port` before binding it, terminate an unhealthy copy of ourselves
 /// if that is what holds it, and tell the user when something else does.
+/// The outcome belongs to this call alone: a caller that needs to report a
+/// held port (the engine start, and through it the watchdog) carries it in
+/// its own return value, never through shared state another start could
+/// overwrite or leave stale.
 pub async fn resolve_before_bind(
     app: &tauri::AppHandle,
     port: u16,
@@ -880,10 +869,6 @@ pub async fn resolve_before_bind(
             purpose.label(),
             describe_all(holders)
         ),
-    }
-    if purpose == PortPurpose::EngineApi {
-        let mut guard = LAST_ENGINE_BLOCK.lock().unwrap_or_else(|e| e.into_inner());
-        *guard = (!outcome.port_available()).then(|| outcome.clone());
     }
     notify(app, port, purpose, &outcome).await;
     outcome

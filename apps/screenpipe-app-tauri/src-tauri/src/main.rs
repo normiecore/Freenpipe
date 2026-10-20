@@ -401,8 +401,15 @@ macro_rules! define_specta_builder {
     }};
 }
 
+fn main() {
+    // First, while this is still the only thread: it removes an environment
+    // variable, which must not race with getenv on another thread.
+    relaunch::capture_relaunch_flag();
+    app_main();
+}
+
 #[tokio::main]
-async fn main() {
+async fn app_main() {
     let _ = fix_path_env::fix();
 
     #[cfg(target_os = "windows")]
@@ -1435,16 +1442,11 @@ async fn main() {
                                 *guard = Some(capture);
                             }
 
-                            // Keep runtime alive as long as server exists
-                            loop {
-                                tokio::time::sleep(std::time::Duration::from_secs(5)).await;
-                                let guard = server_arc.lock().await;
-                                if guard.is_none() {
-                                    info!("Server removed from state, shutting down server thread");
-                                    break;
-                                }
-                            }
+                            // Keep runtime alive as long as server exists;
+                            // a retired generation wakes it at once.
+                            crate::recording::hold_engine_generation(server_arc).await;
                         });
+                        crate::recording::stop_engine_runtime(server_runtime);
                     })
                     .expect("Failed to spawn server thread");
             }

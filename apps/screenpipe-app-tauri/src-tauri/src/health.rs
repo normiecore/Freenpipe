@@ -953,14 +953,12 @@ fn handle_watchdog_action(
         ),
         WatchdogAction::ClearPortError => {
             info!("API port freed while recording is off; clearing the error only");
-            crate::port_conflict::clear_engine_block();
             if read_boot_phase() == "error" {
                 set_boot_phase("idle", None);
             }
         }
         WatchdogAction::RecoveredFromConflict => {
             info!("engine answers again after the port conflict");
-            crate::port_conflict::clear_engine_block();
         }
     }
 }

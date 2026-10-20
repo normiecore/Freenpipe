@@ -7,16 +7,21 @@
 //! same [`teardown`]: stop capture, shut the engine down (pipe scheduler and
 //! audio manager, 15 s for audio), wait for the engine's HTTP runtime to drain,
 //! close the SQLite pools, and stop the Pi agent sessions. Every step has its
-//! own time limit, clipped to an overall budget. When the budget runs out the
-//! process is ended with [`hard_exit`] instead of hanging in a half-closed
-//! state.
+//! own time limit, clipped to an overall budget. A late HTTP drain, pool
+//! close or Pi stop is only logged: capture and audio are already stopped, so
+//! the app leaves normally (status 0, through Tauri where it can). Only a
+//! capture or engine step that did not stop in time ends the process with
+//! [`hard_exit`], because returning then would run native destructors under
+//! live capture or audio work. A guard thread force-exits a teardown that is
+//! itself wedged.
 //!
 //! A safe relaunch records whether the Home window was open, runs the
 //! teardown, stops the control server (so the replacement does not hand its
 //! start-up off to us and exit), starts the same executable with
 //! `SCREENPIPE_RELAUNCH_HOME_VISIBLE` and `SCREENPIPE_DATA_DIR` set, and then
-//! ends this process. The replacement reads the flag once the event loop is
-//! ready and keeps Home closed when the old instance had it closed.
+//! ends this process. The replacement reads (and removes) the flag at the top
+//! of `main`, before any thread exists, and keeps Home closed once the event
+//! loop is ready when the old instance had it closed.
 //!
 //! Quit requests that arrive while a teardown is already running, or while a
 //! protected database recovery holds the gate, are ignored.
@@ -233,7 +238,18 @@ pub enum StepOutcome {
     Done,
     /// Nothing to do (already stopped, no Pi state, ...).
     Skipped,
+    /// The step used up its own time limit.
     TimedOut,
+    /// The overall budget ran out before the step's own limit did (or before
+    /// the step could start).
+    OutOfBudget,
+}
+
+impl StepOutcome {
+    /// The step did not finish in the time it was given.
+    pub fn is_overrun(self) -> bool {
+        matches!(self, StepOutcome::TimedOut | StepOutcome::OutOfBudget)
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -247,8 +263,11 @@ pub struct StepReport {
 pub struct TeardownReport {
     pub steps: Vec<StepReport>,
     pub elapsed: Duration,
-    /// Some step timed out or the overall budget ran out.
+    /// Some step did not finish in time, for either reason.
     pub overran: bool,
+    /// The overall budget ran out: a step was cut short by it, or the whole
+    /// teardown took longer than the budget.
+    pub budget_exhausted: bool,
 }
 
 impl TeardownReport {
@@ -259,39 +278,83 @@ impl TeardownReport {
             .collect::<Vec<_>>()
             .join(" ")
     }
+
+    /// Comma-separated names of the steps with `outcome`, or `none`.
+    fn names_with(&self, outcome: StepOutcome) -> String {
+        let names: Vec<&str> = self
+            .steps
+            .iter()
+            .filter(|s| s.outcome == outcome)
+            .map(|s| s.name)
+            .collect();
+        if names.is_empty() {
+            "none".to_string()
+        } else {
+            names.join(",")
+        }
+    }
+
+    /// Comma-separated names of every step that did not finish in time.
+    fn overrun_names(&self) -> String {
+        self.steps
+            .iter()
+            .filter(|s| s.outcome.is_overrun())
+            .map(|s| s.name)
+            .collect::<Vec<_>>()
+            .join(",")
+    }
+}
+
+/// Outcome of a step that did not return in time: `OutOfBudget` when what
+/// was left of the overall budget, not the step's own limit, set the cut-off.
+pub fn overrun_outcome(own_limit: Duration, budget_left: Duration) -> StepOutcome {
+    if budget_left < own_limit {
+        StepOutcome::OutOfBudget
+    } else {
+        StepOutcome::TimedOut
+    }
 }
 
 /// Run `fut` under the step limit and record the result.
 async fn run_step<F>(
     report: &mut TeardownReport,
     name: &'static str,
-    limit: Duration,
+    own_limit: Duration,
     deadline: Instant,
     fut: F,
 ) where
     F: std::future::Future<Output = StepOutcome>,
 {
     let started = Instant::now();
-    let limit = step_limit(limit, deadline, started);
-    let outcome = if limit.is_zero() {
-        StepOutcome::TimedOut
+    let budget_left = deadline.saturating_duration_since(started);
+    let limit = step_limit(own_limit, deadline, started);
+    let finished = if limit.is_zero() {
+        None
     } else {
-        tokio::time::timeout(limit, fut)
-            .await
-            .unwrap_or(StepOutcome::TimedOut)
+        tokio::time::timeout(limit, fut).await.ok()
     };
     let elapsed = started.elapsed();
-    if outcome == StepOutcome::TimedOut {
-        report.overran = true;
-        warn!(
-            "teardown step {name} did not finish within {}ms",
-            limit.as_millis()
-        );
-    } else {
-        debug!(
+    let outcome = finished.unwrap_or_else(|| overrun_outcome(own_limit, budget_left));
+    match outcome {
+        StepOutcome::TimedOut => warn!(
+            "teardown step {name} hit its own {}ms limit; moving on",
+            own_limit.as_millis()
+        ),
+        StepOutcome::OutOfBudget => warn!(
+            "teardown step {name} cut off by the overall budget ({}ms of its own {}ms limit were left)",
+            limit.as_millis(),
+            own_limit.as_millis()
+        ),
+        StepOutcome::Done | StepOutcome::Skipped => debug!(
             "teardown step {name}: {outcome:?} in {}ms",
             elapsed.as_millis()
-        );
+        ),
+    }
+    if outcome.is_overrun() {
+        report.overran = true;
+    }
+    if outcome == StepOutcome::OutOfBudget {
+        report.budget_exhausted = true;
     }
     report.steps.push(StepReport {
         name,
@@ -396,12 +459,30 @@ async fn teardown(app: &tauri::AppHandle, reason: &str, budget: TeardownBudget) 
     report.elapsed = started.elapsed();
     if report.elapsed > budget.overall {
         report.overran = true;
+        report.budget_exhausted = true;
     }
-    if report.overran {
+    log_teardown_result(&report, budget.overall);
+    report
+}
+
+/// The teardown's closing log line. A step that used up its own limit and
+/// a teardown that ran out of its overall budget read differently, so the
+/// log says which limit was hit.
+fn log_teardown_result(report: &TeardownReport, overall: Duration) {
+    if report.budget_exhausted {
         warn!(
-            "pre-exit teardown overran its {}s budget after {}ms: {}",
-            budget.overall.as_secs(),
+            "pre-exit teardown ran out of its {}s overall budget after {}ms (cut off: {}; over their own limit: {}): {}",
+            overall.as_secs(),
             report.elapsed.as_millis(),
+            report.names_with(StepOutcome::OutOfBudget),
+            report.names_with(StepOutcome::TimedOut),
+            report.summary()
+        );
+    } else if report.overran {
+        warn!(
+            "pre-exit teardown finished in {}ms; over their own limit: {}: {}",
+            report.elapsed.as_millis(),
+            report.names_with(StepOutcome::TimedOut),
             report.summary()
         );
     } else {
@@ -411,7 +492,6 @@ async fn teardown(app: &tauri::AppHandle, reason: &str, budget: TeardownBudget) 
             report.summary()
         );
     }
-    report
 }
 
 /// Starts a thread that ends the process if the teardown has not finished by
@@ -467,10 +547,12 @@ pub fn hard_exit(code: i32) -> ! {
     std::process::exit(code)
 }
 
-/// Leave after a finished teardown. On Unix `_exit` (see [`hard_exit`]). On
-/// Windows `app.exit` lets Tauri run its own cleanup, with a guard that ends
-/// the process if that takes longer than a few seconds.
+/// Leave after a teardown that stopped capture and the engine. On Unix
+/// `_exit` (see [`hard_exit`]). On Windows `app.exit` lets Tauri run its own
+/// cleanup (the tray icon included), with a guard that ends the process if
+/// that takes longer than a few seconds.
 fn exit_after_teardown(app: &tauri::AppHandle, code: i32) {
+    info!("leaving after teardown with status {code}");
     #[cfg(unix)]
     {
         let _ = app;
@@ -486,6 +568,19 @@ fn exit_after_teardown(app: &tauri::AppHandle, code: i32) {
                 hard_exit(code);
             });
         app.exit(code);
+    }
+}
+
+/// Remove the tray icon (and Tauri's other per-process resources) before a
+/// forced exit, if the main thread answers in time. Windows otherwise keeps a
+/// dead icon in the notification area until the mouse passes over it.
+async fn release_tray_before_forced_exit(app: &tauri::AppHandle) {
+    let handle = app.clone();
+    if !on_main_thread(app, MAIN_THREAD_WAIT, move || handle.cleanup_before_exit()).await {
+        warn!(
+            "main thread did not release the tray icon within {}s",
+            MAIN_THREAD_WAIT.as_secs()
+        );
     }
 }
 
@@ -505,7 +600,26 @@ pub fn request_quit(app: tauri::AppHandle, source: &'static str) {
     tauri::async_runtime::spawn(async move {
         let report = teardown(&app, source, budget).await;
         mark_finished();
-        exit_after_teardown(&app, if report.overran { 1 } else { 0 });
+        let severity = TeardownSeverity::of(Some(&report));
+        match quit_exit(severity) {
+            QuitExit::Normal => {
+                if severity == TeardownSeverity::SlowCleanup {
+                    warn!(
+                        "quit: cleanup ran late ({}); capture and engine are stopped, leaving normally",
+                        report.overrun_names()
+                    );
+                }
+                exit_after_teardown(&app, QuitExit::Normal.status());
+            }
+            QuitExit::Forced => {
+                error!(
+                    "quit: capture or engine did not stop in time ({}); forcing exit",
+                    report.overrun_names()
+                );
+                release_tray_before_forced_exit(&app).await;
+                hard_exit(QuitExit::Forced.status());
+            }
+        }
     });
 }
 
@@ -514,38 +628,92 @@ pub fn request_quit(app: tauri::AppHandle, source: &'static str) {
 /// live native work (the ggml Metal abort), so the process ends at once.
 const CRITICAL_STEPS: [&str; 2] = ["capture", "engine"];
 
+/// What a finished teardown means for leaving the process.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TeardownSeverity {
+    /// Every step finished (or had nothing to do) in time.
+    Clean,
+    /// Capture and the engine stopped; only a later step (`http_drain`,
+    /// `sqlite_pools`, `pi`) ran late, or the whole run went a little over
+    /// the budget. A database handle or Pi session still open is released
+    /// by the OS when the process ends, so this is logged, not acted on.
+    SlowCleanup,
+    /// Capture or the engine did not stop in time, or the teardown thread
+    /// panicked: native capture or audio work may still be running.
+    Critical,
+}
+
+impl TeardownSeverity {
+    /// `report` is `None` when the teardown thread panicked.
+    pub fn of(report: Option<&TeardownReport>) -> Self {
+        let Some(report) = report else {
+            return TeardownSeverity::Critical;
+        };
+        let critical = report
+            .steps
+            .iter()
+            .any(|s| s.outcome.is_overrun() && CRITICAL_STEPS.contains(&s.name));
+        if critical {
+            TeardownSeverity::Critical
+        } else if report.overran || report.budget_exhausted {
+            TeardownSeverity::SlowCleanup
+        } else {
+            TeardownSeverity::Clean
+        }
+    }
+}
+
+/// How a tray quit leaves once its teardown is over.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum QuitExit {
+    /// Leave through Tauri (`app.exit`; `_exit` on Unix) with status 0.
+    Normal,
+    /// Release the tray icon if the main thread answers, then end the
+    /// process at once with status 1.
+    Forced,
+}
+
+impl QuitExit {
+    pub fn status(self) -> i32 {
+        match self {
+            QuitExit::Normal => 0,
+            QuitExit::Forced => 1,
+        }
+    }
+}
+
+/// Pure decision behind `request_quit`: only a capture or engine overrun is
+/// worth a forced exit.
+pub fn quit_exit(severity: TeardownSeverity) -> QuitExit {
+    match severity {
+        TeardownSeverity::Clean | TeardownSeverity::SlowCleanup => QuitExit::Normal,
+        TeardownSeverity::Critical => QuitExit::Forced,
+    }
+}
+
 /// What `on_run_exit` does once the teardown is over.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ExitFollowUp {
-    /// Return to Tauri: it finishes its cleanup and, when `app.restart()`
-    /// is pending, starts the replacement.
+    /// Return to Tauri: it finishes its cleanup (tray icon included), exits
+    /// with the status it was asked for and, when `app.restart()` is
+    /// pending, starts the replacement.
     Return,
-    /// End the process now.
+    /// Release the tray icon, then end the process now.
     ForceExit,
-    /// Start the replacement a pending restart would have started, then end
-    /// the process now.
+    /// Release the tray icon, start the replacement a pending restart would
+    /// have started, then end the process now.
     ReplaceThenForceExit,
 }
 
 /// Pure decision behind `on_run_exit`. `report` is `None` when the teardown
 /// thread panicked, which counts as a critical overrun. A slow HTTP drain,
-/// pool close or Pi stop does not justify killing a pending restart: those
-/// are logged and Tauri is left to finish.
+/// pool close or Pi stop is logged and Tauri is left to finish, restart or
+/// not; only a capture or engine overrun ends the process here.
 pub fn exit_follow_up(report: Option<&TeardownReport>, restart_pending: bool) -> ExitFollowUp {
-    let (overran, critical) = match report {
-        None => (true, true),
-        Some(r) => (
-            r.overran,
-            r.steps
-                .iter()
-                .any(|s| s.outcome == StepOutcome::TimedOut && CRITICAL_STEPS.contains(&s.name)),
-        ),
-    };
-    match (overran, critical, restart_pending) {
-        (false, _, _) => ExitFollowUp::Return,
-        (true, _, false) => ExitFollowUp::ForceExit,
-        (true, true, true) => ExitFollowUp::ReplaceThenForceExit,
-        (true, false, true) => ExitFollowUp::Return,
+    match (TeardownSeverity::of(report), restart_pending) {
+        (TeardownSeverity::Clean | TeardownSeverity::SlowCleanup, _) => ExitFollowUp::Return,
+        (TeardownSeverity::Critical, false) => ExitFollowUp::ForceExit,
+        (TeardownSeverity::Critical, true) => ExitFollowUp::ReplaceThenForceExit,
     }
 }
 
@@ -600,19 +768,29 @@ pub fn on_run_exit(app: &tauri::AppHandle) {
         error!("exit teardown thread panicked");
     }
     let pending = restart_pending();
+    let overruns = report
+        .as_ref()
+        .map_or_else(|| "teardown thread".to_string(), |r| r.overrun_names());
     match exit_follow_up(report.as_ref(), pending) {
         ExitFollowUp::Return => {
             if report.as_ref().map_or(false, |r| r.overran) {
-                warn!("exit teardown overran outside capture and engine; letting Tauri finish the pending restart");
+                warn!(
+                    "exit: cleanup ran late ({overruns}); capture and engine are stopped, leaving through Tauri{}",
+                    if pending { " (app restart pending)" } else { "" }
+                );
             }
         }
-        ExitFollowUp::ForceExit => hard_exit(1),
+        // RunEvent::Exit runs on the main thread, so the tray icon and
+        // window resources can be released here, as Tauri itself would. The
+        // single-instance plugin already released its lock in its own Exit
+        // handler, which runs before this one.
+        ExitFollowUp::ForceExit => {
+            error!("exit: capture or engine did not stop in time ({overruns}); forcing exit");
+            app.cleanup_before_exit();
+            hard_exit(1);
+        }
         ExitFollowUp::ReplaceThenForceExit => {
-            warn!("exit teardown overran in capture or engine while an app restart is pending; starting the replacement before forcing exit");
-            // RunEvent::Exit runs on the main thread, so this is where
-            // Tauri itself would release the tray icon and window resources.
-            // The single-instance plugin already released its lock in its
-            // own Exit handler, which runs before this one.
+            error!("exit: capture or engine did not stop in time ({overruns}) while an app restart is pending; starting the replacement before forcing exit");
             app.cleanup_before_exit();
             spawn_pending_restart("exit teardown overran");
             hard_exit(1);
@@ -656,15 +834,34 @@ fn home_window_visible(app: &tauri::AppHandle) -> bool {
 
 static RELAUNCH_HOME_VISIBLE: std::sync::OnceLock<Option<bool>> = std::sync::OnceLock::new();
 
-/// The `SCREENPIPE_RELAUNCH_HOME_VISIBLE` this process was started with
-/// (`None` when it is not a safe-relaunch replacement). The first call reads
-/// the variable and removes it from the environment, so nothing this process
-/// starts later (Tauri's `restart()`, the update installer's relaunch, the
-/// CLI) inherits a stale relaunch flag. Later calls return the same answer.
+/// Read `SCREENPIPE_RELAUNCH_HOME_VISIBLE`, remove it from the environment
+/// and keep the answer for [`relaunch_home_visible`]. Removing it means
+/// nothing this process starts later (Tauri's `restart()`, the update
+/// installer's relaunch, the CLI) inherits a stale relaunch flag.
+///
+/// Call it once, as the first statement of `main`, before any thread or
+/// async runtime exists: changing the environment while another thread may
+/// read it (C `getenv`, in a library or a runtime worker) is undefined
+/// behaviour on Linux and macOS. Later calls change nothing.
+pub fn capture_relaunch_flag() {
+    capture_home_visible_flag(
+        &RELAUNCH_HOME_VISIBLE,
+        screenpipe_core::env::SCREENPIPE_RELAUNCH_HOME_VISIBLE,
+    );
+}
+
+/// The relaunch flag this process was started with, as captured by
+/// [`capture_relaunch_flag`]. `None` when this is not a safe-relaunch
+/// replacement (or the flag was never captured). Never touches the
+/// environment, so it is safe from any thread.
 pub fn relaunch_home_visible() -> Option<bool> {
-    *RELAUNCH_HOME_VISIBLE.get_or_init(|| {
-        take_home_visible_flag(screenpipe_core::env::SCREENPIPE_RELAUNCH_HOME_VISIBLE)
-    })
+    RELAUNCH_HOME_VISIBLE.get().copied().flatten()
+}
+
+/// Fill `cell` from `key` the first time; later calls keep the first answer
+/// and leave the environment alone.
+fn capture_home_visible_flag(cell: &std::sync::OnceLock<Option<bool>>, key: &str) -> Option<bool> {
+    *cell.get_or_init(|| take_home_visible_flag(key))
 }
 
 /// Read a relaunch flag and remove it from the environment.
@@ -677,7 +874,8 @@ fn take_home_visible_flag(key: &str) -> Option<bool> {
 }
 
 /// Start-up half of the relaunch: called once the event loop is ready. When
-/// the previous instance had Home closed, close it here too.
+/// the previous instance had Home closed, close it here too. Uses the flag
+/// `main` captured; the environment is not read again here.
 pub fn on_ready(app: &tauri::AppHandle) {
     match relaunch_home_visible() {
         None => {}
@@ -1023,7 +1221,7 @@ mod tests {
     #[tokio::test]
     async fn steps_that_overrun_are_cut_off_and_reported() {
         let start = Instant::now();
-        let deadline = start + Duration::from_millis(300);
+        let deadline = start + Duration::from_millis(400);
         let mut report = TeardownReport::default();
         run_step(
             &mut report,
@@ -1033,6 +1231,21 @@ mod tests {
             async { StepOutcome::Done },
         )
         .await;
+        // Its own 50 ms limit runs out long before the overall budget.
+        run_step(
+            &mut report,
+            "slow",
+            Duration::from_millis(50),
+            deadline,
+            async {
+                tokio::time::sleep(Duration::from_secs(60)).await;
+                StepOutcome::Done
+            },
+        )
+        .await;
+        assert!(report.overran);
+        assert!(!report.budget_exhausted, "only a step limit was hit so far");
+        // Its own limit is longer than what is left of the budget.
         run_step(
             &mut report,
             "stuck",
@@ -1054,15 +1267,36 @@ mod tests {
         .await;
         assert!(start.elapsed() < Duration::from_secs(2));
         assert!(report.overran);
+        assert!(report.budget_exhausted);
         let outcomes: Vec<_> = report.steps.iter().map(|s| (s.name, s.outcome)).collect();
         assert_eq!(
             outcomes,
             vec![
                 ("fast", StepOutcome::Done),
-                ("stuck", StepOutcome::TimedOut),
-                ("late", StepOutcome::TimedOut),
+                ("slow", StepOutcome::TimedOut),
+                ("stuck", StepOutcome::OutOfBudget),
+                ("late", StepOutcome::OutOfBudget),
             ]
         );
+        assert_eq!(report.names_with(StepOutcome::TimedOut), "slow");
+        assert_eq!(report.names_with(StepOutcome::OutOfBudget), "stuck,late");
+        assert_eq!(report.names_with(StepOutcome::Skipped), "none");
+        assert_eq!(report.overrun_names(), "slow,stuck,late");
+    }
+
+    #[test]
+    fn an_overrun_names_the_limit_that_was_hit() {
+        let s = Duration::from_secs;
+        // Plenty of budget left: the step's own limit ended it.
+        assert_eq!(overrun_outcome(s(3), s(20)), StepOutcome::TimedOut);
+        assert_eq!(overrun_outcome(s(3), s(3)), StepOutcome::TimedOut);
+        // Less budget left than the step's own limit: the budget ended it.
+        assert_eq!(overrun_outcome(s(17), s(5)), StepOutcome::OutOfBudget);
+        assert_eq!(overrun_outcome(s(3), Duration::ZERO), StepOutcome::OutOfBudget);
+        assert!(StepOutcome::TimedOut.is_overrun());
+        assert!(StepOutcome::OutOfBudget.is_overrun());
+        assert!(!StepOutcome::Done.is_overrun());
+        assert!(!StepOutcome::Skipped.is_overrun());
     }
 
     #[test]
@@ -1097,6 +1331,25 @@ mod tests {
         assert_eq!(take_home_visible_flag(key), None);
     }
 
+    #[test]
+    fn the_relaunch_flag_is_captured_once_and_then_only_read_from_the_cache() {
+        let key = "FREENPIPE_TEST_W2_26_RELAUNCH_CAPTURE";
+        let cell = std::sync::OnceLock::new();
+        std::env::set_var(key, "true");
+        assert_eq!(capture_home_visible_flag(&cell, key), Some(true));
+        assert!(std::env::var_os(key).is_none());
+        // A second capture keeps the first answer and does not touch the
+        // environment again (no remove_var once threads may be running).
+        std::env::set_var(key, "false");
+        assert_eq!(capture_home_visible_flag(&cell, key), Some(true));
+        assert_eq!(std::env::var(key).as_deref(), Ok("false"));
+        std::env::remove_var(key);
+        // Without a capture there is no relaunch flag, whatever the
+        // environment says: the getter never reads it.
+        let empty: std::sync::OnceLock<Option<bool>> = std::sync::OnceLock::new();
+        assert_eq!(empty.get().copied().flatten(), None);
+    }
+
     fn report(steps: &[(&'static str, StepOutcome)]) -> TeardownReport {
         TeardownReport {
             steps: steps
@@ -1108,12 +1361,71 @@ mod tests {
                 })
                 .collect(),
             elapsed: Duration::ZERO,
-            overran: steps.iter().any(|(_, o)| *o == StepOutcome::TimedOut),
+            overran: steps.iter().any(|(_, o)| o.is_overrun()),
+            budget_exhausted: steps.iter().any(|(_, o)| *o == StepOutcome::OutOfBudget),
         }
     }
 
     #[test]
-    fn exit_follow_up_spares_a_pending_restart_unless_capture_or_engine_overran() {
+    fn only_capture_or_engine_overruns_are_critical() {
+        use StepOutcome::*;
+        use TeardownSeverity::*;
+        let clean = report(&[
+            ("capture", Done),
+            ("engine", Done),
+            ("http_drain", Done),
+            ("sqlite_pools", Skipped),
+            ("pi", Done),
+        ]);
+        assert_eq!(TeardownSeverity::of(Some(&clean)), Clean);
+        for slow in ["http_drain", "sqlite_pools", "pi"] {
+            for how in [TimedOut, OutOfBudget] {
+                let r = report(&[("capture", Done), ("engine", Done), (slow, how)]);
+                assert_eq!(TeardownSeverity::of(Some(&r)), SlowCleanup, "{slow} {how:?}");
+            }
+        }
+        for critical in ["capture", "engine"] {
+            for how in [TimedOut, OutOfBudget] {
+                let r = report(&[(critical, how), ("pi", Done)]);
+                assert_eq!(TeardownSeverity::of(Some(&r)), Critical, "{critical} {how:?}");
+            }
+        }
+        // A panicked teardown thread.
+        assert_eq!(TeardownSeverity::of(None), Critical);
+        // Overall budget blown by scheduling slack, no step overran.
+        let mut late = clean.clone();
+        late.budget_exhausted = true;
+        late.overran = true;
+        assert_eq!(TeardownSeverity::of(Some(&late)), SlowCleanup);
+    }
+
+    #[test]
+    fn a_tray_quit_leaves_normally_with_status_0_unless_capture_or_engine_overran() {
+        use StepOutcome::*;
+        // The ordinary quit after a pause/resume: the drain waits on a
+        // database handle a detached task still holds, and times out.
+        let drain_late = report(&[
+            ("capture", Done),
+            ("engine", Done),
+            ("http_drain", TimedOut),
+            ("sqlite_pools", Done),
+            ("pi", Done),
+        ]);
+        let exit = quit_exit(TeardownSeverity::of(Some(&drain_late)));
+        assert_eq!(exit, QuitExit::Normal);
+        assert_eq!(exit.status(), 0);
+        let clean = report(&[("capture", Done), ("engine", Done)]);
+        assert_eq!(quit_exit(TeardownSeverity::of(Some(&clean))), QuitExit::Normal);
+        for (critical, how) in [("capture", TimedOut), ("engine", OutOfBudget)] {
+            let r = report(&[(critical, how), ("http_drain", Done)]);
+            let exit = quit_exit(TeardownSeverity::of(Some(&r)));
+            assert_eq!(exit, QuitExit::Forced, "{critical}");
+            assert_eq!(exit.status(), 1);
+        }
+    }
+
+    #[test]
+    fn exit_follow_up_returns_to_tauri_unless_capture_or_engine_overran() {
         use ExitFollowUp::*;
         use StepOutcome::*;
         let clean = report(&[
@@ -1126,11 +1438,14 @@ mod tests {
         assert_eq!(exit_follow_up(Some(&clean), false), Return);
         assert_eq!(exit_follow_up(Some(&clean), true), Return);
 
-        // Slow HTTP drain, pools or Pi: log and let Tauri restart.
+        // Slow HTTP drain, pools or Pi: log and let Tauri finish (tray
+        // cleanup, its own exit status, a pending restart), never a hard exit.
         for slow in ["http_drain", "sqlite_pools", "pi"] {
-            let r = report(&[("capture", Done), ("engine", Done), (slow, TimedOut)]);
-            assert_eq!(exit_follow_up(Some(&r), true), Return, "{slow}");
-            assert_eq!(exit_follow_up(Some(&r), false), ForceExit, "{slow}");
+            for how in [TimedOut, OutOfBudget] {
+                let r = report(&[("capture", Done), ("engine", Done), (slow, how)]);
+                assert_eq!(exit_follow_up(Some(&r), true), Return, "{slow} {how:?}");
+                assert_eq!(exit_follow_up(Some(&r), false), Return, "{slow} {how:?}");
+            }
         }
 
         // Capture or engine still running: never return into C++ teardown,
@@ -1143,16 +1458,19 @@ mod tests {
                 "{critical}"
             );
             assert_eq!(exit_follow_up(Some(&r), false), ForceExit, "{critical}");
+            let cut = report(&[(critical, OutOfBudget)]);
+            assert_eq!(exit_follow_up(Some(&cut), false), ForceExit, "{critical}");
         }
 
         // A panicked teardown thread counts as a critical overrun.
         assert_eq!(exit_follow_up(None, true), ReplaceThenForceExit);
         assert_eq!(exit_follow_up(None, false), ForceExit);
 
-        // Overall budget blown without a timed-out step (scheduling delay).
+        // Overall budget blown without an overrun step (scheduling delay).
         let mut late = clean.clone();
         late.overran = true;
+        late.budget_exhausted = true;
         assert_eq!(exit_follow_up(Some(&late), true), Return);
-        assert_eq!(exit_follow_up(Some(&late), false), ForceExit);
+        assert_eq!(exit_follow_up(Some(&late), false), Return);
     }
 }
