@@ -34,6 +34,7 @@ import {
 	type NotificationPrefs,
 	type SidebarNavLayout,
 	type UpdateChannel as SchemaUpdateChannel,
+	type UrlRule,
 } from "@/lib/settings-schema";
 export type VadSensitivity = "low" | "medium" | "high";
 
@@ -211,7 +212,8 @@ export type Settings = SettingsStore & {
 	deviceId?: string;
 	updateChannel?: UpdateChannel;
 	chatHistory?: ChatHistoryStore;
-	ignoredUrls?: string[];
+	/** Website block list: legacy pattern strings and structured domain rules. */
+	ignoredUrls?: UrlRule[];
 	searchShortcut?: string;
 	lockVaultShortcut?: string;
 	/** When true, audio devices follow system default and auto-switch on changes */

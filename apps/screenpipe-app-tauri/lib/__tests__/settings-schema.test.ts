@@ -10,11 +10,14 @@ import {
   applySchemaV2Migrations,
   assertSavableSettings,
   defaultNotificationPrefs,
+  editUrlRules,
   effectiveAudioCaptureMode,
   normalizeUpdateChannel,
   settingsForSave,
   settingsV2Defaults,
   urlRulePattern,
+  urlRulePatterns,
+  type UrlRule,
 } from "../settings-schema";
 import {
   createDefaultSettingsObject,
@@ -233,6 +236,25 @@ describe("schema v2 helpers", () => {
     expect(
       urlRulePattern({ domain: "Mail.Example.com.", includeSubdomains: true, excludedSubdomains: [] }),
     ).toBe("mail.example.com");
+  });
+
+  test("a string editor keeps structured rules it did not touch", () => {
+    const stored: UrlRule[] = [
+      "bank.example",
+      { domain: "Mail.Example.com", includeSubdomains: true, excludedSubdomains: [] },
+    ];
+    expect(urlRulePatterns(stored)).toEqual(["bank.example", "mail.example.com"]);
+    expect(urlRulePatterns(undefined)).toEqual([]);
+
+    // Adding a pattern appends a string and keeps the domain rule as it was.
+    const added = editUrlRules(stored, ["bank.example", "mail.example.com", "shop.example"]);
+    expect(added).toEqual([stored[0], stored[1], "shop.example"]);
+
+    // Removing the structured rule drops it.
+    expect(editUrlRules(stored, ["bank.example"])).toEqual(["bank.example"]);
+
+    // Same patterns in another case: nothing to save.
+    expect(editUrlRules(stored, ["BANK.example", "mail.example.com"])).toBeNull();
   });
 
   test("a save keeps at least one AI preset", () => {

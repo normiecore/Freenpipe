@@ -46,6 +46,7 @@ import { useSqlAutocomplete } from "@/lib/hooks/use-sql-autocomplete";
 import { useInstalledApps } from "@/lib/hooks/use-installed-apps";
 import { commands } from "@/lib/utils/tauri";
 import { useAiGateway } from "@/lib/hooks/use-ai-gateway";
+import { editUrlRules, urlRulePatterns } from "@/lib/settings-schema";
 import posthog from "posthog-js";
 import {
   validateField,
@@ -678,29 +679,12 @@ export function PrivacySection() {
     }
   };
 
+  // The editor works on pattern strings; structured domain rules (written by
+  // newer stores) keep their shape unless the user removes them.
   const handleIgnoredUrlsChange = (values: string[]) => {
-    const currentUrls = settings.ignoredUrls || [];
-    const lowerCaseValues = values.map((v) => v.toLowerCase());
-    const currentLowerCase = currentUrls.map((v) => v.toLowerCase());
-    const addedValues = values.filter(
-      (v) => !currentLowerCase.includes(v.toLowerCase())
-    );
-    const removedValues = currentUrls.filter(
-      (v) => !lowerCaseValues.includes(v.toLowerCase())
-    );
-
-    if (addedValues.length > 0) {
-      const newValue = addedValues[0];
-      handleSettingsChange(
-        { ignoredUrls: [...currentUrls, newValue] },
-        true
-      );
-    } else if (removedValues.length > 0) {
-      const removedValue = removedValues[0];
-      handleSettingsChange(
-        { ignoredUrls: currentUrls.filter((u) => u !== removedValue) },
-        true
-      );
+    const next = editUrlRules(settings.ignoredUrls, values);
+    if (next) {
+      handleSettingsChange({ ignoredUrls: next }, true);
     }
   };
 
@@ -1365,15 +1349,15 @@ export function PrivacySection() {
               <MultiSelect
                 options={createUrlOptions(
                   urlItems || [],
-                  settings.ignoredUrls || []
+                  urlRulePatterns(settings.ignoredUrls)
                 )}
-                defaultValue={settings.ignoredUrls || []}
-                value={settings.ignoredUrls || []}
+                defaultValue={urlRulePatterns(settings.ignoredUrls)}
+                value={urlRulePatterns(settings.ignoredUrls)}
                 onValueChange={handleIgnoredUrlsChange}
                 placeholder="e.g. wellsfargo.com, chase.com..."
                 allowCustomValues={true}
               />
-              {(settings.ignoredUrls || []).some(
+              {urlRulePatterns(settings.ignoredUrls).some(
                 (url) =>
                   url.length < 5 ||
                   ["bank", "pay", "money", "finance"].includes(

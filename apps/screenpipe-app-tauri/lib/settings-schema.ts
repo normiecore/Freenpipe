@@ -18,6 +18,10 @@
  * dropped and the remote-control policy keys are kept but never read.
  */
 
+import type { DomainRule, UrlRule } from "./utils/tauri";
+
+export type { DomainRule, UrlRule };
+
 export type SettingsPlatformName = "windows" | "macos" | "linux" | string;
 
 // ── Value sets ───────────────────────────────────────────────────────────
@@ -75,17 +79,44 @@ export function aecSettingsFor(mode: AecMode, platform: SettingsPlatformName): A
 export type RecordingDetail = "auto" | "low_impact" | "balanced" | "more_detail";
 export type SemanticContextMode = "memory" | "computerUse" | "both";
 
-/** A structured website rule (`ignoredUrls` entries may also be strings). */
-export interface DomainRule {
-  domain: string;
-  includeSubdomains: boolean;
-  excludedSubdomains: string[];
-}
-export type UrlRule = string | DomainRule;
-
-/** A display/pattern string for one block-list entry. */
+/**
+ * A pattern string for one block-list entry (`ignoredUrls` holds legacy
+ * strings and structured domain rules side by side).
+ */
 export function urlRulePattern(rule: UrlRule): string {
   return typeof rule === "string" ? rule : rule.domain.trim().toLowerCase().replace(/\.$/, "");
+}
+
+/** Pattern strings for an editor that only works on strings. */
+export function urlRulePatterns(rules: readonly UrlRule[] | null | undefined): string[] {
+  return (rules ?? []).map(urlRulePattern);
+}
+
+/**
+ * Apply an edit made in a string-based editor to the stored block list.
+ * `values` is the full list of patterns the editor now shows. Patterns that
+ * are new are appended as strings; entries whose pattern is gone are
+ * removed, structured or not; the others keep their stored shape. Matching
+ * ignores case. Returns `null` when nothing changed.
+ */
+export function editUrlRules(
+  rules: readonly UrlRule[] | null | undefined,
+  values: string[],
+): UrlRule[] | null {
+  const current = [...(rules ?? [])];
+  const shown = new Set(values.map((v) => v.toLowerCase()));
+  const kept = current.filter((rule) => shown.has(urlRulePattern(rule).toLowerCase()));
+  const known = new Set(kept.map((rule) => urlRulePattern(rule).toLowerCase()));
+  const added: string[] = [];
+  for (const value of values) {
+    const key = value.toLowerCase();
+    if (!known.has(key)) {
+      known.add(key);
+      added.push(value);
+    }
+  }
+  if (added.length === 0 && kept.length === current.length) return null;
+  return [...kept, ...added];
 }
 
 export type ShortcutOverlayAnchor = "top-center" | "right-center" | "bottom-center" | "left-center";

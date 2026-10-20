@@ -153,6 +153,7 @@ import { useOverlayData } from "@/app/shortcut-reminder/use-overlay-data";
 import { useOpenAIModels } from "./hooks/use-openai-models";
 import { useTranscriptionDiagnostics } from "./hooks/use-transcription-diagnostics";
 import { useVoiceTraining } from "./hooks/use-voice-training";
+import { editUrlRules } from "@/lib/settings-schema";
 
 type PermissionsStatus = {
   screenRecording: string;
@@ -2301,36 +2302,12 @@ Your screen is a pipe. Everything you see, hear, and type flows through it. Free
     }
   };
 
+  // The editor works on pattern strings; structured domain rules (written by
+  // newer stores) keep their shape unless the user removes them.
   const handleIgnoredUrlsChange = (values: string[]) => {
-    const currentUrls = settings.ignoredUrls || [];
-    const lowerCaseValues = values.map((v) => v.toLowerCase());
-    const currentLowerCase = currentUrls.map((v) => v.toLowerCase());
-
-    // Find added values
-    const addedValues = values.filter(
-      (v) => !currentLowerCase.includes(v.toLowerCase())
-    );
-    // Find removed values
-    const removedValues = currentUrls.filter(
-      (v) => !lowerCaseValues.includes(v.toLowerCase())
-    );
-
-    if (addedValues.length > 0) {
-      const newValue = addedValues[0];
-      handleSettingsChange(
-        {
-          ignoredUrls: [...currentUrls, newValue],
-        },
-        true
-      );
-    } else if (removedValues.length > 0) {
-      const removedValue = removedValues[0];
-      handleSettingsChange(
-        {
-          ignoredUrls: currentUrls.filter((u) => u !== removedValue),
-        },
-        true
-      );
+    const next = editUrlRules(settings.ignoredUrls, values);
+    if (next) {
+      handleSettingsChange({ ignoredUrls: next }, true);
     }
   };
 
