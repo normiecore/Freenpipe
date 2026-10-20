@@ -11,23 +11,33 @@ use tokio::sync::Mutex;
 use tracing::{debug, info, warn};
 
 /// A download that retrying cannot fix: the server answered that the file
-/// does not exist at this URL (HTTP 404 or 410). Once a URL fails this way,
-/// waiters stop polling and no further attempt is made for it in this
-/// process, so a wrong or missing mirror costs one request instead of
-/// minutes of retries.
+/// does not exist at this URL (HTTP 404 or 410), or it served a file that
+/// does not match the pinned size and SHA-256 (`status` 0, `mismatch` set).
+/// Once a URL fails this way, waiters stop polling and no further attempt is
+/// made for it in this process, so a wrong or missing mirror costs one
+/// request instead of minutes of retries.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PermanentDownloadError {
     pub url: String,
     pub status: u16,
+    /// Why the served bytes were rejected (pinned downloads only).
+    pub mismatch: Option<String>,
 }
 
 impl std::fmt::Display for PermanentDownloadError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(
-            f,
-            "HTTP {} for {}: the file is not available at this address; not retrying",
-            self.status, self.url
-        )
+        match &self.mismatch {
+            Some(reason) => write!(
+                f,
+                "the file served by {} was rejected: {}; not retrying",
+                self.url, reason
+            ),
+            None => write!(
+                f,
+                "HTTP {} for {}: the file is not available at this address; not retrying",
+                self.status, self.url
+            ),
+        }
     }
 }
 
@@ -446,6 +456,7 @@ async fn download_model(
             return Err(anyhow::Error::new(PermanentDownloadError {
                 url: url.to_string(),
                 status: status.as_u16(),
+                mismatch: None,
             }));
         }
         let hint = match status.as_u16() {
@@ -500,9 +511,16 @@ async fn download_model(
         return Err(anyhow!("download returned empty body for {}", filename));
     }
     if let Some(expected) = expected {
-        expected
-            .check(&model_data)
-            .map_err(|e| anyhow!("downloaded {} from {} was rejected: {}", filename, url, e))?;
+        // Different bytes at a pinned address will not fix themselves, so
+        // this counts as permanent (no retries, waiters stop at once).
+        expected.check(&model_data).map_err(|e| {
+            anyhow::Error::new(PermanentDownloadError {
+                url: url.to_string(),
+                status: 0,
+                mismatch: Some(e.to_string()),
+            })
+            .context(format!("downloaded {filename} was rejected"))
+        })?;
     }
 
     tokio::fs::create_dir_all(cache_dir).await?;
@@ -806,10 +824,8 @@ mod tests {
     #[tokio::test]
     #[ignore]
     async fn integration_real_silero_vad_download() {
-        // Use real Silero VAD URL (smaller/faster than pyannote models)
-        let url =
-            "https://github.com/snakers4/silero-vad/raw/master/src/silero_vad/data/silero_vad.onnx"
-                .to_string();
+        // The pinned Silero VAD URL (smaller/faster than pyannote models)
+        let url = crate::vad::silero::MODEL_URL.to_string();
         let filename = "test_silero_vad_integration.onnx".to_string();
 
         let dir = tempdir().unwrap();
@@ -821,7 +837,8 @@ mod tests {
         let flag = INTEG_FLAG.get_or_init(|| AtomicBool::new(false));
         let lock = INTEG_LOCK.get_or_init(|| Mutex::const_new(None));
 
-        let downloader = ModelDownloader::new(url, filename.clone(), cache_dir.clone(), flag, lock);
+        let downloader = ModelDownloader::new(url, filename.clone(), cache_dir.clone(), flag, lock)
+            .with_expected(crate::vad::silero::MODEL_PIN);
 
         // First call: download from URL
         let start = std::time::Instant::now();
@@ -1141,8 +1158,40 @@ mod tests {
         .await
         .unwrap_err();
         assert!(err.to_string().contains("rejected"), "{err}");
+        let failure = permanent_failure(&err).expect("a pin mismatch is permanent");
+        assert_eq!(failure.status, 0);
+        assert!(failure.mismatch.as_deref().unwrap().contains("sha256"));
         assert!(!dir.path().join("bad.onnx").exists());
         assert!(!dir.path().join("bad.onnx.downloading").exists());
         assert!(LOCK_BAD.lock().await.is_none());
+    }
+
+    /// A waiter on a pinned download that keeps serving the wrong bytes gets
+    /// the rejection at once instead of polling until the timeout.
+    #[tokio::test]
+    async fn pinned_mismatch_stops_waiters_without_retries() {
+        static FLAG: AtomicBool = AtomicBool::new(false);
+        static LOCK: Mutex<Option<PathBuf>> = Mutex::const_new(None);
+        let dir = tempdir().unwrap();
+        let base = serve_body(b"xyz").await;
+        let url = format!("{base}/pinned/m.onnx");
+        let downloader = ModelDownloader::new(
+            url.clone(),
+            "m.onnx".to_string(),
+            dir.path().to_path_buf(),
+            &FLAG,
+            &LOCK,
+        )
+        .with_expected(ABC);
+        let started = std::time::Instant::now();
+        let err = downloader.ensure_model_available().await.unwrap_err();
+        assert!(
+            started.elapsed() < std::time::Duration::from_secs(10),
+            "took {:?}",
+            started.elapsed()
+        );
+        assert!(permanent_failure(&err).is_some(), "{err:#}");
+        assert!(recorded_permanent_failure(&url).is_some());
+        assert!(!dir.path().join("m.onnx").exists());
     }
 }

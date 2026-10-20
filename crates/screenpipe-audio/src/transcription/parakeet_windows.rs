@@ -156,11 +156,15 @@ pub fn directml_latch() -> &'static AtomicBool {
 }
 
 /// Pure decision step. `built_with_directml` is whether this binary has the
-/// DirectML provider at all (the `directml` feature on Windows).
+/// DirectML provider at all (the `directml` feature on Windows);
+/// `library_check` says whether `DirectML.dll` can be loaded (ONNX Runtime
+/// loads it lazily, the first time the provider is used, so a missing DLL
+/// has to be caught before choosing it).
 pub fn decide_target(
     switch: DirectMlSwitch,
     built_with_directml: bool,
     disabled_after_failure: bool,
+    library_check: impl FnOnce() -> Result<(), String>,
     probe: impl FnOnce() -> Result<Vec<AdapterInfo>, String>,
 ) -> TargetDecision {
     let cpu = |reason: String| TargetDecision {
@@ -177,6 +181,9 @@ pub fn decide_target(
     }
     if disabled_after_failure {
         return cpu("DirectML failed earlier in this process; using CPU".to_string());
+    }
+    if let Err(e) = library_check() {
+        return cpu(format!("{e}; using CPU"));
     }
     let adapters = match probe() {
         Ok(adapters) => adapters,
@@ -222,8 +229,39 @@ pub fn decide_target_for_this_process() -> TargetDecision {
         directml_switch_from_env(),
         cfg!(all(windows, feature = "directml")),
         directml_latch().load(Ordering::SeqCst),
+        directml_library_check,
         probe_adapters,
     )
+}
+
+/// Whether `DirectML.dll` can be loaded from the application directory or
+/// System32 (the places ONNX Runtime's delay-load finds it).
+#[cfg(windows)]
+pub fn directml_library_check() -> Result<(), String> {
+    use windows::core::w;
+    use windows::Win32::Foundation::{FreeLibrary, HANDLE};
+    use windows::Win32::System::LibraryLoader::{LoadLibraryExW, LOAD_LIBRARY_SEARCH_DEFAULT_DIRS};
+
+    // SAFETY: loads and immediately releases a system library by name; no
+    // code from it is called here.
+    unsafe {
+        match LoadLibraryExW(
+            w!("DirectML.dll"),
+            HANDLE::default(),
+            LOAD_LIBRARY_SEARCH_DEFAULT_DIRS,
+        ) {
+            Ok(module) => {
+                let _ = FreeLibrary(module);
+                Ok(())
+            }
+            Err(e) => Err(format!("DirectML.dll could not be loaded ({e})")),
+        }
+    }
+}
+
+#[cfg(not(windows))]
+pub fn directml_library_check() -> Result<(), String> {
+    Err("DirectML needs Windows".to_string())
 }
 
 /// Enumerate DXGI adapters and run the Direct3D 12 checks on each.
@@ -617,9 +655,26 @@ mod tests {
         assert_eq!(select_adapter(&[igpu.clone()]), Some(&igpu));
     }
 
+    fn lib_ok() -> Result<(), String> {
+        Ok(())
+    }
+
+    #[test]
+    fn missing_directml_library_means_cpu_without_probing() {
+        let decision = decide_target(
+            DirectMlSwitch::On,
+            true,
+            false,
+            || Err("DirectML.dll could not be loaded (not found)".to_string()),
+            || panic!("no adapter probe without DirectML.dll"),
+        );
+        assert_eq!(decision.target, OnnxTarget::Cpu);
+        assert!(decision.reason.contains("DirectML.dll could not be loaded"));
+    }
+
     #[test]
     fn disabled_switch_forces_cpu_without_probing() {
-        let decision = decide_target(DirectMlSwitch::Off, true, false, || {
+        let decision = decide_target(DirectMlSwitch::Off, true, false, lib_ok, || {
             panic!("no probe when SCREENPIPE_DIRECTML disables DirectML")
         });
         assert_eq!(decision.target, OnnxTarget::Cpu);
@@ -631,22 +686,22 @@ mod tests {
     #[test]
     fn decision_paths() {
         let gpu = || Ok(vec![adapter(1, "Radeon RX 7600", 8192, capable(false))]);
-        let auto = decide_target(DirectMlSwitch::Auto, true, false, gpu);
+        let auto = decide_target(DirectMlSwitch::Auto, true, false, lib_ok, gpu);
         assert_eq!(auto.target, OnnxTarget::DirectMl { device_id: 1 });
         assert!(auto.reason.contains("ordinal 1"));
         assert!(auto.reason.contains("8192 MiB"));
         assert!(auto.reason.contains("UMA=false"));
 
-        let on = decide_target(DirectMlSwitch::On, true, false, gpu);
+        let on = decide_target(DirectMlSwitch::On, true, false, lib_ok, gpu);
         assert_eq!(on.target, OnnxTarget::DirectMl { device_id: 1 });
 
-        let not_built = decide_target(DirectMlSwitch::On, false, false, gpu);
+        let not_built = decide_target(DirectMlSwitch::On, false, false, lib_ok, gpu);
         assert_eq!(not_built.target, OnnxTarget::Cpu);
 
-        let latched = decide_target(DirectMlSwitch::Auto, true, true, gpu);
+        let latched = decide_target(DirectMlSwitch::Auto, true, true, lib_ok, gpu);
         assert_eq!(latched.target, OnnxTarget::Cpu);
 
-        let enum_failed = decide_target(DirectMlSwitch::Auto, true, false, || {
+        let enum_failed = decide_target(DirectMlSwitch::Auto, true, false, lib_ok, || {
             Err("CreateDXGIFactory1: E_FAIL".to_string())
         });
         assert_eq!(enum_failed.target, OnnxTarget::Cpu);
@@ -654,7 +709,7 @@ mod tests {
             .reason
             .contains("DXGI adapter enumeration failed"));
 
-        let none = decide_target(DirectMlSwitch::Auto, true, false, || Ok(Vec::new()));
+        let none = decide_target(DirectMlSwitch::Auto, true, false, lib_ok, || Ok(Vec::new()));
         assert_eq!(none.target, OnnxTarget::Cpu);
         assert!(none.reason.contains("no hardware adapter"));
     }

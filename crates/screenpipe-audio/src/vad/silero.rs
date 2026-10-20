@@ -5,16 +5,65 @@
 use anyhow;
 use dirs;
 use std::collections::VecDeque;
-use std::path::PathBuf;
-use std::sync::atomic::Ordering;
+use std::path::{Path, PathBuf};
 use tracing::{debug, info, warn};
 use vad_rs::{Vad, VadStatus};
 
+use crate::models::download::{find_local_model, install_dirs, ExpectedFile, ModelOrigin};
+use crate::models::ModelDownloader;
 use crate::vad::FRAME_HISTORY;
 
 use super::{
     VadEngine, DOWNLOADING, MODEL_PATH, SILENCE_THRESHOLD, SPEECH_FRAME_THRESHOLD, SPEECH_THRESHOLD,
 };
+
+/// File name of the model, both in the install dir and in the cache.
+pub const MODEL_FILENAME: &str = "silero_vad_v5.onnx";
+
+/// Directory under an install root that holds the shipped copy
+/// (`<install>/vad/silero_vad_v5.onnx`).
+pub const INSTALL_SUBDIR: &str = "vad";
+
+/// Silero VAD v5.1.2 from snakers4/silero-vad (MIT), addressed by the commit
+/// the `v5.1.2` tag names, so the file behind it cannot change.
+pub const MODEL_URL: &str = "https://raw.githubusercontent.com/snakers4/silero-vad/6478567951ae5c9979ad7b234185b5515f4be7a1/src/silero_vad/data/silero_vad.onnx";
+
+/// Size and SHA-256 of the file at [`MODEL_URL`]. Downloads must match it;
+/// an installed copy must have this size.
+pub const MODEL_PIN: ExpectedFile = ExpectedFile {
+    size: 2_327_524,
+    sha256: "2623a2953f6ff3d2c1e61740c6cdb7168133479b267dfef114a4a3cc5bdd788f",
+};
+
+/// Model lookup without network, first hit wins:
+///
+/// 1. a copy installed with the app (`vad/` under the executable's directory,
+///    then the macOS `Resources` and Linux package resource directories),
+///    accepted only at the pinned size;
+/// 2. the download cache (`<cache>/screenpipe/vad`), as any non-empty file:
+///    a copy screenpipe downloaded earlier is used as it is.
+pub fn find_installed_or_cached(
+    install_dirs: &[PathBuf],
+    cache_dir: &Path,
+) -> Option<(PathBuf, ModelOrigin)> {
+    find_local_model(
+        MODEL_FILENAME,
+        install_dirs,
+        cache_dir,
+        |path| MODEL_PIN.has_size(path),
+        is_non_empty_file,
+    )
+}
+
+fn is_non_empty_file(path: &Path) -> bool {
+    std::fs::metadata(path)
+        .map(|m| m.is_file() && m.len() > 0)
+        .unwrap_or(false)
+}
+
+/// Set when the installed copy failed to load, so later lookups skip it.
+static INSTALLED_REJECTED: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
 
 pub struct SileroVad {
     vad: Vad,
@@ -60,11 +109,15 @@ impl SileroVad {
     pub async fn new() -> anyhow::Result<Self> {
         debug!("Initializing SileroVad...");
         let model_path = Self::get_or_download_model().await?;
-        debug!("SileroVad Model downloaded to: {:?}", model_path);
-        let vad = Vad::new(model_path, 16000).map_err(|e| {
-            debug!("SileroVad Error creating Vad: {}", e);
-            anyhow::anyhow!("Vad creation error: {}", e)
-        })?;
+        debug!("SileroVad model at: {:?}", model_path);
+        let vad = match Vad::new(&model_path, 16000) {
+            Ok(vad) => vad,
+            Err(e) => {
+                debug!("SileroVad Error creating Vad: {}", e);
+                Self::forget_unusable_model(&model_path).await;
+                return Err(anyhow::anyhow!("Vad creation error: {}", e));
+            }
+        };
         debug!("SileroVad initialized successfully");
         Ok(Self {
             vad,
@@ -73,82 +126,71 @@ impl SileroVad {
         })
     }
 
+    /// A model that failed to load is not used again in this process. A
+    /// cached download is deleted so the next attempt fetches the pinned
+    /// file; an installed copy is left alone (the install dir may be
+    /// read-only), and the cache is tried next time.
+    async fn forget_unusable_model(path: &Path) {
+        let in_cache = Self::get_cache_dir()
+            .map(|cache| path.starts_with(cache))
+            .unwrap_or(false);
+        if in_cache {
+            warn!("silero vad model at {:?} could not be loaded; deleting it", path);
+            let _ = tokio::fs::remove_file(path).await;
+        } else {
+            warn!(
+                "installed silero vad model at {:?} could not be loaded; using the cache instead",
+                path
+            );
+            INSTALLED_REJECTED.store(true, std::sync::atomic::Ordering::SeqCst);
+        }
+        *MODEL_PATH.lock().await = None;
+    }
+
     async fn get_or_download_model() -> anyhow::Result<PathBuf> {
         // Check in-memory cache
         {
-            let cached = MODEL_PATH.lock().await;
+            let mut cached = MODEL_PATH.lock().await;
             if let Some(path) = cached.as_ref() {
-                return Ok(path.clone());
+                if path.exists() {
+                    return Ok(path.clone());
+                }
+                *cached = None;
             }
         }
 
         let cache_dir = Self::get_cache_dir()?;
-        // Use v5 model filename to differentiate from old cached model
-        let path = cache_dir.join("silero_vad_v5.onnx");
-        let tmp_path = cache_dir.join("silero_vad_v5.onnx.downloading");
-
-        // Clean up incomplete downloads from previous interrupted runs
-        if tmp_path.exists() {
-            debug!("removing incomplete silero vad download: {:?}", tmp_path);
-            let _ = tokio::fs::remove_file(&tmp_path).await;
-        }
-
-        if path.exists() {
-            let mut cached = MODEL_PATH.lock().await;
-            *cached = Some(path.clone());
+        let installed = if INSTALLED_REJECTED.load(std::sync::atomic::Ordering::SeqCst) {
+            Vec::new()
+        } else {
+            install_dirs(INSTALL_SUBDIR)
+        };
+        if let Some((path, origin)) = find_installed_or_cached(&installed, &cache_dir) {
+            if origin == ModelOrigin::Installed {
+                info!("using installed silero vad model at {:?}", path);
+            }
+            *MODEL_PATH.lock().await = Some(path.clone());
             return Ok(path);
         }
 
-        if DOWNLOADING
-            .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
-            .is_err()
-        {
-            return Err(anyhow::anyhow!(
-                "silero vad model download already in progress"
-            ));
+        // An empty file left by an old interrupted write is not a model.
+        let cached = cache_dir.join(MODEL_FILENAME);
+        if cached.is_file() {
+            let _ = tokio::fs::remove_file(&cached).await;
         }
 
-        tokio::spawn(async move {
-            if let Err(e) = Self::download_model().await {
-                warn!("error downloading silero vad model: {}", e);
-            }
-            DOWNLOADING.store(false, Ordering::SeqCst);
-        });
-
-        Err(anyhow::anyhow!(
-            "silero vad model not available yet; download started in background"
-        ))
-    }
-
-    async fn download_model() -> anyhow::Result<()> {
-        info!("downloading Silero VAD v5 model...");
-        // Silero VAD v5: 3x faster, 6000+ languages, better accuracy
-        // https://github.com/snakers4/silero-vad/discussions/471
-        let url =
-            "https://github.com/snakers4/silero-vad/raw/master/src/silero_vad/data/silero_vad.onnx";
-        let response = reqwest::get(url).await?;
-        let model_data = response.bytes().await?;
-
-        let cache_dir = Self::get_cache_dir()?;
-        tokio::fs::create_dir_all(&cache_dir).await?;
-
-        // Atomic write: download to temp file, then rename.
-        // If process is killed mid-write, the temp file is cleaned up on next launch.
-        let tmp_path = cache_dir.join("silero_vad_v5.onnx.downloading");
-        let final_path = cache_dir.join("silero_vad_v5.onnx");
-
-        let mut file = tokio::fs::File::create(&tmp_path).await?;
-        tokio::io::AsyncWriteExt::write_all(&mut file, &model_data).await?;
-        tokio::io::AsyncWriteExt::flush(&mut file).await?;
-        drop(file);
-
-        tokio::fs::rename(&tmp_path, &final_path).await?;
-        info!(
-            "Silero VAD v5 model downloaded and saved to: {:?}",
-            final_path
-        );
-
-        Ok(())
+        // Not installed, not cached: download the pinned file in the
+        // background (retries, `.downloading` temp file, atomic rename).
+        ModelDownloader::new(
+            MODEL_URL.to_string(),
+            MODEL_FILENAME.to_string(),
+            cache_dir,
+            &DOWNLOADING,
+            &MODEL_PATH,
+        )
+        .with_expected(MODEL_PIN)
+        .ensure_model_downloaded()
+        .await
     }
 
     fn get_cache_dir() -> anyhow::Result<PathBuf> {
@@ -233,5 +275,109 @@ impl VadEngine for SileroVad {
 
     fn set_speech_threshold(&mut self, threshold: Option<f32>) {
         self.speech_threshold_override = threshold;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tempfile::tempdir;
+
+    fn pinned_size_copy(dir: &Path) -> PathBuf {
+        std::fs::create_dir_all(dir).unwrap();
+        let path = dir.join(MODEL_FILENAME);
+        std::fs::File::create(&path)
+            .unwrap()
+            .set_len(MODEL_PIN.size)
+            .unwrap();
+        path
+    }
+
+    #[test]
+    fn exe_dir_copy_is_preferred_over_the_cache() {
+        let tmp = tempdir().unwrap();
+        let exe_vad = tmp.path().join("install").join(INSTALL_SUBDIR);
+        let installed = pinned_size_copy(&exe_vad);
+        let cache = tmp.path().join("cache");
+        std::fs::create_dir_all(&cache).unwrap();
+        std::fs::write(cache.join(MODEL_FILENAME), b"older cached model").unwrap();
+
+        assert_eq!(
+            find_installed_or_cached(&[exe_vad], &cache),
+            Some((installed, ModelOrigin::Installed))
+        );
+    }
+
+    #[test]
+    fn wrong_size_installed_copy_falls_back_to_the_cache() {
+        let tmp = tempdir().unwrap();
+        let exe_vad = tmp.path().join("install").join(INSTALL_SUBDIR);
+        std::fs::create_dir_all(&exe_vad).unwrap();
+        // A Git LFS pointer or truncated copy is not the model.
+        std::fs::write(
+            exe_vad.join(MODEL_FILENAME),
+            b"version https://git-lfs.github.com/spec/v1\n",
+        )
+        .unwrap();
+        let cache = tmp.path().join("cache");
+        std::fs::create_dir_all(&cache).unwrap();
+        let cached = cache.join(MODEL_FILENAME);
+        // A copy screenpipe downloaded earlier (any version) is used as is.
+        std::fs::write(&cached, b"model bytes").unwrap();
+
+        assert_eq!(
+            find_installed_or_cached(&[exe_vad], &cache),
+            Some((cached, ModelOrigin::Cache))
+        );
+    }
+
+    #[test]
+    fn empty_cache_file_means_a_download_is_needed() {
+        let tmp = tempdir().unwrap();
+        let cache = tmp.path().join("cache");
+        std::fs::create_dir_all(&cache).unwrap();
+        std::fs::write(cache.join(MODEL_FILENAME), b"").unwrap();
+        assert_eq!(find_installed_or_cached(&[], &cache), None);
+    }
+
+    #[test]
+    fn install_layout_starts_next_to_the_executable() {
+        let exe_dir = std::env::current_exe()
+            .unwrap()
+            .parent()
+            .unwrap()
+            .to_path_buf();
+        assert_eq!(
+            install_dirs(INSTALL_SUBDIR).first(),
+            Some(&exe_dir.join("vad"))
+        );
+    }
+
+    #[test]
+    fn download_is_pinned_to_a_commit_of_the_original_publisher() {
+        let prefix = "https://raw.githubusercontent.com/snakers4/silero-vad/";
+        assert!(MODEL_URL.starts_with(prefix), "{MODEL_URL}");
+        let commit = MODEL_URL[prefix.len()..].split('/').next().unwrap();
+        assert_eq!(commit.len(), 40, "{commit}");
+        assert!(commit.chars().all(|c| c.is_ascii_hexdigit()));
+        assert!(!MODEL_URL.contains("/master/") && !MODEL_URL.contains("/refs/heads/"));
+        assert_eq!(MODEL_PIN.sha256.len(), 64);
+        assert!(MODEL_PIN.sha256.chars().all(|c| c.is_ascii_hexdigit() && !c.is_ascii_uppercase()));
+    }
+
+    /// Network check: the pinned URL still serves the pinned bytes (2.3 MB).
+    /// Run: cargo test -p screenpipe-audio --lib vad::silero::tests::integration -- --ignored
+    #[tokio::test]
+    #[ignore]
+    async fn integration_pinned_url_serves_the_pinned_model() {
+        let bytes = reqwest::get(MODEL_URL)
+            .await
+            .unwrap()
+            .error_for_status()
+            .unwrap()
+            .bytes()
+            .await
+            .unwrap();
+        MODEL_PIN.check(&bytes).unwrap();
     }
 }
