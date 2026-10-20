@@ -9,6 +9,14 @@
 //! 2. **Proportional downscale**: Compare at 1/4 resolution (preserves aspect ratio for ultrawides)
 //! 3. **Single metric**: Use only histogram comparison (not both histogram + SSIM)
 //! 4. **Shared downscale**: One downscale serves both hash and comparison (no redundant work)
+//! 5. **Grayscale thumbnails, fallible allocation**: each frame becomes one small
+//!    luma thumbnail sampled straight from the source pixels. Its buffer is
+//!    reserved with `Vec::try_reserve_exact`; when that fails the frame counts as
+//!    unchanged and a rate-limited warning carries `source_width`,
+//!    `source_height` and `failures`, instead of the process aborting. A frame
+//!    whose size cannot give a thumbnail at all (a zero dimension, or a size
+//!    no buffer can hold) also counts as unchanged, but is counted and logged
+//!    on its own (`degenerate_frames`), not as memory pressure.
 //!
 //! ## CPU Impact (benchmarked on trader 3-monitor setup: 2×5120x1440 + 2560x1440)
 //!
@@ -36,10 +44,17 @@
 //! ```
 
 use image::imageops::FilterType;
-use image::DynamicImage;
+use image::{DynamicImage, GenericImageView, GrayImage};
 use image_compare::Metric;
 use std::hash::{DefaultHasher, Hash, Hasher};
-use tracing::debug;
+use tracing::{debug, info, warn};
+
+/// How often a repeated skipped frame is logged, counted separately for
+/// allocation failures and for degenerate frames. The first one is always
+/// logged; after that one line per this many keeps a machine under memory
+/// pressure (or a capture source stuck on empty frames) from flooding the log
+/// once per captured frame.
+const THUMBNAIL_FAILURE_LOG_EVERY: u64 = 100;
 
 /// Configuration for frame comparison optimizations.
 #[derive(Debug, Clone)]
@@ -116,27 +131,204 @@ impl FrameComparisonConfig {
     }
 }
 
+/// Why a grayscale thumbnail could not be produced or compared.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ThumbnailError {
+    /// The source image has a zero dimension.
+    EmptySource,
+    /// The thumbnail would need more bytes than any buffer can hold
+    /// (`width * height` overflows `usize` or exceeds `isize::MAX`).
+    SizeOverflow,
+    /// The pixel buffer could not be reserved (`Vec::try_reserve_exact` failed).
+    AllocationFailed,
+    /// Internal invariant: two thumbnails that must match in size did not.
+    SizeMismatch,
+}
+
+impl ThumbnailError {
+    /// True only when memory ran short. Degenerate sizes say something about
+    /// the frame, not about memory, and are counted apart.
+    pub fn is_memory_pressure(self) -> bool {
+        matches!(self, ThumbnailError::AllocationFailed)
+    }
+}
+
+impl std::fmt::Display for ThumbnailError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let text = match self {
+            ThumbnailError::EmptySource => "frame has a zero width or height",
+            ThumbnailError::SizeOverflow => "thumbnail size is larger than any buffer can hold",
+            ThumbnailError::AllocationFailed => "thumbnail buffer allocation failed",
+            ThumbnailError::SizeMismatch => "grayscale thumbnails differ in size",
+        };
+        f.write_str(text)
+    }
+}
+
+impl std::error::Error for ThumbnailError {}
+
+/// Reserves an empty byte buffer with room for `len` bytes, without aborting
+/// the process when memory is short. Swappable in tests to simulate failures.
+type ThumbnailAllocator = fn(usize) -> Result<Vec<u8>, ThumbnailError>;
+
+fn reserve_thumbnail_buffer(len: usize) -> Result<Vec<u8>, ThumbnailError> {
+    // A `Vec` never holds more than `isize::MAX` bytes; asking for more is a
+    // size problem, not a sign of memory pressure.
+    if len > isize::MAX as usize {
+        return Err(ThumbnailError::SizeOverflow);
+    }
+    let mut buf = Vec::new();
+    buf.try_reserve_exact(len)
+        .map_err(|_| ThumbnailError::AllocationFailed)?;
+    Ok(buf)
+}
+
+/// Rec. 709 luma with integer weights (same weighting the `image` crate uses
+/// for `to_luma8`), rounded to nearest.
+#[inline]
+fn luma(r: u8, g: u8, b: u8) -> u8 {
+    ((r as u32 * 2126 + g as u32 * 7152 + b as u32 * 722 + 5000) / 10_000) as u8
+}
+
+/// Nearest-neighbour source coordinate for destination index `dst` when
+/// mapping `src_len` samples onto `dst_len` samples (pixel-centre sampling).
+#[inline]
+fn nearest_source(dst: u32, dst_len: u32, src_len: u32) -> u32 {
+    let pos = ((2 * dst as u64 + 1) * src_len as u64) / (2 * dst_len as u64);
+    (pos as u32).min(src_len - 1)
+}
+
+/// Builds a `dst_w` x `dst_h` grayscale thumbnail of `src` by nearest-neighbour
+/// sampling, reading the source pixels in place. Nothing full-size is
+/// allocated; the only allocation is the thumbnail buffer itself, and that one
+/// goes through `alloc` so a failure becomes an error instead of an abort.
+fn gray_thumbnail(
+    src: &DynamicImage,
+    dst_w: u32,
+    dst_h: u32,
+    alloc: ThumbnailAllocator,
+) -> Result<GrayImage, ThumbnailError> {
+    let (src_w, src_h) = src.dimensions();
+    if src_w == 0 || src_h == 0 || dst_w == 0 || dst_h == 0 {
+        return Err(ThumbnailError::EmptySource);
+    }
+    let len = (dst_w as usize)
+        .checked_mul(dst_h as usize)
+        .ok_or(ThumbnailError::SizeOverflow)?;
+    let mut buf = alloc(len)?;
+
+    // Interleaved 8-bit layouts are read straight from the raw slice; any other
+    // pixel type (16-bit, float) goes through the generic accessor.
+    let (raw, channels): (Option<&[u8]>, usize) = match src {
+        DynamicImage::ImageRgba8(img) => (Some(img.as_raw().as_slice()), 4),
+        DynamicImage::ImageRgb8(img) => (Some(img.as_raw().as_slice()), 3),
+        DynamicImage::ImageLumaA8(img) => (Some(img.as_raw().as_slice()), 2),
+        DynamicImage::ImageLuma8(img) => (Some(img.as_raw().as_slice()), 1),
+        _ => (None, 0),
+    };
+    let row_len = src_w as usize * channels;
+
+    for y in 0..dst_h {
+        let sy = nearest_source(y, dst_h, src_h);
+        for x in 0..dst_w {
+            let sx = nearest_source(x, dst_w, src_w);
+            let value = match raw {
+                Some(bytes) => {
+                    let i = sy as usize * row_len + sx as usize * channels;
+                    if channels >= 3 {
+                        luma(bytes[i], bytes[i + 1], bytes[i + 2])
+                    } else {
+                        bytes[i]
+                    }
+                }
+                None => {
+                    let p = src.get_pixel(sx, sy).0;
+                    luma(p[0], p[1], p[2])
+                }
+            };
+            buf.push(value);
+        }
+    }
+
+    GrayImage::from_raw(dst_w, dst_h, buf).ok_or(ThumbnailError::SizeMismatch)
+}
+
+/// Nearest-neighbour resample of a grayscale thumbnail to `dst_w` x `dst_h`,
+/// with the same fallible allocation as [`gray_thumbnail`].
+fn resample_gray(
+    src: &GrayImage,
+    dst_w: u32,
+    dst_h: u32,
+    alloc: ThumbnailAllocator,
+) -> Result<GrayImage, ThumbnailError> {
+    let (src_w, src_h) = src.dimensions();
+    if src_w == 0 || src_h == 0 || dst_w == 0 || dst_h == 0 {
+        return Err(ThumbnailError::EmptySource);
+    }
+    let len = (dst_w as usize)
+        .checked_mul(dst_h as usize)
+        .ok_or(ThumbnailError::SizeOverflow)?;
+    let mut buf = alloc(len)?;
+    let raw = src.as_raw();
+    for y in 0..dst_h {
+        let row = nearest_source(y, dst_h, src_h) as usize * src_w as usize;
+        for x in 0..dst_w {
+            buf.push(raw[row + nearest_source(x, dst_w, src_w) as usize]);
+        }
+    }
+    GrayImage::from_raw(dst_w, dst_h, buf).ok_or(ThumbnailError::SizeMismatch)
+}
+
+/// Hash of a thumbnail's size and pixels. The size is part of the key so two
+/// thumbnails with equal bytes but a different shape never count as a match.
+fn hash_thumbnail(thumb: &GrayImage) -> u64 {
+    let mut hasher = DefaultHasher::new();
+    thumb.dimensions().hash(&mut hasher);
+    thumb.as_raw().hash(&mut hasher);
+    hasher.finish()
+}
+
+/// True for the skipped frames that get a log line: the first, then every
+/// [`THUMBNAIL_FAILURE_LOG_EVERY`]th (each kind keeps its own count).
+fn should_log_thumbnail_failure(failures: u64) -> bool {
+    failures == 1 || failures.is_multiple_of(THUMBNAIL_FAILURE_LOG_EVERY)
+}
+
 /// Stateful frame comparer that tracks previous frame data for optimizations.
+///
+/// Every frame is reduced to a small grayscale thumbnail (one byte per pixel)
+/// before it is hashed or compared, and only that thumbnail is kept as the
+/// baseline. When the thumbnail cannot be allocated, or the frame's size
+/// cannot give one, the frame is reported as unchanged (`0.0`) and the
+/// previous baseline is kept.
 #[derive(Debug)]
 pub struct FrameComparer {
     config: FrameComparisonConfig,
     previous_hash: Option<u64>,
-    previous_image_downscaled: Option<DynamicImage>,
-    previous_image_full: Option<DynamicImage>,
+    previous_thumbnail: Option<GrayImage>,
     comparison_count: u64,
     hash_hits: u64,
+    thumbnail_failures: u64,
+    degenerate_frames: u64,
+    allocator: ThumbnailAllocator,
 }
 
 impl FrameComparer {
     /// Create a new frame comparer with the given configuration.
     pub fn new(config: FrameComparisonConfig) -> Self {
+        Self::with_allocator(config, reserve_thumbnail_buffer)
+    }
+
+    fn with_allocator(config: FrameComparisonConfig, allocator: ThumbnailAllocator) -> Self {
         Self {
             config,
             previous_hash: None,
-            previous_image_downscaled: None,
-            previous_image_full: None,
+            previous_thumbnail: None,
             comparison_count: 0,
             hash_hits: 0,
+            thumbnail_failures: 0,
+            degenerate_frames: 0,
+            allocator,
         }
     }
 
@@ -150,133 +342,159 @@ impl FrameComparer {
             )
         } else {
             // Legacy fixed dimensions
-            (self.config.comparison_width, self.config.comparison_height)
+            (
+                self.config.comparison_width.max(1),
+                self.config.comparison_height.max(1),
+            )
         }
     }
 
-    /// Downscale an image for comparison.
-    fn downscale(&self, image: &DynamicImage) -> DynamicImage {
-        let (w, h) = self.downscale_dims(image.width(), image.height());
-        image.resize_exact(w, h, FilterType::Nearest)
-    }
-
-    /// Compute hash on a downscaled image (fast — operates on ~1/16th the pixels).
-    fn hash_image(&self, downscaled: &DynamicImage) -> u64 {
-        let mut hasher = DefaultHasher::new();
-        downscaled.as_bytes().hash(&mut hasher);
-        hasher.finish()
+    /// Thumbnail size for a frame: the downscaled size, or the full frame size
+    /// when downscaling is turned off.
+    fn thumbnail_dims(&self, width: u32, height: u32) -> (u32, u32) {
+        if self.config.downscale_comparison {
+            self.downscale_dims(width, height)
+        } else {
+            (width, height)
+        }
     }
 
     /// Compare current frame with previous frame.
     ///
-    /// Downscales the image once and uses it for both hash and histogram comparison.
-    /// No external hash computation needed.
+    /// The frame is reduced to one grayscale thumbnail that serves both the
+    /// hash fast path and the histogram comparison.
     ///
     /// # Returns
-    /// * `0.0` - Frames are identical (hash match or visual comparison)
+    /// * `0.0` - Frames are identical (hash match or visual comparison), or
+    ///   no thumbnail could be made (allocation failure or degenerate frame
+    ///   size, treated as "no change")
     /// * `0.0 - 1.0` - Difference score (higher = more different)
     /// * `1.0` - First frame (no previous to compare) or completely different
     pub fn compare(&mut self, current_image: &DynamicImage) -> f64 {
         self.comparison_count += 1;
 
-        // Downscale once — shared between hash and comparison
-        let current_downscaled = if self.config.downscale_comparison {
-            Some(self.downscale(current_image))
-        } else {
-            None
+        let (source_width, source_height) = current_image.dimensions();
+        let (thumb_w, thumb_h) = self.thumbnail_dims(source_width, source_height);
+        let thumbnail = match gray_thumbnail(current_image, thumb_w, thumb_h, self.allocator) {
+            Ok(t) => t,
+            Err(e) => {
+                self.record_skipped_frame(source_width, source_height, e);
+                return 0.0;
+            }
         };
 
-        // Hash the downscaled image (or full image if not downscaling)
-        let current_hash = if self.config.hash_early_exit {
-            let to_hash = current_downscaled.as_ref().unwrap_or(current_image);
-            Some(self.hash_image(to_hash))
-        } else {
-            None
-        };
+        let current_hash = self
+            .config
+            .hash_early_exit
+            .then(|| hash_thumbnail(&thumbnail));
 
         // First frame - no previous to compare
-        if self.previous_hash.is_none()
-            && self.previous_image_downscaled.is_none()
-            && self.previous_image_full.is_none()
-        {
-            self.update_previous_internal(current_image, current_downscaled, current_hash);
+        let Some(previous) = self.previous_thumbnail.as_ref() else {
+            self.store_baseline(thumbnail, current_hash);
             return 1.0;
-        }
+        };
 
         // Optimization 1: Hash-based early exit
-        if self.config.hash_early_exit {
-            if let (Some(prev_hash), Some(curr_hash)) = (self.previous_hash, current_hash) {
-                if prev_hash == curr_hash {
-                    self.hash_hits += 1;
-                    debug!(
-                        "Hash match - skipping comparison (hits: {}/{})",
-                        self.hash_hits, self.comparison_count
-                    );
-                    return 0.0;
-                }
+        if let (Some(prev_hash), Some(curr_hash)) = (self.previous_hash, current_hash) {
+            if prev_hash == curr_hash {
+                self.hash_hits += 1;
+                debug!(
+                    "Hash match - skipping comparison (hits: {}/{})",
+                    self.hash_hits, self.comparison_count
+                );
+                return 0.0;
             }
         }
 
-        // Get images for comparison
-        let (prev_img, curr_img) = if self.config.downscale_comparison {
-            let prev = self.previous_image_downscaled.as_ref();
-            let curr = current_downscaled.as_ref();
-            match (prev, curr) {
-                (Some(p), Some(c)) => (p, c.clone()),
-                _ => {
-                    self.update_previous_internal(current_image, current_downscaled, current_hash);
-                    return 1.0;
-                }
+        let diff = match self.score(previous, &thumbnail) {
+            Ok(d) => d,
+            Err(
+                e @ (ThumbnailError::AllocationFailed
+                | ThumbnailError::SizeOverflow
+                | ThumbnailError::EmptySource),
+            ) => {
+                self.record_skipped_frame(source_width, source_height, e);
+                return 0.0;
             }
-        } else {
-            let prev = self.previous_image_full.as_ref();
-            match prev {
-                Some(p) => (p, current_image.clone()),
-                None => {
-                    self.update_previous_internal(current_image, current_downscaled, current_hash);
-                    return 1.0;
-                }
+            Err(ThumbnailError::SizeMismatch) => {
+                debug!("frame comparison: thumbnail sizes still differ after resize; reporting a change");
+                1.0
             }
         };
 
-        // Perform comparison
-        let diff = if self.config.single_metric {
-            compare_histogram(prev_img, &curr_img).unwrap_or(1.0)
-        } else {
-            let histogram_diff = compare_histogram(prev_img, &curr_img).unwrap_or(1.0);
-            let ssim_diff = compare_ssim(prev_img, &curr_img);
-            (histogram_diff + ssim_diff) / 2.0
-        };
-
-        // Update previous frame
-        self.update_previous_internal(current_image, current_downscaled, current_hash);
-
+        self.store_baseline(thumbnail, current_hash);
         diff
+    }
+
+    /// Difference between the baseline and the current thumbnail. A current
+    /// thumbnail of another size (the monitor changed resolution) is resampled
+    /// to the baseline size first, as before.
+    fn score(&self, previous: &GrayImage, current: &GrayImage) -> Result<f64, ThumbnailError> {
+        let resized;
+        let current = if previous.dimensions() != current.dimensions() {
+            resized = resample_gray(current, previous.width(), previous.height(), self.allocator)?;
+            &resized
+        } else {
+            current
+        };
+        if previous.dimensions() != current.dimensions() {
+            return Err(ThumbnailError::SizeMismatch);
+        }
+
+        let histogram = gray_histogram_distance(previous, current).unwrap_or(1.0);
+        if self.config.single_metric {
+            Ok(histogram)
+        } else {
+            let ssim = gray_ssim_distance(previous, current).unwrap_or(1.0);
+            Ok((histogram + ssim) / 2.0)
+        }
+    }
+
+    fn store_baseline(&mut self, thumbnail: GrayImage, hash: Option<u64>) {
+        self.previous_hash = hash;
+        self.previous_thumbnail = Some(thumbnail);
+    }
+
+    /// Count and (rate-limited) log a frame that got no thumbnail. Only an
+    /// allocation failure is memory pressure; a degenerate frame size has its
+    /// own counter and a neutral message.
+    fn record_skipped_frame(
+        &mut self,
+        source_width: u32,
+        source_height: u32,
+        reason: ThumbnailError,
+    ) {
+        if reason.is_memory_pressure() {
+            self.thumbnail_failures += 1;
+            let failures = self.thumbnail_failures;
+            if should_log_thumbnail_failure(failures) {
+                warn!(
+                    source_width,
+                    source_height,
+                    failures,
+                    %reason,
+                    "frame diff skipped because no thumbnail buffer was available; frame counted as unchanged"
+                );
+            }
+        } else {
+            self.degenerate_frames += 1;
+            let degenerate_frames = self.degenerate_frames;
+            if should_log_thumbnail_failure(degenerate_frames) {
+                info!(
+                    source_width,
+                    source_height,
+                    degenerate_frames,
+                    %reason,
+                    "frame diff skipped for a frame whose size gives no thumbnail; frame counted as unchanged"
+                );
+            }
+        }
     }
 
     /// Backward-compatible compare that accepts a pre-computed hash.
     /// The hash is ignored — we compute our own on the downscaled image.
     pub fn compare_with_hash(&mut self, current_image: &DynamicImage, _legacy_hash: u64) -> f64 {
         self.compare(current_image)
-    }
-
-    /// Update the previous frame state using pre-computed downscaled image.
-    fn update_previous_internal(
-        &mut self,
-        full_image: &DynamicImage,
-        downscaled: Option<DynamicImage>,
-        hash: Option<u64>,
-    ) {
-        self.previous_hash = hash;
-
-        if self.config.downscale_comparison {
-            self.previous_image_downscaled =
-                downscaled.or_else(|| Some(self.downscale(full_image)));
-            self.previous_image_full = None;
-        } else {
-            self.previous_image_full = Some(full_image.clone());
-            self.previous_image_downscaled = None;
-        }
     }
 
     /// Get statistics about comparison performance.
@@ -289,14 +507,15 @@ impl FrameComparer {
             } else {
                 0.0
             },
+            thumbnail_failures: self.thumbnail_failures,
+            degenerate_frames: self.degenerate_frames,
         }
     }
 
     /// Reset the comparer state (e.g., when switching monitors).
     pub fn reset(&mut self) {
         self.previous_hash = None;
-        self.previous_image_downscaled = None;
-        self.previous_image_full = None;
+        self.previous_thumbnail = None;
     }
 }
 
@@ -306,6 +525,36 @@ pub struct FrameComparisonStats {
     pub total_comparisons: u64,
     pub hash_hits: u64,
     pub hash_hit_rate: f64,
+    /// Frames whose thumbnail buffer could not be allocated, i.e. memory
+    /// pressure (reported as unchanged).
+    pub thumbnail_failures: u64,
+    /// Frames whose size gives no thumbnail: a zero width or height, or more
+    /// pixels than a buffer can hold (reported as unchanged).
+    pub degenerate_frames: u64,
+}
+
+/// Keeps a metric inside `[0, 1]` and turns NaN or infinity into an error, so
+/// a degenerate input can never leak a NaN into the capture loop's threshold
+/// checks.
+fn finite_unit(value: f64) -> anyhow::Result<f64> {
+    if value.is_finite() {
+        Ok(value.clamp(0.0, 1.0))
+    } else {
+        Err(anyhow::anyhow!("comparison produced a non-finite score"))
+    }
+}
+
+fn gray_histogram_distance(a: &GrayImage, b: &GrayImage) -> anyhow::Result<f64> {
+    let distance = image_compare::gray_similarity_histogram(Metric::Hellinger, a, b)
+        .map_err(|e| anyhow::anyhow!("Failed to compare images: {}", e))?;
+    finite_unit(distance)
+}
+
+fn gray_ssim_distance(a: &GrayImage, b: &GrayImage) -> anyhow::Result<f64> {
+    let similarity =
+        image_compare::gray_similarity_structure(&image_compare::Algorithm::MSSIMSimple, a, b)
+            .map_err(|e| anyhow::anyhow!("Failed to compare images: {}", e))?;
+    finite_unit(1.0 - similarity.score) // Convert similarity to difference
 }
 
 /// Compare two images using histogram comparison.
@@ -322,12 +571,13 @@ pub fn compare_histogram(image1: &DynamicImage, image2: &DynamicImage) -> anyhow
             FilterType::Nearest,
         );
     }
-    image_compare::gray_similarity_histogram(Metric::Hellinger, &image_one, &image_two)
-        .map_err(|e| anyhow::anyhow!("Failed to compare images: {}", e))
+    gray_histogram_distance(&image_one, &image_two)
 }
 
 /// Compare two images using SSIM.
 /// Returns a difference score between 0.0 (identical) and 1.0 (completely different).
+/// Images that cannot be compared (for example too small for the SSIM window)
+/// score 1.0 instead of panicking.
 pub fn compare_ssim(image1: &DynamicImage, image2: &DynamicImage) -> f64 {
     let image_one = image1.to_luma8();
     let mut image_two = image2.to_luma8();
@@ -340,13 +590,7 @@ pub fn compare_ssim(image1: &DynamicImage, image2: &DynamicImage) -> f64 {
             FilterType::Nearest,
         );
     }
-    let result = image_compare::gray_similarity_structure(
-        &image_compare::Algorithm::MSSIMSimple,
-        &image_one,
-        &image_two,
-    )
-    .expect("images should have matching dimensions after resize");
-    1.0 - result.score // Convert similarity to difference
+    gray_ssim_distance(&image_one, &image_two).unwrap_or(1.0)
 }
 
 /// Calculate hash of an image (for early exit optimization).
@@ -606,5 +850,381 @@ mod tests {
 
         let max_perf = FrameComparisonConfig::max_performance();
         assert_eq!(max_perf.downscale_factor, 4);
+    }
+
+    // ── Hardening: grayscale thumbnails and fallible allocation ─────────
+
+    fn failing_allocator(_len: usize) -> Result<Vec<u8>, ThumbnailError> {
+        Err(ThumbnailError::AllocationFailed)
+    }
+
+    #[test]
+    fn allocation_failure_reports_no_change_and_counts() {
+        let mut comparer =
+            FrameComparer::with_allocator(FrameComparisonConfig::default(), failing_allocator);
+        let black = create_solid_image(640, 360, 0, 0, 0);
+        let white = create_solid_image(640, 360, 255, 255, 255);
+
+        assert_eq!(comparer.compare(&black), 0.0);
+        assert_eq!(comparer.compare(&white), 0.0);
+        let stats = comparer.stats();
+        assert_eq!(stats.thumbnail_failures, 2);
+        assert_eq!(stats.degenerate_frames, 0);
+        assert_eq!(stats.total_comparisons, 2);
+        assert_eq!(stats.hash_hits, 0);
+        assert!(comparer.previous_thumbnail.is_none());
+    }
+
+    #[test]
+    fn allocation_failure_keeps_the_previous_baseline() {
+        let mut comparer = FrameComparer::new(FrameComparisonConfig::default());
+        let black = create_solid_image(640, 360, 0, 0, 0);
+        let white = create_solid_image(640, 360, 255, 255, 255);
+
+        assert_eq!(comparer.compare(&black), 1.0, "first frame");
+        let baseline_hash = comparer.previous_hash;
+
+        // Memory runs short for one frame: "no change", baseline untouched.
+        comparer.allocator = failing_allocator;
+        assert_eq!(comparer.compare(&white), 0.0);
+        assert_eq!(comparer.previous_hash, baseline_hash);
+        assert_eq!(comparer.stats().thumbnail_failures, 1);
+
+        // Memory is back: the change is measured against the old baseline.
+        comparer.allocator = reserve_thumbnail_buffer;
+        assert!(comparer.compare(&white) > 0.5);
+    }
+
+    #[test]
+    fn allocation_failure_on_first_frame_leaves_no_baseline() {
+        let mut comparer =
+            FrameComparer::with_allocator(FrameComparisonConfig::default(), failing_allocator);
+        let image = create_gradient_image(320, 200);
+        assert_eq!(comparer.compare(&image), 0.0);
+
+        comparer.allocator = reserve_thumbnail_buffer;
+        assert_eq!(comparer.compare(&image), 1.0, "first real thumbnail");
+        assert_eq!(comparer.compare(&image), 0.0, "then a hash hit");
+    }
+
+    #[test]
+    fn allocation_failure_while_resampling_reports_no_change() {
+        // Small buffers succeed, anything larger fails: the 50x50 thumbnail
+        // fits, resampling it up to the 400x400 baseline does not.
+        fn fail_above_small(len: usize) -> Result<Vec<u8>, ThumbnailError> {
+            if len > 100 * 100 {
+                Err(ThumbnailError::AllocationFailed)
+            } else {
+                reserve_thumbnail_buffer(len)
+            }
+        }
+        let config = FrameComparisonConfig {
+            downscale_factor: 1,
+            ..Default::default()
+        };
+        let mut comparer = FrameComparer::new(config);
+        assert_eq!(
+            comparer.compare(&create_solid_image(400, 400, 10, 10, 10)),
+            1.0
+        );
+
+        comparer.allocator = fail_above_small;
+        assert_eq!(
+            comparer.compare(&create_solid_image(50, 50, 250, 250, 250)),
+            0.0
+        );
+        assert_eq!(comparer.stats().thumbnail_failures, 1);
+        assert_eq!(
+            comparer.previous_thumbnail.as_ref().unwrap().dimensions(),
+            (400, 400),
+            "baseline kept"
+        );
+    }
+
+    #[test]
+    fn thumbnail_beyond_any_buffer_is_a_size_error() {
+        let image = create_solid_image(4, 4, 1, 2, 3);
+        // u32::MAX squared is above isize::MAX on 64-bit targets and
+        // overflows usize on 32-bit ones: no buffer can hold it either way.
+        let err = gray_thumbnail(&image, u32::MAX, u32::MAX, reserve_thumbnail_buffer)
+            .expect_err("an impossible thumbnail must fail");
+        assert_eq!(err, ThumbnailError::SizeOverflow);
+        assert!(!err.is_memory_pressure());
+    }
+
+    /// 2^31 x 2^31 bytes (4 EiB) is a valid `Vec` capacity on 64-bit targets
+    /// but more than any address space, so the allocator itself refuses it.
+    #[cfg(target_pointer_width = "64")]
+    const UNALLOCATABLE_SIDE: u32 = 1 << 31;
+
+    #[test]
+    #[cfg(target_pointer_width = "64")]
+    fn real_allocation_failure_is_an_error_not_an_abort() {
+        let image = create_solid_image(4, 4, 1, 2, 3);
+        let err = gray_thumbnail(
+            &image,
+            UNALLOCATABLE_SIDE,
+            UNALLOCATABLE_SIDE,
+            reserve_thumbnail_buffer,
+        )
+        .expect_err("a 4 EiB thumbnail cannot be allocated");
+        assert_eq!(err, ThumbnailError::AllocationFailed);
+        assert!(err.is_memory_pressure());
+    }
+
+    #[test]
+    #[cfg(target_pointer_width = "64")]
+    fn legacy_fixed_size_that_cannot_be_allocated_reports_no_change() {
+        // End to end through the default allocator: a legacy fixed size the
+        // allocator cannot satisfy fails on every frame as memory pressure.
+        let config = FrameComparisonConfig {
+            downscale_factor: 0,
+            comparison_width: UNALLOCATABLE_SIDE,
+            comparison_height: UNALLOCATABLE_SIDE,
+            ..Default::default()
+        };
+        let mut comparer = FrameComparer::new(config);
+        let image = create_solid_image(64, 64, 100, 100, 100);
+        assert_eq!(comparer.compare(&image), 0.0);
+        assert_eq!(comparer.compare(&image), 0.0);
+        assert_eq!(comparer.stats().thumbnail_failures, 2);
+        assert_eq!(comparer.stats().degenerate_frames, 0);
+    }
+
+    #[test]
+    fn legacy_fixed_size_beyond_any_buffer_is_degenerate() {
+        let config = FrameComparisonConfig {
+            downscale_factor: 0,
+            comparison_width: u32::MAX,
+            comparison_height: u32::MAX,
+            ..Default::default()
+        };
+        let mut comparer = FrameComparer::new(config);
+        let image = create_solid_image(64, 64, 100, 100, 100);
+        assert_eq!(comparer.compare(&image), 0.0);
+        assert_eq!(comparer.compare(&image), 0.0);
+        assert_eq!(comparer.stats().degenerate_frames, 2);
+        assert_eq!(
+            comparer.stats().thumbnail_failures,
+            0,
+            "not memory pressure"
+        );
+    }
+
+    /// Formatted log output of everything `run` logs at info level or above
+    /// on this thread.
+    fn capture_logs(run: impl FnOnce()) -> String {
+        use std::sync::{Arc, Mutex};
+
+        #[derive(Clone)]
+        struct Sink(Arc<Mutex<Vec<u8>>>);
+        impl std::io::Write for Sink {
+            fn write(&mut self, data: &[u8]) -> std::io::Result<usize> {
+                self.0.lock().unwrap().extend_from_slice(data);
+                Ok(data.len())
+            }
+            fn flush(&mut self) -> std::io::Result<()> {
+                Ok(())
+            }
+        }
+
+        let sink = Sink(Arc::new(Mutex::new(Vec::new())));
+        let writer = sink.clone();
+        let subscriber = tracing_subscriber::fmt()
+            .with_writer(move || writer.clone())
+            .with_ansi(false)
+            .with_max_level(tracing::Level::INFO)
+            .finish();
+        tracing::subscriber::with_default(subscriber, run);
+        let bytes = sink.0.lock().unwrap().clone();
+        String::from_utf8(bytes).unwrap()
+    }
+
+    #[test]
+    fn degenerate_frames_are_not_logged_as_memory_pressure() {
+        let mut comparer = FrameComparer::new(FrameComparisonConfig::default());
+        let empty = DynamicImage::ImageRgb8(RgbImage::new(0, 0));
+        let logs = capture_logs(|| {
+            for _ in 0..3 {
+                assert_eq!(comparer.compare(&empty), 0.0);
+            }
+        });
+        let stats = comparer.stats();
+        assert_eq!(stats.degenerate_frames, 3);
+        assert_eq!(stats.thumbnail_failures, 0);
+        assert!(!logs.contains("no thumbnail buffer"), "{}", logs);
+        assert_eq!(
+            logs.matches("frame whose size gives no thumbnail").count(),
+            1,
+            "first one logged, the rest rate-limited: {}",
+            logs
+        );
+        assert!(logs.contains("degenerate_frames=1"), "{}", logs);
+        assert!(logs.contains("zero width or height"), "{}", logs);
+    }
+
+    #[test]
+    fn allocation_failures_are_logged_as_memory_pressure() {
+        let mut comparer =
+            FrameComparer::with_allocator(FrameComparisonConfig::default(), failing_allocator);
+        let image = create_solid_image(64, 64, 1, 2, 3);
+        let logs = capture_logs(|| {
+            for _ in 0..3 {
+                assert_eq!(comparer.compare(&image), 0.0);
+            }
+        });
+        assert_eq!(comparer.stats().thumbnail_failures, 3);
+        assert_eq!(comparer.stats().degenerate_frames, 0);
+        assert_eq!(
+            logs.matches("no thumbnail buffer was available").count(),
+            1,
+            "first one logged, the rest rate-limited: {}",
+            logs
+        );
+        assert!(logs.contains("failures=1"), "{}", logs);
+        assert!(!logs.contains("gives no thumbnail"), "{}", logs);
+    }
+
+    #[test]
+    fn failure_logging_is_rate_limited() {
+        let logged: Vec<u64> = (1..=350)
+            .filter(|n| should_log_thumbnail_failure(*n))
+            .collect();
+        assert_eq!(logged, vec![1, 100, 200, 300]);
+    }
+
+    #[test]
+    fn thumbnail_is_grayscale_with_the_downscaled_size() {
+        let comparer = FrameComparer::new(FrameComparisonConfig::default());
+        let (w, h) = comparer.thumbnail_dims(1920, 1080);
+        assert_eq!((w, h), (480, 270));
+
+        let red = create_solid_image(1920, 1080, 255, 0, 0);
+        let thumb = gray_thumbnail(&red, w, h, reserve_thumbnail_buffer).unwrap();
+        assert_eq!(thumb.dimensions(), (480, 270));
+        assert_eq!(thumb.as_raw().len(), 480 * 270, "one byte per pixel");
+        // Rec. 709 red weight: 0.2126 * 255 rounds to 54.
+        assert!(thumb.as_raw().iter().all(|&v| v == 54));
+    }
+
+    #[test]
+    fn full_resolution_thumbnail_when_downscaling_is_off() {
+        let comparer = FrameComparer::new(FrameComparisonConfig::no_optimizations());
+        assert_eq!(comparer.thumbnail_dims(1280, 720), (1280, 720));
+    }
+
+    #[test]
+    fn thumbnail_matches_image_crate_luma_for_every_pixel_layout() {
+        let rgb = create_gradient_image(97, 61);
+        let reference = rgb.to_luma8();
+        let layouts = [
+            DynamicImage::ImageRgba8(rgb.to_rgba8()),
+            rgb.clone(),
+            DynamicImage::ImageLuma8(rgb.to_luma8()),
+            DynamicImage::ImageLumaA8(rgb.to_luma_alpha8()),
+            DynamicImage::ImageRgb16(rgb.to_rgb16()),
+        ];
+        for img in &layouts {
+            // Same size as the source: sampling is the identity mapping.
+            let thumb = gray_thumbnail(img, 97, 61, reserve_thumbnail_buffer).unwrap();
+            for (a, b) in thumb.as_raw().iter().zip(reference.as_raw()) {
+                assert!(
+                    (*a as i16 - *b as i16).abs() <= 1,
+                    "luma differs by more than rounding: {} vs {}",
+                    a,
+                    b
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn resolution_change_is_compared_without_panicking() {
+        let mut comparer = FrameComparer::new(FrameComparisonConfig::default());
+        let small = create_text_pattern_image(1280, 720, 0);
+        let large = create_text_pattern_image(2560, 1440, 0);
+        let different = create_solid_image(2560, 1440, 0, 0, 0);
+
+        assert_eq!(comparer.compare(&small), 1.0);
+        let same_layout = comparer.compare(&large);
+        assert!(
+            (0.0..=1.0).contains(&same_layout),
+            "score stays in range across a resize: {}",
+            same_layout
+        );
+        // The baseline is now the larger thumbnail.
+        assert_eq!(
+            comparer.previous_thumbnail.as_ref().unwrap().dimensions(),
+            (640, 360)
+        );
+        let changed = comparer.compare(&different);
+        assert!(changed > 0.3, "content change after resize: {}", changed);
+    }
+
+    #[test]
+    fn same_picture_at_a_new_resolution_looks_unchanged() {
+        let mut comparer = FrameComparer::new(FrameComparisonConfig::default());
+        let gray = create_solid_image(1920, 1080, 90, 90, 90);
+        let gray_bigger = create_solid_image(2560, 1440, 90, 90, 90);
+        comparer.compare(&gray);
+        let diff = comparer.compare(&gray_bigger);
+        assert!(diff < 0.01, "uniform frame across a resize: {}", diff);
+    }
+
+    #[test]
+    fn hash_includes_thumbnail_shape() {
+        let wide = GrayImage::from_raw(4, 1, vec![1, 2, 3, 4]).unwrap();
+        let tall = GrayImage::from_raw(1, 4, vec![1, 2, 3, 4]).unwrap();
+        assert_ne!(hash_thumbnail(&wide), hash_thumbnail(&tall));
+        assert_eq!(hash_thumbnail(&wide), hash_thumbnail(&wide.clone()));
+    }
+
+    #[test]
+    fn resample_preserves_uniform_content_and_size() {
+        let src = GrayImage::from_pixel(10, 7, image::Luma([77]));
+        let out = resample_gray(&src, 23, 3, reserve_thumbnail_buffer).unwrap();
+        assert_eq!(out.dimensions(), (23, 3));
+        assert!(out.as_raw().iter().all(|&v| v == 77));
+    }
+
+    #[test]
+    fn nearest_source_stays_in_bounds() {
+        for (dst_len, src_len) in [(1, 1), (1, 9), (9, 1), (480, 1920), (7, 3), (1000, 999)] {
+            for d in 0..dst_len {
+                assert!(nearest_source(d, dst_len, src_len) < src_len);
+            }
+        }
+        assert_eq!(nearest_source(0, 2, 4), 1);
+        assert_eq!(nearest_source(1, 2, 4), 3);
+    }
+
+    #[test]
+    fn zero_sized_frame_is_degenerate_not_a_panic() {
+        let mut comparer = FrameComparer::new(FrameComparisonConfig::default());
+        let empty = DynamicImage::ImageRgb8(RgbImage::new(0, 0));
+        assert_eq!(comparer.compare(&empty), 0.0);
+        assert_eq!(comparer.stats().degenerate_frames, 1);
+        assert_eq!(comparer.stats().thumbnail_failures, 0);
+        // A real frame afterwards becomes the first baseline.
+        assert_eq!(comparer.compare(&create_solid_image(8, 8, 9, 9, 9)), 1.0);
+    }
+
+    #[test]
+    fn ssim_path_handles_tiny_and_mismatched_frames() {
+        let mut comparer = FrameComparer::new(FrameComparisonConfig {
+            single_metric: false,
+            ..Default::default()
+        });
+        // 4x4 sources give 1x1 thumbnails, below any SSIM window.
+        assert_eq!(comparer.compare(&create_solid_image(4, 4, 0, 0, 0)), 1.0);
+        let diff = comparer.compare(&create_solid_image(8, 8, 255, 255, 255));
+        assert!((0.0..=1.0).contains(&diff), "diff in range: {}", diff);
+
+        // The public helper no longer panics either, and never returns NaN.
+        let d = compare_ssim(
+            &create_solid_image(3, 3, 0, 0, 0),
+            &create_solid_image(5, 2, 9, 9, 9),
+        );
+        assert!((0.0..=1.0).contains(&d), "ssim distance in range: {}", d);
     }
 }

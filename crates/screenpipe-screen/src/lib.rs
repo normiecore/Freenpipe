@@ -10,7 +10,9 @@ pub mod frame_comparison;
 #[cfg(any(target_os = "windows", test))]
 pub mod microsoft;
 pub mod monitor;
-#[cfg(target_os = "windows")]
+/// Persistent Windows Graphics Capture sessions. The session code is
+/// Windows-only; the frame slot, pixel conversion and recovery policy compile
+/// everywhere so they are unit-tested on every OS.
 pub mod wgc_capture;
 #[cfg(target_os = "macos")]
 pub use monitor::HdCapture;

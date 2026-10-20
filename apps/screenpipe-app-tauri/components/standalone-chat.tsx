@@ -4320,7 +4320,7 @@ export function StandaloneChat({
       setIsLoadingSpeakers(true);
       try {
         const response = await localFetch(
-          `/speakers/search?name=${encodeURIComponent(mentionFilter)}`
+          `/speakers/search?name=${encodeURIComponent(mentionFilter)}&limit=50&include_samples=false`
         );
         if (response.ok) {
           const speakers: Speaker[] = await response.json();
@@ -4675,7 +4675,9 @@ export function StandaloneChat({
     if (!appFilterOpen || recentSpeakers.length > 0) return;
     (async () => {
       try {
-        const response = await localFetch("/speakers/search?name=");
+        const response = await localFetch(
+          "/speakers/search?name=&limit=50&include_samples=false"
+        );
         if (response.ok) {
           const speakers: Speaker[] = await response.json();
           setRecentSpeakers(

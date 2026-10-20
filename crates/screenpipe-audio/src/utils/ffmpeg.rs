@@ -176,6 +176,101 @@ pub fn read_audio_from_file(path: &Path) -> Result<(Vec<f32>, u32)> {
     Ok((samples, sample_rate))
 }
 
+// Freenpipe (W2-16, audio-005): windowed decode for the speaker sample route.
+
+/// Decode `duration_secs` of audio that starts `start_secs` into the file, as
+/// 16 kHz mono f32 PCM, using the discovered ffmpeg binary.
+///
+/// See [`decode_audio_window_with_ffmpeg`] for what the result contains.
+pub fn read_audio_window_from_file(
+    path: &Path,
+    start_secs: f64,
+    duration_secs: f64,
+) -> Result<(Vec<f32>, u32)> {
+    let ffmpeg_path = find_ffmpeg_path()
+        .ok_or_else(|| anyhow::anyhow!("ffmpeg not found in PATH or bundled binaries"))?;
+    decode_audio_window_with_ffmpeg(&ffmpeg_path, path, start_secs, duration_secs)
+}
+
+/// Decode one window of an audio file with the given ffmpeg binary.
+///
+/// The seek is placed before `-i`, so ffmpeg jumps close to `start_secs` and
+/// decodes only the window instead of the whole file. Returns
+/// `(samples, 16000)`, where the first sample sits at `start_secs`. When the
+/// window starts at or after the end of the file ffmpeg still succeeds and the
+/// buffer is empty; when the file ends inside the window the buffer is shorter
+/// than asked. An unreadable or corrupt file is an error.
+pub fn decode_audio_window_with_ffmpeg(
+    ffmpeg_path: &Path,
+    path: &Path,
+    start_secs: f64,
+    duration_secs: f64,
+) -> Result<(Vec<f32>, u32)> {
+    const SAMPLE_RATE: u32 = 16000;
+    if !start_secs.is_finite() || start_secs < 0.0 {
+        return Err(anyhow::anyhow!(
+            "window start must be a finite, non-negative number of seconds"
+        ));
+    }
+    if !duration_secs.is_finite() || duration_secs <= 0.0 {
+        return Err(anyhow::anyhow!(
+            "window length must be a finite, positive number of seconds"
+        ));
+    }
+    let path_str = path
+        .to_str()
+        .ok_or_else(|| anyhow::anyhow!("path is not valid UTF-8: {}", path.display()))?;
+    let start_arg = format!("{:.3}", start_secs);
+    let duration_arg = format!("{:.3}", duration_secs);
+    let rate_arg = SAMPLE_RATE.to_string();
+
+    let mut command = screenpipe_core::ffmpeg_cmd(ffmpeg_path);
+    command
+        .args([
+            "-nostdin",
+            "-hide_banner",
+            "-loglevel",
+            "error",
+            "-ss",
+            &start_arg,
+            "-t",
+            &duration_arg,
+            "-i",
+            path_str,
+            "-vn",
+            "-f",
+            "f32le",
+            "-ar",
+            &rate_arg,
+            "-ac",
+            "1",
+            "pipe:1",
+        ])
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+
+    let output = command
+        .output()
+        .map_err(|e| anyhow::anyhow!("failed to run ffmpeg for audio decode: {}", e))?;
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return Err(anyhow::anyhow!(
+            "ffmpeg audio decode failed: {}",
+            stderr.trim()
+        ));
+    }
+
+    // Read the raw little-endian floats without assuming the byte buffer is
+    // aligned for f32; a trailing partial sample is dropped.
+    let samples = output
+        .stdout
+        .chunks_exact(4)
+        .map(|bytes| f32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]))
+        .collect();
+    Ok((samples, SAMPLE_RATE))
+}
+
 pub fn write_audio_to_file(
     audio: &[f32],
     sample_rate: u32,

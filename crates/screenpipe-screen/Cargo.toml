@@ -49,6 +49,7 @@ url = "2.5.0"
 
 [dev-dependencies]
 tempfile = "3.3.0"
+tracing-subscriber = { workspace = true }
 criterion = { workspace = true }
 strsim = "0.10.0"
 memory-stats = "1.2.0"
@@ -97,6 +98,22 @@ windows = { version = "0.58", features = [
   "Storage",
   "Storage_Streams",
   "Foundation_Collections",
+  # Native Windows Graphics Capture (wgc_capture.rs) and monitor enumeration
+  # (monitor/windows.rs)
+  "Foundation",
+  "Graphics",
+  "Graphics_Capture",
+  "Graphics_DirectX",
+  "Graphics_DirectX_Direct3D11",
+  "Win32_Foundation",
+  "Win32_Graphics_Direct3D",
+  "Win32_Graphics_Direct3D11",
+  "Win32_Graphics_Dxgi",
+  "Win32_Graphics_Dxgi_Common",
+  "Win32_Graphics_Gdi",
+  "Win32_System_WinRT",
+  "Win32_System_WinRT_Direct3D11",
+  "Win32_System_WinRT_Graphics_Capture",
 ] }
 
 [target.'cfg(target_os = "linux")'.dependencies]
