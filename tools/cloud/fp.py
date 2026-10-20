@@ -335,12 +335,12 @@ def cmd_template(a):
           "<!-- For each hit: file:line, the shared run, and why it is an interop identifier (route, JSON field,",
           "     SQL, CLI flag, settings key, env var, file name) or moved MIT base code. Prose hits must be rewritten. -->",
           "", "### Windows hardware smoke items", "",
-          "<!-- Entries added to docs/dev/windows-smoke-checklist.md (ids), or \"none\". -->", "",
+          "<!-- Entries added to docs/dev/smoke/<WP>.md (ids), or \"none\". -->", "",
           "### Review", "",
           "- Verification reviewer (head `<sha>`): <verdict and summary>",
           "- Compliance reviewer (head `<sha>`): <verdict and summary>", "",
           "### Spec decisions and open questions", "",
-          "<!-- Ambiguities you decided; each is also added to docs/clean-room/OPEN-QUESTIONS.md. Or \"none\". -->", "",
+          "<!-- Ambiguities you decided; each is also added to docs/clean-room/open-questions/<WP>.md. Or \"none\". -->", "",
           "### Follow-ups", "", "<!-- Work left for later WPs, or \"none\". -->", "",
           f"<!-- fp-target: {name or 'fix-main'} -->"]
     say("\n".join(L))

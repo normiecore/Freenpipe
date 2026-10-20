@@ -5,14 +5,13 @@
 #[cfg(test)]
 mod tests {
     use chrono::Utc;
-    use screenpipe_db::{DatabaseManager, OcrEngine, Order};
-    use std::sync::Arc;
+    use screenpipe_db::{DatabaseManager, Order};
 
     async fn setup_test_db() -> DatabaseManager {
         let db = DatabaseManager::new("sqlite::memory:", Default::default())
             .await
             .unwrap();
-        sqlx::migrate!("./src/migrations")
+        screenpipe_db::schema_migrations::migrator()
             .run(&db.pool)
             .await
             .unwrap();
@@ -70,9 +69,7 @@ mod tests {
             .await
             .unwrap();
 
-        db.insert_ocr_text(frame_id, ocr_text, "[]", Arc::new(OcrEngine::AppleNative))
-            .await
-            .unwrap();
+        db.insert_ocr_text(frame_id, ocr_text, "[]").await.unwrap();
 
         frame_id
     }

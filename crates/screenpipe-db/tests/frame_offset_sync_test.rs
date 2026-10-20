@@ -19,7 +19,10 @@ mod tests {
             .await
             .unwrap();
 
-        match sqlx::migrate!("./src/migrations").run(&db.pool).await {
+        match screenpipe_db::schema_migrations::migrator()
+            .run(&db.pool)
+            .await
+        {
             Ok(_) => {}
             Err(e) => {
                 eprintln!("Migration error: {:?}", e);

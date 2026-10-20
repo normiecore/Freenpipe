@@ -7,6 +7,8 @@ collect here, and the owner runs them when the PC is on.
 
 - **Workers add entries** (never tick them) in the same PR as the code, under their WP's heading in
   plan order. See [cloud-runbook.md](cloud-runbook.md), section 1.3.
+  From wave 1 on each WP writes its entries to its own file, `docs/dev/smoke/<WP>.md`, in the format
+  below; this file keeps the wave 0 entries.
 - **The owner runs them** and records the result in place.
 - **The merger** counts the open entries of each wave in its integration record (runbook 4.7).
 

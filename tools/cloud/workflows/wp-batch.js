@@ -20,6 +20,8 @@ export const meta = {
 const BASE = args.base
 const REPO = args.repo || '/home/user/Freenpipe'
 const SESSION = args.session_url || ''
+const LEAN = !!args.lean   // owner decision 6: one combined reviewer reading the diff, CI as the build gate, one fix round
+const MAX_ROUND = LEAN ? 1 : 2
 const WPS = args.wps
 const TRAILER = 'Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>' + (SESSION ? `\nClaude-Session: ${SESSION}` : '')
 const WT = id => `/root/.cache/freenpipe/wt/${id}`
@@ -95,7 +97,7 @@ Process: follow docs/dev/cloud-runbook.md sections 1.2-1.5 and 3.2-3.4 (read the
 4. Run the checks from runbook 3.4 for what you touched: cargo check -p <crate> --tests, targeted cargo test, the app crate check if touched (cargo check --manifest-path apps/screenpipe-app-tauri/src-tauri/Cargo.toml --tests), bun test for touched frontend code, \`bun test scripts/ci/vendor-guard.test.ts\`, and the clean-room gate \`bash scripts/ci/verbatim-diff.sh ${BASE} HEAD\`. Two checks CI always runs and earlier workers kept missing:
    - If you add, remove or change any \`#[tauri::command]\` (or a type one uses), run \`cd apps/screenpipe-app-tauri && bun run bindings:generate\` and commit the regenerated lib/utils/tauri.ts (never edit it by hand); \`bun run bindings:check\` must pass. It builds the app crate, so start it in the background early.
    - If you touch anything under apps/screenpipe-app-tauri that the frontend compiles, run \`bun run build\` there (Next static export with a full type check); it must pass. Afterwards delete that worktree's apps/screenpipe-app-tauri/.next directory (about 1 GB of build cache per worktree; the VM disk is shared and small).
-5. Acceptance checks that need Windows hardware or a desktop: add entries to docs/dev/windows-smoke-checklist.md (format in that file, under a "## ${w.id}" heading in plan order); never tick them. Spec ambiguities you decide: append to docs/clean-room/OPEN-QUESTIONS.md under "## ${w.id}" (question, decision, reason; create the file with a "# Open questions" heading if missing).
+5. Acceptance checks that need Windows hardware or a desktop: write them to docs/dev/smoke/${w.id}.md (a "# ${w.id} Windows smoke checks" heading, then entries in the format docs/dev/windows-smoke-checklist.md describes); never tick them. Spec ambiguities you decide: write them to docs/clean-room/open-questions/${w.id}.md (a "# ${w.id} open questions" heading, then question, decision, reason for each). One file per WP keeps parallel WPs from conflicting; do not append to the old shared OPEN-QUESTIONS.md or windows-smoke-checklist.md (this overrides the runbook).
 6. ${commitRule}
 
 Finish with everything committed and pushed (fp.py push) and the worktree on branch wp/${w.id}.
@@ -118,10 +120,12 @@ Finish with everything committed and pushed (fp.py push). Return head_sha, pushe
 ${w.extra || ''}`
 }
 
-const ROLES = [
-  { key: 'verification', name: 'Verification reviewer' },
-  { key: 'compliance', name: 'Compliance reviewer' },
-]
+const ROLES = LEAN
+  ? [{ key: 'combined', name: 'Combined reviewer' }]
+  : [
+      { key: 'verification', name: 'Verification reviewer' },
+      { key: 'compliance', name: 'Compliance reviewer' },
+    ]
 
 function reviewPrompt(w, role, sha, round, prev) {
   const re = !prev ? '' : `
@@ -131,7 +135,9 @@ The worker's responses (a rebuttal with evidence can be accepted):
 ${JSON.stringify(prev.responses || [], null, 1)}`
   return `You review Freenpipe work package ${w.id} ("${w.title}") on branch wp/${w.id}, head ${sha}, in the worktree ${WT(w.id)}. The base commit is ${BASE}. Before any build or test command run \`. ~/.freenpipe-env.sh\`. First confirm \`git -C ${WT(w.id)} rev-parse HEAD\` equals ${sha}; if it does not, report that as a blocker and stop.
 
-You are the ${role.name}. Read docs/dev/cloud-reviewers.md: follow the shared preamble and the "${role.name}" brief exactly, reading "origin/main" as ${BASE} (so the change is \`git diff ${BASE}...${sha}\` and \`git log --stat ${BASE}..${sha}\`, and the gate is \`bash scripts/ci/verbatim-diff.sh ${BASE} ${sha}\`). Read the WP section of docs/clean-room/PLAN.md, its sections 2, 5 and 6, docs/clean-room/DECISIONS.md, the spec text for each item id (grep the ids in docs/clean-room/specs/*.md) and CLAUDE.md.
+${role.key === 'combined'
+    ? 'You are the Combined reviewer. Read docs/dev/cloud-reviewers.md: follow the shared preamble, then apply both the "Verification reviewer" and the "Compliance reviewer" briefs in one pass. CI builds and tests every PR on Windows and Linux, so do not run workspace builds, the app crate build or `bun run build`: read the diff, and run only fast checks (the verbatim gate, `bun test scripts/ci/vendor-guard.test.ts`, and a single targeted test such as `cargo test -p <crate> --lib <filter>` where you doubt a logic path). Read'
+    : `You are the ${role.name}. Read docs/dev/cloud-reviewers.md: follow the shared preamble and the "${role.name}" brief exactly, reading`} "origin/main" as ${BASE} (so the change is \`git diff ${BASE}...${sha}\` and \`git log --stat ${BASE}..${sha}\`, and the gate is \`bash scripts/ci/verbatim-diff.sh ${BASE} ${sha}\`). Read the WP section of docs/clean-room/PLAN.md, its sections 2, 5 and 6, docs/clean-room/DECISIONS.md, the spec text for each item id (grep the ids in docs/clean-room/specs/*.md) and CLAUDE.md.
 ${re}
 Do not modify tracked files, commit, push or switch branches in that worktree; another reviewer may be using it at the same time. Scratch files go in $FP_STATE/review/${w.id}/ (you may add a detached worktree there if you need to experiment, and remove it when done). The cargo target dir is shared: a "Blocking waiting for file lock" message means another build is running, so wait. Run targeted tests only (no workspace-wide test runs; disk is limited). The VM is Linux: judge cfg(windows) code by reading and say what CI's windows job must prove.
 
@@ -160,7 +166,7 @@ function publishPrompt(w, res) {
   return `You publish the result of Freenpipe work package ${w.id} ("${w.title}") to GitHub. Worktree ${WT(w.id)}, branch wp/${w.id}, expected head ${res.head}. Run every command from inside the worktree after \`. ~/.freenpipe-env.sh &&\`.
 
 1. Confirm \`git rev-parse HEAD\` is ${res.head} and the tree is clean, then \`python3 tools/cloud/fp.py push\` (it must say pushed; if it prints STOP, report that and do nothing else).
-2. Write the PR description: \`python3 tools/cloud/fp.py template ${w.id} --worker coordinator > $FP_STATE/pr-${w.id}.md\`, then fill in every section from the data below, in plain factual prose (no marketing words, no emoji). "What changed": the summary bullets. "Acceptance checks": tick [x] only for pass, and say where each ran or will run (VM Linux, CI windows job, CI linux job, smoke checklist entry). "Tests run": the check commands and results. "Verbatim gate": hits and justifications or "0 hits". "Windows hardware smoke items": the entries or "none". "Review": exactly two bullets, \`- Verification reviewer (head \\\`${res.head}\\\`): <VERDICT> - <summary>\` and the same for the Compliance reviewer, using the final round's verdicts${approved ? '' : ' (state plainly that changes are still open)'}. "Spec decisions and open questions" and "Follow-ups": from the data, or "none". Keep the \`<!-- fp-target: ${w.id} -->\` line. End the file with a blank line, then these two lines:
+2. Write the PR description: \`python3 tools/cloud/fp.py template ${w.id} --worker coordinator > $FP_STATE/pr-${w.id}.md\`, then fill in every section from the data below, in plain factual prose (no marketing words, no emoji). "What changed": the summary bullets. "Acceptance checks": tick [x] only for pass, and say where each ran or will run (VM Linux, CI windows job, CI linux job, smoke checklist entry). "Tests run": the check commands and results. "Verbatim gate": hits and justifications or "0 hits". "Windows hardware smoke items": the entries or "none". "Review": one bullet per reviewer (${ROLES.map(r => r.name).join(', ')}), each \`- <reviewer> (head \\\`${res.head}\\\`): <VERDICT> - <summary>\`, using the final round's verdicts${approved ? '' : ' (state plainly that changes are still open)'}. "Spec decisions and open questions" and "Follow-ups": from the data, or "none". Keep the \`<!-- fp-target: ${w.id} -->\` line. End the file with a blank line, then these two lines:
 🤖 Generated with [Claude Code](https://claude.com/claude-code)
 ${SESSION}
 3. \`python3 tools/cloud/fp.py open-pr ${w.id} --draft --update-body --body-file $FP_STATE/pr-${w.id}.md\` and note the PR number it prints.
@@ -198,7 +204,7 @@ async function runWP(w) {
   const rounds = []
   const prevByRole = {}
   let approved = false
-  for (let round = 0; round <= 2; round++) {
+  for (let round = 0; round <= MAX_ROUND; round++) {
     const reviews = await parallel(ROLES.map(role => () =>
       agent(reviewPrompt(w, role, head, round, prevByRole[role.key]), {
         label: `review-${role.key}:${w.id}:r${round}`, phase: 'Review', schema: REVIEW_SCHEMA,
@@ -207,7 +213,7 @@ async function runWP(w) {
     rounds.push({ round, head, reviews: got })
     log(`${w.id} r${round}: ${got.map(r => `${r.role}=${r.verdict}`).join(', ') || 'no reviews (agents failed)'}`)
     if (got.length === ROLES.length && got.every(r => r.verdict === 'APPROVE')) { approved = true; break }
-    if (got.length < ROLES.length || round === 2) break
+    if (got.length < ROLES.length || round === MAX_ROUND) break
     const findings = got.flatMap(r => r.findings.map(f => ({ reviewer: r.role, ...f })))
     const fix = await agent(fixPrompt(w, head, round + 1, findings), { label: `fix:${w.id}:r${round + 1}`, phase: 'Fix', schema: FIX_SCHEMA })
     if (!fix) break

@@ -103,7 +103,7 @@ Several large files are edited by more than one WP in the same wave. Each WP edi
 | Wave | Theme | WPs | Sizes |
 |---|---|---|---|
 | 0 | Foundation: build, ee/ stubs, de-cloud, rebrand | 13 | 6 L, 7 M |
-| 1 | Cross-cutting foundations: schema v2.7, settings schema, integration seams | 4 | 2 L, 1 M, 1 S |
+| 1 | Cross-cutting foundations: schema v2.7, settings schema, integration seams | 5 | 2 L, 2 M, 1 S |
 | 2 | Engine data layer and core backends | 27 | 21 L, 5 M, 1 XL |
 | 3 | Feature backends (search, pipes, connections, capture, audio) | 31 | 25 L, 6 M |
 | 4 | Advanced backends, agents runtime, app shell | 22 | 14 L, 3 M, 5 XL |
@@ -111,7 +111,7 @@ Several large files are edited by more than one WP in the same wave. Each WP edi
 | 6 | Agent/workflow UIs, piggyback, hybrid bulk | 21 | 12 L, 3 M, 6 XL |
 | 7 | Hybrid lifecycle, overlays, chat follow-ups | 9 | 6 L, 1 M, 2 XL |
 | 8 | Final UI pieces and surface audit | 3 | 2 L, 1 XL |
-| total | | 154 | 107 L, 30 M, 1 S, 16 XL |
+| total | | 155 | 107 L, 31 M, 1 S, 16 XL |
 
 Coverage: 412 live delta items, each in exactly one WP (checked by `python3 tools/plan/plan_build.py`); 38 verifier-dropped items are mapped in section 9.
 
@@ -511,6 +511,7 @@ Acceptance:
 | W1-02 | L | Settings schema v2 and store compatibility | W0-12 | shell-001, shell-002, shell-003, shell-037, shell-M02, frontend-053, audio-028, cloud-033, cloud-034, cloud-035 |
 | W1-03 | M | Integration seams, stub modules and shared constants | W0-12 | shell-025, shell-038 |
 | W1-04 | S | Enterprise and plan-gate no-op surface | W0-12 | frontend-052, cloud-043, agents_pipes-041, agents_pipes-045, api-035, meetings_memory-042 |
+| W1-05 | M | Licence gating for commercial builds | W0-13 | (owner decision 7) commercial-ready default builds |
 
 #### W1-01 Schema v2.7.104: 28 migrations and ocr_text retirement (L)
 
@@ -620,6 +621,30 @@ Acceptance:
 - [ ] tauri.ts exposes isHistoryAccessRestricted and it resolves false (bun test against bindings)
 - [ ] cargo test -p screenpipe-engine history_access: every caller gets Unrestricted
 - [ ] grep -rn 'history_access_limited' crates shows only the enum definition
+
+#### W1-05 Licence gating for commercial builds (M)
+
+- **Items:** (owner decision 7) commercial-ready default builds
+- **Depends on:** W0-13
+- **Specs:** docs/clean-room/DECISIONS.md decision 7; third_party/README.md
+
+Make every build the project ships commercially usable by default. opf-rs (CC BY-NC 4.0) and tinfoil (AGPL-3.0) move behind opt-in Cargo features that no default build and no release-app.yml feature set enables: screenpipe-redact `opf-text` and a new `tinfoil-enclave` feature, forwarded by screenpipe-engine and the app crate as opt-in features of their own. With the features off, the text PII worker skips the opf fallback (v45 ONNX, then regex), and the BYO-enclave paths (search filter_pii enclave, tinfoil text and image adapters) report 'not built with enclave support' instead of compiling the client. Add a CI gate that resolves the default and release feature sets of the engine and app crates and fails if any package licensed CC BY-NC, AGPL, GPL (other than LGPL), SSPL or without any licence declaration enters them, with a short commented allow-list for declared exceptions. Record both crates' status in third_party/README.md.
+
+Owner paths:
+- `crates/screenpipe-redact/Cargo.toml (opf-text, tinfoil features)`
+- `crates/screenpipe-redact/src/adapters/ (tinfoil and opf adapters behind features)`
+- `crates/screenpipe-engine/Cargo.toml (feature flags)`
+- `crates/screenpipe-engine/src/privacy_filter.rs (enclave path behind a feature)`
+- `crates/screenpipe-engine/src/bin/screenpipe-engine.rs (opf fallback behind a feature)`
+- `apps/screenpipe-app-tauri/src-tauri/Cargo.toml (feature flags)`
+- `scripts/ci/licence-guard.test.ts (new)`
+- `.github/workflows/freenpipe-ci.yml (gates step)`
+- `third_party/README.md`
+
+Acceptance:
+- [ ] cargo tree for screenpipe-engine and the app crate with default and release features contains neither opf nor tinfoil
+- [ ] cargo check of screenpipe-redact and screenpipe-engine passes both with and without the opt-in features
+- [ ] the licence gate passes on main and fails on a branch that re-enables opf-text by default (negative test in the gate's tests)
 
 ### Wave 2: Engine data layer and core backends
 

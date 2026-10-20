@@ -15,7 +15,6 @@ mod tests {
     use screenpipe_engine::routes::search::SearchResponse;
     use screenpipe_engine::SCServer;
     use screenpipe_engine::{ContentItem, PaginatedResponse};
-    use screenpipe_screen::OcrEngine; // Adjust this import based on your actual module structure
     use serde::Deserialize;
     use std::net::SocketAddr;
     use std::sync::Arc;
@@ -99,7 +98,6 @@ mod tests {
             frame_id,
             "A user can find the local api sentinel exactmatch from visible OCR text",
             "[]",
-            Arc::new(OcrEngine::Tesseract.into()),
         )
         .await
         .unwrap();
@@ -285,7 +283,6 @@ mod tests {
             frame_id1,
             "This is a test OCR text", // 21 chars
             "",
-            Arc::new(OcrEngine::Tesseract.into()),
         )
         .await
         .unwrap();
@@ -293,7 +290,6 @@ mod tests {
             frame_id2,
             "Another OCR text for testing that should be longer than thirty characters", // >30 chars
             "",
-            Arc::new(OcrEngine::Tesseract.into()),
         )
         .await
         .unwrap();
@@ -529,14 +525,9 @@ mod tests {
             .unwrap();
 
         // insert ocr and audio data
-        db.insert_ocr_text(
-            frame_id1,
-            "old ocr text",
-            "",
-            Arc::new(OcrEngine::Tesseract.into()),
-        )
-        .await
-        .unwrap();
+        db.insert_ocr_text(frame_id1, "old ocr text", "")
+            .await
+            .unwrap();
 
         let audio_transcription_id1 = db
             .insert_audio_transcription(
@@ -763,23 +754,13 @@ mod tests {
             .await
             .unwrap();
 
-        db.insert_ocr_text(
-            old_frame_id,
-            "old task: write documentation",
-            "",
-            Arc::new(OcrEngine::Tesseract.into()),
-        )
-        .await
-        .unwrap();
+        db.insert_ocr_text(old_frame_id, "old task: write documentation", "")
+            .await
+            .unwrap();
 
-        db.insert_ocr_text(
-            recent_frame_id,
-            "current task: fix bug #123",
-            "",
-            Arc::new(OcrEngine::Tesseract.into()),
-        )
-        .await
-        .unwrap();
+        db.insert_ocr_text(recent_frame_id, "current task: fix bug #123", "")
+            .await
+            .unwrap();
 
         // Search with 30-second window
         let results = db

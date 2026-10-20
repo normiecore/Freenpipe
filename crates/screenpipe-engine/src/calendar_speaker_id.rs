@@ -1249,7 +1249,7 @@ mod tests {
         let db = screenpipe_db::DatabaseManager::new("sqlite::memory:", Default::default())
             .await
             .unwrap();
-        sqlx::migrate!("../../crates/screenpipe-db/src/migrations")
+        screenpipe_db::schema_migrations::migrator()
             .run(&db.pool)
             .await
             .unwrap();

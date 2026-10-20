@@ -982,17 +982,13 @@ pub async fn run_frame_ocr(
 
     let (ocr_text, ocr_text_json) = ocr_result;
 
-    // Store in DB for future reads (ignore errors — the result is still returned)
+    // Store on the frame row for future reads (frames.full_text when the
+    // frame has no text yet, frames.text_json for the word boxes). Errors are
+    // ignored: the result is still returned.
     if !ocr_text.is_empty() {
-        #[cfg(target_os = "macos")]
-        let engine = Arc::new(screenpipe_db::OcrEngine::AppleNative);
-        #[cfg(target_os = "windows")]
-        let engine = Arc::new(screenpipe_db::OcrEngine::WindowsNative);
-        #[cfg(not(any(target_os = "macos", target_os = "windows")))]
-        let engine = Arc::new(screenpipe_db::OcrEngine::Tesseract);
         if let Err(e) = state
             .db
-            .insert_ocr_text(frame_id, &ocr_text, &ocr_text_json, engine)
+            .insert_ocr_text(frame_id, &ocr_text, &ocr_text_json)
             .await
         {
             debug!(

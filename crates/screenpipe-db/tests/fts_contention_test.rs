@@ -14,7 +14,7 @@
 #[cfg(test)]
 mod fts_contention_tests {
     use chrono::{Duration, Utc};
-    use screenpipe_db::{DatabaseManager, FrameWindowData, OcrEngine};
+    use screenpipe_db::{DatabaseManager, FrameWindowData};
     use std::sync::Arc;
     use std::time::Instant;
 
@@ -27,7 +27,7 @@ mod fts_contention_tests {
             .await
             .unwrap();
 
-        sqlx::migrate!("./src/migrations")
+        screenpipe_db::schema_migrations::migrator()
             .run(&db.pool)
             .await
             .expect("Failed to run migrations");
@@ -55,15 +55,9 @@ mod fts_contention_tests {
                 text: format!("Frame {} content: {}", i, &large_text),
                 text_json: String::new(),
             }];
-            db.insert_frames_with_ocr_batch(
-                "test_device",
-                Some(ts),
-                i as i64,
-                &windows,
-                Arc::new(OcrEngine::Tesseract),
-            )
-            .await
-            .unwrap();
+            db.insert_frames_with_ocr_batch("test_device", Some(ts), i as i64, &windows)
+                .await
+                .unwrap();
         }
     }
 
@@ -78,9 +72,9 @@ mod fts_contention_tests {
 
         // Pre-read all data OUTSIDE any write transaction
         let rows: Vec<(i64, String, String, String)> = sqlx::query_as(
-            "SELECT frame_id, text, COALESCE(app_name, ''), COALESCE(window_name, '') \
-             FROM ocr_text WHERE text IS NOT NULL AND text != '' AND frame_id IS NOT NULL \
-             ORDER BY rowid LIMIT 200",
+            "SELECT id, full_text, COALESCE(app_name, ''), COALESCE(window_name, '') \
+             FROM frames WHERE full_text IS NOT NULL AND full_text != '' \
+             ORDER BY id LIMIT 200",
         )
         .fetch_all(&db.pool)
         .await
@@ -171,9 +165,9 @@ mod fts_contention_tests {
 
         // Pre-read FTS data outside any tx
         let rows: Vec<(i64, String, String, String)> = sqlx::query_as(
-            "SELECT frame_id, text, COALESCE(app_name, ''), COALESCE(window_name, '') \
-             FROM ocr_text WHERE text IS NOT NULL AND text != '' AND frame_id IS NOT NULL \
-             ORDER BY rowid LIMIT 200",
+            "SELECT id, full_text, COALESCE(app_name, ''), COALESCE(window_name, '') \
+             FROM frames WHERE full_text IS NOT NULL AND full_text != '' \
+             ORDER BY id LIMIT 200",
         )
         .fetch_all(&db.pool)
         .await
@@ -227,7 +221,6 @@ mod fts_contention_tests {
                         Some(Utc::now()),
                         (1000 + i) as i64,
                         &windows,
-                        Arc::new(OcrEngine::Tesseract),
                     )
                     .await
                     .unwrap();

@@ -22,6 +22,12 @@
 //!
 //! See the sibling text adapter for the full verification rationale.
 //!
+//! The SDK is AGPL-3.0 and is linked only with the opt-in
+//! `tinfoil-enclave` feature. Without it this adapter builds, but
+//! [`ImageRedactor::detect`] fails with "not built with enclave support"
+//! before reading or sending anything (see the text adapter's "Build
+//! support" notes).
+//!
 //! Shipping rationale: a single Tinfoil container running BOTH the OPF
 //! text model and the rfdetr_v8 image model on H200 is far faster than
 //! either consumer-CPU OPF or M-series-CoreML rfdetr — and avoids
@@ -45,7 +51,7 @@
 //! ```
 
 use std::path::Path;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use async_trait::async_trait;
 use base64::{engine::general_purpose::STANDARD as B64, Engine as _};
@@ -54,8 +60,8 @@ use serde::{Deserialize, Serialize};
 use tokio::sync::RwLock;
 
 use crate::adapters::tinfoil::{
-    looks_like_attestation_drift, not_configured_error, resolve_api_key_with, resolve_target,
-    TinfoilTarget,
+    attest, looks_like_attestation_drift, require_target, resolve_api_key_with, resolve_target,
+    AttestedClient, TinfoilTarget, ENCLAVE_SUPPORT_BUILT, NOT_BUILT_MESSAGE,
 };
 use crate::image::{ImageRedactor, ImageRegion};
 use crate::{RedactError, SpanLabel};
@@ -66,11 +72,6 @@ use crate::{RedactError, SpanLabel};
 const DEFAULT_TIMEOUT: Duration = Duration::from_secs(30);
 const TINFOIL_IMAGE_NAME: &str = "tinfoil_image";
 const TINFOIL_IMAGE_VERSION: u32 = 1;
-/// Same rationale as the text adapter — see
-/// [`crate::adapters::tinfoil`] for the full incident note. Keep this
-/// in lockstep with that constant so both modalities pick up enclave
-/// redeploys at the same cadence.
-const CLIENT_REFRESH: Duration = Duration::from_secs(60 * 60 * 12);
 
 /// Configuration. Same env-var fallback chain as the text Tinfoil
 /// adapter so users only configure auth once.
@@ -98,14 +99,6 @@ pub struct TinfoilImageConfig {
     pub labels: Vec<String>,
 }
 
-/// See sibling `tinfoil::CachedClient` for the rationale on holding
-/// the verifier alongside the bare reqwest client.
-struct CachedClient {
-    _inner: tinfoil::Client,
-    http: reqwest::Client,
-    created_at: Instant,
-}
-
 pub struct TinfoilImageRedactor {
     /// `None` when no enclave is configured.
     target: Option<TinfoilTarget>,
@@ -115,7 +108,9 @@ pub struct TinfoilImageRedactor {
     /// Server-side label allow-list forwarded on every request; empty =
     /// enclave default.
     labels: Vec<String>,
-    client: RwLock<Option<CachedClient>>,
+    /// Cached attested client, shared shape with the text adapter (which
+    /// also owns the re-attestation interval).
+    client: RwLock<Option<AttestedClient>>,
     has_auth: bool,
 }
 
@@ -132,7 +127,9 @@ impl std::fmt::Debug for TinfoilImageRedactor {
 impl TinfoilImageRedactor {
     pub fn new(cfg: TinfoilImageConfig) -> Self {
         let target = resolve_target(cfg.enclave, cfg.repo);
-        if target.is_none() {
+        if !ENCLAVE_SUPPORT_BUILT {
+            tracing::info!("tinfoil_image redactor: {NOT_BUILT_MESSAGE}");
+        } else if target.is_none() {
             tracing::info!(
                 "tinfoil_image redactor has no enclave configured; it will not send anything"
             );
@@ -192,39 +189,25 @@ impl TinfoilImageRedactor {
 
     /// Verify the enclave and return its attested HTTP client. Mirrors
     /// [`crate::adapters::tinfoil::TinfoilRedactor::http`] — re-attests
-    /// after `CLIENT_REFRESH`, or whenever [`invalidate`] is called.
+    /// once the cached client is no longer fresh, or whenever
+    /// [`invalidate`] is called.
     async fn http(&self) -> Result<reqwest::Client, RedactError> {
-        let target = self.target.as_ref().ok_or_else(not_configured_error)?;
+        let target = require_target(self.target.as_ref())?;
         if let Some(c) = self.client.read().await.as_ref() {
-            if c.created_at.elapsed() < CLIENT_REFRESH {
+            if c.is_fresh() {
                 return Ok(c.http.clone());
             }
         }
         let mut g = self.client.write().await;
         if let Some(c) = g.as_ref() {
-            if c.created_at.elapsed() < CLIENT_REFRESH {
+            if c.is_fresh() {
                 return Ok(c.http.clone());
             }
         }
-        let inner = tinfoil::Client::new(&target.enclave, &target.repo, "")
-            .await
-            .map_err(|e| {
-                RedactError::Runtime(format!(
-                    "tinfoil_image attestation failed for {}: {}",
-                    target.enclave, e
-                ))
-            })?;
-        let http = inner
-            .http_client()
-            .map_err(|e| RedactError::Runtime(format!("tinfoil_image http_client: {}", e)))?
-            .clone();
-        let http_clone = http.clone();
-        *g = Some(CachedClient {
-            _inner: inner,
-            http,
-            created_at: Instant::now(),
-        });
-        Ok(http_clone)
+        let fresh = attest(target, "tinfoil_image").await?;
+        let http = fresh.http.clone();
+        *g = Some(fresh);
+        Ok(http)
     }
 
     /// Drop the cached attested client so the next call re-attests.
@@ -269,10 +252,12 @@ impl ImageRedactor for TinfoilImageRedactor {
     }
 
     async fn detect(&self, image_path: &Path) -> Result<Vec<ImageRegion>, RedactError> {
+        // Refuse before touching the frame when the enclave cannot be used
+        // (no enclave support in this build, or nothing configured).
+        let target = require_target(self.target.as_ref())?;
         let bytes = tokio::fs::read(image_path)
             .await
             .map_err(|e| RedactError::Runtime(format!("read {}: {e}", image_path.display())))?;
-        let target = self.target.as_ref().ok_or_else(not_configured_error)?;
         let image_b64 = B64.encode(&bytes);
 
         let http = self.http().await?;
@@ -403,7 +388,33 @@ mod tests {
         let img = dir.path().join("frame.jpg");
         std::fs::write(&img, b"not really a jpeg").unwrap();
         let err = r.detect(&img).await.unwrap_err();
-        assert!(err.to_string().contains("not configured"), "{err}");
+        let expected = if ENCLAVE_SUPPORT_BUILT {
+            "not configured"
+        } else {
+            "not built with enclave support"
+        };
+        assert!(err.to_string().contains(expected), "{err}");
+    }
+
+    /// Without enclave support even a configured detector refuses, and it
+    /// does so before reading the frame.
+    #[cfg(not(feature = "tinfoil-enclave"))]
+    #[tokio::test]
+    async fn configured_detector_without_enclave_support_refuses() {
+        let r = TinfoilImageRedactor::new(TinfoilImageConfig {
+            api_key: Some("enclave-key".into()),
+            ..cfg()
+        });
+        assert!(r.is_configured());
+        let err = r
+            .detect(std::path::Path::new("/nonexistent-frame.jpg"))
+            .await
+            .unwrap_err();
+        assert!(matches!(err, RedactError::Unavailable(_)), "{err:?}");
+        assert!(
+            err.to_string().contains("not built with enclave support"),
+            "{err}"
+        );
     }
 
     #[test]

@@ -27,7 +27,6 @@ use crate::{
     },
 };
 use axum::extract::Path;
-use screenpipe_screen::OcrEngine;
 
 #[derive(OaSchema, Serialize, Deserialize, Debug, Clone)]
 #[serde(tag = "type", content = "content")]
@@ -308,6 +307,8 @@ pub struct FrameContent {
 pub struct OCRResult {
     pub text: String,
     pub text_json: Option<String>,
+    /// Accepted for API compatibility and ignored: the OCR engine is no
+    /// longer stored.
     pub ocr_engine: Option<String>,
     pub focused: Option<bool>,
 }
@@ -345,13 +346,8 @@ pub(crate) async fn add_frame_to_db(
 
     if let Some(ocr_results) = &frame.ocr_results {
         for ocr in ocr_results {
-            db.insert_ocr_text(
-                frame_id,
-                &ocr.text,
-                ocr.text_json.as_deref().unwrap_or(""),
-                Arc::new(OcrEngine::default().into()), // Ideally could pass any str as ocr_engine since can be run outside of screenpipe
-            )
-            .await?;
+            db.insert_ocr_text(frame_id, &ocr.text, ocr.text_json.as_deref().unwrap_or(""))
+                .await?;
         }
     }
 
