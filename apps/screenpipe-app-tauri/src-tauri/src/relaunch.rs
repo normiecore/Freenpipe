@@ -4,14 +4,14 @@
 //! One bounded teardown for every way the app ends, and a safe relaunch.
 //!
 //! Quit (tray), the `RunEvent::Exit` path and a safe relaunch all run the
-//! same [`teardown`]: release the keep-awake hold, stop capture, shut the
-//! engine down (background workers,
+//! same [`teardown`]: stop capture, shut the engine down (background workers,
 //! pipe scheduler and audio manager, 15 s for audio, and any engine another
 //! task is starting or stopping at that moment), wait for the engine's HTTP
 //! runtime to drain, close the engine's read pool (its write pool goes with the
-//! database manager once that drains), and stop the Pi agent sessions. Every
-//! step has its own time limit, clipped to an overall budget. A late HTTP drain, pool
-//! close or Pi stop is only logged: capture and audio are already stopped, so
+//! database manager once that drains), stop the Pi agent sessions, and release
+//! the keep-awake hold. Every step has its own time limit, clipped to an
+//! overall budget. A late HTTP drain, pool close, Pi stop or keep-awake
+//! release is only logged: capture and audio are already stopped, so
 //! the app leaves normally (status 0, through Tauri where it can). Only a
 //! capture or engine step that did not stop in time ends the process with
 //! [`hard_exit`], because returning then would run native destructors under
@@ -201,8 +201,6 @@ fn spawn_pending_restart(context: &str) {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct TeardownBudget {
     pub overall: Duration,
-    /// Giving back the keep-awake hold (`keepComputerAwake`).
-    pub keep_awake: Duration,
     pub capture: Duration,
     /// `ServerCore::shutdown`: background workers (their grace,
     /// [`BACKGROUND_WORKER_GRACE`]), the pipe scheduler (aborted, normally at
@@ -214,6 +212,10 @@ pub struct TeardownBudget {
     /// Closing the engine's read pool.
     pub pools: Duration,
     pub pi: Duration,
+    /// Giving back the keep-awake hold (`keepComputerAwake`). The last step
+    /// and not a critical one: the OS releases the hold when the process
+    /// ends anyway.
+    pub keep_awake: Duration,
 }
 
 /// Room the engine step leaves for the pipe scheduler's stop on top of the
@@ -227,12 +229,12 @@ impl Default for TeardownBudget {
             // Capture and the engine at their limits still leave a little
             // room for the drain; the later steps are not critical.
             overall: Duration::from_secs(29),
-            keep_awake: crate::power_awake::RELEASE_LIMIT + Duration::from_secs(1),
             capture: Duration::from_secs(6),
             engine,
             http_drain: Duration::from_secs(3),
             pools: Duration::from_secs(3),
             pi: Duration::from_secs(3),
+            keep_awake: crate::power_awake::RELEASE_LIMIT + Duration::from_secs(1),
         }
     }
 }
@@ -415,18 +417,6 @@ async fn teardown(app: &tauri::AppHandle, reason: &str, budget: TeardownBudget) 
     // The watchdog must not bring the engine back while it is being stopped.
     crate::health::set_recording_intended(false);
 
-    // First, while the budget is untouched: the OS would release the hold
-    // when the process ends anyway, but a relaunch or a slow teardown should
-    // not keep the machine awake meanwhile.
-    run_step(
-        &mut report,
-        "keep_awake",
-        budget.keep_awake,
-        deadline,
-        crate::power_awake::release_for_teardown(),
-    )
-    .await;
-
     let state = app.try_state::<RecordingState>();
     let (capture_arc, server_arc) = match &state {
         Some(s) => (Some(s.capture.clone()), Some(s.server.clone())),
@@ -517,6 +507,19 @@ async fn teardown(app: &tauri::AppHandle, reason: &str, budget: TeardownBudget) 
             None => StepOutcome::Skipped,
         }
     })
+    .await;
+
+    // Last: the OS releases the hold when the process ends anyway, so this
+    // only keeps a slow quit or a relaunch from holding the machine awake
+    // meanwhile. After the critical steps, a wedged keep-awake thread can
+    // never cut them short.
+    run_step(
+        &mut report,
+        "keep_awake",
+        budget.keep_awake,
+        deadline,
+        crate::power_awake::release_for_teardown(),
+    )
     .await;
 
     report.elapsed = started.elapsed();
@@ -727,9 +730,10 @@ pub enum TeardownSeverity {
     /// Every step finished (or had nothing to do) in time.
     Clean,
     /// Capture and the engine stopped; only a later step (`http_drain`,
-    /// `sqlite_pools`, `pi`) ran late, or the whole run went a little over
-    /// the budget. A database handle or Pi session still open is released
-    /// by the OS when the process ends, so this is logged, not acted on.
+    /// `sqlite_pools`, `pi`, `keep_awake`) ran late, or the whole run went
+    /// a little over the budget. A database handle, Pi session or keep-awake
+    /// hold still open is released by the OS when the process ends, so this
+    /// is logged, not acted on.
     SlowCleanup,
     /// Capture or the engine did not stop in time, or the teardown thread
     /// panicked: native capture or audio work may still be running.
@@ -1329,7 +1333,9 @@ mod tests {
         assert_eq!(b.engine, Duration::from_secs(21));
         assert_eq!(b.http_drain, Duration::from_secs(3));
         // Capture and the engine at their own limits still fit the budget.
+        // Every other step runs after them, so none can shorten them.
         assert!(b.overall >= b.capture + b.engine);
+        assert!(!CRITICAL_STEPS.contains(&"keep_awake"));
         assert!(b.overall >= b.engine + b.http_drain);
         assert_eq!(b.overall + GUARD_MARGIN, Duration::from_secs(32));
     }
