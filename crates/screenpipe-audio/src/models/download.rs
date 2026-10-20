@@ -112,6 +112,15 @@ impl ExpectedFile {
             .map(|m| m.is_file() && m.len() == self.size)
             .unwrap_or(false)
     }
+
+    /// True when the file at `path` has the pinned size and SHA-256. The size
+    /// is checked first, so other files are never read.
+    pub fn matches_file(&self, path: &Path) -> bool {
+        self.has_size(path)
+            && std::fs::read(path)
+                .map(|bytes| self.check(&bytes).is_ok())
+                .unwrap_or(false)
+    }
 }
 
 fn sha256_hex(bytes: &[u8]) -> String {

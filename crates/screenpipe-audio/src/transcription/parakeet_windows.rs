@@ -8,6 +8,10 @@
 //! * `SCREENPIPE_DIRECTML` unset or empty: automatic. `1` or `true`: on (an
 //!   adapter must still qualify). Any other value (`0`, `false`, `off`, ...):
 //!   CPU.
+//! * `DirectML.dll`: automatic mode uses DirectML only with a copy next to
+//!   the executable; `1`/`true` also accepts the one in System32. Either copy
+//!   must export `DMLCreateDevice1` at the ordinal ONNX Runtime imports (see
+//!   [`directml_exports_verdict`]).
 //! * Adapter: every DXGI adapter except software (WARP, Basic Render Driver)
 //!   and remote ones is opened with `D3D12CreateDevice` at feature level
 //!   11_0 and asked for its architecture. Of those that pass, a discrete
@@ -157,14 +161,15 @@ pub fn directml_latch() -> &'static AtomicBool {
 
 /// Pure decision step. `built_with_directml` is whether this binary has the
 /// DirectML provider at all (the `directml` feature on Windows);
-/// `library_check` says whether `DirectML.dll` can be loaded (ONNX Runtime
-/// loads it lazily, the first time the provider is used, so a missing DLL
-/// has to be caught before choosing it).
+/// `library_check` names the usable `DirectML.dll` or says why there is none
+/// (ONNX Runtime loads it lazily, the first time the provider is used, so an
+/// unusable DLL has to be caught before choosing DirectML; see
+/// [`choose_directml_library`]).
 pub fn decide_target(
     switch: DirectMlSwitch,
     built_with_directml: bool,
     disabled_after_failure: bool,
-    library_check: impl FnOnce() -> Result<(), String>,
+    library_check: impl FnOnce() -> Result<String, String>,
     probe: impl FnOnce() -> Result<Vec<AdapterInfo>, String>,
 ) -> TargetDecision {
     let cpu = |reason: String| TargetDecision {
@@ -182,9 +187,10 @@ pub fn decide_target(
     if disabled_after_failure {
         return cpu("DirectML failed earlier in this process; using CPU".to_string());
     }
-    if let Err(e) = library_check() {
-        return cpu(format!("{e}; using CPU"));
-    }
+    let library = match library_check() {
+        Ok(library) => library,
+        Err(e) => return cpu(format!("{e}; using CPU")),
+    };
     let adapters = match probe() {
         Ok(adapters) => adapters,
         Err(e) => return cpu(format!("DXGI adapter enumeration failed ({e}); using CPU")),
@@ -203,11 +209,12 @@ pub fn decide_target(
                 device_id: adapter.ordinal as i32,
             },
             reason: format!(
-                "DirectML adapter ordinal {}: {} ({} MiB dedicated video memory, UMA={}){}",
+                "DirectML adapter ordinal {}: {} ({} MiB dedicated video memory, UMA={}), {}{}",
                 adapter.ordinal,
                 adapter.name,
                 adapter.dedicated_mib(),
                 adapter.uma().unwrap_or(false),
+                library,
                 if switch == DirectMlSwitch::On {
                     format!(" [{DIRECTML_ENV} on]")
                 } else {
@@ -225,43 +232,164 @@ pub fn decide_target(
 /// Decide for this process: reads `SCREENPIPE_DIRECTML`, the build features
 /// and (on Windows) the DXGI adapters.
 pub fn decide_target_for_this_process() -> TargetDecision {
+    let switch = directml_switch_from_env();
     decide_target(
-        directml_switch_from_env(),
+        switch,
         cfg!(all(windows, feature = "directml")),
         directml_latch().load(Ordering::SeqCst),
-        directml_library_check,
+        || directml_library_check(switch),
         probe_adapters,
     )
 }
 
-/// Whether `DirectML.dll` can be loaded from the application directory or
-/// System32 (the places ONNX Runtime's delay-load finds it).
-#[cfg(windows)]
-pub fn directml_library_check() -> Result<(), String> {
-    use windows::core::w;
-    use windows::Win32::Foundation::{FreeLibrary, HANDLE};
-    use windows::Win32::System::LibraryLoader::{LoadLibraryExW, LOAD_LIBRARY_SEARCH_DEFAULT_DIRS};
+// ---------------------------------------------------------------------------
+// DirectML.dll
+// ---------------------------------------------------------------------------
 
-    // SAFETY: loads and immediately releases a system library by name; no
-    // code from it is called here.
-    unsafe {
-        match LoadLibraryExW(
-            w!("DirectML.dll"),
-            HANDLE::default(),
-            LOAD_LIBRARY_SEARCH_DEFAULT_DIRS,
-        ) {
-            Ok(module) => {
-                let _ = FreeLibrary(module);
-                Ok(())
-            }
-            Err(e) => Err(format!("DirectML.dll could not be loaded ({e})")),
-        }
+/// The pinned ONNX Runtime 1.22.0 DirectML build (NuGet
+/// `Microsoft.ML.OnnxRuntime.DirectML`) delay-imports `DirectML.dll` by this
+/// ordinal, which is [`DIRECTML_REQUIRED_EXPORT`] in the DirectML 1.15.4
+/// redistributable (ordinal 1 is `DMLCreateDevice`). The import is bound the
+/// first time the provider runs; a DLL without it fails there as a loader
+/// exception, not as an error the CPU fallback can catch.
+pub const DIRECTML_REQUIRED_ORDINAL: u16 = 2;
+/// The export that must sit at [`DIRECTML_REQUIRED_ORDINAL`].
+pub const DIRECTML_REQUIRED_EXPORT: &str = "DMLCreateDevice1";
+
+/// Pure check of the two lookups in a loaded `DirectML.dll`: the ordinal
+/// ONNX Runtime imports must exist and be `DMLCreateDevice1`.
+pub fn directml_exports_verdict(
+    by_ordinal: Option<usize>,
+    by_name: Option<usize>,
+) -> Result<(), String> {
+    match (by_ordinal, by_name) {
+        (Some(ordinal), Some(name)) if ordinal == name => Ok(()),
+        (_, None) => Err(format!(
+            "has no {DIRECTML_REQUIRED_EXPORT} export (older than the DirectML the provider needs)"
+        )),
+        (None, Some(_)) => Err(format!(
+            "does not export ordinal {DIRECTML_REQUIRED_ORDINAL}, which ONNX Runtime imports"
+        )),
+        (Some(_), Some(_)) => Err(format!(
+            "exports something other than {DIRECTML_REQUIRED_EXPORT} at ordinal {DIRECTML_REQUIRED_ORDINAL}"
+        )),
     }
 }
 
+/// Which `DirectML.dll` the provider may use, as a description for the log.
+///
+/// A copy next to the executable is found first by ONNX Runtime's lazy load
+/// and is the one shipped or placed with the app. Automatic mode accepts only
+/// that copy: the System32 one that Windows provides can be of any age, and
+/// its fitness for the provider has not been checked on hardware.
+/// `SCREENPIPE_DIRECTML=1` also accepts the System32 copy. Each candidate has
+/// passed [`directml_exports_verdict`] when its closure returns `Ok`.
+pub fn choose_directml_library(
+    switch: DirectMlSwitch,
+    app_dir_copy: impl FnOnce() -> Result<String, String>,
+    system_copy: impl FnOnce() -> Result<String, String>,
+) -> Result<String, String> {
+    let app_dir_error = match app_dir_copy() {
+        Ok(found) => return Ok(found),
+        Err(e) => e,
+    };
+    if switch != DirectMlSwitch::On {
+        return Err(format!(
+            "{app_dir_error}; automatic mode does not use the System32 DirectML.dll \
+             (set {DIRECTML_ENV}=1 to allow it)"
+        ));
+    }
+    system_copy().map_err(|system_error| format!("{app_dir_error}; {system_error}"))
+}
+
+/// The usable `DirectML.dll` for `switch` (see [`choose_directml_library`]).
+#[cfg(windows)]
+pub fn directml_library_check(switch: DirectMlSwitch) -> Result<String, String> {
+    choose_directml_library(switch, directml_app_dir_copy, directml_system_copy)
+}
+
 #[cfg(not(windows))]
-pub fn directml_library_check() -> Result<(), String> {
+pub fn directml_library_check(_switch: DirectMlSwitch) -> Result<String, String> {
     Err("DirectML needs Windows".to_string())
+}
+
+/// `DirectML.dll` in the executable's directory, checked.
+#[cfg(windows)]
+pub fn directml_app_dir_copy() -> Result<String, String> {
+    use windows::Win32::System::LibraryLoader::{
+        LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR, LOAD_LIBRARY_SEARCH_SYSTEM32,
+    };
+    let exe = std::env::current_exe().map_err(|e| format!("executable path unknown ({e})"))?;
+    let path = exe
+        .parent()
+        .map(|dir| dir.join("DirectML.dll"))
+        .ok_or_else(|| "the executable has no parent directory".to_string())?;
+    if !path.is_file() {
+        return Err(format!(
+            "no DirectML.dll next to the executable ({})",
+            path.display()
+        ));
+    }
+    let wide: Vec<u16> = {
+        use std::os::windows::ffi::OsStrExt;
+        path.as_os_str().encode_wide().chain(Some(0)).collect()
+    };
+    check_directml_module(
+        &wide,
+        LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR | LOAD_LIBRARY_SEARCH_SYSTEM32,
+    )
+    .map(|()| format!("DirectML.dll next to the executable ({})", path.display()))
+    .map_err(|e| {
+        format!(
+            "DirectML.dll next to the executable ({}) {e}",
+            path.display()
+        )
+    })
+}
+
+/// The System32 `DirectML.dll`, checked.
+#[cfg(windows)]
+pub fn directml_system_copy() -> Result<String, String> {
+    use windows::Win32::System::LibraryLoader::LOAD_LIBRARY_SEARCH_SYSTEM32;
+    let wide: Vec<u16> = "DirectML.dll".encode_utf16().chain(Some(0)).collect();
+    check_directml_module(&wide, LOAD_LIBRARY_SEARCH_SYSTEM32)
+        .map(|()| "System32 DirectML.dll".to_string())
+        .map_err(|e| format!("System32 DirectML.dll {e}"))
+}
+
+/// Load `library` (NUL-terminated UTF-16 name or path) with `flags`, look up
+/// the export ONNX Runtime binds, and release it again.
+#[cfg(windows)]
+pub fn check_directml_module(
+    library: &[u16],
+    flags: windows::Win32::System::LibraryLoader::LOAD_LIBRARY_FLAGS,
+) -> Result<(), String> {
+    use windows::core::{s, PCSTR, PCWSTR};
+    use windows::Win32::Foundation::{FreeLibrary, HANDLE};
+    use windows::Win32::System::LibraryLoader::{GetProcAddress, LoadLibraryExW};
+
+    debug_assert_eq!(
+        library.last(),
+        Some(&0),
+        "library name must be NUL-terminated"
+    );
+    // SAFETY: `library` is a NUL-terminated UTF-16 string that outlives the
+    // call. The module is only queried for two export addresses, which are
+    // compared and never called, and is released before returning. An
+    // ordinal is passed to GetProcAddress as a pointer-sized integer below
+    // 0x10000, which is how the API takes ordinals.
+    unsafe {
+        let module = LoadLibraryExW(PCWSTR(library.as_ptr()), HANDLE::default(), flags)
+            .map_err(|e| format!("could not be loaded ({e})"))?;
+        let by_ordinal = GetProcAddress(
+            module,
+            PCSTR(DIRECTML_REQUIRED_ORDINAL as usize as *const u8),
+        )
+        .map(|f| f as usize);
+        let by_name = GetProcAddress(module, s!("DMLCreateDevice1")).map(|f| f as usize);
+        let _ = FreeLibrary(module);
+        directml_exports_verdict(by_ordinal, by_name)
+    }
 }
 
 /// Enumerate DXGI adapters and run the Direct3D 12 checks on each.
@@ -655,8 +783,153 @@ mod tests {
         assert_eq!(select_adapter(&[igpu.clone()]), Some(&igpu));
     }
 
-    fn lib_ok() -> Result<(), String> {
-        Ok(())
+    fn lib_ok() -> Result<String, String> {
+        Ok("DirectML.dll next to the executable (C:\\app\\DirectML.dll)".to_string())
+    }
+
+    fn found(what: &str) -> impl FnOnce() -> Result<String, String> + '_ {
+        move || Ok(what.to_string())
+    }
+
+    fn missing(what: &str) -> impl FnOnce() -> Result<String, String> + '_ {
+        move || Err(what.to_string())
+    }
+
+    #[test]
+    fn automatic_mode_needs_a_directml_dll_next_to_the_executable() {
+        let system32_not_consulted = || -> Result<String, String> {
+            panic!("the app copy wins without looking at System32")
+        };
+        assert_eq!(
+            choose_directml_library(
+                DirectMlSwitch::Auto,
+                found("app copy"),
+                system32_not_consulted
+            ),
+            Ok("app copy".to_string())
+        );
+        let err = choose_directml_library(
+            DirectMlSwitch::Auto,
+            missing("no DirectML.dll next to the executable"),
+            || panic!("automatic mode never accepts the System32 copy"),
+        )
+        .unwrap_err();
+        assert!(
+            err.contains("no DirectML.dll next to the executable"),
+            "{err}"
+        );
+        assert!(err.contains("SCREENPIPE_DIRECTML=1"), "{err}");
+    }
+
+    #[test]
+    fn switch_on_also_accepts_the_system32_copy() {
+        assert_eq!(
+            choose_directml_library(
+                DirectMlSwitch::On,
+                missing("no DirectML.dll next to the executable"),
+                found("System32 DirectML.dll"),
+            ),
+            Ok("System32 DirectML.dll".to_string())
+        );
+        let err = choose_directml_library(
+            DirectMlSwitch::On,
+            missing("no DirectML.dll next to the executable"),
+            missing("System32 DirectML.dll has no DMLCreateDevice1 export"),
+        )
+        .unwrap_err();
+        assert!(err.contains("next to the executable"), "{err}");
+        assert!(err.contains("has no DMLCreateDevice1 export"), "{err}");
+    }
+
+    #[test]
+    fn the_imported_ordinal_must_be_dmlcreatedevice1() {
+        assert_eq!(directml_exports_verdict(Some(0x1000), Some(0x1000)), Ok(()));
+        let old = directml_exports_verdict(Some(0x1000), None).unwrap_err();
+        assert!(old.contains("has no DMLCreateDevice1 export"), "{old}");
+        let no_ordinal = directml_exports_verdict(None, Some(0x1000)).unwrap_err();
+        assert!(no_ordinal.contains("ordinal 2"), "{no_ordinal}");
+        let other = directml_exports_verdict(Some(0x2000), Some(0x1000)).unwrap_err();
+        assert!(
+            other.contains("something other than DMLCreateDevice1"),
+            "{other}"
+        );
+    }
+
+    #[test]
+    fn automatic_mode_without_an_app_copy_decides_cpu() {
+        let decision = decide_target(
+            DirectMlSwitch::Auto,
+            true,
+            false,
+            || {
+                choose_directml_library(
+                    DirectMlSwitch::Auto,
+                    missing("no DirectML.dll next to the executable"),
+                    || panic!("not consulted in automatic mode"),
+                )
+            },
+            || panic!("no adapter probe without a usable DirectML.dll"),
+        );
+        assert_eq!(decision.target, OnnxTarget::Cpu);
+        assert!(
+            decision.reason.ends_with("; using CPU"),
+            "{}",
+            decision.reason
+        );
+    }
+
+    /// Runs the real DXGI / Direct3D 12 probe and the DLL checks (CI's
+    /// windows job; hosted runners expose the Microsoft Basic Render Driver).
+    #[cfg(windows)]
+    #[test]
+    fn windows_probe_runs_and_never_selects_a_software_adapter() {
+        let adapters = probe_adapters().expect("DXGI adapter enumeration");
+        for adapter in &adapters {
+            eprintln!(
+                "adapter {}: {} software={} remote={} {:?}",
+                adapter.ordinal, adapter.name, adapter.software, adapter.remote, adapter.d3d12
+            );
+            if adapter.software || adapter.name.contains("Microsoft Basic Render Driver") {
+                assert!(adapter.rejection().is_some(), "{adapter:?}");
+            }
+        }
+        if let Some(chosen) = select_adapter(&adapters) {
+            assert!(!chosen.software && !chosen.remote, "{chosen:?}");
+            assert!(
+                matches!(chosen.d3d12, D3d12Check::Capable { .. }),
+                "{chosen:?}"
+            );
+        }
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_directml_dll_checks_run() {
+        use windows::Win32::System::LibraryLoader::LOAD_LIBRARY_SEARCH_SYSTEM32;
+        // A system DLL without DirectML's exports is refused by the export check.
+        let kernel32: Vec<u16> = "kernel32.dll".encode_utf16().chain(Some(0)).collect();
+        let err = check_directml_module(&kernel32, LOAD_LIBRARY_SEARCH_SYSTEM32).unwrap_err();
+        assert!(err.contains("has no DMLCreateDevice1 export"), "{err}");
+        // The test binary has no DirectML.dll beside it.
+        let exe_dir = std::env::current_exe()
+            .unwrap()
+            .parent()
+            .unwrap()
+            .to_path_buf();
+        if !exe_dir.join("DirectML.dll").exists() {
+            let err = directml_app_dir_copy().unwrap_err();
+            assert!(
+                err.contains("no DirectML.dll next to the executable"),
+                "{err}"
+            );
+            assert!(directml_library_check(DirectMlSwitch::Auto).is_err());
+        }
+        // Whatever the runner's System32 holds, the check answers without faulting.
+        eprintln!("System32 DirectML.dll: {:?}", directml_system_copy());
+        eprintln!(
+            "switch on: {:?}",
+            directml_library_check(DirectMlSwitch::On)
+        );
     }
 
     #[test]

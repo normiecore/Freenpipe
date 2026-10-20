@@ -497,28 +497,55 @@ jobs:
       # the exe: LunarG's runtime components for the same SDK version
       # (Khronos Vulkan loader, Apache-2.0), staged with its licence text by
       # scripts/stage_bundled_runtime.js through FREENPIPE_VULKAN_RUNTIME_DIR.
+      # The installer runs elevated and the loader goes into every installer,
+      # so the step fails on a signature that is not Valid and on a SHA-256
+      # that differs from its pin. The pins are filled in from the first
+      # release run's job summary (open question W2-19 #8; this repo's build
+      # VMs cannot reach sdk.lunarg.com); until then the step warns.
       - name: Vulkan SDK and loader (Windows x64)
         if: matrix.os_type == 'windows' && matrix.target == 'x86_64-pc-windows-msvc'
         shell: pwsh
         env:
           VULKAN_SDK_VERSION: "1.4.313.0"
+          # SHA-256 of vulkan-sdk.exe and of vulkan-runtime-components.zip for
+          # VULKAN_SDK_VERSION (upper- or lower-case hex; empty = not pinned yet).
+          VULKAN_SDK_SHA256: ""
+          VULKAN_RUNTIME_SHA256: ""
         run: |
           $ErrorActionPreference = 'Stop'
           $v = $env:VULKAN_SDK_VERSION
           $root = "C:\VulkanSDK\$v"
           $base = "https://sdk.lunarg.com/sdk/download/$v/windows"
-          function Report-Signature($file) {
-            $sig = Get-AuthenticodeSignature $file
-            $hash = (Get-FileHash $file -Algorithm SHA256).Hash
-            Write-Host "$(Split-Path $file -Leaf): sha256 $hash, signature $($sig.Status) $($sig.SignerCertificate.Subject)"
-            "- ``$(Split-Path $file -Leaf)``: sha256 ``$hash``, Authenticode $($sig.Status)" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Encoding utf8 -Append
-            if ($sig.Status -ne 'Valid') { Write-Host "::warning::$file has no valid Authenticode signature ($($sig.Status))" }
+          function Add-Summary($line) {
+            $line | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Encoding utf8 -Append
           }
-          "### Vulkan $v" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Encoding utf8 -Append
+          function Assert-Pin($file, $pin) {
+            $name = Split-Path $file -Leaf
+            $hash = (Get-FileHash $file -Algorithm SHA256).Hash
+            Write-Host "${name}: sha256 $hash"
+            if ([string]::IsNullOrWhiteSpace($pin)) {
+              Add-Summary "- ``$name``: sha256 ``$hash`` (not pinned yet)"
+              Write-Host "::warning::$name is not pinned; check it and pin sha256 $hash in release-app.yml"
+            } elseif ($hash -ne $pin.Trim().ToUpperInvariant()) {
+              throw "$name sha256 $hash does not match the pinned $pin"
+            } else {
+              Add-Summary "- ``$name``: sha256 ``$hash`` (matches the pin)"
+            }
+          }
+          function Assert-Signature($file) {
+            $name = Split-Path $file -Leaf
+            $sig = Get-AuthenticodeSignature $file
+            Write-Host "${name}: Authenticode $($sig.Status) $($sig.SignerCertificate.Subject)"
+            Add-Summary "- ``$name``: Authenticode $($sig.Status), signer ``$($sig.SignerCertificate.Subject)``"
+            if ($sig.Status -ne 'Valid') { throw "$name has no valid Authenticode signature ($($sig.Status))" }
+          }
+          Add-Summary "### Vulkan $v"
 
           $installer = Join-Path $env:RUNNER_TEMP "vulkan-sdk-$v.exe"
           Invoke-WebRequest "$base/vulkan-sdk.exe" -OutFile $installer
-          Report-Signature $installer
+          # Both checks before the installer runs.
+          Assert-Signature $installer
+          Assert-Pin $installer $env:VULKAN_SDK_SHA256
           # A GUI-subsystem installer: Start-Process -Wait, or the step moves on
           # before the SDK is in place.
           $proc = Start-Process -FilePath $installer -Wait -PassThru -ArgumentList @(
@@ -531,12 +558,15 @@ jobs:
           $zip = Join-Path $env:RUNNER_TEMP "vulkan-runtime-$v.zip"
           $dir = Join-Path $env:RUNNER_TEMP "vulkan-runtime-$v"
           Invoke-WebRequest "$base/vulkan-runtime-components.zip" -OutFile $zip
+          Assert-Pin $zip $env:VULKAN_RUNTIME_SHA256
           if (Test-Path $dir) { Remove-Item $dir -Recurse -Force }
           7z x $zip "-o$dir" -y | Out-Null
           $dll = Get-ChildItem $dir -Recurse -Filter vulkan-1.dll |
             Where-Object { $_.Directory.Name -match '^(x64|amd64|x86_64|win64)$' } | Select-Object -First 1
           if (-not $dll) { throw "no x64 vulkan-1.dll in the Vulkan runtime components" }
-          Report-Signature $dll.FullName
+          Assert-Signature $dll.FullName
+          $dllHash = (Get-FileHash $dll.FullName -Algorithm SHA256).Hash
+          Add-Summary "- ``vulkan-1.dll`` (shipped): sha256 ``$dllHash``"
           # The loader ships with a licence text. Use the one in the runtime
           # components, else the SDK's own; never ship the DLL without one.
           $licence = Get-ChildItem $dir -Recurse -File | Where-Object { $_.Name -match 'licen[cs]e' } | Select-Object -First 1

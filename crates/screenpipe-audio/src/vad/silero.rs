@@ -61,6 +61,39 @@ fn is_non_empty_file(path: &Path) -> bool {
         .unwrap_or(false)
 }
 
+/// What to do with a model file that ONNX Runtime refused.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum UnusableModelAction {
+    /// Leave the file in place and report the error.
+    Keep,
+    /// Delete it (cache) or skip it (installed), so the pinned file is used.
+    Discard,
+}
+
+/// A file is given up only when it is not the pinned model and the error is
+/// about the model file itself. The pinned bytes are known to load, so an
+/// error with them comes from the runtime; and any other error (ONNX Runtime
+/// missing or failing to start) says nothing about the file, which may be a
+/// copy an installed screenpipe wrote to the shared cache.
+pub fn unusable_model_action(matches_pin: bool, model_file_error: bool) -> UnusableModelAction {
+    if !matches_pin && model_file_error {
+        UnusableModelAction::Discard
+    } else {
+        UnusableModelAction::Keep
+    }
+}
+
+/// Whether an ONNX Runtime error from session creation concerns the model
+/// file: it could not be parsed as a model, has no or an invalid graph, or
+/// ONNX Runtime's model loader rejected it (its messages start with
+/// `Load model from <path> failed`).
+pub fn ort_error_concerns_model_file(code: ort::ErrorCode, message: &str) -> bool {
+    matches!(
+        code,
+        ort::ErrorCode::InvalidProtobuf | ort::ErrorCode::InvalidGraph | ort::ErrorCode::NoModel
+    ) || message.contains("Load model from")
+}
+
 /// Set when the installed copy failed to load, so later lookups skip it.
 static INSTALLED_REJECTED: std::sync::atomic::AtomicBool =
     std::sync::atomic::AtomicBool::new(false);
@@ -114,7 +147,10 @@ impl SileroVad {
             Ok(vad) => vad,
             Err(e) => {
                 debug!("SileroVad Error creating Vad: {}", e);
-                Self::forget_unusable_model(&model_path).await;
+                let model_file_error = e.downcast_ref::<ort::Error>().is_some_and(|ort_error| {
+                    ort_error_concerns_model_file(ort_error.code(), ort_error.message())
+                });
+                Self::forget_unusable_model(&model_path, model_file_error).await;
                 return Err(anyhow::anyhow!("Vad creation error: {}", e));
             }
         };
@@ -126,25 +162,53 @@ impl SileroVad {
         })
     }
 
-    /// A model that failed to load is not used again in this process. A
-    /// cached download is deleted so the next attempt fetches the pinned
-    /// file; an installed copy is left alone (the install dir may be
-    /// read-only), and the cache is tried next time.
-    async fn forget_unusable_model(path: &Path) {
+    /// Handle a model that failed to load. Only a file that is itself at
+    /// fault is given up (see [`unusable_model_action`]): a cached copy is
+    /// deleted so the next attempt fetches the pinned file, and an installed
+    /// copy is skipped for the rest of the process (the install dir may be
+    /// read-only) so the cache is tried next. A file kept because ONNX
+    /// Runtime, not the model, failed stays where it is; the cache directory
+    /// is shared with an installed screenpipe.
+    async fn forget_unusable_model(path: &Path, model_file_error: bool) {
         let in_cache = Self::get_cache_dir()
             .map(|cache| path.starts_with(cache))
             .unwrap_or(false);
-        if in_cache {
-            warn!("silero vad model at {:?} could not be loaded; deleting it", path);
-            let _ = tokio::fs::remove_file(path).await;
-        } else {
-            warn!(
-                "installed silero vad model at {:?} could not be loaded; using the cache instead",
-                path
-            );
-            INSTALLED_REJECTED.store(true, std::sync::atomic::Ordering::SeqCst);
+        let checked = path.to_path_buf();
+        let matches_pin = tokio::task::spawn_blocking(move || MODEL_PIN.matches_file(&checked))
+            .await
+            .unwrap_or(false);
+        match (
+            unusable_model_action(matches_pin, model_file_error),
+            in_cache,
+        ) {
+            (UnusableModelAction::Keep, _) => {
+                warn!(
+                    "silero vad model at {:?} is kept although it could not be loaded: {}",
+                    path,
+                    if matches_pin {
+                        "it is the pinned model, so the ONNX runtime failed"
+                    } else {
+                        "the error does not concern the model file"
+                    }
+                );
+            }
+            (UnusableModelAction::Discard, true) => {
+                warn!(
+                    "silero vad model at {:?} could not be parsed; deleting it",
+                    path
+                );
+                let _ = tokio::fs::remove_file(path).await;
+                *MODEL_PATH.lock().await = None;
+            }
+            (UnusableModelAction::Discard, false) => {
+                warn!(
+                    "installed silero vad model at {:?} could not be parsed; using the cache instead",
+                    path
+                );
+                INSTALLED_REJECTED.store(true, std::sync::atomic::Ordering::SeqCst);
+                *MODEL_PATH.lock().await = None;
+            }
         }
-        *MODEL_PATH.lock().await = None;
     }
 
     async fn get_or_download_model() -> anyhow::Result<PathBuf> {
@@ -332,6 +396,79 @@ mod tests {
     }
 
     #[test]
+    fn only_a_bad_file_with_a_model_error_is_given_up() {
+        use UnusableModelAction::{Discard, Keep};
+        // A screenpipe copy (not the pinned bytes) that does not parse.
+        assert_eq!(unusable_model_action(false, true), Discard);
+        // ONNX Runtime broken: the file is not touched, pinned or not.
+        assert_eq!(unusable_model_action(false, false), Keep);
+        assert_eq!(unusable_model_action(true, false), Keep);
+        // The pinned bytes load with a working runtime; never re-download them.
+        assert_eq!(unusable_model_action(true, true), Keep);
+    }
+
+    #[test]
+    fn model_file_errors_are_told_apart_from_runtime_errors() {
+        use ort::ErrorCode;
+        assert!(ort_error_concerns_model_file(
+            ErrorCode::InvalidProtobuf,
+            "Load model from C:\\cache\\silero_vad_v5.onnx failed:Protobuf parsing failed."
+        ));
+        assert!(ort_error_concerns_model_file(
+            ErrorCode::InvalidGraph,
+            "bad graph"
+        ));
+        assert!(ort_error_concerns_model_file(
+            ErrorCode::GenericFailure,
+            "Load model from /cache/silero_vad_v5.onnx failed:ModelProto does not have a graph."
+        ));
+        assert!(!ort_error_concerns_model_file(
+            ErrorCode::GenericFailure,
+            "Failed to load ONNX Runtime dylib: onnxruntime.dll not found"
+        ));
+        assert!(!ort_error_concerns_model_file(
+            ErrorCode::RuntimeException,
+            "Exception during initialization: out of memory"
+        ));
+    }
+
+    /// The real error path: a file that is not an ONNX model, loaded through
+    /// vad-rs, comes back as an `ort::Error` that counts as a model-file error.
+    #[test]
+    fn a_garbage_model_file_is_reported_as_a_model_file_error() {
+        let tmp = tempdir().unwrap();
+        let path = tmp.path().join(MODEL_FILENAME);
+        std::fs::write(
+            &path,
+            b"version https://git-lfs.github.com/spec/v1\nnot a model\n",
+        )
+        .unwrap();
+        let err = Vad::new(&path, 16000).expect_err("garbage must not load");
+        let ort_error = err
+            .downcast_ref::<ort::Error>()
+            .unwrap_or_else(|| panic!("not an ort::Error: {err:?}"));
+        assert!(
+            ort_error_concerns_model_file(ort_error.code(), ort_error.message()),
+            "{:?}: {}",
+            ort_error.code(),
+            ort_error.message()
+        );
+    }
+
+    #[test]
+    fn pin_check_reads_size_then_hash() {
+        let tmp = tempdir().unwrap();
+        // Right size, wrong bytes: not the pinned model.
+        let same_size = pinned_size_copy(&tmp.path().join("a"));
+        assert!(MODEL_PIN.has_size(&same_size));
+        assert!(!MODEL_PIN.matches_file(&same_size));
+        let small = tmp.path().join("small.onnx");
+        std::fs::write(&small, b"model").unwrap();
+        assert!(!MODEL_PIN.matches_file(&small));
+        assert!(!MODEL_PIN.matches_file(&tmp.path().join("missing.onnx")));
+    }
+
+    #[test]
     fn empty_cache_file_means_a_download_is_needed() {
         let tmp = tempdir().unwrap();
         let cache = tmp.path().join("cache");
@@ -362,7 +499,10 @@ mod tests {
         assert!(commit.chars().all(|c| c.is_ascii_hexdigit()));
         assert!(!MODEL_URL.contains("/master/") && !MODEL_URL.contains("/refs/heads/"));
         assert_eq!(MODEL_PIN.sha256.len(), 64);
-        assert!(MODEL_PIN.sha256.chars().all(|c| c.is_ascii_hexdigit() && !c.is_ascii_uppercase()));
+        assert!(MODEL_PIN
+            .sha256
+            .chars()
+            .all(|c| c.is_ascii_hexdigit() && !c.is_ascii_uppercase()));
     }
 
     /// Network check: the pinned URL still serves the pinned bytes (2.3 MB).

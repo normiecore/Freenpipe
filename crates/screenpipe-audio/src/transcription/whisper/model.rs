@@ -70,7 +70,7 @@ pub fn create_whisper_context_parameters<'a>(
 ) -> Result<WhisperContextParameters<'a>> {
     let plan = plan_whisper_device();
     plan.log();
-    Ok(whisper_context_params(plan.use_gpu))
+    Ok(plan.context_params())
 }
 
 /// Context parameters with GPU offload on or off.
@@ -99,6 +99,9 @@ pub fn whisper_context_params<'a>(use_gpu: bool) -> WhisperContextParameters<'a>
 /// A GPU-class device that ggml registered (discrete or integrated).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct GgmlGpuDevice {
+    /// Position among ggml's GPU and integrated-GPU devices, in registry
+    /// order. whisper.cpp numbers `gpu_device` the same way.
+    pub gpu_index: usize,
     /// Backend device name, for example `Vulkan0`, `MTL0` or `CUDA0`.
     pub name: String,
     /// Driver-supplied description (usually the adapter name).
@@ -139,6 +142,7 @@ pub fn ggml_gpu_devices() -> Vec<GgmlGpuDevice> {
                 continue;
             }
             devices.push(GgmlGpuDevice {
+                gpu_index: devices.len(),
                 name: c_string(sys::ggml_backend_dev_name(dev)),
                 description: c_string(sys::ggml_backend_dev_description(dev)),
                 integrated,
@@ -206,16 +210,28 @@ impl WhisperDevicePlan {
         }
     }
 
+    /// Context parameters that put whisper on the planned device: GPU offload
+    /// with `gpu_device` set to the chosen device's index, so the context runs
+    /// on the adapter [`Self::log`] names.
+    pub fn context_params<'a>(&self) -> WhisperContextParameters<'a> {
+        let mut params = whisper_context_params(self.use_gpu);
+        if let (true, Some(dev)) = (self.use_gpu, &self.device) {
+            params.gpu_device(dev.gpu_index.try_into().unwrap_or(0));
+        }
+        params
+    }
+
     pub fn log(&self) {
         match (&self.device, self.cpu_reason) {
             (Some(dev), _) => info!(
-                "whisper context: GPU backend {} ({} build asks for {}) on {} ({}{})",
+                "whisper context: GPU backend {} ({} build asks for {}) on {} ({}{}; gpu_device {})",
                 gpu_backend_label(&dev.name),
                 std::env::consts::OS,
                 requested_gpu_backend(),
                 dev.name,
                 dev.description,
-                if dev.integrated { ", integrated" } else { "" }
+                if dev.integrated { ", integrated" } else { "" },
+                dev.gpu_index
             ),
             (None, reason) => info!(
                 "whisper context: GPU unavailable; using CPU fallback ({}; {} build asks for {})",
@@ -280,11 +296,12 @@ fn disable_whisper_gpu() {
     }
 }
 
-/// Test hook (Freenpipe): makes GPU whisper sessions fail on purpose so the
+/// Test hook (Freenpipe only, hence not a `SCREENPIPE_*` name or an entry in
+/// `screenpipe_core::env`): makes GPU whisper sessions fail on purpose so the
 /// CPU recovery path can be exercised on real hardware. `state` fails GPU
 /// state creation, `inference` (or `1`/`true`) fails GPU inference. CPU
 /// sessions are never affected.
-pub const WHISPER_GPU_FAULT_ENV: &str = "SCREENPIPE_WHISPER_GPU_FAULT";
+pub const WHISPER_GPU_FAULT_ENV: &str = "FREENPIPE_WHISPER_GPU_FAULT";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum GpuFault {
@@ -312,40 +329,60 @@ pub fn gpu_fault_from_env() -> GpuFault {
 /// Process-wide map of model path to one CPU context. The first caller builds
 /// it while holding the lock; concurrent callers wait and reuse it. Entries
 /// are weak: a context lives while an engine or session uses it, so switching
-/// models does not keep the old one in memory.
+/// models does not keep the old one in memory. A caller passes `keep` once
+/// GPU use is off for the process: then the context is also held here (one
+/// model at a time), so sessions that move to CPU while the engine's own
+/// context stays on GPU reuse it instead of loading it from disk per batch.
 pub struct SharedCpuContexts<C> {
     contexts: Mutex<HashMap<PathBuf, Weak<C>>>,
+    kept: Mutex<Option<(PathBuf, Arc<C>)>>,
 }
 
 impl<C> Default for SharedCpuContexts<C> {
     fn default() -> Self {
         Self {
             contexts: Mutex::new(HashMap::new()),
+            kept: Mutex::new(None),
         }
     }
 }
 
 impl<C> SharedCpuContexts<C> {
     /// The shared context for `model_path` and whether this call built it.
+    /// With `keep`, the context stays alive after its last user drops it,
+    /// until a context for another model is kept instead.
     pub fn get_or_build(
         &self,
         model_path: &Path,
+        keep: bool,
         build: impl FnOnce(&Path) -> Result<C>,
     ) -> Result<(Arc<C>, bool)> {
         let mut contexts = self.contexts.lock().unwrap_or_else(|e| e.into_inner());
         contexts.retain(|_, weak| weak.strong_count() > 0);
-        if let Some(existing) = contexts.get(model_path).and_then(Weak::upgrade) {
-            return Ok((existing, false));
+        let (context, built) = match contexts.get(model_path).and_then(Weak::upgrade) {
+            Some(existing) => (existing, false),
+            None => {
+                if !model_path.is_file() {
+                    return Err(anyhow!(
+                        "recovery model not cached: {} is missing",
+                        model_path.display()
+                    ));
+                }
+                let built = Arc::new(build(model_path)?);
+                contexts.insert(model_path.to_path_buf(), Arc::downgrade(&built));
+                (built, true)
+            }
+        };
+        if keep {
+            let mut kept = self.kept.lock().unwrap_or_else(|e| e.into_inner());
+            let already = kept
+                .as_ref()
+                .is_some_and(|(path, held)| path == model_path && Arc::ptr_eq(held, &context));
+            if !already {
+                *kept = Some((model_path.to_path_buf(), context.clone()));
+            }
         }
-        if !model_path.is_file() {
-            return Err(anyhow!(
-                "recovery model not cached: {} is missing",
-                model_path.display()
-            ));
-        }
-        let built = Arc::new(build(model_path)?);
-        contexts.insert(model_path.to_path_buf(), Arc::downgrade(&built));
-        Ok((built, true))
+        Ok((context, built))
     }
 }
 
@@ -356,8 +393,10 @@ fn whisper_cpu_contexts() -> &'static SharedCpuContexts<WhisperContext> {
 }
 
 /// The process-wide CPU whisper context for `model_path`, built on first use.
+/// After a GPU failure (the latch is set) it is kept for the rest of the
+/// process.
 pub fn shared_cpu_context(model_path: &Path) -> Result<(Arc<WhisperContext>, bool)> {
-    whisper_cpu_contexts().get_or_build(model_path, |path| {
+    whisper_cpu_contexts().get_or_build(model_path, whisper_gpu_disabled(), |path| {
         info!(
             "whisper: building the shared CPU context from {}",
             path.display()
@@ -528,7 +567,7 @@ pub fn load_whisper_context(model_path: &Path) -> Result<(Arc<WhisperContext>, W
             .map_err(|e| anyhow!("failed to load whisper model: {e}"))?;
         return Ok((ctx, WhisperDevice::Cpu));
     }
-    match WhisperContext::new_with_params(model_path, whisper_context_params(true)) {
+    match WhisperContext::new_with_params(model_path, plan.context_params()) {
         Ok(ctx) => Ok((Arc::new(ctx), WhisperDevice::Gpu)),
         Err(gpu_err) => {
             warn!("whisper context: GPU context creation failed ({gpu_err}); using CPU fallback");
@@ -546,8 +585,9 @@ mod tests {
     use super::*;
     use std::sync::atomic::AtomicUsize;
 
-    fn dev(name: &str, integrated: bool) -> GgmlGpuDevice {
+    fn dev(gpu_index: usize, name: &str, integrated: bool) -> GgmlGpuDevice {
         GgmlGpuDevice {
+            gpu_index,
             name: name.to_string(),
             description: format!("{name} adapter"),
             integrated,
@@ -556,14 +596,32 @@ mod tests {
 
     #[test]
     fn plan_prefers_a_discrete_gpu() {
-        let devices = [dev("Vulkan0", true), dev("Vulkan1", false)];
+        let devices = [dev(0, "Vulkan0", true), dev(1, "Vulkan1", false)];
         let plan = plan_device_from(&devices, false);
         assert!(plan.use_gpu);
-        assert_eq!(plan.device.unwrap().name, "Vulkan1");
+        assert_eq!(plan.device.as_ref().unwrap().name, "Vulkan1");
         assert_eq!(
             plan_device_from(&devices[..1], false).device.unwrap().name,
             "Vulkan0"
         );
+    }
+
+    #[test]
+    fn context_params_select_the_planned_device() {
+        // An integrated GPU listed first: whisper.cpp must be told to use the
+        // discrete one at index 1, the device the log names.
+        let devices = [dev(0, "Vulkan0", true), dev(1, "Vulkan1", false)];
+        let params = plan_device_from(&devices, false).context_params();
+        assert!(params.use_gpu);
+        assert_eq!(params.gpu_device, 1);
+
+        let only_igpu = plan_device_from(&devices[..1], false).context_params();
+        assert!(only_igpu.use_gpu);
+        assert_eq!(only_igpu.gpu_device, 0);
+
+        let cpu = plan_device_from(&[], false).context_params();
+        assert!(!cpu.use_gpu);
+        assert_eq!(cpu.gpu_device, 0);
     }
 
     #[test]
@@ -572,7 +630,7 @@ mod tests {
         assert!(!none.use_gpu);
         assert_eq!(none.device(), WhisperDevice::Cpu);
         assert!(none.cpu_reason.is_some());
-        let disabled = plan_device_from(&[dev("Vulkan0", false)], true);
+        let disabled = plan_device_from(&[dev(0, "Vulkan0", false)], true);
         assert!(!disabled.use_gpu);
         assert!(disabled.cpu_reason.unwrap().contains("earlier GPU failure"));
     }
@@ -623,7 +681,7 @@ mod tests {
                 let model = model.clone();
                 std::thread::spawn(move || {
                     shared
-                        .get_or_build(&model, |_| {
+                        .get_or_build(&model, false, |_| {
                             builds.fetch_add(1, Ordering::SeqCst);
                             std::thread::sleep(std::time::Duration::from_millis(20));
                             Ok("cpu".to_string())
@@ -640,16 +698,48 @@ mod tests {
         // Once nobody holds it, the next caller builds a fresh one.
         drop(results);
         let (_, rebuilt) = shared
-            .get_or_build(&model, |_| Ok("cpu again".to_string()))
+            .get_or_build(&model, false, |_| Ok("cpu again".to_string()))
             .unwrap();
         assert!(rebuilt);
+    }
+
+    #[test]
+    fn a_kept_cpu_context_outlives_its_sessions() {
+        let tmp = tempfile::tempdir().unwrap();
+        let tiny = tmp.path().join("ggml-tiny.bin");
+        let base = tmp.path().join("ggml-base.bin");
+        std::fs::write(&tiny, b"model").unwrap();
+        std::fs::write(&base, b"model").unwrap();
+        let shared: SharedCpuContexts<String> = SharedCpuContexts::default();
+        let builds = AtomicUsize::new(0);
+        let build = |_: &Path| {
+            builds.fetch_add(1, Ordering::SeqCst);
+            Ok("cpu".to_string())
+        };
+
+        // After a GPU failure (keep): a session's batch ends and drops the
+        // context, and the next session reuses it instead of loading again.
+        let (first, built) = shared.get_or_build(&tiny, true, build).unwrap();
+        assert!(built);
+        drop(first);
+        let (second, built) = shared.get_or_build(&tiny, true, build).unwrap();
+        assert!(!built, "the kept context is reused");
+        drop(second);
+        assert_eq!(builds.load(Ordering::SeqCst), 1);
+
+        // Keeping another model's context releases the first one.
+        let (other, _) = shared.get_or_build(&base, true, build).unwrap();
+        drop(other);
+        let (_, rebuilt) = shared.get_or_build(&tiny, false, build).unwrap();
+        assert!(rebuilt, "only one model's context is kept");
+        assert_eq!(builds.load(Ordering::SeqCst), 3);
     }
 
     #[test]
     fn shared_cpu_context_needs_the_model_file() {
         let shared: SharedCpuContexts<String> = SharedCpuContexts::default();
         let err = shared
-            .get_or_build(Path::new("/nonexistent/ggml-tiny.bin"), |_| {
+            .get_or_build(Path::new("/nonexistent/ggml-tiny.bin"), true, |_| {
                 Ok("never".to_string())
             })
             .unwrap_err();
