@@ -105,9 +105,9 @@ version = "1"
 optional = true
 
 # OPF text redactor (pure-Rust candle port; same model as the v3
-# fine-tune on HF). Pinned to a commit so reproducible across CI
-# runners — bump the rev together with the model checkpoint version
-# whenever opf-rs ships a meaningful change.
+# fine-tune on HF). screenpipe/opf-rs @ e725ad5, vendored in
+# third_party/opf-rs. Its licence is CC BY-NC 4.0, not MIT: see
+# third_party/README.md before shipping a build with `opf-text`.
 #
 # `default-features = false` drops opf-rs's `metal` default, which
 # transitively pulls in `objc2` and breaks Linux/Windows release
@@ -115,8 +115,7 @@ optional = true
 # below in a target-conditional entry so Mac builds still get GPU
 # acceleration.
 [dependencies.opf]
-git = "https://github.com/screenpipe/opf-rs"
-rev = "e725ad5e8a89ae46e4cb38022a26e746c37329b6"
+path = "../../third_party/opf-rs"
 optional = true
 default-features = false
 
@@ -125,8 +124,7 @@ default-features = false
 # is purely additive — Linux/Windows still see `default-features =
 # false` and stay clear of objc2.
 [target.'cfg(target_os = "macos")'.dependencies.opf]
-git = "https://github.com/screenpipe/opf-rs"
-rev = "e725ad5e8a89ae46e4cb38022a26e746c37329b6"
+path = "../../third_party/opf-rs"
 optional = true
 features = ["metal"]
 

@@ -1,0 +1,82 @@
+Freenpipe local change to audiopipe (applied by third_party/vendor.sh).
+
+qwen3-asr-sys/build.rs rewrites two ggml-metal sources in place on every
+Metal build (functions patch_ggml_metal_no_abort and
+patch_ggml_metal_device_teardown): a failed Metal command buffer sets a flag
+instead of aborting, and freeing non-empty resource sets during process exit
+logs instead of asserting. In a git checkout that write lands in cargo's
+cache; in a vendored path dependency it would modify the repository on every
+macOS build. This patch is exactly the output of those two functions, applied
+ahead of time. The build script detects its markers ("synchronize_failed",
+"rsets_free_patched"), reports "already applied" and leaves the files alone,
+so what gets compiled is unchanged.
+
+--- a/crates/qwen3-asr-sys/qwen3-asr.cpp/ggml/src/ggml-metal/ggml-metal-context.m
++++ b/crates/qwen3-asr-sys/qwen3-asr.cpp/ggml/src/ggml-metal/ggml-metal-context.m
+@@ -71,6 +71,9 @@
+     // abort ggml_metal_graph_compute if callback returns true
+     ggml_abort_callback abort_callback;
+     void *              abort_callback_data;
++
++    // set by ggml_metal_synchronize when a command buffer fails, checked by graph_compute
++    bool synchronize_failed;
+ };
+ 
+ ggml_metal_t ggml_metal_init(ggml_metal_device_t dev) {
+@@ -232,7 +235,8 @@
+                 if (status == MTLCommandBufferStatusError) {
+                     GGML_LOG_ERROR("error: %s\n", [[cmd_buf error].localizedDescription UTF8String]);
+                 }
+-                GGML_ABORT("fatal error");
++                ctx->synchronize_failed = true;
++                return;
+             }
+         }
+     }
+@@ -248,7 +252,13 @@
+                 if (status == MTLCommandBufferStatusError) {
+                     GGML_LOG_ERROR("error: %s\n", [[cmd_buf error].localizedDescription UTF8String]);
+                 }
+-                GGML_ABORT("fatal error");
++                // release already-checked ext buffers before returning
++                for (size_t j = 0; j < i; ++j) {
++                    [ctx->cmd_bufs_ext[j] release];
++                }
++                [ctx->cmd_bufs_ext removeAllObjects];
++                ctx->synchronize_failed = true;
++                return;
+             }
+ 
+             [cmd_buf release];
+@@ -357,6 +367,13 @@
+ }
+ 
+ enum ggml_status ggml_metal_graph_compute(ggml_metal_t ctx, struct ggml_cgraph * gf) {
++    // if a previous synchronize detected a command buffer failure, propagate the error
++    if (ctx->synchronize_failed) {
++        GGML_LOG_ERROR("%s: previous Metal command buffer failure detected, returning GGML_STATUS_FAILED\n", __func__);
++        ctx->synchronize_failed = false;
++        return GGML_STATUS_FAILED;
++    }
++
+     // number of nodes encoded by the main thread (empirically determined)
+     const int n_main = 64;
+ 
+--- a/crates/qwen3-asr-sys/qwen3-asr.cpp/ggml/src/ggml-metal/ggml-metal-device.m
++++ b/crates/qwen3-asr-sys/qwen3-asr.cpp/ggml/src/ggml-metal/ggml-metal-device.m
+@@ -605,7 +605,14 @@
+     }
+ 
+     // note: if you hit this assert, most likely you haven't deallocated all Metal resources before exiting
+-    GGML_ASSERT([rsets->data count] == 0);
++    // rsets_free_patched: tolerate non-empty rsets during process exit
++    if ([rsets->data count] != 0) {
++        GGML_LOG_WARN("%s: %lu Metal resource sets still alive during teardown (process exiting)\n", __func__, (unsigned long)[rsets->data count]);
++        // Skip cleanup — resources will be reclaimed by the OS on exit.
++        // Continuing with free() here would use-after-free the leaked backends.
++        free(rsets);
++        return;
++    }
+ 
+     atomic_store_explicit(&rsets->d_stop, true, memory_order_relaxed);
+ 

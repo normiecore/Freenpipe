@@ -1,0 +1,93 @@
+# Attribution-NonCommercial 4.0 International (CC BY-NC 4.0)
+
+Copyright 2026 Mediar, Inc.
+
+This repository distributes a derivative work — fine-tuned weights and
+training-pipeline artifacts — built on top of the OpenAI Privacy Filter,
+which is itself licensed under the Apache License, Version 2.0. See
+[`NOTICE`](NOTICE) for the dual-license arrangement and the upstream
+attribution, and [`LICENSE.upstream-apache2.txt`](LICENSE.upstream-apache2.txt)
+for the full Apache 2.0 text.
+
+The Derivative Work in this repository — the fine-tuned weights, the
+README, the example code, and the model card — is licensed under the
+Creative Commons Attribution-NonCommercial 4.0 International License
+(CC BY-NC 4.0).
+
+The Apache 2.0 obligations on the underlying base weights are preserved.
+You comply with both licenses if you (a) keep the upstream attribution
+and Apache 2.0 license text intact when redistributing this Derivative
+Work, and (b) honor CC BY-NC 4.0 on this Derivative Work itself
+(non-commercial use only, with attribution).
+
+You are free to:
+
+  * **Share** — copy and redistribute the material in any medium or format
+  * **Adapt** — remix, transform, and build upon the material
+
+Under the following terms:
+
+  * **Attribution** — You must give appropriate credit, provide a link
+    to the license, and indicate if changes were made. You may do so in
+    any reasonable manner, but not in any way that suggests the licensor
+    endorses you or your use.
+  * **NonCommercial** — You may not use the material for commercial
+    purposes.
+  * **No additional restrictions** — You may not apply legal terms or
+    technological measures that legally restrict others from doing
+    anything the license permits.
+
+Full license text: https://creativecommons.org/licenses/by-nc/4.0/legalcode
+
+## What "non-commercial" means here
+
+You MAY use this model for:
+  - Personal use
+  - Academic research and publication
+  - Teaching
+  - Internal evaluation at any organization (running it, comparing it
+    to alternatives, integrating it into a research prototype)
+  - Open-source projects that are themselves non-commercial
+
+You may NOT use this model for:
+  - Production redaction in a commercial product or paid service
+  - Embedding in software you sell or charge for
+  - Powering a SaaS / API offering
+  - Any use where the model output contributes to revenue
+
+## Commercial licensing
+
+If you want to use this model commercially, contact:
+
+    louis@screenpi.pe
+
+Commercial licenses are available and reasonably priced. Including:
+production deployment, redistribution rights, support, SLA-backed
+inference, and custom fine-tunes for your domain.
+
+## Citation
+
+If you use this model in research, please cite:
+
+    @misc{screenpipe-pii-redactor-2026,
+      title  = {screenpipe-pii-redactor: a PII redactor for accessibility
+                trees, OCR'd screen text, and computer-use traces},
+      author = {{screenpipe}},
+      year   = {2026},
+      url    = {https://huggingface.co/screenpipe/pii-redactor}
+    }
+
+## Disclaimer
+
+This model is provided "as is" without warranty of any kind, express or
+implied, including but not limited to the warranties of merchantability,
+fitness for a particular purpose and noninfringement. In no event shall
+the authors or copyright holders be liable for any claim, damages or
+other liability, whether in an action of contract, tort or otherwise,
+arising from, out of or in connection with the model or the use or
+other dealings in the model.
+
+PII redaction is a hard problem with documented failure modes (see
+`README.md` "Limitations" section). Do NOT rely on this model alone
+for compliance with privacy regulations (GDPR, HIPAA, CCPA, etc.).
+Validate on your own data before deploying.

@@ -1,0 +1,29 @@
+[package]
+name = "tauri-plugin-permission-flow"
+version.workspace = true
+description = "Tauri bindings for the permission-flow macOS permission UI"
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+homepage.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+documentation = "https://docs.rs/tauri-plugin-permission-flow"
+readme = "README.md"
+exclude = ["/examples", "/dist-js", "/guest-js", "/node_modules"]
+links = "tauri-plugin-permission-flow"
+
+[package.metadata.docs.rs]
+default-target = "aarch64-apple-darwin"
+targets = ["aarch64-apple-darwin", "x86_64-apple-darwin"]
+
+[dependencies]
+tauri = { version = "2.10.3" }
+serde = { version = "1.0", features = ["derive"] }
+thiserror = "2"
+
+[target.'cfg(target_os = "macos")'.dependencies]
+permission-flow = { version = "0.1.40", path = "../flow" }
+
+[build-dependencies]
+tauri-plugin = { version = "2.5.3", features = ["build"] }

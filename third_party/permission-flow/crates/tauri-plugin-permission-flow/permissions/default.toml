@@ -1,0 +1,10 @@
+[default]
+description = "Default permissions for the plugin"
+permissions = [
+    "allow-create",
+    "allow-suggested-host-app-path",
+    "allow-authorization-state",
+    "allow-start-flow",
+    "allow-stop-current-flow",
+]
+platforms = ["macOS"]

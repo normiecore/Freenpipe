@@ -17,9 +17,10 @@ serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 oasgen = { workspace = true }
 
-# Cross-platform audio capture. Tracks screenpipe/cpal main, which carries
-# the Windows WASAPI AEC and macOS VoiceProcessingIO patches.
-cpal = { git = "https://github.com/screenpipe/cpal.git", rev = "c7a610aee5c6037c9c69dc5bf7f2a850da8d8b12" }
+# Cross-platform audio capture. The screenpipe/cpal fork @ c7a610a, which
+# carries the Windows WASAPI AEC and macOS VoiceProcessingIO patches; vendored
+# in third_party/cpal (third_party/README.md).
+cpal = { path = "../../third_party/cpal" }
 
 # Wav encoding
 hound = "3.5"
@@ -36,13 +37,16 @@ chrono = { version = "0.4.31", features = ["serde"] }
 # Local Embeddings + STT
 # Using fork of vad-rs with Silero VAD v5/v6 support
 # v5/v6: 3x faster, 6000+ languages, better accuracy
-vad-rs = { git = "https://github.com/divanshu-go/vad-rs-1.git", rev = "b14b26ec7093f5398ef6658020259cd7c130ea6c", default-features = false }
+# (divanshu-go/vad-rs-1 @ b14b26e, vendored in third_party/vad-rs)
+vad-rs = { path = "../../third_party/vad-rs", default-features = false }
 anyhow = "1.0.86"
 hf-hub = { workspace = true }
 # https://github.com/pdeljanov/Symphonia/tree/master?tab=readme-ov-file#optimizations
 symphonia = { version = "0.5.4", features = ["aac", "isomp4", "opt-simd"] }
 rubato = "0.15.0"
-whisper-rs = { git = "https://github.com/screenpipe/whisper-rs.git", rev = "97e4070", features = ["tracing_backend"] }
+# screenpipe/whisper-rs @ 97e4070, vendored in third_party/whisper-rs (audiopipe
+# points at the same copy, so there is one whisper-rs-sys in the graph).
+whisper-rs = { path = "../../third_party/whisper-rs", features = ["tracing_backend"] }
 
 # Log
 log = { workspace = true }
@@ -84,7 +88,8 @@ ort = { version = "=2.0.0-rc.10", default-features = false, features = ["ndarray
 ort-sys = { version = "=2.0.0-rc.10", default-features = false }
 knf-rs = "0.3.2"
 futures = "0.3.31"
-audiopipe = { git = "https://github.com/divanshu-go/audiopipe.git", rev = "2fd5c360651157a5df504394066e509ad4d1bdc9", default-features = false, features = ["qwen3-asr-antirez-blas", "parakeet"], optional = true }
+# divanshu-go/audiopipe @ 2fd5c36, vendored in third_party/audiopipe
+audiopipe = { path = "../../third_party/audiopipe", default-features = false, features = ["qwen3-asr-antirez-blas", "parakeet"], optional = true }
 mlx-rs = { version = "0.25", optional = true }
 bytes = { version = "1.9.0", features = ["serde"] }
 rand = "0.9.0"

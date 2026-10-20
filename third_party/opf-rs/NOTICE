@@ -1,0 +1,38 @@
+opf-rs — Rust runtime for the screenpipe-pii-redactor / OPF v3 model
+Copyright 2026 Mediar, Inc.
+
+This crate is a pure-Rust inference runtime for the
+[`screenpipe/pii-redactor`](https://huggingface.co/screenpipe/pii-redactor)
+model, a fine-tuned derivative of OpenAI's Privacy Filter
+([github.com/openai/privacy-filter](https://github.com/openai/privacy-filter),
+Apache 2.0).
+
+This crate does NOT redistribute the fine-tuned model weights or the
+upstream Apache 2.0 base weights — users obtain those at runtime from
+HuggingFace under their respective licenses. The Apache 2.0 license
+text is included in `LICENSE.upstream-apache2.txt` solely as a
+courtesy reference for users who download the upstream weights through
+this crate's loader.
+
+Architectural concepts (rotary embeddings, mixture-of-experts feed-
+forward, attention sinks, RMSNorm, sliding-window mask) were
+re-implemented in candle following the upstream Apache 2.0 reference
+implementation in `opf._model.model`. Re-implementation, not
+redistribution — every line of code in this crate is original.
+
+"OpenAI" and "Privacy Filter" are trademarks / brands of OpenAI; this
+work does not use those marks to endorse or suggest endorsement of
+this work by OpenAI.
+
+Distribution license:
+
+  - The Rust source code in this repository (the "Runtime") is
+    licensed CC BY-NC 4.0; see LICENSE.
+  - The Runtime does not bundle, redistribute, or modify any
+    Apache 2.0-licensed model weights. When users elect to download
+    such weights through this Runtime, the Apache 2.0 obligations
+    on those weights are theirs to honor (see
+    LICENSE.upstream-apache2.txt for the full text).
+
+Questions about license compatibility or commercial use:
+  louis@screenpi.pe

@@ -323,6 +323,14 @@ Wave 0 ran on the PC before the cloud phase. Tick anything you already checked t
   - Expected: Freenpipe's profile is `%LOCALAPPDATA%\Freenpipe\WebView2`; screenpipe's `%LOCALAPPDATA%\ScreenPipe\WebView2` was not modified (timestamps unchanged); app-level files, if any, are under `%APPDATA%\com.normiecore.freenpipe`, and nothing under `%APPDATA%\screenpi.pe` changed.
   - Result:
 
+### W0-13 Vendor git dependencies into third_party/
+
+- [ ] **SMK-W0-13-1** (Hardware) Audio capture and transcription run on the vendored cpal, whisper-rs and vad-rs
+  - Setup: release-dev engine built from `main` in a fresh clone, a fresh `$FP_DD`, port `$FP_PORT`, a microphone and speakers.
+  - Steps: 1. `cargo build -p screenpipe-engine --profile release-dev` and confirm the build log shows `cpal`, `whisper-rs-sys`, `vad-rs` and `audiopipe` compiled from `third_party\`. 2. Start the engine with the default audio settings and speak a short sentence while some audio plays through the speakers. 3. After a minute, `GET /search?content_type=audio&limit=5`.
+  - Expected: the engine lists the input and output devices, the search returns a transcription of the spoken sentence, and the engine log has no cpal (WASAPI) or whisper errors.
+  - Result:
+
 ## Wave 1: Cross-cutting foundations
 
 ### W1-01 Schema v2.7.104: 28 migrations and ocr_text retirement

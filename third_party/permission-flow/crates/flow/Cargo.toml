@@ -1,0 +1,26 @@
+[package]
+name = "permission-flow"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+authors.workspace = true
+homepage.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+description = "macOS permission onboarding UI for Rust apps"
+documentation = "https://docs.rs/permission-flow"
+readme = "README.md"
+keywords = ["macos", "permissions", "swift", "accessibility", "tcc"]
+categories = ["api-bindings", "os::macos-apis"]
+
+[package.metadata.docs.rs]
+default-target = "aarch64-apple-darwin"
+targets = ["aarch64-apple-darwin", "x86_64-apple-darwin"]
+
+[dependencies]
+
+[build-dependencies]
+swift-rs = { version = "1.0.7", features = ["build"] }
+
+[dev-dependencies]
+iced = "0.13.1"

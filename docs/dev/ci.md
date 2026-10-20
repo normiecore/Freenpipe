@@ -88,6 +88,12 @@ Every step after the engine build runs even when an earlier one failed
   legitimately matches; the PR description must justify every hit. It exits
   2 (fails) only when it cannot run.
   Locally: `bash scripts/ci/verbatim-diff.sh origin/main HEAD`.
+- **Third-party dependency guard:** `bun test scripts/ci/third-party.test.ts`
+  fails when a Cargo.toml or Cargo.lock points at a git repository of the
+  vendor or its contributors again (they are vendored in `third_party/`, see
+  its README), when `third_party/` stops being excluded from the workspace,
+  when a path dependency into `third_party/` is broken, or when
+  `third_party/README.md` misses a vendored tree or a remaining git source.
 
 ### What CI does not cover
 

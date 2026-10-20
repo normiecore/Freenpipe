@@ -1,0 +1,14 @@
+[package]
+name = "antirez-asr-sys"
+version = "0.1.0"
+edition = "2021"
+description = "FFI bindings to antirez/qwen-asr (pure C Qwen3-ASR inference)"
+license = "MIT"
+links = "antirez_asr"
+build = "build.rs"
+
+[build-dependencies]
+cc = "1"
+
+[features]
+openblas = []

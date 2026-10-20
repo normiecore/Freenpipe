@@ -1,0 +1,13 @@
+# Automatically generated - DO NOT EDIT!
+
+"$schema" = "../../schemas/schema.json"
+
+[[permission]]
+identifier = "allow-authorization-state"
+description = "Enables the authorization_state command without any pre-configured scope."
+commands.allow = ["authorization_state"]
+
+[[permission]]
+identifier = "deny-authorization-state"
+description = "Denies the authorization_state command without any pre-configured scope."
+commands.deny = ["authorization_state"]
