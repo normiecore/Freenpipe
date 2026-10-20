@@ -357,7 +357,9 @@ impl Guard {
 
     async fn handle(&mut self, signal: Signal, reading: Reading) {
         let facts = Facts {
-            guard_enabled: self.guard_enabled(),
+            // Only a low reading consults the setting; skip the store read
+            // on the routine "all fine" checks.
+            guard_enabled: signal != Signal::Low || self.guard_enabled(),
             recording_intended: crate::health::recording_intended(),
             incident_active: self.state.incident_active,
             incident_notified: self.state.notified,
@@ -537,7 +539,9 @@ async fn run(app: AppHandle, data_dir: PathBuf) {
                 guard.handle(Signal::Recovered, Reading::from(&event.data)).await;
             }
             _ = ticks.tick() => {
-                if let Some(status) = monitor::latest_status() {
+                // A failed read says nothing new: the monitor keeps its level
+                // and only a successful read can start or end an incident.
+                if let Some(status) = monitor::latest_status().filter(|s| s.last_error.is_none()) {
                     let signal = if status.low { Signal::Low } else { Signal::Normal };
                     let reading = Reading {
                         available_bytes: status.available_bytes,

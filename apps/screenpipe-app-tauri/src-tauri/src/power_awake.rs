@@ -85,7 +85,10 @@ mod tests {
 
     #[test]
     fn teardown_reports_the_release() {
-        assert_eq!(teardown_outcome(Some(StopOutcome::Stopped)), StepOutcome::Done);
+        assert_eq!(
+            teardown_outcome(Some(StopOutcome::Stopped)),
+            StepOutcome::Done
+        );
         assert_eq!(
             teardown_outcome(Some(StopOutcome::NotStarted)),
             StepOutcome::Skipped

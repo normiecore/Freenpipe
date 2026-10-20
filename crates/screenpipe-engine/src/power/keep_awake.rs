@@ -190,11 +190,7 @@ impl KeepAwake {
     /// Give back any hold and end the thread (app quit). Waits up to
     /// `timeout`.
     pub fn stop(&self, timeout: Duration) -> StopOutcome {
-        let worker = self
-            .worker
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .take();
+        let worker = self.worker.lock().unwrap_or_else(|e| e.into_inner()).take();
         let Some(worker) = worker else {
             return StopOutcome::NotStarted;
         };
@@ -665,7 +661,9 @@ mod tests {
         let log = Log::default();
         let k = fake(&log, true, Duration::ZERO);
         let err = k.set_enabled(true).unwrap_err();
-        assert!(matches!(&err, KeepAwakeError::Backend(m) if m.contains("SetThreadExecutionState")));
+        assert!(
+            matches!(&err, KeepAwakeError::Backend(m) if m.contains("SetThreadExecutionState"))
+        );
         assert!(!k.is_enabled());
         // Nothing is held, so there is nothing to release.
         k.stop(Duration::from_secs(2));
@@ -692,7 +690,10 @@ mod tests {
         // The global may already be in use by another test binary path, but
         // in this crate's tests nothing touches it before this point.
         if Lazy::get(&GLOBAL).is_none() {
-            assert_eq!(release_for_exit(Duration::from_secs(1)), StopOutcome::NotStarted);
+            assert_eq!(
+                release_for_exit(Duration::from_secs(1)),
+                StopOutcome::NotStarted
+            );
             assert!(Lazy::get(&GLOBAL).is_none());
         }
     }

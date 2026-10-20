@@ -318,7 +318,10 @@ fn os_volume_space(dir: &Path) -> io::Result<VolumeSpace> {
 fn os_volume_space(dir: &Path) -> io::Result<VolumeSpace> {
     Err(io::Error::new(
         io::ErrorKind::Unsupported,
-        format!("free space of {} cannot be read on this platform", dir.display()),
+        format!(
+            "free space of {} cannot be read on this platform",
+            dir.display()
+        ),
     ))
 }
 
@@ -673,8 +676,14 @@ mod tests {
         assert_eq!(Thresholds::for_volume(0).threshold_bytes, 2 * GIB);
         let t = Thresholds::for_volume(250 * GIB);
         assert_eq!(t.recovery_threshold_bytes, t.threshold_bytes + GIB);
-        assert_eq!(ThresholdRule::VolumeScaled.resolve(None), Thresholds::floor());
-        assert_eq!(Thresholds::with_headroom(u64::MAX).recovery_threshold_bytes, u64::MAX);
+        assert_eq!(
+            ThresholdRule::VolumeScaled.resolve(None),
+            Thresholds::floor()
+        );
+        assert_eq!(
+            Thresholds::with_headroom(u64::MAX).recovery_threshold_bytes,
+            u64::MAX
+        );
     }
 
     #[test]
@@ -695,7 +704,10 @@ mod tests {
             assert_eq!(t.observe(available, limits()), None, "{available}");
             assert_eq!(t.level(), PressureLevel::Low);
         }
-        assert_eq!(t.observe(6 * GIB + 1, limits()), Some(Transition::Recovered));
+        assert_eq!(
+            t.observe(6 * GIB + 1, limits()),
+            Some(Transition::Recovered)
+        );
         // And back inside the band from above: still normal.
         assert_eq!(t.observe(5 * GIB + 1, limits()), None);
         assert_eq!(t.level(), PressureLevel::Normal);
@@ -814,7 +826,10 @@ mod tests {
             ThresholdRule::Fixed(Thresholds::with_headroom(free.saturating_mul(2).max(GIB))),
         );
         assert_eq!(
-            core.apply(SystemProbe.probe(dir.path()).map_err(|e| e.to_string()), &sink),
+            core.apply(
+                SystemProbe.probe(dir.path()).map_err(|e| e.to_string()),
+                &sink
+            ),
             Some(Transition::BecameLow)
         );
         core.set_rule(ThresholdRule::Fixed(Thresholds {
@@ -822,19 +837,28 @@ mod tests {
             recovery_threshold_bytes: 1,
         }));
         assert_eq!(
-            core.apply(SystemProbe.probe(dir.path()).map_err(|e| e.to_string()), &sink),
+            core.apply(
+                SystemProbe.probe(dir.path()).map_err(|e| e.to_string()),
+                &sink
+            ),
             Some(Transition::Recovered)
         );
         let events = sink.events();
-        assert!(matches!(&events[0], Seen::Low(e) if e.data_dir == dir.path().display().to_string()));
+        assert!(
+            matches!(&events[0], Seen::Low(e) if e.data_dir == dir.path().display().to_string())
+        );
         assert!(matches!(&events[1], Seen::Recovered(_)));
     }
 
     #[tokio::test]
     async fn the_monitor_loop_publishes_and_stops_on_shutdown() {
         let sink = Arc::new(RecordingSink::default());
-        let probe: Arc<dyn FreeSpaceProbe> =
-            Arc::new(ScriptedProbe::new(&[20 * GIB, 4 * GIB, 5 * GIB + 1, 9 * GIB]));
+        let probe: Arc<dyn FreeSpaceProbe> = Arc::new(ScriptedProbe::new(&[
+            20 * GIB,
+            4 * GIB,
+            5 * GIB + 1,
+            9 * GIB,
+        ]));
         let shutdown = CancellationToken::new();
         let task = tokio::spawn(run_monitor(
             PathBuf::from("/data"),
