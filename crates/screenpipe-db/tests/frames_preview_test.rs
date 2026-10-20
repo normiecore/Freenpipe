@@ -359,3 +359,56 @@ async fn preview_candidates_filter_by_domain_and_media() {
         .unwrap()
         .is_empty());
 }
+
+/// URLs that name the domain only outside their host pass the SQL `LIKE`
+/// pre-filter. The edge lookups and each slice must page past more of them
+/// than one page holds to reach the real matches.
+#[tokio::test]
+async fn preview_candidates_page_past_domain_false_positives() {
+    let db = setup_db().await;
+    let decoy = Some("https://www.google.com/search?q=github.com");
+    let mut decoy_secs = Vec::new();
+    decoy_secs.extend(0..100); // before the first match
+    decoy_secs.extend(101..400); // between the matches: 150 of them in the second slice
+    decoy_secs.extend(401..500); // after the last match
+    for secs in decoy_secs {
+        snapshot(&db, "m", secs, &format!("/d/q{secs}.jpg"), "Chrome", decoy).await;
+    }
+    let first = snapshot(
+        &db,
+        "m",
+        100,
+        "/d/r1.jpg",
+        "Chrome",
+        Some("https://github.com/a"),
+    )
+    .await;
+    let last = snapshot(
+        &db,
+        "m",
+        400,
+        "/d/r2.jpg",
+        "Chrome",
+        Some("https://github.com/b"),
+    )
+    .await;
+
+    let filter = FramePreviewFilter {
+        start: at(-10),
+        end: at(1000),
+        app_name: "Chrome",
+        browser_domain: Some("github.com"),
+    };
+    let slices = db
+        .get_frame_preview_candidates(&filter, 2, 1)
+        .await
+        .unwrap();
+    let ids: Vec<i64> = slices.iter().flatten().map(|r| r.frame_id).collect();
+    assert_eq!(ids, vec![first, last]);
+    for row in slices.iter().flatten() {
+        assert!(row
+            .browser_url
+            .as_deref()
+            .is_some_and(|u| u.starts_with("https://github.com/")));
+    }
+}

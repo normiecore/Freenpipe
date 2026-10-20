@@ -58,6 +58,16 @@ pub const NEIGHBOUR_TIME_WINDOW_SECS: i64 = 10 * 60;
 /// local file.
 pub const REMOTE_PATH_PREFIX: &str = "cloud://";
 
+/// Most rows one domain-filtered preview lookup reads before it gives up.
+/// The SQL `LIKE` pre-filter also passes URLs that only mention the domain
+/// outside the host (`google.com/search?q=github.com`), so a lookup pages
+/// past those until it has its exact matches, the range runs out, or this
+/// many rows were read.
+pub const PREVIEW_DOMAIN_SCAN_LIMIT: u32 = 5_000;
+
+/// Page size of a domain-filtered preview lookup.
+const PREVIEW_DOMAIN_PAGE: u32 = 64;
+
 /// A frame together with where its pixels are stored.
 #[derive(Debug, Clone, PartialEq)]
 pub struct FrameMediaRow {
@@ -276,11 +286,10 @@ impl DatabaseManager {
                     like.as_deref(),
                     bucket_start,
                     bucket_end,
-                    per_bucket.saturating_mul(4),
+                    per_bucket,
                     true,
                 )
                 .await?;
-            let rows: Vec<_> = rows.into_iter().take(per_bucket as usize).collect();
             if !rows.is_empty() {
                 out.push(rows);
             }
@@ -314,26 +323,79 @@ impl DatabaseManager {
         first: bool,
     ) -> Result<Option<DateTime<Utc>>, sqlx::Error> {
         let rows = self
-            .preview_rows(filter, like, filter.start, filter.end, 64, first)
+            .preview_rows(filter, like, filter.start, filter.end, 1, first)
             .await?;
         Ok(rows.into_iter().next().map(|r| r.timestamp))
     }
 
-    /// Frames in `[start, end)` that match `filter`, oldest first when
-    /// `ascending`, else newest first. The domain is pre-filtered in SQL with
-    /// `LIKE` and checked exactly here, so up to `fetch` rows are read to find
-    /// the matches.
+    /// Up to `want` frames in `[start, end)` that match `filter`, oldest
+    /// first when `ascending`, else newest first.
+    ///
+    /// Without a domain every row the query returns matches, so one query
+    /// with `LIMIT want` is enough. With a domain, SQL pre-filters with
+    /// `LIKE` and each row's host is checked exactly here; rows are read a
+    /// page at a time until `want` matches are found, the range has no more
+    /// rows, or [`PREVIEW_DOMAIN_SCAN_LIMIT`] rows were read.
     async fn preview_rows(
         &self,
         filter: &FramePreviewFilter<'_>,
         like: Option<&str>,
         start: DateTime<Utc>,
         end: DateTime<Utc>,
-        fetch: u32,
+        want: u32,
+        ascending: bool,
+    ) -> Result<Vec<FrameMediaRow>, sqlx::Error> {
+        let want = want.max(1);
+        let page = if like.is_some() {
+            want.saturating_mul(4).max(PREVIEW_DOMAIN_PAGE)
+        } else {
+            want
+        };
+        let mut out = Vec::new();
+        let mut offset = 0u32;
+        loop {
+            let rows = self
+                .preview_page(filter, like, start, end, page, offset, ascending)
+                .await?;
+            let fetched = rows.len();
+            for candidate in rows {
+                let keep = match filter.browser_domain {
+                    None => true,
+                    Some(domain) => candidate
+                        .browser_url
+                        .as_deref()
+                        .and_then(browser_url_host)
+                        .is_some_and(|host| host_matches_domain(&host, domain)),
+                };
+                if keep {
+                    out.push(candidate);
+                    if out.len() >= want as usize {
+                        return Ok(out);
+                    }
+                }
+            }
+            offset = offset.saturating_add(page);
+            if like.is_none() || fetched < page as usize || offset >= PREVIEW_DOMAIN_SCAN_LIMIT {
+                return Ok(out);
+            }
+        }
+    }
+
+    /// One page of [`Self::preview_rows`]: rows in `[start, end)` for the
+    /// app (and the `LIKE` pattern when given), skipping `offset` rows.
+    #[allow(clippy::too_many_arguments)]
+    async fn preview_page(
+        &self,
+        filter: &FramePreviewFilter<'_>,
+        like: Option<&str>,
+        start: DateTime<Utc>,
+        end: DateTime<Utc>,
+        limit: u32,
+        offset: u32,
         ascending: bool,
     ) -> Result<Vec<FrameMediaRow>, sqlx::Error> {
         let domain_filter = if like.is_some() {
-            "AND f.browser_url LIKE ?5 ESCAPE '\\'"
+            "AND f.browser_url LIKE ?6 ESCAPE '\\'"
         } else {
             ""
         };
@@ -347,33 +409,19 @@ impl DatabaseManager {
              WHERE f.timestamp >= ?1 AND f.timestamp < ?2 \
                AND f.app_name = ?3 COLLATE NOCASE \
                AND {HAS_LOCAL_MEDIA} {domain_filter} \
-             ORDER BY f.timestamp {order}, f.id {order} LIMIT ?4"
+             ORDER BY f.timestamp {order}, f.id {order} LIMIT ?4 OFFSET ?5"
         );
         let mut query = sqlx::query(sqlx::AssertSqlSafe(sql))
             .bind(start)
             .bind(end)
             .bind(filter.app_name)
-            .bind(i64::from(fetch.max(1)));
+            .bind(i64::from(limit.max(1)))
+            .bind(i64::from(offset));
         if let Some(like) = like {
             query = query.bind(like);
         }
         let rows = query.fetch_all(&self.pool).await?;
-        let mut out = Vec::with_capacity(rows.len());
-        for row in &rows {
-            let candidate = FrameMediaRow::from_row(row)?;
-            let keep = match filter.browser_domain {
-                None => true,
-                Some(domain) => candidate
-                    .browser_url
-                    .as_deref()
-                    .and_then(browser_url_host)
-                    .is_some_and(|host| host_matches_domain(&host, domain)),
-            };
-            if keep {
-                out.push(candidate);
-            }
-        }
-        Ok(out)
+        rows.iter().map(FrameMediaRow::from_row).collect()
     }
 }
 

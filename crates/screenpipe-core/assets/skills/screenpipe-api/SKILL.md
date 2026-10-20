@@ -15,7 +15,7 @@ Local REST API at `http://localhost:3030`.
 curl -H "Authorization: Bearer $SCREENPIPE_LOCAL_API_KEY" "http://localhost:3030/..."
 ```
 
-The `$SCREENPIPE_LOCAL_API_KEY` env var is already set in your environment. Without it you get 403. Endpoints that skip auth: `/health`, `/ws/health`, `/audio/device/status`, `/connections/oauth/callback`, `/frames/*`, `/notify`, `/pipes/store/*`.
+The `$SCREENPIPE_LOCAL_API_KEY` env var is already set in your environment. Without it you get 403. Endpoints that skip auth: `/health`, `/ws/health`, `/audio/device/status`, `/connections/oauth/callback`, `/notify`, `/pipes/store/*`.
 
 ## Context Window Protection
 
@@ -139,10 +139,16 @@ OCR-only roles (fallback when accessibility unavailable): `line`, `word`, `block
 ## 4. Frames (Screenshots) — `GET /frames/{frame_id}`
 
 ```bash
-curl -o /tmp/frame.png "http://localhost:3030/frames/12345"
+curl -f -H "Authorization: Bearer $SCREENPIPE_LOCAL_API_KEY" -o /tmp/frame.jpg "http://localhost:3030/frames/12345"
 ```
 
-Returns raw PNG. **Never fetch more than 2-3 frames per query** (~1000-2000 tokens each).
+Returns a raw JPEG. Frame routes need the auth header like every other read; `-f` makes curl fail on an error instead of saving the JSON error body as the image. **Never fetch more than 2-3 frames per query** (~1000-2000 tokens each).
+
+For a small preview, `GET /frames/{frame_id}/thumbnail?width=320` returns a scaled JPEG (`width` 32-3840, `quality` 1-100), far cheaper than the full frame:
+
+```bash
+curl -f -H "Authorization: Bearer $SCREENPIPE_LOCAL_API_KEY" -o /tmp/thumb.jpg "http://localhost:3030/frames/12345/thumbnail?width=320"
+```
 
 ---
 

@@ -334,23 +334,46 @@ fn is_missing_file_error(e: &std::io::Error) -> bool {
     )
 }
 
+/// Pause before the single retry of a snapshot read that failed although the
+/// file is there. On Windows the capture writer or a virus scanner can hold a
+/// fresh JPEG open without read sharing for a moment.
+const SNAPSHOT_READ_RETRY_DELAY: Duration = Duration::from_millis(100);
+
 /// Read a snapshot JPEG fully, telling a missing file apart from one that
-/// exists but cannot be read.
+/// exists but cannot be read. A read that fails for any other reason than a
+/// missing file or a non-file path is tried once more after
+/// [`SNAPSHOT_READ_RETRY_DELAY`] before it is reported.
 async fn read_snapshot_file(path: &str) -> Result<Vec<u8>, SnapshotReadError> {
-    let classify = |e: std::io::Error| {
+    let mut result = read_regular_file(path).await;
+    let retryable = match &result {
+        Ok(_) => false,
+        Err(e) => !is_missing_file_error(e) && e.kind() != std::io::ErrorKind::InvalidInput,
+    };
+    if retryable {
+        debug!("snapshot read failed, retrying once: {}", path);
+        tokio::time::sleep(SNAPSHOT_READ_RETRY_DELAY).await;
+        result = read_regular_file(path).await;
+    }
+    result.map_err(|e| {
         if is_missing_file_error(&e) {
             SnapshotReadError::Missing
         } else {
             SnapshotReadError::Unreadable(e.to_string())
         }
-    };
-    let metadata = tokio::fs::metadata(path).await.map_err(classify)?;
+    })
+}
+
+/// The whole content of `path`, or `InvalidInput` when it is not a regular
+/// file (a directory, say), which no retry fixes.
+async fn read_regular_file(path: &str) -> std::io::Result<Vec<u8>> {
+    let metadata = tokio::fs::metadata(path).await?;
     if !metadata.is_file() {
-        return Err(SnapshotReadError::Unreadable(
-            "snapshot path is not a regular file".to_string(),
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "snapshot path is not a regular file",
         ));
     }
-    tokio::fs::read(path).await.map_err(classify)
+    tokio::fs::read(path).await
 }
 
 fn frame_not_found_error(frame_id: i64) -> (StatusCode, JsonResponse<Value>) {
