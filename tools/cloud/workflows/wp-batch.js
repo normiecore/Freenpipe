@@ -22,6 +22,9 @@ const REPO = args.repo || '/home/user/Freenpipe'
 const SESSION = args.session_url || ''
 const LEAN = !!args.lean   // owner decision 6: one combined reviewer reading the diff, CI as the build gate, one fix round
 const MAX_ROUND = LEAN ? 1 : 2
+// Owner decision 7 (commercial-ready builds): an APPROVE that still carries findings gets one fix round
+// and a re-review instead of merging with known defects. Pass fix_minors: false to skip that round.
+const FIX_MINORS = args.fix_minors !== false
 const WPS = args.wps
 const TRAILER = 'Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>' + (SESSION ? `\nClaude-Session: ${SESSION}` : '')
 const WT = id => `/root/.cache/freenpipe/wt/${id}`
@@ -141,7 +144,7 @@ ${role.key === 'combined'
 ${re}
 Do not modify tracked files, commit, push or switch branches in that worktree; another reviewer may be using it at the same time. Scratch files go in $FP_STATE/review/${w.id}/ (you may add a detached worktree there if you need to experiment, and remove it when done). The cargo target dir is shared: a "Blocking waiting for file lock" message means another build is running, so wait. Run targeted tests only (no workspace-wide test runs; disk is limited). The VM is Linux: judge cfg(windows) code by reading and say what CI's windows job must prove.
 
-Request CHANGES only for blocker or major findings; minor findings still allow APPROVE. Return verdict, findings (severity, location as file:line, problem, fix) and a 3-6 line summary of what you checked and ran, with results.
+Request CHANGES only for blocker or major findings; minor findings still allow APPROVE. Rate by consequence, not by how rare the path is: a user-visible regression (data hidden or lost, a feature that silently stops working), a hang or crash path, killing or signalling the wrong process, or leaking a secret is at least major. Minor means wording, docs, dead code, or a path whose worst case is a log line. Return verdict, findings (severity, location as file:line, problem, fix) and a 3-6 line summary of what you checked and ran, with results.
 ${role.key === 'verification' ? `
 CI runs these on every PR, so check them yourself: if the change touches any \`#[tauri::command]\` or a type one uses, \`cd apps/screenpipe-app-tauri && bun run bindings:check\` must pass (stale lib/utils/tauri.ts is a blocker); if it touches frontend code, \`bun run build\` in apps/screenpipe-app-tauri must pass (type errors are blockers).` : ''}
 ${w.extraReview || ''}`
@@ -155,7 +158,7 @@ ${SHARED_RULES}
 Findings from the two independent reviewers:
 ${JSON.stringify(findings, null, 1)}
 
-Fix every blocker and major finding. When a finding is wrong, rebut it with concrete evidence (file:line, command output) instead of changing code. Fix minor findings when the fix is cheap and clearly correct. Re-run the checks your changes affect (cargo check/test for touched crates, bun test, vendor guard, \`bash scripts/ci/verbatim-diff.sh ${BASE} HEAD\`). ${commitRule}
+Fix every blocker and major finding. When a finding is wrong, rebut it with concrete evidence (file:line, command output) instead of changing code. ${FIX_MINORS ? 'Fix every minor finding too, unless you rebut it with evidence or it needs work outside this WP (then defer it with a note naming the owning WP).' : 'Fix minor findings when the fix is cheap and clearly correct.'} Re-run the checks your changes affect (cargo check/test for touched crates, bun test, vendor guard, \`bash scripts/ci/verbatim-diff.sh ${BASE} HEAD\`). ${commitRule}
 
 Finish with everything committed and pushed (fp.py push) on branch wp/${w.id}. Return head_sha, pushed, one response per finding (fixed|rebutted|deferred, with a note) and the checks you ran.
 ${w.extra || ''}`
@@ -212,7 +215,9 @@ async function runWP(w) {
     const got = reviews.filter(Boolean)
     rounds.push({ round, head, reviews: got })
     log(`${w.id} r${round}: ${got.map(r => `${r.role}=${r.verdict}`).join(', ') || 'no reviews (agents failed)'}`)
-    if (got.length === ROLES.length && got.every(r => r.verdict === 'APPROVE')) { approved = true; break }
+    const allApprove = got.length === ROLES.length && got.every(r => r.verdict === 'APPROVE')
+    const openFindings = got.some(r => r.findings.length > 0)
+    if (allApprove && (!FIX_MINORS || !openFindings || round === MAX_ROUND)) { approved = true; break }
     if (got.length < ROLES.length || round === MAX_ROUND) break
     const findings = got.flatMap(r => r.findings.map(f => ({ reviewer: r.role, ...f })))
     const fix = await agent(fixPrompt(w, head, round + 1, findings), { label: `fix:${w.id}:r${round + 1}`, phase: 'Fix', schema: FIX_SCHEMA })
