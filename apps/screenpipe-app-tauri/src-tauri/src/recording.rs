@@ -1518,9 +1518,12 @@ where
 }
 
 /// Stop whatever is left of the engine and start a fresh generation. Used by
-/// the health watchdog; does not change the recording intent. Returns `Ok`
-/// without doing anything when another start is already under way. Both
-/// halves are bounded by [`RespawnLimits`]; running out of time is `Failed`.
+/// the health watchdog; never changes the recording intent. A pause made
+/// while this runs leaves the new engine up without capture, and a quit or
+/// relaunch that begins meanwhile retires the new generation again (see
+/// [`start_generation`]). Returns `Ok` without doing anything when another
+/// start is already under way. Both halves are bounded by [`RespawnLimits`];
+/// running out of time is `Failed`.
 pub(crate) async fn respawn_engine(app: &tauri::AppHandle) -> Result<(), RespawnError> {
     let Some(state) = app.try_state::<RecordingState>() else {
         return Err(RespawnError::Failed("recording state not ready".into()));
