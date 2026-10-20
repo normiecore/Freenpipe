@@ -701,16 +701,28 @@ pub struct SemanticFrameAttachment {
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
 pub struct SemanticAttachOutcome {
     /// Frame rows updated. Frames that no longer exist are not counted and
-    /// not reported: there is nothing left to attach a run to.
+    /// never reported in [`Self::skipped`], whether or not their run still
+    /// exists: there is nothing left to attach a run to, and storing their
+    /// parse again would bring deleted text back.
     pub frames_updated: u64,
-    /// Attachments not written because their run no longer exists, ordered
-    /// by frame id. GC collected the run between the worker getting it
-    /// (stored, or found by fingerprint) and the flush, which can happen when
-    /// a reused run is older than the GC grace and nothing pointed at it. The
-    /// frames are still there without a run: the caller should store the
-    /// parse again (which creates a new run) or queue the frame for parsing
-    /// again, then attach the new run.
+    /// Attachments not written because their run no longer exists, for
+    /// frames that still exist when the batch is written (checked in the same
+    /// transaction), ordered by frame id. GC collected the run between the
+    /// worker getting it (stored, or found by fingerprint) and the flush:
+    /// either a reused run older than the GC grace that nothing pointed at,
+    /// or any unattached run during a zero-grace pass after a user delete.
+    /// These frames are still there without a run: the caller should store
+    /// the parse again (which creates a new run) or queue the frame for
+    /// parsing again, then attach the new run.
     pub skipped: Vec<SemanticFrameAttachment>,
+    /// Runs deleted because the batch named them only for frames that no
+    /// longer exist and no other frame points at them, typically a parse the
+    /// worker stored after its frame was deleted (see
+    /// [`DatabaseManager::attach_semantic_runs_to_frames`]).
+    pub runs_discarded: u64,
+    /// Items deleted with [`Self::runs_discarded`] because no other run
+    /// contains them. Their FTS text and actor assignments go with them.
+    pub items_discarded: u64,
 }
 
 // ---------------------------------------------------------------------------
@@ -1468,26 +1480,92 @@ async fn store_run_tx(
     })
 }
 
+/// The ids in `ids` (at most [`IN_CHUNK`] of them) that still have a
+/// `frames` row, ascending.
+async fn existing_frame_ids(conn: &mut SqliteConnection, ids: &[i64]) -> Result<Vec<i64>> {
+    let sql = format!(
+        "SELECT id FROM frames WHERE id IN ({}) ORDER BY id",
+        numbered_placeholders(1, ids.len())
+    );
+    let mut q = sqlx::query_scalar(sqlx::AssertSqlSafe(sql));
+    for id in ids {
+        q = q.bind(id);
+    }
+    Ok(q.fetch_all(&mut *conn).await?)
+}
+
+/// Delete run `run_id` unless a frame points at it, together with its items
+/// that no other run contains; their actor assignments (cascade) and FTS rows
+/// (delete trigger) go with them. Returns the number of items deleted, or
+/// `None` when the run is referenced (or already gone) and nothing changed.
+async fn discard_unreferenced_run(conn: &mut SqliteConnection, run_id: i64) -> Result<Option<u64>> {
+    let referenced: Option<i64> =
+        sqlx::query_scalar("SELECT 1 FROM frames WHERE semantic_run_id = ?1 LIMIT 1")
+            .bind(run_id)
+            .fetch_optional(&mut *conn)
+            .await?;
+    if referenced.is_some() {
+        return Ok(None);
+    }
+    // Read the item ids first: deleting the run cascades to its run items.
+    let item_ids: Vec<i64> =
+        sqlx::query_scalar("SELECT DISTINCT item_id FROM semantic_run_items WHERE run_id = ?1")
+            .bind(run_id)
+            .fetch_all(&mut *conn)
+            .await?;
+    let runs_deleted = sqlx::query("DELETE FROM semantic_runs WHERE id = ?1")
+        .bind(run_id)
+        .execute(&mut *conn)
+        .await?
+        .rows_affected();
+    if runs_deleted == 0 {
+        return Ok(None);
+    }
+    let mut items_deleted = 0u64;
+    for chunk in item_ids.chunks(IN_CHUNK) {
+        let sql = format!(
+            "DELETE FROM semantic_items WHERE id IN ({}) \
+             AND NOT EXISTS ( \
+                 SELECT 1 FROM semantic_run_items ri WHERE ri.item_id = semantic_items.id)",
+            numbered_placeholders(1, chunk.len())
+        );
+        let mut q = sqlx::query(sqlx::AssertSqlSafe(sql));
+        for id in chunk {
+            q = q.bind(id);
+        }
+        items_deleted += q.execute(&mut *conn).await?.rows_affected();
+    }
+    Ok(Some(items_deleted))
+}
+
+/// The body of [`DatabaseManager::attach_semantic_runs_to_frames`]. It runs
+/// inside one `BEGIN IMMEDIATE` transaction, which holds the write lock, so
+/// neither a GC pass nor a frame delete can land between the checks below
+/// and the writes they decide.
 async fn attach_tx(
     conn: &mut SqliteConnection,
     by_run: BTreeMap<i64, Vec<i64>>,
 ) -> Result<SemanticAttachOutcome> {
     let mut outcome = SemanticAttachOutcome::default();
     for (run_id, frame_ids) in by_run {
-        // The transaction holds the write lock, so GC cannot remove the run
-        // between this check and the UPDATE below.
         let exists: Option<i64> = sqlx::query_scalar("SELECT 1 FROM semantic_runs WHERE id = ?1")
             .bind(run_id)
             .fetch_optional(&mut *conn)
             .await?;
         if exists.is_none() {
-            outcome.skipped.extend(
-                frame_ids
-                    .into_iter()
-                    .map(|frame_id| SemanticFrameAttachment { frame_id, run_id }),
-            );
+            // Report only the frames that are still there. A frame deleted
+            // since the worker parsed it has nothing to attach to, and
+            // reporting it would have the worker store its text again.
+            for chunk in frame_ids.chunks(IN_CHUNK) {
+                let live = existing_frame_ids(conn, chunk).await?;
+                outcome.skipped.extend(
+                    live.into_iter()
+                        .map(|frame_id| SemanticFrameAttachment { frame_id, run_id }),
+                );
+            }
             continue;
         }
+        let mut updated = 0u64;
         for chunk in frame_ids.chunks(IN_CHUNK) {
             let sql = format!(
                 "UPDATE frames SET semantic_run_id = ?1 WHERE id IN ({})",
@@ -1497,7 +1575,19 @@ async fn attach_tx(
             for id in chunk {
                 q = q.bind(id);
             }
-            outcome.frames_updated += q.execute(&mut *conn).await?.rows_affected();
+            updated += q.execute(&mut *conn).await?.rows_affected();
+        }
+        outcome.frames_updated += updated;
+        // SQLite counts every row the UPDATE matched, so zero means none of
+        // the frames named for this run exist any more. Unless another frame
+        // points at the run, drop it now; otherwise a parse the worker
+        // stored after its frame was deleted would stay searchable until the
+        // next GC pass.
+        if updated == 0 {
+            if let Some(items) = discard_unreferenced_run(conn, run_id).await? {
+                outcome.runs_discarded += 1;
+                outcome.items_discarded += items;
+            }
         }
     }
     outcome.skipped.sort_unstable_by_key(|a| a.frame_id);
@@ -1728,11 +1818,27 @@ impl DatabaseManager {
 
     /// Point frames at runs (`frames.semantic_run_id`) in one transaction.
     ///
-    /// When a frame appears more than once, the last entry wins. Entries whose
-    /// run no longer exists (collected by GC in the meantime) are not written
-    /// and do not fail the batch; they come back in
-    /// [`SemanticAttachOutcome::skipped`] so the caller can store or parse
-    /// those frames again. Frames that no longer exist are ignored.
+    /// When a frame appears more than once, the last entry wins. The
+    /// transaction holds the write lock, so frames and runs cannot change
+    /// while it decides what to do with each entry:
+    ///
+    /// - A frame that no longer exists (retention or a user delete removed it
+    ///   after the worker read it) is ignored: not written, not counted and
+    ///   never reported in [`SemanticAttachOutcome::skipped`], whatever state
+    ///   its run is in. Storing its parse again would bring deleted text back.
+    /// - A frame that exists but whose run no longer exists (collected by GC
+    ///   in the meantime) is not written and does not fail the batch; it
+    ///   comes back in [`SemanticAttachOutcome::skipped`] so the caller can
+    ///   store or parse that frame again.
+    /// - A run that the batch names only for frames that no longer exist, and
+    ///   that no other frame points at, is deleted together with its items
+    ///   that no other run contains (so their FTS text goes too), as a
+    ///   zero-grace GC pass would. This covers a parse the worker stored after
+    ///   its frame was deleted, which would otherwise stay searchable until
+    ///   the next GC pass. A later attachment of another frame to that run
+    ///   comes back in `skipped`. Counted in
+    ///   [`SemanticAttachOutcome::runs_discarded`] and
+    ///   [`SemanticAttachOutcome::items_discarded`].
     pub async fn attach_semantic_runs_to_frames(
         &self,
         attachments: &[SemanticFrameAttachment],
@@ -1931,7 +2037,7 @@ impl DatabaseManager {
     /// hit, or `store_semantic_run` returning `created == false`) can be
     /// older than the grace and, if retention just removed the frames that
     /// pointed at it, unreferenced. A pass before the next flush then
-    /// collects it, and the flush reports the frames waiting on it in
+    /// collects it, and the flush reports the frames still waiting on it in
     /// [`SemanticAttachOutcome::skipped`] instead of attaching them. The
     /// worker must store or parse those frames again.
     ///
@@ -1947,7 +2053,11 @@ impl DatabaseManager {
     ///   stored moments ago for a frame outside the deleted range, and has
     ///   not attached yet, is collected too. Its pending attachment is then
     ///   skipped and reported (see [`Self::attach_semantic_runs_to_frames`]),
-    ///   so the worker can store or parse that frame again.
+    ///   so the worker can store or parse that frame again. Pending
+    ///   attachments of the deleted frames themselves are dropped without
+    ///   being reported, so the worker never stores their text again, and a
+    ///   parse it stored for one of them after this pass is deleted by the
+    ///   flush that tries to attach it.
     pub async fn gc_semantic_projection(&self, grace: Duration) -> Result<SemanticGcStats> {
         let grace =
             chrono::Duration::from_std(grace).unwrap_or_else(|_| chrono::Duration::days(365 * 100));
@@ -2271,9 +2381,12 @@ impl SemanticFrameAttachmentBuffer {
     }
 
     /// Write everything queued in one transaction and log the flush (at
-    /// debug level). Entries whose run GC removed in the meantime are not
-    /// written; they come back in [`SemanticAttachOutcome::skipped`] for the
-    /// caller to store or parse again.
+    /// debug level), with the rules of
+    /// [`DatabaseManager::attach_semantic_runs_to_frames`]: entries whose run
+    /// GC removed in the meantime are not written, and those whose frame
+    /// still exists come back in [`SemanticAttachOutcome::skipped`] for the
+    /// caller to store or parse again. Entries whose frame was deleted are
+    /// dropped without being reported.
     ///
     /// The entries leave the buffer only after the transaction commits:
     ///
@@ -2302,6 +2415,8 @@ impl SemanticFrameAttachmentBuffer {
                     queued = batch.len(),
                     updated = outcome.frames_updated,
                     skipped = outcome.skipped.len(),
+                    runs_discarded = outcome.runs_discarded,
+                    items_discarded = outcome.items_discarded,
                     "semantic: flushed frame attachments"
                 );
                 Ok(outcome)

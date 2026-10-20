@@ -357,6 +357,8 @@ async fn frames_attach_in_batches() {
         .await
         .unwrap();
     assert_eq!(outcome.frames_updated, 2);
+    // run_a still went onto f1, so the missing frame costs it nothing.
+    assert_eq!((outcome.runs_discarded, outcome.items_discarded), (0, 0));
     assert_eq!(
         outcome.skipped,
         vec![SemanticFrameAttachment {
@@ -880,6 +882,264 @@ async fn gc_of_a_reused_run_reports_the_frames_waiting_on_it() {
         .unwrap();
     assert_eq!(on_frame.run.id, again.run_id);
     assert_eq!(fts_hits(&db, "reusedbody").await, 1);
+}
+
+async fn delete_frames(db: &DatabaseManager, ids: &[i64]) {
+    for id in ids {
+        sqlx::query("DELETE FROM frames WHERE id = ?1")
+            .bind(id)
+            .execute(&db.pool)
+            .await
+            .unwrap();
+    }
+}
+
+#[tokio::test]
+async fn a_frame_deleted_with_its_run_is_not_reported() {
+    let (_dir, db) = open_db().await;
+    let frame = insert_frame(&db, 1).await;
+    let stored = db
+        .store_semantic_run(&new_run(
+            "secret",
+            vec![message("m", "secret", "deletedsecret", Some("Ada"))],
+        ))
+        .await
+        .unwrap();
+    let mut buffer = SemanticFrameAttachmentBuffer::new(100, Duration::from_secs(3600));
+    buffer.push(frame, stored.run_id).unwrap();
+
+    // The user deletes the range holding the frame before the flush, and the
+    // delete runs a zero-grace pass.
+    delete_frames(&db, &[frame]).await;
+    let stats = db.gc_semantic_projection(Duration::ZERO).await.unwrap();
+    assert_eq!((stats.runs_deleted, stats.items_deleted), (1, 1));
+    assert_eq!(fts_hits(&db, "deletedsecret").await, 0);
+
+    // Nothing comes back for the worker to store again.
+    let outcome = buffer.flush(&db).await.unwrap();
+    assert_eq!(outcome.frames_updated, 0);
+    assert!(outcome.skipped.is_empty(), "{:?}", outcome.skipped);
+    assert_eq!((outcome.runs_discarded, outcome.items_discarded), (0, 0));
+    assert!(buffer.is_empty());
+    assert_eq!(fts_hits(&db, "deletedsecret").await, 0);
+    assert!(db
+        .search_semantic_items(&query("deletedsecret"))
+        .await
+        .unwrap()
+        .is_empty());
+}
+
+#[tokio::test]
+async fn surviving_frames_whose_run_was_collected_are_reported() {
+    let (_dir, db) = open_db().await;
+    let gone = insert_frame(&db, 1).await;
+    let kept = insert_frame(&db, 2).await;
+    let gone_too = insert_frame(&db, 3).await;
+    let kept_too = insert_frame(&db, 4).await;
+    let secret = new_run(
+        "secret",
+        vec![message("m", "secret", "deletedsecret", None)],
+    );
+    let kept_parse = new_run("kept", vec![message("m", "kept", "keptbody", None)]);
+    // One input seen on two frames, one inside the deleted range and one
+    // outside it.
+    let mixed_parse = new_run("mixed", vec![message("m", "mixed", "mixedbody", None)]);
+    let secret_run = db.store_semantic_run(&secret).await.unwrap();
+    let kept_run = db.store_semantic_run(&kept_parse).await.unwrap();
+    let mixed_run = db.store_semantic_run(&mixed_parse).await.unwrap();
+    let mut buffer = SemanticFrameAttachmentBuffer::new(100, Duration::from_secs(3600));
+    buffer.push(gone, secret_run.run_id).unwrap();
+    buffer.push(kept, kept_run.run_id).unwrap();
+    buffer.push(gone_too, mixed_run.run_id).unwrap();
+    buffer.push(kept_too, mixed_run.run_id).unwrap();
+
+    // A delete-range takes `gone` and `gone_too`; its zero-grace pass also
+    // collects the not yet attached runs of the frames outside the range.
+    delete_frames(&db, &[gone, gone_too]).await;
+    let stats = db.gc_semantic_projection(Duration::ZERO).await.unwrap();
+    assert_eq!((stats.runs_deleted, stats.items_deleted), (3, 3));
+
+    // Only the frames that still exist are reported, also when a deleted
+    // frame was waiting on the same run.
+    let outcome = buffer.flush(&db).await.unwrap();
+    assert_eq!(outcome.frames_updated, 0);
+    assert_eq!(
+        outcome.skipped,
+        vec![
+            SemanticFrameAttachment {
+                frame_id: kept,
+                run_id: kept_run.run_id,
+            },
+            SemanticFrameAttachment {
+                frame_id: kept_too,
+                run_id: mixed_run.run_id,
+            },
+        ]
+    );
+    assert_eq!((outcome.runs_discarded, outcome.items_discarded), (0, 0));
+
+    // The worker follows the contract: store each reported frame's parse
+    // again and attach the new run.
+    for (pair, parse) in outcome.skipped.iter().zip([&kept_parse, &mixed_parse]) {
+        let again = db.store_semantic_run(parse).await.unwrap();
+        assert!(again.created);
+        buffer.push(pair.frame_id, again.run_id).unwrap();
+    }
+    let outcome = buffer.flush(&db).await.unwrap();
+    assert_eq!(outcome.frames_updated, 2);
+    assert!(outcome.skipped.is_empty());
+    assert_eq!(fts_hits(&db, "keptbody").await, 1);
+    assert_eq!(fts_hits(&db, "mixedbody").await, 1);
+    assert_eq!(fts_hits(&db, "deletedsecret").await, 0);
+    assert!(db
+        .search_semantic_items(&query("deletedsecret"))
+        .await
+        .unwrap()
+        .is_empty());
+    for frame in [gone, gone_too] {
+        assert!(db
+            .get_semantic_run_for_frame(frame)
+            .await
+            .unwrap()
+            .is_none());
+    }
+}
+
+#[tokio::test]
+async fn a_parse_stored_after_its_frame_was_deleted_is_discarded_by_the_flush() {
+    let (_dir, db) = open_db().await;
+    // A frame outside the deleted range holds a run with an item the late
+    // parse shares.
+    let holder = insert_frame(&db, 1).await;
+    let holder_run = db
+        .store_semantic_run(&new_run(
+            "holder",
+            vec![message("m", "shared", "sharedhello", None)],
+        ))
+        .await
+        .unwrap();
+    db.attach_semantic_runs_to_frames(&[SemanticFrameAttachment {
+        frame_id: holder,
+        run_id: holder_run.run_id,
+    }])
+    .await
+    .unwrap();
+
+    // The worker read `late` before the user deleted it, and stores its
+    // parse only after the delete and its zero-grace pass have finished.
+    let late = insert_frame(&db, 2).await;
+    delete_frames(&db, &[late]).await;
+    let stats = db.gc_semantic_projection(Duration::ZERO).await.unwrap();
+    assert_eq!((stats.runs_deleted, stats.items_deleted), (0, 0));
+    let late_run = db
+        .store_semantic_run(&new_run(
+            "late",
+            vec![
+                message("a", "late", "latepineapple", Some("Grace")),
+                message("b", "shared", "sharedhello", None),
+            ],
+        ))
+        .await
+        .unwrap();
+    assert!(late_run.created);
+    assert_eq!(late_run.items_inserted, 1);
+    assert_eq!(fts_hits(&db, "latepineapple").await, 1);
+
+    // The flush finds no frame for the run and drops it with its own item.
+    let mut buffer = SemanticFrameAttachmentBuffer::new(100, Duration::from_secs(3600));
+    buffer.push(late, late_run.run_id).unwrap();
+    let outcome = buffer.flush(&db).await.unwrap();
+    assert_eq!(outcome.frames_updated, 0);
+    assert!(outcome.skipped.is_empty());
+    assert_eq!((outcome.runs_discarded, outcome.items_discarded), (1, 1));
+    assert!(db
+        .get_semantic_run_detail(late_run.run_id)
+        .await
+        .unwrap()
+        .is_none());
+    assert_eq!(fts_hits(&db, "latepineapple").await, 0);
+    assert!(db
+        .search_semantic_items(&query("latepineapple"))
+        .await
+        .unwrap()
+        .is_empty());
+    assert_eq!(
+        count(&db, "SELECT COUNT(*) FROM semantic_item_actors").await,
+        0
+    );
+    // The shared item still belongs to the holder's run, and actors stay, as
+    // they do in GC.
+    assert_eq!(fts_hits(&db, "sharedhello").await, 1);
+    let detail = db
+        .get_semantic_run_for_frame(holder)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(detail.run.id, holder_run.run_id);
+    assert_eq!(detail.items.len(), 1);
+    assert_eq!(count(&db, "SELECT COUNT(*) FROM semantic_actors").await, 1);
+
+    // A run another frame points at is kept, even when every frame the batch
+    // names for it is gone.
+    let outcome = db
+        .attach_semantic_runs_to_frames(&[SemanticFrameAttachment {
+            frame_id: late,
+            run_id: holder_run.run_id,
+        }])
+        .await
+        .unwrap();
+    assert_eq!(outcome.frames_updated, 0);
+    assert!(outcome.skipped.is_empty());
+    assert_eq!((outcome.runs_discarded, outcome.items_discarded), (0, 0));
+    assert!(db
+        .get_semantic_run_detail(holder_run.run_id)
+        .await
+        .unwrap()
+        .is_some());
+
+    // So is a fresh run the batch also attaches to a frame that exists.
+    let fresh = insert_frame(&db, 3).await;
+    let both = db
+        .store_semantic_run(&new_run(
+            "both",
+            vec![message("m", "both", "bothbody", None)],
+        ))
+        .await
+        .unwrap();
+    buffer.push(late, both.run_id).unwrap();
+    buffer.push(fresh, both.run_id).unwrap();
+    let outcome = buffer.flush(&db).await.unwrap();
+    assert_eq!(outcome.frames_updated, 1);
+    assert!(outcome.skipped.is_empty());
+    assert_eq!((outcome.runs_discarded, outcome.items_discarded), (0, 0));
+    assert_eq!(
+        db.get_semantic_run_for_frame(fresh)
+            .await
+            .unwrap()
+            .unwrap()
+            .run
+            .id,
+        both.run_id
+    );
+    assert_eq!(fts_hits(&db, "bothbody").await, 1);
+
+    // A later frame with the late input finds no run and is reported, so the
+    // worker stores the parse again for it.
+    let next = insert_frame(&db, 4).await;
+    let outcome = db
+        .attach_semantic_runs_to_frames(&[SemanticFrameAttachment {
+            frame_id: next,
+            run_id: late_run.run_id,
+        }])
+        .await
+        .unwrap();
+    assert_eq!(
+        outcome.skipped,
+        vec![SemanticFrameAttachment {
+            frame_id: next,
+            run_id: late_run.run_id,
+        }]
+    );
 }
 
 #[tokio::test]
