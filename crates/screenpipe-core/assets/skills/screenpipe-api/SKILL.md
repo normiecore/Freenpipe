@@ -15,7 +15,7 @@ Local REST API at `http://localhost:3030`.
 curl -H "Authorization: Bearer $SCREENPIPE_LOCAL_API_KEY" "http://localhost:3030/..."
 ```
 
-The `$SCREENPIPE_LOCAL_API_KEY` env var is already set in your environment. Without it you get 403. Endpoints that skip auth: `/health`, `/ws/health`, `/audio/device/status`, `/connections/oauth/callback`, `/notify`, `/pipes/store/*`.
+Your environment provides `$SCREENPIPE_LOCAL_API_KEY`; a request without it gets 403, frame images and thumbnails included. Endpoints that skip auth: `/health`, `/ws/health`, `/audio/device/status`, `/connections/oauth/callback`, `/notify`, `/pipes/store/*`.
 
 ## Context Window Protection
 
