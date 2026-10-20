@@ -305,7 +305,7 @@ async function fetchPinnedPackage(pkg, stageRoot) {
 	return body
 }
 
-/** Copy the listed files of a pinned package into `destDir`. */
+/** The listed files of a pinned package, each DLL checked against `arch`. */
 export function extractPackageFiles(packageBuffer, files, arch) {
 	const entries = readZipEntries(
 		packageBuffer,
