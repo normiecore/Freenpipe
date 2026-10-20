@@ -120,7 +120,10 @@ fn choose_user_data_dir() -> Result<(String, PathBuf, String), String> {
 
     let mut errors = Vec::new();
     for (source, base) in candidates {
-        let path = base.join("ScreenPipe").join("WebView2");
+        // App-private browser state (localStorage, cookies, caches). It sits
+        // under the product's own folder so an installed screenpipe's profile
+        // at `ScreenPipe\WebView2` is never shared or overwritten.
+        let path = base.join(crate::brand::PRODUCT_NAME).join("WebView2");
         match ensure_writable_dir(&path) {
             Ok(()) => return Ok((source, path, elevation)),
             Err(err) => errors.push(format!("{}: {}", path.display(), err)),

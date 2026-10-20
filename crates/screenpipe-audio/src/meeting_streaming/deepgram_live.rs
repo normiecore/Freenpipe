@@ -116,7 +116,7 @@ async fn run_stream(
     );
     request.headers_mut().insert(
         USER_AGENT,
-        HeaderValue::from_static("screenpipe-meeting-streaming-deepgram"),
+        HeaderValue::from_static(screenpipe_core::endpoints::DEFAULT_USER_AGENT),
     );
 
     let (ws, _) = connect_websocket_with_ipv4_fallback(request)

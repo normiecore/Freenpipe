@@ -34,6 +34,7 @@ import {
   openScreenpipeViewerLink,
   rewriteLocalMarkdownLinksForChat,
 } from "@/components/markdown";
+import { isDeepLinkTo } from "@/lib/brand";
 import { ChatCodeBlock } from "@/components/ui/chat-code-block";
 import { AIPresetsSelector } from "@/components/rewind/ai-presets-selector";
 import { AIPreset, PiQueuedPrompt } from "@/lib/utils/tauri";
@@ -1438,7 +1439,7 @@ const STATIC_APP_ICONS: Record<string, string> = {
   apple: "/images/apple.svg",
   "apple-calendar": "/images/apple.svg",
   "apple intelligence": "/images/apple-intelligence.png",
-  screenpipe: "/images/screenpipe.png",
+  screenpipe: "/images/freenpipe.png",
 };
 
 function normalizeAppKey(name: string): string {
@@ -1643,16 +1644,17 @@ function MarkdownBlock({ text, isUser }: { text: string; isUser: boolean }) {
         },
         a({ href, children, ...props }) {
           if (
-            href?.startsWith("screenpipe://timeline") ||
-            href?.startsWith("screenpipe://frame") ||
-            href?.startsWith("screenpipe://view")
+            typeof href === "string" &&
+            (isDeepLinkTo(href, "timeline") ||
+              isDeepLinkTo(href, "frame") ||
+              isDeepLinkTo(href, "view"))
           ) {
             const handleScreenpipeLinkClick = async (e: React.MouseEvent<HTMLAnchorElement>) => {
               e.preventDefault();
               try {
                 if (await openScreenpipeViewerLink(href)) return;
 
-                if (href.startsWith("screenpipe://frame")) {
+                if (isDeepLinkTo(href, "frame")) {
                   const frameId = href.split("frame/")[1]?.replace(/^\//, "");
                   if (frameId) {
                     useTimelineStore.getState().setPendingNavigation({ timestamp: "", frameId });
@@ -1672,7 +1674,7 @@ function MarkdownBlock({ text, isUser }: { text: string; isUser: boolean }) {
                   }
                 }
               } catch (error) {
-                console.error("Failed to open screenpipe link:", error);
+                console.error("Failed to open in-app link:", error);
               }
             };
 

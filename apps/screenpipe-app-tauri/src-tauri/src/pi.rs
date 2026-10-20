@@ -1551,7 +1551,7 @@ pub async fn pi_start_inner(
                             .unwrap_or_default();
                         format!("Pi not found after install attempt.{} Try restarting the app or delete ~/.screenpipe/pi-agent and restart.", install_err)
                     } else {
-                        format!("Pi not found: bun is not installed. Screenpipe needs bun to run the AI assistant. Expected bundled bun next to the app executable.")
+                        format!("Pi not found: bun is not installed. Freenpipe needs bun to run the AI assistant. Expected bundled bun next to the app executable.")
                     }
                 })?
         }

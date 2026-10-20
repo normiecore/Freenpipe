@@ -78,7 +78,7 @@ fn handle_audio_stall(app: &AppHandle, event: StallEvent) {
         if let Err(e) = app_for_notify
             .notification()
             .builder()
-            .title("screenpipe is not capturing audio")
+            .title("Freenpipe is not capturing audio")
             .body(format!(
                 "no audio reached the meeting after {elapsed}s — check mic permissions or restart the recorder"
             ))

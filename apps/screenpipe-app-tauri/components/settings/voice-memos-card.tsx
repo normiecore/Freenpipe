@@ -53,7 +53,7 @@ export function VoiceMemosCard() {
 
         <div className="px-4 py-2 bg-muted/50 border-t border-border">
           <p className="text-xs text-muted-foreground">
-            Toggle on screenpipe in Privacy &amp; Security → Full Disk Access
+            Toggle on Freenpipe in Privacy &amp; Security → Full Disk Access
             to enable Voice Memos indexing
           </p>
         </div>

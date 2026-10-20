@@ -70,7 +70,7 @@ pub fn setup_dock_menu(app_handle: AppHandle) {
                 let menu: id = msg_send![class!(NSMenu), new];
 
                 // "Show screenpipe"
-                let title = NSString::alloc(nil).init_str("Show screenpipe");
+                let title = NSString::alloc(nil).init_str("Show Freenpipe");
                 let action = sel!(showScreenpipe:);
                 let key = NSString::alloc(nil).init_str("");
                 let item: id = msg_send![class!(NSMenuItem), alloc];

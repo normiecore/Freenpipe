@@ -526,7 +526,7 @@ export function buildMeetingSummarizeInstructions(
   options?: { followUpAsk?: boolean },
 ): string {
   const lines = [
-    `search screenpipe for what happened during this meeting and summarize it: key topics, decisions, action items.`,
+    `search Freenpipe for what happened during this meeting and summarize it: key topics, decisions, action items.`,
     ``,
     `meeting id: ${meetingId}`,
     `primary transcript source: GET "http://localhost:3030/meetings/${meetingId}/transcript" and use each row's "transcript", "speakerName", "capturedAt", and "source" fields. sort rows by capturedAt before summarizing.`,

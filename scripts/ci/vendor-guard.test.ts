@@ -10,13 +10,18 @@
  * hosted privacy enclave. Comments and test code are skipped, so the guard
  * only reports places that could actually build a request.
  *
- * Modes (env `VENDOR_GUARD_MODE`):
- *   - `report` (default): print every remaining hit and pass. W0-01 ships it
- *     this way because later wave-0 work packages remove the hits.
- *   - `strict`: fail when any hit remains. W0-12 makes this the default.
+ * It also guards the product's identity (W0-12): the Tauri configs must name
+ * Freenpipe, use its own bundle identifier and register only `freenpipe`
+ * deep-link schemes, and the desktop UI's copy must not call the product
+ * "screenpipe". Interop names keep the upstream spelling and are not
+ * reported: crate and package names, `SCREENPIPE_*` variables,
+ * `~/.screenpipe` paths, the `screenpipe` CLI, skill names, quoted ids.
  *
- * Independently of the mode, the endpoint switchboard files must always be
- * vendor-free; that check fails in both modes.
+ * Modes (env `VENDOR_GUARD_MODE`):
+ *   - `strict` (default since W0-12): fail when any hit remains.
+ *   - `report`: print every remaining hit and pass. Only for local triage.
+ *
+ * The endpoint switchboard, commerce and identity checks fail in every mode.
  *
  * Run from the repository root:  bun test scripts/ci/vendor-guard.test.ts
  */
@@ -37,7 +42,31 @@ export const RULES: Rule[] = [
   { id: "posthog-key", pattern: /\bphc_[A-Za-z0-9]{20,}/ },
   { id: "sentry.io", pattern: /sentry\.io\b/i },
   { id: "tinfoil", pattern: /tinfoil\.(dev|sh)\b/i },
+  { id: "mediar.ai", pattern: /mediar\.ai\b/i },
+  // The vendor's company name in shipped code (installer publisher, about
+  // text, copy). Case-sensitive so `EvictMediaRequest` and friends pass.
+  { id: "vendor-company", pattern: /\bMediar\b/ },
 ];
+
+/**
+ * Paths left out of every scan. A path ending in "/" covers everything below
+ * it. Keep each entry narrow and give its reason.
+ */
+const EXCLUDED: { path: string; reason: string }[] = [
+  {
+    path: "packages/ai-gateway/",
+    reason:
+      "upstream's hosted gateway worker, kept as MIT reference source; not built or shipped (W0-06 open question 11)",
+  },
+  {
+    path: "third_party/",
+    reason: "vendored third-party sources (W0-13) legitimately name their own authors and hosts",
+  },
+];
+
+function isExcluded(repoPath: string): boolean {
+  return EXCLUDED.some((e) => repoPath === e.path || repoPath.startsWith(e.path));
+}
 
 /**
  * Hits that are legitimate: third-party integrations the user connects with
@@ -54,6 +83,11 @@ const ALLOWED: { path: string; rules: string[]; reason: string }[] = [
     path: "crates/screenpipe-connect/src/connections/posthog.rs",
     rules: ["posthog.com"],
     reason: "user-owned PostHog connector",
+  },
+  {
+    path: "crates/screenpipe-redact/examples/pii_eval.rs",
+    rules: ["sentry.io"],
+    reason: "synthetic Sentry-DSN-shaped secret for the redaction eval; never requested",
   },
 ];
 
@@ -115,6 +149,113 @@ const COMMERCE_ALLOWED: { path: string; rules: string[]; reason: string }[] = [
     reason: "the vendor's hosted gateway source; not built or shipped (W0-06)",
   },
 ];
+
+/**
+ * Product name in the desktop UI's copy (W0-12). Only the app's pages and
+ * components are scanned; their strings and JSX text are what people read.
+ */
+const BRAND_COPY_ROOTS = ["apps/screenpipe-app-tauri/app/", "apps/screenpipe-app-tauri/components/"];
+const BRAND_COPY_EXTS = new Set([".ts", ".tsx"]);
+
+/** Words after the name that make it an interop name, not the product. */
+const INTEROP_FOLLOWERS = /^ (pipe|skill|cloud)\b/;
+
+/**
+ * Legitimate brand-copy hits: `contains` must appear on the line. Keep these
+ * to interop text with a reason.
+ */
+const BRAND_ALLOWED: { path: string; contains: string; reason: string }[] = [
+  {
+    path: "apps/screenpipe-app-tauri/components/rewind/ai-presets-selector.tsx",
+    contains: "because screenpipe paths often contain",
+    reason:
+      "default preset prompt; must stay identical to the copies in store.rs and use-settings.tsx so stored presets keep matching it",
+  },
+];
+
+/**
+ * Columns where a line calls the product "screenpipe": a standalone word
+ * that is not part of an identifier, path, URL, file name or quoted id, not
+ * a backticked command name and not followed by an interop word.
+ */
+export function brandCopyHits(line: string): number[] {
+  if (/\bconsole\.(log|info|warn|error|debug)\(/.test(line)) return [];
+  const found: number[] = [];
+  const re = /screenpipe/gi;
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(line)) !== null) {
+    const start = m.index;
+    const end = start + m[0].length;
+    const prev = line[start - 1] ?? "";
+    const next = line[end] ?? "";
+    const after = line[end + 1] ?? "";
+    if (/[-_./@~:$=\\A-Za-z0-9]/.test(prev)) continue; // ids, paths, ?name=screenpipe
+    if (/[-_/:&\\A-Za-z0-9]/.test(next)) continue;
+    if (next === "." && /[A-Za-z0-9]/.test(after)) continue; // screenpipe.exe, .md
+    if (/["'`]/.test(prev) && prev === next) continue; // "screenpipe" id, `screenpipe`
+    if (INTEROP_FOLLOWERS.test(line.slice(end))) continue;
+    found.push(start);
+  }
+  return found;
+}
+
+function scanBrandCopy(): { hits: Hit[]; files: number } {
+  const hits: Hit[] = [];
+  let files = 0;
+  for (const root of BRAND_COPY_ROOTS) {
+    for (const full of walk(join(REPO_ROOT, root))) {
+      const ext = extname(full).toLowerCase();
+      if (!BRAND_COPY_EXTS.has(ext)) continue;
+      const file = toRepoPath(full);
+      if (isExcluded(file)) continue;
+      files++;
+      let source: string;
+      try {
+        source = readFileSync(full, "utf8");
+      } catch {
+        continue;
+      }
+      stripComments(source, ext).forEach((text, i) => {
+        if (brandCopyHits(text).length === 0) return;
+        if (BRAND_ALLOWED.some((a) => a.path === file && text.includes(a.contains))) return;
+        hits.push({ file, line: i + 1, rule: "product-name", text: text.trim().slice(0, 160) });
+      });
+    }
+  }
+  return { hits, files };
+}
+
+/** Bundle identity every Tauri config must carry. */
+const TAURI_DIR = "apps/screenpipe-app-tauri/src-tauri";
+
+export function identityProblems(file: string, conf: any): string[] {
+  const problems: string[] = [];
+  if ("productName" in conf && !/^Freenpipe( |$)/.test(String(conf.productName))) {
+    problems.push(`${file}: productName "${conf.productName}" is not Freenpipe`);
+  }
+  if ("identifier" in conf && !/^com\.normiecore\.freenpipe(\.[a-z]+)?$/.test(String(conf.identifier))) {
+    problems.push(`${file}: identifier "${conf.identifier}" is not com.normiecore.freenpipe[.channel]`);
+  }
+  const publisher = conf.bundle?.publisher;
+  if (publisher !== undefined && /mediar|screenpipe/i.test(String(publisher))) {
+    problems.push(`${file}: publisher "${publisher}" names the upstream vendor`);
+  }
+  const deepLink = conf.plugins?.["deep-link"];
+  const desktop = deepLink?.desktop?.schemes ?? deepLink?.desktop?.scheme;
+  const schemes: string[] = desktop === undefined ? [] : [desktop].flat();
+  for (const scheme of schemes) {
+    if (!/^freenpipe(-[a-z]+)?$/.test(String(scheme))) {
+      problems.push(`${file}: registers deep-link scheme "${scheme}" (only freenpipe schemes may be claimed)`);
+    }
+  }
+  for (const entry of deepLink?.mobile ?? []) {
+    const host = String(entry?.host ?? "");
+    if (RULES.some((r) => r.pattern.test(host))) {
+      problems.push(`${file}: mobile deep-link host "${host}" is a vendor host`);
+    }
+  }
+  return problems;
+}
 
 /** Files that make up the endpoint switchboard; these must stay clean. */
 const SWITCHBOARD_FILES = [
@@ -308,6 +449,8 @@ export function scanRepo(
   let files = 0;
   for (const root of SCAN_ROOTS) {
     for (const full of walk(join(REPO_ROOT, root))) {
+      const repoPath = toRepoPath(full);
+      if (isExcluded(repoPath)) continue;
       const ext = extname(full).toLowerCase();
       if (!SLASH_COMMENT.has(ext) && !HASH_COMMENT.has(ext) && !PLAIN.has(ext)) continue;
       files++;
@@ -317,7 +460,7 @@ export function scanRepo(
       } catch {
         continue;
       }
-      for (const hit of scanSource(toRepoPath(full), source, rules)) {
+      for (const hit of scanSource(repoPath, source, rules)) {
         (allow(hit) ? allowed : hits).push(hit);
       }
     }
@@ -346,7 +489,7 @@ function printReport(hits: Hit[], allowed: Hit[], files: number): void {
   console.log(lines.join("\n"));
 }
 
-const MODE = (process.env.VENDOR_GUARD_MODE ?? "report").toLowerCase();
+const MODE = (process.env.VENDOR_GUARD_MODE ?? "strict").toLowerCase();
 
 describe("vendor-host guard", () => {
   test("comment stripping keeps URLs inside strings", () => {
@@ -433,6 +576,81 @@ describe("vendor-host guard", () => {
     }
     expect(files).toBeGreaterThan(0);
     expect(hits).toEqual([]);
+  });
+
+  test("brand-copy matcher separates the product name from interop names", () => {
+    const flagged = [
+      '"screenpipe will launch when your computer starts"',
+      "Lets Screenpipe index what's on your screen",
+      "        same machine as screenpipe.",
+      "<strong>screenpipe</strong> on in System Settings",
+      "## what is screenpipe?",
+      '"failed to restart screenpipe"',
+    ];
+    for (const line of flagged) expect(brandCopyHits(line).length, line).toBeGreaterThan(0);
+    const fine = [
+      'import { x } from "@/lib/screenpipe-skills";',
+      'if (citation.kind === "screenpipe") {',
+      "install: screenpipe pipe install ~/.screenpipe/pipes/my-pipe",
+      "in your shell it is the \\`screenpipe\\` command ($SCREENPIPE_CLI)",
+      'return "screenpipe cloud";',
+      "first read the screenpipe skill file",
+      'const p = "%LOCALAPPDATA%\\\\screenpipe\\\\screenpipe.exe";',
+      "lmstudio://add_mcp?name=screenpipe&config=x",
+      'localStorage.getItem("screenpipe:pipes-welcome-dismissed")',
+      'console.error("failed to open screenpipe link", e);',
+      "Freenpipe is recording",
+    ];
+    for (const line of fine) expect(brandCopyHits(line), line).toEqual([]);
+  });
+
+  test("desktop UI copy names Freenpipe, not screenpipe (every mode)", () => {
+    const { hits, files } = scanBrandCopy();
+    if (hits.length > 0) {
+      console.log(
+        ["vendor-guard: UI copy still calls the product screenpipe:"]
+          .concat(hits.map((h) => `  ${h.file}:${h.line} ${h.text}`))
+          .join("\n"),
+      );
+    }
+    expect(files).toBeGreaterThan(0);
+    expect(hits).toEqual([]);
+  });
+
+  test("identity checks reject upstream identity", () => {
+    const upstream = {
+      productName: "screenpipe",
+      identifier: "screenpi.pe",
+      bundle: { publisher: "Mediar, Inc." },
+      plugins: {
+        "deep-link": {
+          desktop: { schemes: ["screenpipe"] },
+          mobile: [{ host: "screenpi.pe" }],
+        },
+      },
+    };
+    expect(identityProblems("x.json", upstream)).toHaveLength(5);
+    const ours = {
+      productName: "Freenpipe Beta",
+      identifier: "com.normiecore.freenpipe.beta",
+      bundle: { publisher: "normiecore" },
+      plugins: { "deep-link": { desktop: { schemes: ["freenpipe-beta"] } } },
+    };
+    expect(identityProblems("x.json", ours)).toEqual([]);
+  });
+
+  test("Tauri configs carry the Freenpipe identity (every mode)", () => {
+    const dir = join(REPO_ROOT, TAURI_DIR);
+    const files = readdirSync(dir).filter((f) => /^tauri(\..+)?\.(conf\.)?json$/.test(f));
+    expect(files).toContain("tauri.conf.json");
+    const problems = files.flatMap((f) =>
+      identityProblems(`${TAURI_DIR}/${f}`, JSON.parse(readFileSync(join(dir, f), "utf8"))),
+    );
+    expect(problems).toEqual([]);
+    // The release config must actually set the name and identifier.
+    const prod = JSON.parse(readFileSync(join(dir, "tauri.prod.conf.json"), "utf8"));
+    expect(prod.productName).toBe("Freenpipe");
+    expect(prod.identifier).toBe("com.normiecore.freenpipe");
   });
 
   test(`repository scan (${MODE} mode)`, () => {

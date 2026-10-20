@@ -554,3 +554,59 @@ taken and the reason. Later work packages may revisit a decision; say so under t
      timeline performance test ten seconds after startup.
    On large file databases the check now also walks the FTS5 indexes, so it takes longer; it still
    runs in the background.
+
+## W0-12
+
+- **Question:** DECISIONS (coordinator calls) says to register `freenpipe://` as primary with
+  `screenpipe://` as a compatibility alias, but the acceptance check requires
+  `HKCU\Software\Classes\screenpipe` to stay untouched after install, and dev-isolation rule 4 says
+  the installed screenpipe owns `screenpipe://`. Register both schemes with the OS, or one?
+  **Decision:** only `freenpipe://` (`freenpipe-beta://` for the beta channel) is listed in the
+  Tauri `deep-link` config, so the NSIS installer and `register_all()` claim only that scheme. The
+  app's own link handling accepts `screenpipe://` URLs once they reach it: command-line arguments
+  on the single-instance and focus handoff, notification actions, chat and notification markdown,
+  and the viewer route. Links the app builds itself (copy frame link, local file links in chat)
+  use `freenpipe://`. The helpers are `src-tauri/src/brand.rs` and `lib/brand.ts`.
+  **Reason:** this keeps every existing pipe, skill and notification that emits `screenpipe://`
+  working inside Freenpipe, satisfies the registry acceptance check, and leaves an installed
+  screenpipe's link handler alone.
+
+- **Question:** which identifiers and names are "user-visible identity" and which are interop?
+  **Decision:** renamed: product names (`Freenpipe`, `Freenpipe Dev`, `Freenpipe Beta`), bundle
+  identifiers (`com.normiecore.freenpipe`, `.dev`, `.beta`), installer publisher (`normiecore`),
+  descriptions and copyright line, tray tooltip and menu labels, window titles, the macOS app menu
+  and permission prompts, notification and toast copy, UI copy and the product name inside the
+  app's LLM prompts, outbound User-Agent strings, the remote-sync data README, and the WebView2
+  profile folder (`%LOCALAPPDATA%\Freenpipe\WebView2`, app-private state like the identifier).
+  Kept: crate and package names, the `screenpipe-app` and `screenpipe` binaries, routes, JSON
+  fields, settings and localStorage keys, SQL names, `SCREENPIPE_*` variables, CLI commands in
+  prompts, skill and MCP server names, `~/.screenpipe` and `%LOCALAPPDATA%\screenpipe` data paths,
+  the tray id `screenpipe_main`, tray icon file names (the code loads them by path) and the
+  `screenpipe cloud` engine label on transcripts screenpipe's service produced.
+  **Reason:** CLAUDE.md lets interop identifiers match upstream exactly and DECISIONS 1 keeps the
+  data layout drop-in; everything a person reads as the product's name says Freenpipe.
+
+- **Question:** on Windows the captured app name of a window is the executable's file
+  description, which the bundler sets to the product name. The engine left out its own UI by
+  matching `screenpipe` in the app name. Does the rename break that?
+  **Decision:** yes, so the self-exclusion now goes through `screenpipe_core::brand::is_own_app_name`
+  (matches `freenpipe` and `screenpipe`), used by window capture, search, streaming and the hot
+  frame cache; the skip lists also name the three Freenpipe product names, and activity
+  suggestions leave out `Freenpipe*` apps.
+  **Reason:** without it Freenpipe would record and surface its own windows on Windows and macOS.
+
+- **Question:** the default preset prompt says "screenpipe paths often contain spaces"; rename it?
+  **Decision:** no. The same text is copied into new presets from `store.rs`, `use-settings.tsx`
+  and `ai-presets-selector.tsx`; the vendor guard allow-lists that one line.
+  **Reason:** it is agent-facing text about data paths under `~/.screenpipe`, not the product's
+  name, and the three copies should change together. W1-02 (settings) can rewrite them at once.
+
+- **Question:** what should the vendor guard enforce in strict mode?
+  **Decision:** strict is the default. Beyond vendor hosts and keys it now flags the vendor's
+  company name and `mediar.ai`, checks every `tauri*.json` for the Freenpipe product name,
+  identifier, publisher and `freenpipe` deep-link schemes, and flags UI copy under `app/` and
+  `components/` that calls the product "screenpipe" (identifiers, paths, quoted ids, backticked
+  commands and `screenpipe pipe|skill|cloud` are not hits). `packages/ai-gateway/` (W0-06 open
+  question 11) and `third_party/` (W0-13) are excluded with reasons.
+  **Reason:** the acceptance check asks for failing mode, and the identity checks keep the rename
+  from regressing as later waves port UI.

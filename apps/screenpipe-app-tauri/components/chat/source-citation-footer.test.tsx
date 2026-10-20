@@ -53,7 +53,7 @@ describe("SourceCitationFooter", () => {
             id: "screenpipe-connections-perplexity-proxy-chat-completions",
             kind: "connector",
             title: "Perplexity search",
-            subtitle: "external web context via Screenpipe connection",
+            subtitle: "external web context via Freenpipe connection",
           },
         ]}
       />
@@ -76,7 +76,7 @@ describe("SourceCitationFooter", () => {
           {
             id: "screenpipe-memories-jill-benaglio",
             kind: "screenpipe",
-            title: "Screenpipe memories",
+            title: "Freenpipe memories",
             subtitle: "memory query: Jill Benaglio",
           },
         ]}
@@ -86,6 +86,6 @@ describe("SourceCitationFooter", () => {
     fireEvent.click(screen.getByRole("button", { name: /2 sources/i }));
 
     expect(container.querySelector('img[src="/images/google-calendar.svg"]')).toBeTruthy();
-    expect(container.querySelector('img[src="/images/screenpipe.png"]')).toBeTruthy();
+    expect(container.querySelector('img[src="/images/freenpipe.png"]')).toBeTruthy();
   });
 });

@@ -356,7 +356,7 @@ function ListEmpty({
       <Phone className="inline-block h-6 w-6 text-muted-foreground/40 mb-4" />
       <h2 className="text-lg font-medium mb-2">no meetings yet</h2>
       <p className="text-sm text-muted-foreground mb-6 leading-relaxed">
-        Join a Zoom, Meet, or Teams call and screenpipe will detect it
+        Join a Zoom, Meet, or Teams call and Freenpipe will detect it
         automatically. Or start one manually to take notes against any
         conversation.
       </p>

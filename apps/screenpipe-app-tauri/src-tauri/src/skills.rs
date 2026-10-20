@@ -233,7 +233,7 @@ pub fn import_skill(source_path: String) -> Result<ImportedSkill, String> {
         return Err("could not derive a skill name".to_string());
     }
     if RESERVED_SKILL_NAMES.contains(&key.as_str()) {
-        return Err(format!("\"{key}\" is a reserved screenpipe skill name"));
+        return Err(format!("\"{key}\" is a reserved built-in skill name"));
     }
 
     let dest = skills_store_dir().join(&key);

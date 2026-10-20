@@ -72,8 +72,10 @@ Every step after the engine build runs even when an earlier one failed
 `gates` (ubuntu, under a minute):
 
 - **Vendor-host guard:** `bun test scripts/ci/vendor-guard.test.ts`, the way
-  its header says, in report mode until W0-12 switches the default to strict.
-  The remaining hits go to the job summary.
+  its header says. Strict by default since W0-12: a vendor host or key, a
+  commerce surface, an upstream identity in a Tauri config or UI copy that
+  calls the product "screenpipe" fails the job. Allow-lists and exclusions
+  sit in the test with a reason each. The scan summary goes to the job summary.
 - **Clean-room verbatim gate:** `scripts/ci/verbatim-diff.sh` collects the
   lines the change adds (PR: base...head; push: before...after; a new
   branch or a force push falls back to the merge base with `main`), from

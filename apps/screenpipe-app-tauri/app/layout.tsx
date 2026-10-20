@@ -18,6 +18,7 @@ import { FeedbackDialog } from "@/components/feedback-dialog";
 // import { VaultLockDialog } from "@/components/vault-lock-dialog";
 import { usePathname, useSearchParams } from "next/navigation";
 import { commands } from "@/lib/utils/tauri";
+import { PRODUCT_NAME } from "@/lib/brand";
 import {
   clearSearchOpenedFromChatSurface,
   markSearchOpenedFromChatSurface,
@@ -332,6 +333,8 @@ export default function RootLayout({
   return (
     <html lang="en" suppressHydrationWarning className={isSearch ? "bg-transparent" : ""}>
       <head>
+        <title>{PRODUCT_NAME}</title>
+        <meta name="application-name" content={PRODUCT_NAME} />
         <script
           dangerouslySetInnerHTML={{
             __html: `
@@ -387,8 +390,8 @@ export default function RootLayout({
             recovery render) on every first launch after auto-update. */}
         <Providers>
           {/* DeeplinkHandler is mounted in Providers (outside the entitlement
-              gate) so the screenpipe:// login callback is always caught, even
-              while the "sign in required" screen is showing. */}
+              gate) so in-app links (freenpipe:// and the screenpipe:// alias)
+              are always caught, even while a blocking screen is showing. */}
           {!isOverlay && <ShortcutTracker />}
           {!isOverlay && <PipeInstallDialog />}
           {!isOverlay && <BrowserPairingDialog />}

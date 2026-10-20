@@ -242,7 +242,7 @@ async confirmBrowserCookieAccessForSession() : Promise<Result<null, string>> {
 }
 },
 /**
- * Copy a frame deeplink (screenpipe://frame/N) to clipboard. Native API only.
+ * Copy a frame deeplink (freenpipe://frame/N) to clipboard. Native API only.
  */
 async copyDeeplinkToClipboard(frameId: number) : Promise<Result<null, string>> {
     try {
@@ -1049,7 +1049,7 @@ async oauthStatus(integrationId: string, instance: string | null) : Promise<Resu
 },
 /**
  * Open Google Calendar OAuth inside an in-app WebView.
- * Same pattern as `open_login_window` — intercepts the screenpipe:// deep-link
+ * Same pattern as `open_login_window` — intercepts the in-app deep-link
  * redirect so we don't rely on Safari custom-scheme support.
  */
 async openGoogleCalendarAuthWindow(authUrl: string) : Promise<Result<null, string>> {

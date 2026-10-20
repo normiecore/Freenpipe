@@ -153,7 +153,7 @@ fn native_notif_action_callback_inner(json_ptr: *const std::os::raw::c_char) {
     // URL-opening actions. Two distinct semantics, explicit types so senders
     // can't conflate them:
     //   "link"      → external URL, opened in the user's default browser
-    //   "deeplink"  → screenpipe:// in-app route, dispatched to DeeplinkHandler
+    //   "deeplink"  → freenpipe:// (or screenpipe://) in-app route, dispatched to DeeplinkHandler
     //
     // Both are handled in Rust rather than via JS emit so clicks work even
     // when the overlay window (which hosts the JS listener in
@@ -176,10 +176,11 @@ fn native_notif_action_callback_inner(json_ptr: *const std::os::raw::c_char) {
             return;
         };
 
-        // Guard against senders putting a browser URL into "deeplink" or a
-        // screenpipe:// URL into "link". We route on actual scheme, not on
-        // the declared type, so a typo doesn't break the click.
-        let is_in_app = url.starts_with("screenpipe://");
+        // Guard against senders putting a browser URL into "deeplink" or an
+        // in-app URL into "link". We route on actual scheme, not on the
+        // declared type, so a typo doesn't break the click. Pipes written for
+        // screenpipe send screenpipe:// links; both schemes are in-app.
+        let is_in_app = crate::brand::is_app_deep_link(&url);
         let app_clone = app.clone();
         std::thread::spawn(move || {
             if is_in_app {
@@ -223,7 +224,23 @@ fn native_notif_action_callback_inner(json_ptr: *const std::os::raw::c_char) {
 
 #[cfg(any(target_os = "macos", test))]
 fn is_meeting_deeplink(url: &str) -> bool {
-    url.starts_with("screenpipe://meeting/") || url.starts_with("screenpipe://meeting?")
+    crate::brand::deep_link_route(url)
+        .is_some_and(|route| route.starts_with("meeting/") || route.starts_with("meeting?"))
+}
+
+#[cfg(test)]
+mod meeting_deeplink_scheme_tests {
+    use super::is_meeting_deeplink;
+
+    #[test]
+    fn meeting_links_match_either_scheme() {
+        assert!(is_meeting_deeplink("freenpipe://meeting/12"));
+        assert!(is_meeting_deeplink("freenpipe://meeting?id=12&live=0"));
+        assert!(is_meeting_deeplink("screenpipe://meeting/12"));
+        assert!(!is_meeting_deeplink("freenpipe://meetings"));
+        assert!(!is_meeting_deeplink("freenpipe://settings"));
+        assert!(!is_meeting_deeplink("https://example.test/meeting/12"));
+    }
 }
 
 #[cfg(target_os = "macos")]
@@ -232,9 +249,10 @@ fn parse_meeting_deeplink(url: &str) -> Option<(u64, bool)> {
         return None;
     }
 
-    let (base, query) = url.split_once('?').unwrap_or((url, ""));
+    let route = crate::brand::deep_link_route(url)?;
+    let (base, query) = route.split_once('?').unwrap_or((route, ""));
     let path_id = base
-        .strip_prefix("screenpipe://meeting/")
+        .strip_prefix("meeting/")
         .and_then(|rest| rest.split('/').next())
         .filter(|id| !id.is_empty());
     let query_id = query.split('&').find_map(|part| {
@@ -298,6 +316,14 @@ mod tests {
         assert_eq!(
             parse_meeting_deeplink("screenpipe://meeting?id=456&live=0"),
             Some((456, false))
+        );
+    }
+
+    #[test]
+    fn parses_meeting_deeplink_with_primary_scheme() {
+        assert_eq!(
+            parse_meeting_deeplink("freenpipe://meeting/77?live=0"),
+            Some((77, false))
         );
     }
 
@@ -1451,7 +1477,7 @@ pub async fn open_login_window(_app_handle: tauri::AppHandle) -> Result<(), Stri
 }
 
 /// Open Google Calendar OAuth inside an in-app WebView.
-/// Same pattern as `open_login_window` — intercepts the screenpipe:// deep-link
+/// Same pattern as `open_login_window` — intercepts the in-app deep-link
 /// redirect so we don't rely on Safari custom-scheme support.
 #[allow(dead_code)] // invoked via Tauri IPC, not direct Rust calls
 #[tauri::command]
@@ -1486,7 +1512,7 @@ pub async fn open_google_calendar_auth_window(
     }
 
     builder = builder.on_navigation(move |url| {
-        if url.scheme() == "screenpipe" {
+        if crate::brand::is_app_deep_link(url.as_str()) {
             info!("google calendar auth window intercepted deep link: {}", url);
             let _ = app_for_nav.emit("deep-link-received", url.to_string());
             if let Some(w) = app_for_nav.get_webview_window("google-calendar-auth") {
@@ -3044,11 +3070,11 @@ pub async fn copy_frame_to_clipboard(app: tauri::AppHandle, frame_id: i64) -> Re
     Ok(())
 }
 
-/// Copy a frame deeplink (screenpipe://frame/N) to clipboard. Native API only.
+/// Copy a frame deeplink (freenpipe://frame/N) to clipboard. Native API only.
 #[tauri::command]
 #[specta::specta]
 pub async fn copy_deeplink_to_clipboard(frame_id: i64) -> Result<(), String> {
-    let link = format!("screenpipe://frame/{}", frame_id);
+    let link = crate::brand::app_deep_link(&format!("frame/{}", frame_id));
     let mut clipboard = arboard::Clipboard::new().map_err(|e| format!("clipboard error: {}", e))?;
     clipboard
         .set_text(link)

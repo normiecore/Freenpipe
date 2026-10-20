@@ -1,13 +1,9 @@
-## New Features
+## Freenpipe
 
-- **macOS 14.4+:** Exclude apps from system-audio capture via `~/.screenpipe/audio-exclusions.json` (hot-reloadable JSON file; resolves bundle IDs via NSRunningApp + macOS 14.4+ `NSAudioCaptureUsageDescription` TCC prompt)
-- **macOS 14.4+:** Settings panel for managing audio process exclusions — Settings → Recording → "Exclude apps from system audio" with Finder `.app` picker, chip list with app icons, Apply & Restart integration
-- Bring your own MCP servers — register custom MCP servers from your config and route them through the AI agent alongside the built-in ones
-- Microphone capture can now use macOS VoiceProcessingIO (opt-in) for cleaner echo/noise cancellation on Apple silicon
+Freenpipe has no tagged release yet. This build is a development snapshot of the open-source fork of screenpipe at commit `892199f`, the last MIT-licensed upstream commit.
 
-## Bug Fixes
+- Recordings, settings, pipes and skills stay compatible with screenpipe's data folder (`~/.screenpipe`).
+- No telemetry, no hosted account and no vendor services. Cloud features use your own keys or self-hosted servers.
+- Release notes for tagged builds appear here once releases are published on GitHub.
 
-- Electron apps (VS Code, Discord, Slack) now get the full accessibility walk budget — depth counter resets at AXWebArea boundaries instead of cutting off the tree halfway through
-- USB audio devices with mismatched sample rates no longer drop into silence on macOS
-
-#### **Full Changelog:** [bdf01bdb..2b06b643](https://github.com/screenpipe/screenpipe/compare/bdf01bdb..2b06b643)
+#### **Project:** [github.com/normiecore/Freenpipe](https://github.com/normiecore/Freenpipe)

@@ -297,6 +297,31 @@ Wave 0 ran on the PC before the cloud phase. Tick anything you already checked t
   - Steps: 1. Install Freenpipe. 2. `reg query HKCU\Software\Classes\freenpipe`. 3. Export the screenpipe key again and compare.
   - Expected: the `freenpipe` key exists; the `screenpipe` key is byte-identical to before.
   - Result:
+- [ ] **SMK-W0-12-3** (UI smoke) Both link schemes open inside Freenpipe
+  - Setup: the installed build from SMK-W0-12-1, with at least a few minutes of recording; screenpipe quit.
+  - Steps: 1. Close every Freenpipe window (leave it in the tray), then Win+R, run `freenpipe://settings`. 2. Close Settings; from cmd, run `"%LOCALAPPDATA%\Freenpipe\screenpipe-app.exe" screenpipe://home` while Freenpipe is running. 3. In the timeline, right-click a frame, "copy deeplink", and paste it into Notepad. 4. Win+R, run `screenpipe://timeline`.
+  - Expected: 1. Freenpipe opens Settings. 2. The running Freenpipe comes to the front and opens Settings again (no second instance). 3. The copied link starts with `freenpipe://frame/`. 4. Windows opens the installed screenpipe (or reports no handler if screenpipe is not installed), never Freenpipe.
+  - Result:
+- [ ] **SMK-W0-12-4** (Runtime) Freenpipe does not record its own windows
+  - Setup: installed build, recording on, screenpipe quit.
+  - Steps: 1. Keep the Freenpipe Home window focused for two minutes, then switch to Notepad for a minute. 2. Search the timeline and `GET /search?app_name=Freenpipe&limit=5` on the API port.
+  - Expected: no frames or search results whose app name is `Freenpipe` (Task Manager shows the app as "Freenpipe"); Notepad frames are there.
+  - Result:
+- [ ] **SMK-W0-12-5** (Manual) The installer stops only its own processes
+  - Setup: screenpipe installed and running; a Freenpipe installer from `main`.
+  - Steps: 1. Run the Freenpipe installer (upgrade over an existing Freenpipe install if there is one). 2. Check Task Manager during and after the install. 3. Uninstall Freenpipe from Settings > Apps.
+  - Expected: screenpipe's `screenpipe.exe` and `screenpipe-app.exe` keep running throughout; the Freenpipe processes in its install folder are stopped before files are replaced; after uninstall `HKCU\Software\Classes\freenpipe` is gone and `HKCU\Software\Classes\screenpipe` is unchanged.
+  - Result:
+- [ ] **SMK-W0-12-6** (UI smoke) Tray, menu and icons are Freenpipe's own
+  - Setup: installed build; light and dark taskbar themes.
+  - Steps: 1. Look at the tray icon in both themes and open its menu. 2. Pause recording for 15 minutes and hover the icon. 3. Check the Start menu entry, the taskbar icon, the installer's header and side images, and Settings > Apps.
+  - Expected: the green "f." mark everywhere (white or black glyph in the tray, no pipe-shaped logo); menu items read "Open Freenpipe", "Quit Freenpipe" and "Freenpipe v<version>"; the tooltip reads "Freenpipe — paused, resumes in 15m"; Settings > Apps lists "Freenpipe" by normiecore.
+  - Result:
+- [ ] **SMK-W0-12-7** (Runtime) The web view keeps its state apart from screenpipe's
+  - Setup: installed build; screenpipe installed and used at least once.
+  - Steps: 1. Start Freenpipe, change the theme, quit. 2. Look in `%LOCALAPPDATA%`.
+  - Expected: Freenpipe's profile is `%LOCALAPPDATA%\Freenpipe\WebView2`; screenpipe's `%LOCALAPPDATA%\ScreenPipe\WebView2` was not modified (timestamps unchanged); app-level files, if any, are under `%APPDATA%\com.normiecore.freenpipe`, and nothing under `%APPDATA%\screenpi.pe` changed.
+  - Result:
 
 ## Wave 1: Cross-cutting foundations
 

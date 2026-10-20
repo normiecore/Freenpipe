@@ -1,6 +1,6 @@
 {
     "bundle": {
-        "publisher": "Mediar, Inc.",
+        "publisher": "normiecore",
         "resources": [
             "assets/*"
         ],

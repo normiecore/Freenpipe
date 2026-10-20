@@ -65,7 +65,7 @@ describe("source citations", () => {
 
     expect(citations).toHaveLength(1);
     expect(citations[0].kind).toBe("screenpipe");
-    expect(citations[0].title).toBe("Screenpipe search");
+    expect(citations[0].title).toBe("Freenpipe search");
     expect(citations[0].subtitle).toContain("audio");
     expect(citations[0].subtitle).toContain("query: pricing");
   });
@@ -92,7 +92,7 @@ describe("source citations", () => {
     expect(citations[0]).toMatchObject({
       kind: "connector",
       title: "Perplexity search",
-      subtitle: "external web context via Screenpipe connection",
+      subtitle: "external web context via Freenpipe connection",
     });
   });
 
@@ -117,7 +117,7 @@ describe("source citations", () => {
     expect(citations).toHaveLength(1);
     expect(citations[0]).toMatchObject({
       kind: "memory",
-      title: "Screenpipe memories",
+      title: "Freenpipe memories",
       subtitle: "memory query: Jill Benaglio",
     });
   });
@@ -305,7 +305,7 @@ describe("source citations", () => {
     expect(citations).toHaveLength(1);
     expect(citations[0]).toMatchObject({
       kind: "screenpipe",
-      title: "Screenpipe search",
+      title: "Freenpipe search",
     });
     expect(citations[0].subtitle).toContain("ocr");
     expect(citations[0].subtitle).toContain("app: Slack");
