@@ -1215,6 +1215,16 @@ impl Engine {
     }
 
     fn note_rebuild_failure(&mut self, reason: &str, e: &anyhow::Error) {
+        if self.broken.is_none() {
+            // The old client still runs, so nothing is lost: keep it. A
+            // default-endpoint move is retried after the next grace period.
+            warn!(
+                "{ENGINE_LABEL}: rebuilding loopback for {} failed ({reason}): {e:#}; \
+                 keeping {}",
+                self.label, self.client.target
+            );
+            return;
+        }
         self.rebuild_failures += 1;
         let backoff = REBUILD_RETRY_BASE
             .saturating_mul(1u32 << self.rebuild_failures.min(4))
@@ -1227,11 +1237,6 @@ impl Engine {
             backoff.as_millis(),
             self.rebuild_failures
         );
-        if self.broken.is_none() {
-            // The old client still runs; only a broken client counts toward
-            // giving up, so reset the counter for the next real failure.
-            self.rebuild_failures = 0;
-        }
     }
 }
 
