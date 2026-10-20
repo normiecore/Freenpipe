@@ -8,15 +8,22 @@
 //! there is room again (with headroom, so it does not flap),
 //! `disk_space_recovered`. This module acts on them:
 //!
-//! - On low space with the guard on, it stops capture (the API, search and
-//!   pipes keep running) and posts one notification with a button that
-//!   opens the storage settings. With the guard off it only logs.
-//! - Capture that is started again during the incident (from the tray, a
-//!   settings save, an engine restart, ...) is stopped again at the next
-//!   check, with a notice that says so. Recording through a low-disk
-//!   incident is what switching the guard off is for.
-//! - On recovery it starts capture again, but only if the guard was what
-//!   stopped it. A recording the user paused stays paused.
+//! - On a fresh low reading with the guard on, it stops capture (the API,
+//!   search and pipes keep running) and posts one notification with a
+//!   button that opens the storage settings. With the guard off it only
+//!   logs.
+//! - "Fresh" means a reading the guard has not acted on yet: the first low
+//!   reading of a monitor run (each engine start or restart has its own
+//!   generation), or of a new incident after a recovery. Recording started
+//!   after the guard acted (from the tray, a deep link, a settings save that
+//!   only restarts capture) keeps running: that is how a user records on a
+//!   nearly full disk. A later engine restart ("Apply & Restart", an update
+//!   rollback, a failed relaunch, crash recovery) starts a new run, whose
+//!   low reading stops capture again, with a notice that says how to keep
+//!   recording.
+//! - On recovery it starts capture again, but only if the guard's stop is
+//!   still the last change to recording. A recording the user paused, or
+//!   started and paused again, stays paused.
 //! - Whether the current incident was already announced is kept in
 //!   `disk-pressure-notification-state.json` in the data dir, so restarting
 //!   the app does not repeat the notification. Recovery re-arms it.
@@ -24,10 +31,10 @@
 //! Besides the events it re-reads the monitor's latest status every check
 //! interval. That catches an event published before this task subscribed,
 //! a recovery that happened while the app was closed, and the guard being
-//! switched off in the middle of an incident.
+//! switched off or on in the middle of an incident.
 //!
-//! `get_low_disk_guard_config` gives the settings page and the recording
-//! status the threshold that applies to the active data dir.
+//! `get_low_disk_guard_config` gives the settings page the threshold that
+//! applies to the active data dir.
 
 use std::path::{Path, PathBuf};
 use std::time::Duration;
@@ -50,6 +57,10 @@ pub const LOW_NOTIFICATION_TYPE: &str = "disk_space_low";
 pub const RECOVERED_NOTIFICATION_TYPE: &str = "disk_space_recovered";
 /// Route the notification's button opens.
 pub const STORAGE_SETTINGS_ROUTE: &str = "settings?section=storage";
+/// Label of the `stopRecordingOnLowDisk` switch in the storage settings
+/// (`LOW_DISK_GUARD_LABEL` in `lib/low-disk-guard.ts`). The notices name the
+/// switch, so the two must read the same.
+pub const GUARD_SWITCH_LABEL: &str = "Pause recording on low disk";
 
 // ---------------------------------------------------------------------------
 // get_low_disk_guard_config
@@ -128,9 +139,10 @@ static PENDING_CONFIG_READ: tokio::sync::Mutex<Option<PendingRead>> =
     tokio::sync::Mutex::const_new(None);
 
 /// Read the thresholds of `dir` on a blocking thread, within `timeout`
-/// (waiting for another caller's read counts against it). A read that is
-/// still running for `dir` is awaited rather than started again; a finished
-/// one, or one for another directory, is dropped and a fresh read started.
+/// (waiting for another caller's read counts against it). A read kept for
+/// `dir` is awaited rather than started again, whether it is still running
+/// or has finished since (its answer is then used as it is); one for another
+/// directory is dropped and a fresh read started.
 async fn read_thresholds<F>(
     pending: &tokio::sync::Mutex<Option<PendingRead>>,
     dir: &Path,
@@ -145,7 +157,7 @@ where
         .await
         .map_err(|_| "another free-space read of the data dir is still running".to_string())?;
     let mut handle = match slot.take() {
-        Some(earlier) if earlier.dir == dir && !earlier.handle.is_finished() => earlier.handle,
+        Some(earlier) if earlier.dir == dir => earlier.handle,
         _ => {
             let owned = dir.to_path_buf();
             tokio::task::spawn_blocking(move || read(owned))
@@ -232,8 +244,9 @@ pub fn state_path(data_dir: &Path) -> PathBuf {
 /// What the monitor says.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Signal {
-    /// Free space is at or below the threshold (event or status).
-    Low,
+    /// Free space is at or below the threshold, as read by the monitor run
+    /// with this generation (`disk_space_low`, or a low status).
+    Low(u64),
     /// `disk_space_recovered` arrived.
     Recovered,
     /// The latest status shows no incident.
@@ -243,12 +256,20 @@ pub enum Signal {
 /// What the guard remembers while the app runs.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct GuardMemory {
-    /// The guard stopped capture and owes a restart on recovery.
-    pub paused_by_guard: bool,
-    /// While the guard was on during this incident, it saw recording off
-    /// (stopped by the guard or paused by the user). Recording that is on
-    /// again after that was started during the incident.
-    pub saw_recording_off: bool,
+    /// The monitor run whose low reading the guard has acted on. Further
+    /// low readings of that run change nothing, so a recording started
+    /// after the guard acted keeps running until a fresh `disk_space_low`
+    /// (a new monitor run, which an engine restart starts, or a new
+    /// incident after a recovery).
+    pub handled_generation: Option<u64>,
+    /// The guard stopped capture: the recording-intent epoch right after
+    /// its stop. Any later change of intent (someone started or paused
+    /// recording) means the pause is no longer the guard's to undo.
+    pub guard_stop_epoch: Option<u64>,
+    /// The guard has acted on an earlier monitor run of this incident in
+    /// this app run, so a recording it finds on at a fresh run was started
+    /// during the incident.
+    pub acted_this_incident: bool,
     /// "Guard is off" was logged for this incident.
     pub guard_off_logged: bool,
 }
@@ -258,8 +279,8 @@ pub struct GuardMemory {
 pub enum LowNotice {
     /// The guard stopped capture; it starts again once there is room.
     Paused,
-    /// Recording was started during the incident and the guard stopped it
-    /// again.
+    /// Recording was started during the incident, the recording engine
+    /// restarted, and the guard stopped capture again.
     PausedAgain,
     /// Recording was already off; the guard did not stop anything and will
     /// not start anything on recovery.
@@ -273,13 +294,17 @@ pub struct Facts {
     pub guard_enabled: bool,
     /// The user wants recording on (not paused, not quitting).
     pub recording_intended: bool,
+    /// How often the recording intent has changed so far
+    /// (`health::recording_intent_epoch`).
+    pub intent_epoch: u64,
     /// Persisted: an incident is in progress.
     pub incident_active: bool,
     /// Persisted: the incident was announced.
     pub incident_notified: bool,
 }
 
-/// What to do, and the state that follows.
+/// What to do, and the state that follows. After a stop the runtime
+/// records the intent epoch in `memory.guard_stop_epoch`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct Plan {
     pub stop_capture: bool,
@@ -294,12 +319,18 @@ pub struct Plan {
     pub incident_notified: bool,
 }
 
+/// Whether the guard's own stop is still the last word on recording: it
+/// stopped capture, and nobody has started or paused recording since.
+fn guard_pause_holds(facts: Facts, memory: GuardMemory) -> bool {
+    !facts.recording_intended && memory.guard_stop_epoch == Some(facts.intent_epoch)
+}
+
 /// The guard's rules (see the module docs).
 pub fn plan(signal: Signal, facts: Facts, memory: GuardMemory) -> Plan {
     match signal {
-        Signal::Low => plan_low(facts, memory),
+        Signal::Low(generation) => plan_low(generation, facts, memory),
         Signal::Recovered | Signal::Normal => {
-            let resume = memory.paused_by_guard && !facts.recording_intended;
+            let resume = guard_pause_holds(facts, memory);
             Plan {
                 resume_capture: resume,
                 notify_resumed: resume,
@@ -312,49 +343,54 @@ pub fn plan(signal: Signal, facts: Facts, memory: GuardMemory) -> Plan {
     }
 }
 
-fn plan_low(facts: Facts, memory: GuardMemory) -> Plan {
+fn plan_low(generation: u64, facts: Facts, memory: GuardMemory) -> Plan {
+    let holds = guard_pause_holds(facts, memory);
     let mut p = Plan {
         memory,
         incident_active: true,
         incident_notified: facts.incident_notified,
         ..Plan::default()
     };
+    if !holds {
+        // Someone started or paused recording since the guard's stop; a
+        // recovery must not override that.
+        p.memory.guard_stop_epoch = None;
+    }
     if !facts.guard_enabled {
-        // Switched off mid-incident: give back what the guard took. The
-        // switch is how a user records on a nearly full disk.
-        p.resume_capture = memory.paused_by_guard && !facts.recording_intended;
-        p.memory.paused_by_guard = false;
-        p.memory.saw_recording_off = false;
-        if !memory.guard_off_logged {
-            p.log_guard_off = true;
-            p.memory.guard_off_logged = true;
-        }
+        // Switched off mid-incident: give back what the guard took, and
+        // forget what it did, so switching it on again acts afresh.
+        p.resume_capture = holds;
+        p.memory = GuardMemory {
+            guard_off_logged: true,
+            ..GuardMemory::default()
+        };
+        p.log_guard_off = !memory.guard_off_logged;
         return p;
     }
     p.memory.guard_off_logged = false;
+    if memory.handled_generation == Some(generation) {
+        // Already acted on this run's reading. A recording started since
+        // then (from the tray, a deep link, a settings save that only
+        // restarts capture) is the user's choice and keeps running.
+        return p;
+    }
+    p.memory.handled_generation = Some(generation);
+    p.memory.acted_this_incident = true;
     if facts.recording_intended {
-        // Whatever started it (the tray, a settings save, an engine restart,
-        // an update rollback), recording does not run on a nearly full disk
-        // while the guard is on.
         p.stop_capture = true;
-        p.memory.paused_by_guard = true;
-        p.memory.saw_recording_off = true;
-        if memory.saw_recording_off {
-            // Started during the incident: say why it stopped again.
+        if memory.acted_this_incident {
+            // Started during the incident, then the engine restarted.
             p.stop_again = true;
             p.notify_low = Some(LowNotice::PausedAgain);
         } else if !facts.incident_notified {
             p.notify_low = Some(LowNotice::Paused);
         }
-    } else {
-        p.memory.saw_recording_off = true;
-        if !facts.incident_notified {
-            p.notify_low = Some(if memory.paused_by_guard {
-                LowNotice::Paused
-            } else {
-                LowNotice::RecordingOff
-            });
-        }
+    } else if !facts.incident_notified {
+        p.notify_low = Some(if holds {
+            LowNotice::Paused
+        } else {
+            LowNotice::RecordingOff
+        });
     }
     if p.notify_low.is_some() {
         p.incident_notified = true;
@@ -405,31 +441,33 @@ pub fn low_notification_text(
 ) -> (String, String) {
     let available = size_or_unknown(available_bytes);
     let threshold = size_or_unknown(threshold_bytes);
+    let anyway = format!(
+        "To record anyway, start recording again, or turn off \"{GUARD_SWITCH_LABEL}\" in the \
+         storage settings."
+    );
     match notice {
         LowNotice::Paused => (
             "Recording paused: the disk is nearly full".to_string(),
             format!(
-                "Only {available} is left on the drive that holds your recordings, and the \
-                 low-disk guard stops recording at {threshold}. Free some space or change where \
-                 recordings are stored; recording starts again by itself once there is room."
+                "Only {available} is left on the drive that holds your recordings (recording \
+                 pauses at {threshold}). Free some space or change where recordings are stored; \
+                 recording starts again by itself once there is room. {anyway}"
             ),
         ),
         LowNotice::PausedAgain => (
             "Recording paused again: the disk is still nearly full".to_string(),
             format!(
-                "Recording was started, but only {available} is left on the drive that holds \
-                 your recordings (the low-disk guard stops recording at {threshold}). It starts \
-                 again by itself once there is room. To record anyway, turn off the low-disk \
-                 guard in the storage settings."
+                "The recording engine restarted and found only {available} left on the drive \
+                 that holds your recordings (recording pauses at {threshold}), so recording is \
+                 paused again. It starts again by itself once there is room. {anyway}"
             ),
         ),
         LowNotice::RecordingOff => (
             "The disk is nearly full".to_string(),
             format!(
-                "Only {available} is left on the drive that holds your recordings. Recording is \
-                 already off, and while free space stays at or below {threshold} the low-disk \
-                 guard keeps it paused. Free some space or change where recordings are stored, \
-                 then start recording again."
+                "Only {available} is left on the drive that holds your recordings (recording \
+                 pauses at {threshold}). Recording is already off. Free some space or change \
+                 where recordings are stored before you start it again."
             ),
         ),
     }
@@ -463,11 +501,16 @@ impl Guard {
     }
 
     async fn handle(&mut self, signal: Signal, reading: Reading) {
+        // Only a low reading consults the setting; skip the store read on
+        // the routine "all fine" checks.
+        let guard_enabled = !matches!(signal, Signal::Low(_)) || self.guard_enabled();
+        // The epoch before the intent: a change between the two reads then
+        // shows as a newer epoch, never as a missed one.
+        let intent_epoch = crate::health::recording_intent_epoch();
         let facts = Facts {
-            // Only a low reading consults the setting; skip the store read
-            // on the routine "all fine" checks.
-            guard_enabled: signal != Signal::Low || self.guard_enabled(),
+            guard_enabled,
             recording_intended: crate::health::recording_intended(),
+            intent_epoch,
             incident_active: self.state.incident_active,
             incident_notified: self.state.notified,
         };
@@ -484,7 +527,7 @@ impl Guard {
         if plan.stop_capture {
             if plan.stop_again {
                 warn!(
-                    "low-disk guard: recording was started during the low-disk incident; stopping capture again, {} free (threshold {})",
+                    "low-disk guard: the engine restarted during the low-disk incident with recording on; stopping capture again, {} free (threshold {})",
                     size_or_unknown(reading.available_bytes),
                     size_or_unknown(reading.threshold_bytes)
                 );
@@ -496,15 +539,20 @@ impl Guard {
                 );
             }
             self.stop_capture().await;
+            // The stop set the intent off; any later change is someone else's.
+            plan.memory.guard_stop_epoch = Some(crate::health::recording_intent_epoch());
         }
         if plan.resume_capture {
             if let Err(e) = self.start_capture().await {
                 warn!("low-disk guard: could not start capture again: {e}");
                 plan.notify_resumed = false;
                 // A start that got as far as setting the intent is now the
-                // regular start/respawn machinery's job; otherwise retry on
-                // the next check.
-                plan.memory.paused_by_guard = !crate::health::recording_intended();
+                // regular start/respawn machinery's job; otherwise the pause
+                // is still the guard's, and the next check retries.
+                let epoch = crate::health::recording_intent_epoch();
+                if !crate::health::recording_intended() {
+                    plan.memory.guard_stop_epoch = Some(epoch);
+                }
             } else {
                 info!("low-disk guard: capture started again");
             }
@@ -645,20 +693,20 @@ async fn run(app: AppHandle, data_dir: PathBuf) {
     loop {
         tokio::select! {
             Some(event) = lows.next() => {
-                guard.handle(Signal::Low, Reading::from(&event.data)).await;
+                match low_event_generation(&event.data, monitor::latest_status().as_ref()) {
+                    Some(generation) => {
+                        guard.handle(Signal::Low(generation), Reading::from(&event.data)).await;
+                    }
+                    // Overtaken by a newer reading that is not low; the next
+                    // check acts on that one.
+                    None => debug!("low-disk guard: {} superseded", monitor::DISK_SPACE_LOW_EVENT),
+                }
             }
             Some(event) = recoveries.next() => {
                 guard.handle(Signal::Recovered, Reading::from(&event.data)).await;
             }
             _ = ticks.tick() => {
-                // A failed read says nothing new: the monitor keeps its level
-                // and only a successful read can start or end an incident.
-                if let Some(status) = monitor::latest_status().filter(|s| s.last_error.is_none()) {
-                    let signal = if status.low { Signal::Low } else { Signal::Normal };
-                    let reading = Reading {
-                        available_bytes: status.available_bytes,
-                        threshold_bytes: Some(status.threshold_bytes),
-                    };
+                if let Some((signal, reading)) = status_signal(monitor::latest_status().as_ref()) {
                     guard.handle(signal, reading).await;
                 }
             }
@@ -666,179 +714,292 @@ async fn run(app: AppHandle, data_dir: PathBuf) {
     }
 }
 
+/// The monitor run behind a `disk_space_low` event. The monitor stores a
+/// reading's status before it publishes the event, so the latest status is
+/// that reading or a newer one; `None` when the newest reading for that
+/// directory is no longer low.
+fn low_event_generation(
+    event: &DiskSpaceLowEvent,
+    latest: Option<&monitor::DiskPressureStatus>,
+) -> Option<u64> {
+    latest
+        .filter(|s| s.low && s.data_dir == event.data_dir)
+        .map(|s| s.generation)
+}
+
+/// What a periodic check reads from the monitor's latest status. A failed
+/// read says nothing new: the monitor keeps its level, and only a
+/// successful read can start or end an incident.
+fn status_signal(status: Option<&monitor::DiskPressureStatus>) -> Option<(Signal, Reading)> {
+    let status = status.filter(|s| s.last_error.is_none())?;
+    let signal = if status.low {
+        Signal::Low(status.generation)
+    } else {
+        Signal::Normal
+    };
+    let reading = Reading {
+        available_bytes: status.available_bytes,
+        threshold_bytes: Some(status.threshold_bytes),
+    };
+    Some((signal, reading))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    fn facts(guard_enabled: bool, recording_intended: bool) -> Facts {
-        Facts {
-            guard_enabled,
-            recording_intended,
-            incident_active: false,
-            incident_notified: false,
-        }
+    /// A run of the decision rules against a simulated recording intent,
+    /// applying each plan the way the runtime does (assuming every action
+    /// succeeds).
+    struct Sim {
+        f: Facts,
+        m: GuardMemory,
     }
 
-    /// Apply a plan the way the runtime does (assuming actions succeed).
-    fn step(signal: Signal, f: &mut Facts, m: &mut GuardMemory) -> Plan {
-        let p = plan(signal, *f, *m);
-        if p.stop_capture {
-            f.recording_intended = false;
+    impl Sim {
+        fn new(guard_enabled: bool, recording_intended: bool) -> Self {
+            Self {
+                f: Facts {
+                    guard_enabled,
+                    recording_intended,
+                    intent_epoch: 0,
+                    incident_active: false,
+                    incident_notified: false,
+                },
+                m: GuardMemory::default(),
+            }
         }
-        if p.resume_capture {
-            f.recording_intended = true;
+
+        fn set_intent(&mut self, on: bool) {
+            if self.f.recording_intended != on {
+                self.f.recording_intended = on;
+                self.f.intent_epoch += 1;
+            }
         }
-        *m = p.memory;
-        f.incident_active = p.incident_active;
-        f.incident_notified = p.incident_notified;
-        p
+
+        /// The user (tray, deep link, settings save) starts recording.
+        fn user_start(&mut self) {
+            self.set_intent(true);
+        }
+
+        /// The user pauses recording.
+        fn user_pause(&mut self) {
+            self.set_intent(false);
+        }
+
+        fn step(&mut self, signal: Signal) -> Plan {
+            let mut p = plan(signal, self.f, self.m);
+            if p.stop_capture {
+                self.set_intent(false);
+                p.memory.guard_stop_epoch = Some(self.f.intent_epoch);
+            }
+            if p.resume_capture {
+                self.set_intent(true);
+            }
+            self.m = p.memory;
+            self.f.incident_active = p.incident_active;
+            self.f.incident_notified = p.incident_notified;
+            p
+        }
+
+        fn quiet(&mut self, signal: Signal) {
+            let p = self.step(signal);
+            assert_eq!(
+                (
+                    p.stop_capture,
+                    p.resume_capture,
+                    p.notify_low,
+                    p.notify_resumed
+                ),
+                (false, false, None, false),
+                "{signal:?} should change nothing"
+            );
+        }
     }
 
     #[test]
     fn low_space_stops_capture_and_notifies_once_then_recovery_resumes() {
-        let mut f = facts(true, true);
-        let mut m = GuardMemory::default();
+        let mut s = Sim::new(true, true);
 
-        let p = step(Signal::Low, &mut f, &mut m);
+        let p = s.step(Signal::Low(1));
         assert!(p.stop_capture && !p.stop_again);
         assert_eq!(p.notify_low, Some(LowNotice::Paused));
-        assert!(m.paused_by_guard);
-        assert!(f.incident_active && f.incident_notified);
+        assert!(!s.f.recording_intended);
+        assert!(s.f.incident_active && s.f.incident_notified);
 
-        // Repeated low readings (status ticks) change nothing.
+        // Repeated low readings of the same run (status ticks) change nothing.
         for _ in 0..3 {
-            let p = step(Signal::Low, &mut f, &mut m);
-            assert_eq!(
-                (p.stop_capture, p.notify_low, p.resume_capture),
-                (false, None, false)
-            );
+            s.quiet(Signal::Low(1));
         }
 
-        let p = step(Signal::Recovered, &mut f, &mut m);
+        let p = s.step(Signal::Recovered);
         assert!(p.resume_capture && p.notify_resumed);
-        assert!(f.recording_intended);
-        assert_eq!(m, GuardMemory::default());
-        assert!(!f.incident_active && !f.incident_notified);
+        assert!(s.f.recording_intended);
+        assert_eq!(s.m, GuardMemory::default());
+        assert!(!s.f.incident_active && !s.f.incident_notified);
 
-        // The next incident is announced again.
-        let p = step(Signal::Low, &mut f, &mut m);
+        // The next incident, even in the same monitor run, is announced again.
+        let p = s.step(Signal::Low(1));
         assert!(p.stop_capture);
         assert_eq!(p.notify_low, Some(LowNotice::Paused));
     }
 
     #[test]
     fn guard_off_only_logs() {
-        let mut f = facts(false, true);
-        let mut m = GuardMemory::default();
-        let p = step(Signal::Low, &mut f, &mut m);
+        let mut s = Sim::new(false, true);
+        let p = s.step(Signal::Low(1));
         assert!(p.log_guard_off);
         assert!(!p.stop_capture && p.notify_low.is_none());
         // Logged once per incident.
-        let p = step(Signal::Low, &mut f, &mut m);
+        let p = s.step(Signal::Low(1));
         assert!(!p.log_guard_off);
-        let p = step(Signal::Recovered, &mut f, &mut m);
+        let p = s.step(Signal::Recovered);
         assert!(!p.resume_capture && !p.notify_resumed);
+        assert!(s.f.recording_intended);
     }
 
     #[test]
     fn a_recording_the_user_paused_is_not_resumed() {
-        let mut f = facts(true, false);
-        let mut m = GuardMemory::default();
-        let p = step(Signal::Low, &mut f, &mut m);
+        let mut s = Sim::new(true, false);
+        let p = s.step(Signal::Low(1));
         assert!(!p.stop_capture);
         // The user still hears about the full disk, without a promise that
         // recording comes back by itself.
         assert_eq!(p.notify_low, Some(LowNotice::RecordingOff));
-        let p = step(Signal::Recovered, &mut f, &mut m);
-        assert!(!p.resume_capture);
-        assert!(!f.recording_intended);
+        s.quiet(Signal::Recovered);
+        assert!(!s.f.recording_intended);
     }
 
     #[test]
-    fn capture_started_during_the_incident_is_stopped_again_with_a_notice() {
-        let mut f = facts(true, true);
-        let mut m = GuardMemory::default();
-        step(Signal::Low, &mut f, &mut m);
-        // Something starts capture again: the tray, a settings save that
-        // restarts capture, a mic-grant re-init, an engine restart.
-        for _ in 0..2 {
-            f.recording_intended = true;
-            let p = step(Signal::Low, &mut f, &mut m);
-            assert!(p.stop_capture && p.stop_again);
-            assert_eq!(p.notify_low, Some(LowNotice::PausedAgain));
-            assert!(!f.recording_intended && m.paused_by_guard);
-            // Until the next start, the ticks are quiet again.
-            let p = step(Signal::Low, &mut f, &mut m);
-            assert_eq!((p.stop_capture, p.notify_low), (false, None));
+    fn a_start_after_the_guard_stopped_capture_stands_until_a_fresh_low() {
+        let mut s = Sim::new(true, true);
+        s.step(Signal::Low(1));
+        assert!(!s.f.recording_intended);
+
+        // The user starts recording from the tray, a deep link or a settings
+        // save that only restarts capture: the same monitor run, so the
+        // checks leave it running.
+        s.user_start();
+        for _ in 0..3 {
+            s.quiet(Signal::Low(1));
+            assert!(s.f.recording_intended);
         }
-        // Recovery starts capture again: the guard stopped it last.
-        let p = step(Signal::Recovered, &mut f, &mut m);
+        // The guard no longer owes a restart: the recording is the user's.
+        assert_eq!(s.m.guard_stop_epoch, None);
+
+        // An engine restart starts a new monitor run, whose first low reading
+        // is fresh: capture is stopped again, with a notice saying how to keep
+        // recording.
+        let p = s.step(Signal::Low(2));
+        assert!(p.stop_capture && p.stop_again);
+        assert_eq!(p.notify_low, Some(LowNotice::PausedAgain));
+        assert!(!s.f.recording_intended);
+        s.quiet(Signal::Low(2));
+
+        // That stop is the guard's, so recovery brings recording back.
+        let p = s.step(Signal::Recovered);
         assert!(p.resume_capture && p.notify_resumed);
     }
 
     #[test]
-    fn starting_a_recording_the_user_had_paused_is_stopped_too() {
-        let mut f = facts(true, false);
-        let mut m = GuardMemory::default();
-        let p = step(Signal::Low, &mut f, &mut m);
+    fn a_start_while_the_user_had_paused_stands_too() {
+        let mut s = Sim::new(true, false);
+        let p = s.step(Signal::Low(1));
         assert_eq!(p.notify_low, Some(LowNotice::RecordingOff));
-        f.recording_intended = true;
-        let p = step(Signal::Low, &mut f, &mut m);
-        assert!(p.stop_capture && p.stop_again);
-        assert_eq!(p.notify_low, Some(LowNotice::PausedAgain));
-        // Now the guard stopped it, so recovery brings it back.
-        let p = step(Signal::Recovered, &mut f, &mut m);
+        s.user_start();
+        s.quiet(Signal::Low(1));
+        assert!(s.f.recording_intended);
+        // Recovery changes nothing: recording is already on.
+        s.quiet(Signal::Recovered);
+        assert!(s.f.recording_intended);
+    }
+
+    #[test]
+    fn a_start_and_pause_after_the_guards_stop_is_not_undone_on_recovery() {
+        let mut s = Sim::new(true, true);
+        s.step(Signal::Low(1));
+        // Both changes land between two checks: the guard never sees
+        // recording on, but the epoch shows that someone took over.
+        s.user_start();
+        s.user_pause();
+        s.quiet(Signal::Low(1));
+        let p = s.step(Signal::Recovered);
+        assert!(!p.resume_capture && !p.notify_resumed);
+        assert!(!s.f.recording_intended);
+    }
+
+    #[test]
+    fn a_new_run_that_finds_recording_off_does_not_stop_or_notify() {
+        let mut s = Sim::new(true, true);
+        s.step(Signal::Low(1));
+        // The engine restarts while recording is still paused by the guard.
+        s.quiet(Signal::Low(2));
+        // The pause is still the guard's: recovery resumes.
+        let p = s.step(Signal::Normal);
         assert!(p.resume_capture);
     }
 
     #[test]
-    fn switching_the_guard_off_mid_incident_resumes_capture() {
-        let mut f = facts(true, true);
-        let mut m = GuardMemory::default();
-        step(Signal::Low, &mut f, &mut m);
-        assert!(!f.recording_intended);
-        f.guard_enabled = false;
-        let p = step(Signal::Low, &mut f, &mut m);
+    fn switching_the_guard_off_mid_incident_resumes_capture_and_on_again_stops_it() {
+        let mut s = Sim::new(true, true);
+        s.step(Signal::Low(1));
+        assert!(!s.f.recording_intended);
+        s.f.guard_enabled = false;
+        let p = s.step(Signal::Low(1));
         assert!(p.resume_capture && p.log_guard_off);
-        assert!(f.recording_intended);
-        assert!(!m.paused_by_guard);
+        assert!(s.f.recording_intended);
+        assert_eq!(s.m.guard_stop_epoch, None);
         // With the guard off, recording keeps running.
-        let p = step(Signal::Low, &mut f, &mut m);
-        assert!(!p.stop_capture && p.notify_low.is_none());
-        // Switching it back on stops capture again, without a second notice.
-        f.guard_enabled = true;
-        let p = step(Signal::Low, &mut f, &mut m);
+        let p = s.step(Signal::Low(1));
+        assert!(!p.stop_capture && p.notify_low.is_none() && !p.log_guard_off);
+        // Switching it back on is a choice made for this incident: capture
+        // stops again, without a second notice.
+        s.f.guard_enabled = true;
+        let p = s.step(Signal::Low(1));
         assert!(p.stop_capture && !p.stop_again);
         assert!(p.notify_low.is_none());
     }
 
     #[test]
-    fn a_restart_mid_incident_stops_capture_without_a_second_notice() {
-        // Persisted: the incident was announced by the previous run.
-        let mut f = Facts {
-            guard_enabled: true,
-            recording_intended: true,
-            incident_active: true,
-            incident_notified: true,
-        };
-        let mut m = GuardMemory::default();
-        let p = step(Signal::Low, &mut f, &mut m);
+    fn switching_the_guard_on_mid_incident_announces_it_when_nobody_was_told() {
+        let mut s = Sim::new(false, true);
+        s.step(Signal::Low(1));
+        s.f.guard_enabled = true;
+        let p = s.step(Signal::Low(1));
+        assert!(p.stop_capture);
+        assert_eq!(p.notify_low, Some(LowNotice::Paused));
+    }
+
+    #[test]
+    fn switching_the_guard_off_leaves_a_users_pause_alone() {
+        let mut s = Sim::new(true, true);
+        s.step(Signal::Low(1));
+        s.user_start();
+        s.user_pause();
+        s.f.guard_enabled = false;
+        let p = s.step(Signal::Low(1));
+        assert!(!p.resume_capture);
+        assert!(!s.f.recording_intended);
+    }
+
+    #[test]
+    fn an_app_restart_mid_incident_stops_capture_without_a_second_notice() {
+        // Persisted: the incident was announced by the previous app run.
+        let mut s = Sim::new(true, true);
+        s.f.incident_active = true;
+        s.f.incident_notified = true;
+        let p = s.step(Signal::Low(1));
         assert!(p.stop_capture && !p.stop_again);
         assert!(p.notify_low.is_none());
     }
 
     #[test]
     fn a_normal_status_clears_a_stale_incident_quietly() {
-        let mut f = Facts {
-            guard_enabled: true,
-            recording_intended: true,
-            incident_active: true,
-            incident_notified: true,
-        };
-        let mut m = GuardMemory::default();
-        let p = step(Signal::Normal, &mut f, &mut m);
-        assert!(!p.resume_capture && !p.notify_resumed);
-        assert!(!f.incident_active && !f.incident_notified);
+        let mut s = Sim::new(true, true);
+        s.f.incident_active = true;
+        s.f.incident_notified = true;
+        s.quiet(Signal::Normal);
+        assert!(!s.f.incident_active && !s.f.incident_notified);
     }
 
     #[test]
@@ -851,9 +1012,8 @@ mod tests {
             available_bytes: Some(5),
             threshold_bytes: Some(20),
         };
-        let mut f = facts(true, true);
-        let mut m = GuardMemory::default();
-        let p = step(Signal::Low, &mut f, &mut m);
+        let mut s = Sim::new(true, true);
+        let p = s.step(Signal::Low(1));
         let s1 = next_state(&NotificationState::default(), &p, first, "t1".into());
         assert_eq!(
             s1,
@@ -865,9 +1025,9 @@ mod tests {
                 threshold_bytes: Some(20),
             }
         );
-        let p = step(Signal::Low, &mut f, &mut m);
+        let p = s.step(Signal::Low(1));
         assert_eq!(next_state(&s1, &p, later, "t2".into()), s1);
-        let p = step(Signal::Recovered, &mut f, &mut m);
+        let p = s.step(Signal::Recovered);
         assert_eq!(
             next_state(&s1, &p, later, "t3".into()),
             NotificationState::default()
@@ -928,16 +1088,78 @@ mod tests {
     #[test]
     fn only_a_notice_for_a_stop_by_the_guard_promises_an_automatic_restart() {
         let promise = "by itself";
-        for (notice, promises) in [
+        for (notice, stopped_by_guard) in [
             (LowNotice::Paused, true),
             (LowNotice::PausedAgain, true),
             (LowNotice::RecordingOff, false),
         ] {
             let (_, body) = low_notification_text(notice, Some(1), Some(2));
-            assert_eq!(body.contains(promise), promises, "{notice:?}: {body}");
+            assert_eq!(
+                body.contains(promise),
+                stopped_by_guard,
+                "{notice:?}: {body}"
+            );
+            // A stop by the guard says how to keep recording, naming the
+            // switch exactly as the storage settings label it.
+            let names_switch = body.contains(&format!("\"{GUARD_SWITCH_LABEL}\""));
+            assert_eq!(names_switch, stopped_by_guard, "{notice:?}: {body}");
+            assert_eq!(
+                body.contains("start recording again"),
+                stopped_by_guard,
+                "{notice:?}: {body}"
+            );
         }
-        let (_, body) = low_notification_text(LowNotice::PausedAgain, Some(1), Some(2));
-        assert!(body.contains("turn off the low-disk guard"), "{body}");
+    }
+
+    #[test]
+    fn the_switch_label_matches_the_settings_page() {
+        let ts = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("..")
+            .join("lib")
+            .join("low-disk-guard.ts");
+        let source = std::fs::read_to_string(&ts).unwrap();
+        assert!(
+            source.contains(&format!("LOW_DISK_GUARD_LABEL = \"{GUARD_SWITCH_LABEL}\"")),
+            "{} must define LOW_DISK_GUARD_LABEL as {GUARD_SWITCH_LABEL:?}",
+            ts.display()
+        );
+    }
+
+    #[test]
+    fn a_low_event_takes_the_generation_of_the_latest_low_status() {
+        let event = DiskSpaceLowEvent {
+            available_bytes: 1,
+            threshold_bytes: 2,
+            data_dir: "/data".into(),
+        };
+        let mut status = status_for("/data", 2, None);
+        status.low = true;
+        status.generation = 7;
+        assert_eq!(low_event_generation(&event, Some(&status)), Some(7));
+        // A newer reading that is no longer low, or one for another dir, or
+        // none at all: the event is left to the next check.
+        status.low = false;
+        assert_eq!(low_event_generation(&event, Some(&status)), None);
+        let mut other = status_for("/elsewhere", 2, None);
+        other.low = true;
+        assert_eq!(low_event_generation(&event, Some(&other)), None);
+        assert_eq!(low_event_generation(&event, None), None);
+    }
+
+    #[test]
+    fn a_check_reads_the_level_and_run_from_the_status() {
+        let mut status = status_for("/data", 2, None);
+        status.generation = 3;
+        assert_eq!(status_signal(Some(&status)).unwrap().0, Signal::Normal);
+        status.low = true;
+        let (signal, reading) = status_signal(Some(&status)).unwrap();
+        assert_eq!(signal, Signal::Low(3));
+        assert_eq!(reading.available_bytes, Some(50));
+        assert_eq!(reading.threshold_bytes, Some(2));
+        // A failed read says nothing new.
+        let failed = status_for("/data", 2, Some("unreadable"));
+        assert_eq!(status_signal(Some(&failed)), None);
+        assert_eq!(status_signal(None), None);
     }
 
     fn status_for(
@@ -954,6 +1176,7 @@ mod tests {
             data_dir: dir.to_string(),
             checked_at: chrono::Utc::now(),
             last_error: last_error.map(str::to_string),
+            generation: 0,
         }
     }
 
@@ -1007,8 +1230,21 @@ mod tests {
         }
         assert_eq!(reads.load(Ordering::SeqCst), 1);
 
-        // Once it finishes, the waiting caller gets its result.
+        // Once it finishes, the next caller gets its result, also when the
+        // read ended before that call came in (the path that used to start a
+        // second read).
         release.send(()).unwrap();
+        loop {
+            let finished = pending
+                .lock()
+                .await
+                .as_ref()
+                .is_some_and(|p| p.handle.is_finished());
+            if finished {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
         let counted = Arc::clone(&reads);
         let done = read_thresholds(&pending, &dir, Duration::from_secs(5), move |_| {
             counted.fetch_add(1, Ordering::SeqCst);

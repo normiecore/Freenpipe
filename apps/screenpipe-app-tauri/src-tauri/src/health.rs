@@ -7,7 +7,7 @@ use anyhow::Result;
 use dark_light::Mode;
 use once_cell::sync::Lazy;
 use serde::Deserialize;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, RwLock};
 use std::time::Instant;
 use tauri::{path::BaseDirectory, Emitter, Manager};
@@ -566,14 +566,27 @@ fn parse_devices_from_health(health_result: &Result<HealthCheckResponse>) -> Vec
 /// and starting it sets it again.
 static RECORDING_INTENDED: AtomicBool = AtomicBool::new(true);
 
+/// Number of times the recording intent has changed. Lets a caller tell
+/// whether anyone started or paused recording since it last looked (the
+/// low-disk guard uses it to restart only a pause it made itself).
+static RECORDING_INTENT_CHANGES: AtomicU64 = AtomicU64::new(0);
+
 pub fn set_recording_intended(on: bool) {
     if RECORDING_INTENDED.swap(on, Ordering::SeqCst) != on {
+        RECORDING_INTENT_CHANGES.fetch_add(1, Ordering::SeqCst);
         info!("recording intent: {}", if on { "on" } else { "off" });
     }
 }
 
 pub fn recording_intended() -> bool {
     RECORDING_INTENDED.load(Ordering::SeqCst)
+}
+
+/// How many times the recording intent has changed so far. Read it before
+/// [`recording_intended`]: a change between the two reads then shows as a
+/// later epoch, never as a missed one.
+pub fn recording_intent_epoch() -> u64 {
+    RECORDING_INTENT_CHANGES.load(Ordering::SeqCst)
 }
 
 pub(crate) mod watchdog {

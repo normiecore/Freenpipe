@@ -16,12 +16,20 @@
 //! starts capture again on recovery. [`latest_status`] keeps the newest
 //! reading for the app and for `/health`.
 //!
+//! Every monitor run (each engine start or restart) has its own
+//! [generation](DiskPressureStatus::generation). A run reports an incident
+//! once, so the app can tell a fresh `disk_space_low` (a new run that found
+//! the disk still full) from a reading it has already acted on. A reading's
+//! status is stored before its event goes out, so a subscriber that gets the
+//! event finds that reading, and its generation, in [`latest_status`].
+//!
 //! Thresholds are Freenpipe's choice (the shipped numbers were not
 //! observable): 2 % of the volume, never less than 2 GiB and never more than
 //! 10 GiB, and recovery needs 1 GiB on top of that.
 
 use std::io;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, RwLock};
 use std::time::Duration;
 
@@ -95,9 +103,16 @@ pub struct DiskPressureStatus {
     pub checked_at: DateTime<Utc>,
     /// Why the read failed, when it did.
     pub last_error: Option<String>,
+    /// The monitor run that took this reading. Each run gets a new number
+    /// (they start at 1), so a low reading from a newer run is a fresh one.
+    #[serde(default)]
+    pub generation: u64,
 }
 
 static LATEST: RwLock<Option<DiskPressureStatus>> = RwLock::new(None);
+
+/// Generation handed to the next [`MonitorCore`].
+static NEXT_GENERATION: AtomicU64 = AtomicU64::new(1);
 
 /// The newest reading of the running monitor, or `None` before its first one.
 pub fn latest_status() -> Option<DiskPressureStatus> {
@@ -336,7 +351,9 @@ pub fn thresholds_for_dir(dir: &Path) -> io::Result<Thresholds> {
 // Monitor
 // ---------------------------------------------------------------------------
 
-/// Where the monitor's events and readings go.
+/// Where the monitor's events and readings go. For each reading the
+/// monitor calls [`status`](Self::status) first and then, on a change of
+/// level, the matching event.
 pub trait PressureSink: Send + Sync {
     fn disk_space_low(&self, event: &DiskSpaceLowEvent);
     fn disk_space_recovered(&self, event: &DiskSpaceRecoveredEvent);
@@ -382,8 +399,9 @@ impl Default for MonitorConfig {
 }
 
 /// The synchronous part of the monitor: turns one reading into a status and,
-/// on a change of level, an event.
+/// on a change of level, an event. Each instance is a new generation.
 pub struct MonitorCore {
+    generation: u64,
     data_dir: PathBuf,
     rule: ThresholdRule,
     tracker: PressureTracker,
@@ -395,6 +413,7 @@ pub struct MonitorCore {
 impl MonitorCore {
     pub fn new(data_dir: PathBuf, rule: ThresholdRule) -> Self {
         Self {
+            generation: NEXT_GENERATION.fetch_add(1, Ordering::Relaxed),
             limits: rule.resolve(None),
             data_dir,
             rule,
@@ -406,6 +425,11 @@ impl MonitorCore {
 
     pub fn level(&self) -> PressureLevel {
         self.tracker.level()
+    }
+
+    /// This run's generation, as carried by its statuses.
+    pub fn generation(&self) -> u64 {
+        self.generation
     }
 
     /// Replace the threshold rule; the next reading uses it.
@@ -445,6 +469,24 @@ impl MonitorCore {
             }
         };
 
+        // The status first: whoever receives the event below can then read
+        // this reading, generation included, from `latest_status`.
+        sink.status(&DiskPressureStatus {
+            low: self.tracker.level() == PressureLevel::Low,
+            available_bytes: available,
+            total_bytes: if error.is_some() {
+                None
+            } else {
+                self.total_bytes
+            },
+            threshold_bytes: self.limits.threshold_bytes,
+            recovery_threshold_bytes: self.limits.recovery_threshold_bytes,
+            data_dir: data_dir.clone(),
+            checked_at: Utc::now(),
+            last_error: error,
+            generation: self.generation,
+        });
+
         match (transition, available) {
             (Some(Transition::BecameLow), Some(available_bytes)) => {
                 warn!(
@@ -455,7 +497,7 @@ impl MonitorCore {
                 sink.disk_space_low(&DiskSpaceLowEvent {
                     available_bytes,
                     threshold_bytes: self.limits.threshold_bytes,
-                    data_dir: data_dir.clone(),
+                    data_dir,
                 });
             }
             (Some(Transition::Recovered), Some(available_bytes)) => {
@@ -468,26 +510,12 @@ impl MonitorCore {
                     available_bytes,
                     threshold_bytes: self.limits.threshold_bytes,
                     recovery_threshold_bytes: self.limits.recovery_threshold_bytes,
-                    data_dir: data_dir.clone(),
+                    data_dir,
                 });
             }
             _ => {}
         }
 
-        sink.status(&DiskPressureStatus {
-            low: self.tracker.level() == PressureLevel::Low,
-            available_bytes: available,
-            total_bytes: if error.is_some() {
-                None
-            } else {
-                self.total_bytes
-            },
-            threshold_bytes: self.limits.threshold_bytes,
-            recovery_threshold_bytes: self.limits.recovery_threshold_bytes,
-            data_dir,
-            checked_at: Utc::now(),
-            last_error: error,
-        });
         transition
     }
 }
@@ -913,6 +941,69 @@ mod tests {
         stopped.expect("monitor stops while a read hangs").unwrap();
         assert!(sink.events().is_empty());
         assert!(sink.statuses().is_empty());
+    }
+
+    /// Logs statuses and events in the order the monitor hands them over.
+    #[derive(Default)]
+    struct OrderSink(Mutex<Vec<String>>);
+
+    impl PressureSink for OrderSink {
+        fn disk_space_low(&self, _event: &DiskSpaceLowEvent) {
+            self.0.lock().unwrap().push("low".into());
+        }
+        fn disk_space_recovered(&self, _event: &DiskSpaceRecoveredEvent) {
+            self.0.lock().unwrap().push("recovered".into());
+        }
+        fn status(&self, status: &DiskPressureStatus) {
+            self.0.lock().unwrap().push(format!(
+                "status low={} gen={}",
+                status.low, status.generation
+            ));
+        }
+    }
+
+    #[test]
+    fn the_status_of_a_reading_is_stored_before_its_event() {
+        let sink = OrderSink::default();
+        let mut core = MonitorCore::new(PathBuf::from("/data"), ThresholdRule::Fixed(limits()));
+        let generation = core.generation();
+        core.apply(Ok(space(GIB)), &sink);
+        core.apply(Ok(space(20 * GIB)), &sink);
+        assert_eq!(
+            *sink.0.lock().unwrap(),
+            vec![
+                format!("status low=true gen={generation}"),
+                "low".to_string(),
+                format!("status low=false gen={generation}"),
+                "recovered".to_string(),
+            ]
+        );
+    }
+
+    #[test]
+    fn each_monitor_run_is_a_new_generation() {
+        let mut first = MonitorCore::new(PathBuf::from("/data"), ThresholdRule::Fixed(limits()));
+        let mut second = MonitorCore::new(PathBuf::from("/data"), ThresholdRule::Fixed(limits()));
+        assert!(first.generation() >= 1);
+        assert_ne!(first.generation(), second.generation());
+
+        // Both runs report the same full disk; their statuses say which run
+        // each reading came from.
+        let sink = RecordingSink::default();
+        first.apply(Ok(space(GIB)), &sink);
+        second.apply(Ok(space(GIB)), &sink);
+        let generations: Vec<u64> = sink.statuses().iter().map(|s| s.generation).collect();
+        assert_eq!(generations, vec![first.generation(), second.generation()]);
+        assert_eq!(sink.events().len(), 2, "each run reports the incident once");
+
+        // A status written before generations existed still reads.
+        let old: DiskPressureStatus = serde_json::from_value(serde_json::json!({
+            "low": true, "available_bytes": 1, "total_bytes": 2, "threshold_bytes": 3,
+            "recovery_threshold_bytes": 4, "data_dir": "d",
+            "checked_at": "2026-10-20T10:00:00Z", "last_error": null
+        }))
+        .unwrap();
+        assert_eq!(old.generation, 0);
     }
 
     #[test]
