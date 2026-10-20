@@ -691,6 +691,10 @@ pub async fn retranscribe_meeting_handler(
                 item_id: segment.item_id.clone(),
                 device_name: segment.device.name.clone(),
                 device_type: device_type.to_string(),
+                // A batch re-transcription has no live stream or provider
+                // speaker labels, so it keeps the unscoped default.
+                stream_id: None,
+                session_speaker_id: None,
                 speaker_name: None,
                 transcript: segment.transcript.clone(),
                 captured_at: segment.captured_at,

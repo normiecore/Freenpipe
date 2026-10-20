@@ -16,7 +16,10 @@ use tracing::{debug, info, warn};
 use crate::{
     core::{device::DeviceType, engine::AudioTranscriptionEngine},
     meeting_streaming::{
-        events::{MeetingStreamingError, MeetingTranscriptDelta, MeetingTranscriptFinal},
+        events::{
+            stream_turn_item_id, MeetingStreamingError, MeetingTranscriptDelta,
+            MeetingTranscriptFinal,
+        },
         MeetingAudioFrame, MeetingStreamingConfig,
     },
     transcription::engine::{TranscriptionEngine, TranscriptionSession},
@@ -28,11 +31,17 @@ const LIVE_CHUNK_TARGET: Duration = Duration::from_secs(6);
 const LIVE_CHUNK_MIN: Duration = Duration::from_secs(2);
 const FLUSH_TICK: Duration = Duration::from_millis(750);
 const MIN_LIVE_RMS: f32 = 0.003;
+/// Namespace of the turn ids this stream produces.
+const ITEM_SOURCE: &str = "selected-engine";
 
+/// One selected-engine session for one device of one meeting. The local
+/// engine does not diarize, so finals carry `stream_id` (minted by the caller
+/// for this session) and no `session_speaker_id`.
 pub fn spawn_selected_engine_stream(
     config: MeetingStreamingConfig,
     engine_ref: Arc<RwLock<Option<TranscriptionEngine>>>,
     meeting_id: i64,
+    stream_id: String,
     device_name: String,
     device_type: DeviceType,
     rx: mpsc::Receiver<MeetingAudioFrame>,
@@ -40,14 +49,15 @@ pub fn spawn_selected_engine_stream(
     tokio::spawn(async move {
         let device_type_label = device_type_label(&device_type).to_string();
         info!(
-            "meeting streaming: starting selected-engine live stream (meeting_id={}, device={}, type={})",
-            meeting_id, device_name, device_type_label
+            "meeting streaming: starting selected-engine live stream (meeting_id={}, stream_id={}, device={}, type={})",
+            meeting_id, stream_id, device_name, device_type_label
         );
 
         if let Err(err) = run_stream(
             config.clone(),
             engine_ref,
             meeting_id,
+            &stream_id,
             device_name.clone(),
             device_type_label,
             rx,
@@ -67,6 +77,7 @@ async fn run_stream(
     config: MeetingStreamingConfig,
     engine_ref: Arc<RwLock<Option<TranscriptionEngine>>>,
     meeting_id: i64,
+    stream_id: &str,
     device_name: String,
     device_type: String,
     mut rx: mpsc::Receiver<MeetingAudioFrame>,
@@ -81,7 +92,7 @@ async fn run_stream(
         tokio::select! {
             maybe_frame = rx.recv() => {
                 let Some(frame) = maybe_frame else {
-                    flush_buffer(&mut buffer, &mut session, &config, meeting_id, &device_name, &device_type, model.clone(), &mut sequence).await?;
+                    flush_buffer(&mut buffer, &mut session, &config, meeting_id, stream_id, &device_name, &device_type, model.clone(), &mut sequence).await?;
                     break;
                 };
 
@@ -92,12 +103,12 @@ async fn run_stream(
                 }
                 buffer.push(samples, frame.captured_at_unix_ms);
                 if buffer.duration() >= LIVE_CHUNK_TARGET {
-                    flush_buffer(&mut buffer, &mut session, &config, meeting_id, &device_name, &device_type, model.clone(), &mut sequence).await?;
+                    flush_buffer(&mut buffer, &mut session, &config, meeting_id, stream_id, &device_name, &device_type, model.clone(), &mut sequence).await?;
                 }
             }
             _ = flush_tick.tick() => {
                 if buffer.duration() >= LIVE_CHUNK_MIN {
-                    flush_buffer(&mut buffer, &mut session, &config, meeting_id, &device_name, &device_type, model.clone(), &mut sequence).await?;
+                    flush_buffer(&mut buffer, &mut session, &config, meeting_id, stream_id, &device_name, &device_type, model.clone(), &mut sequence).await?;
                 }
             }
         }
@@ -154,6 +165,7 @@ async fn flush_buffer(
     session: &mut TranscriptionSession,
     config: &MeetingStreamingConfig,
     meeting_id: i64,
+    stream_id: &str,
     device_name: &str,
     device_type: &str,
     model: Option<String>,
@@ -178,10 +190,7 @@ async fn flush_buffer(
     }
 
     *sequence += 1;
-    let item_id = format!(
-        "selected-engine:{}:{}:{}",
-        device_type, chunk.captured_at_unix_ms, sequence
-    );
+    let item_id = selected_engine_item_id(stream_id, chunk.captured_at_unix_ms, *sequence);
     let captured_at = captured_at_from_ms(chunk.captured_at_unix_ms);
     let speaker_name = if device_type == "input" {
         config.local_speaker_name.clone()
@@ -193,6 +202,7 @@ async fn flush_buffer(
         meeting_id,
         provider: config.provider.as_str().to_string(),
         model: model.clone(),
+        stream_id: stream_id.to_string(),
         item_id: item_id.clone(),
         device_name: device_name.to_string(),
         device_type: device_type.to_string(),
@@ -206,9 +216,11 @@ async fn flush_buffer(
         meeting_id,
         provider: config.provider.as_str().to_string(),
         model,
+        stream_id: stream_id.to_string(),
         item_id,
         device_name: device_name.to_string(),
         device_type: device_type.to_string(),
+        session_speaker_id: None,
         speaker_name,
         transcript,
         captured_at,
@@ -216,6 +228,16 @@ async fn flush_buffer(
     let _ = screenpipe_events::send_event("meeting_transcript_final", final_event);
 
     Ok(())
+}
+
+/// Turn id of one transcribed chunk. The sequence restarts with every
+/// session, so the stream id keeps two sessions of one meeting apart.
+fn selected_engine_item_id(stream_id: &str, captured_at_unix_ms: u64, sequence: u64) -> String {
+    stream_turn_item_id(
+        ITEM_SOURCE,
+        stream_id,
+        &format!("{captured_at_unix_ms}:{sequence}"),
+    )
 }
 
 #[derive(Default)]
@@ -332,6 +354,13 @@ mod tests {
         assert_eq!(chunk.captured_at_unix_ms, 1_000);
         assert_eq!(chunk.samples.len(), LIVE_SAMPLE_RATE as usize * 2);
         assert!(buffer.take().is_none());
+    }
+
+    #[test]
+    fn item_ids_are_scoped_to_the_session_stream() {
+        let first = selected_engine_item_id("s1", 1_000, 1);
+        assert_eq!(first, "selected-engine:s1:turn:1000:1");
+        assert_ne!(first, selected_engine_item_id("s2", 1_000, 1));
     }
 
     #[test]

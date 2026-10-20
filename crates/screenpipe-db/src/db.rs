@@ -99,9 +99,76 @@ pub struct NewMeetingTranscriptSegment {
     pub item_id: String,
     pub device_name: String,
     pub device_type: String,
+    /// Opaque id of the provider connection that produced the segment. `None`
+    /// (or blank) stores [`LEGACY_MEETING_STREAM_ID`], the value rows written
+    /// before streams were scoped carry.
+    pub stream_id: Option<String>,
+    /// The provider's speaker label, meaningful only inside `stream_id`.
+    pub session_speaker_id: Option<String>,
     pub speaker_name: Option<String>,
     pub transcript: String,
     pub captured_at: DateTime<Utc>,
+}
+
+/// `meeting_transcript_segments.stream_id` of rows that do not belong to a
+/// scoped live stream (the column default of migration 20260828143000).
+pub const LEGACY_MEETING_STREAM_ID: &str = "legacy";
+
+const INSERT_OR_IGNORE_MEETING_SEGMENT: &str = "INSERT OR IGNORE INTO meeting_transcript_segments \
+     (meeting_id, provider, model, item_id, device_name, device_type, stream_id, \
+     session_speaker_id, speaker_name, transcript, captured_at) \
+     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)";
+
+const INSERT_MEETING_SEGMENT: &str = "INSERT INTO meeting_transcript_segments \
+     (meeting_id, provider, model, item_id, device_name, device_type, stream_id, \
+     session_speaker_id, speaker_name, transcript, captured_at) \
+     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)";
+
+/// Bind one segment to an 11-column segment insert. The transcript is stored
+/// trimmed and `captured_at` as RFC 3339, the format every reader expects.
+fn bind_meeting_segment_insert(
+    sql: &'static str,
+    meeting_id: i64,
+    segment: &NewMeetingTranscriptSegment,
+) -> sqlx::query::Query<'static, sqlx::Sqlite, sqlx::sqlite::SqliteArguments> {
+    sqlx::query(sql)
+        .bind(meeting_id)
+        .bind(segment.provider.clone())
+        .bind(segment.model.clone())
+        .bind(segment.item_id.clone())
+        .bind(segment.device_name.clone())
+        .bind(segment.device_type.clone())
+        .bind(segment.stored_stream_id().to_string())
+        .bind(segment.stored_session_speaker_id().map(str::to_string))
+        .bind(segment.speaker_name.clone())
+        .bind(segment.transcript.trim().to_string())
+        .bind(segment.captured_at.to_rfc3339())
+}
+
+impl NewMeetingTranscriptSegment {
+    fn stored_stream_id(&self) -> &str {
+        self.stream_id
+            .as_deref()
+            .map(str::trim)
+            .filter(|id| !id.is_empty())
+            .unwrap_or(LEGACY_MEETING_STREAM_ID)
+    }
+
+    fn stored_session_speaker_id(&self) -> Option<&str> {
+        self.session_speaker_id
+            .as_deref()
+            .map(str::trim)
+            .filter(|id| !id.is_empty())
+    }
+}
+
+/// Placement of one timeline audio row; see `DatabaseManager::timeline_audio_window`.
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct TimelineAudioWindow {
+    start: DateTime<Utc>,
+    end: DateTime<Utc>,
+    duration_secs: f64,
+    offsets_valid: bool,
 }
 
 /// Outcome of `evict_media_in_range`. DB rows stay alive (search/timeline
@@ -5376,6 +5443,7 @@ impl DatabaseManager {
             at.end_time,
             at.speaker_id,
             s.name as speaker_name,
+            COALESCE(at.transcription_engine, '') = 'live' AS is_live,
             CAST((julianday(datetime(at.timestamp, '+' || at.end_time || ' seconds')) -
                   julianday(datetime(at.timestamp, '+' || at.start_time || ' seconds'))) * 86400
                  as REAL) as duration_secs
@@ -5396,7 +5464,9 @@ impl DatabaseManager {
         // stretch on the timeline even though the in-app Meeting view (which already
         // UNIONs both tables) shows it. Columns are aliased to match audio_query so the
         // same row-processing path below handles both. There is no audio file / chunk for
-        // a live segment, so audio_path='' and audio_chunk_id=-1 (transcript-only entry).
+        // a live segment, so audio_path='' (transcript-only entry). Its audio_chunk_id is
+        // the negated segment id: unique per row (consumers key timeline audio on it) and
+        // never a real chunk id. is_live marks both these rows and live mirrors.
         let live_query = r#"
         SELECT
             mts.captured_at AS timestamp,
@@ -5404,13 +5474,17 @@ impl DatabaseManager {
             mts.device_name AS audio_device,
             CASE WHEN mts.device_type = 'input' THEN 1 ELSE 0 END AS is_input_device,
             '' AS audio_path,
-            -1 AS audio_chunk_id,
+            -mts.id AS audio_chunk_id,
             NULL AS start_time,
             NULL AS end_time,
-            mts.speaker_name AS speaker_name,
+            -- Resolved global speaker's name first, then the provider label.
+            -- speaker_id stays NULL: the row has no chunk to reassign.
+            COALESCE(NULLIF(s.name, ''), mts.speaker_name) AS speaker_name,
             NULL AS speaker_id,
+            1 AS is_live,
             0.0 AS duration_secs
         FROM meeting_transcript_segments mts
+        LEFT JOIN speakers s ON s.id = mts.speaker_id
         WHERE julianday(mts.captured_at) >= julianday(?1)
           AND julianday(mts.captured_at) <= julianday(?2)
           AND TRIM(mts.transcript) != ''
@@ -5515,23 +5589,25 @@ impl DatabaseManager {
         // share the same aliased columns, so a single loop attaches both to frames.
         for row in audio_rows.into_iter().chain(live_rows) {
             let audio_timestamp: DateTime<Utc> = row.get("timestamp");
-            let start_offset: Option<f64> = row.try_get("start_time").ok();
-            let end_offset: Option<f64> = row.try_get("end_time").ok();
+            let raw_start: Option<f64> = row.try_get("start_time").ok();
+            let raw_end: Option<f64> = row.try_get("end_time").ok();
+            let raw_duration: Option<f64> = row.try_get("duration_secs").ok();
 
             // Calculate audio time range
             // start_time and end_time are offsets in seconds from the audio timestamp
-            let audio_start = if let Some(start) = start_offset {
-                audio_timestamp + chrono::Duration::milliseconds((start * 1000.0) as i64)
+            let window =
+                Self::timeline_audio_window(audio_timestamp, raw_start, raw_end, raw_duration);
+            if !window.offsets_valid {
+                debug!(
+                    "timeline: invalid audio offsets (start={:?}, end={:?}); keeping transcript at chunk timestamp {}",
+                    raw_start, raw_end, audio_timestamp
+                );
+            }
+            let (audio_start, audio_end) = (window.start, window.end);
+            let (start_offset, end_offset) = if window.offsets_valid {
+                (raw_start, raw_end)
             } else {
-                audio_timestamp
-            };
-
-            let audio_end = if let Some(end) = end_offset {
-                audio_timestamp + chrono::Duration::milliseconds((end * 1000.0) as i64)
-            } else {
-                // If no end_time, use duration_secs to calculate end
-                let duration: f64 = row.try_get("duration_secs").unwrap_or(5.0);
-                audio_timestamp + chrono::Duration::milliseconds((duration * 1000.0) as i64)
+                (None, None)
             };
 
             // Pad the search range so nearby frames also get the audio indicator
@@ -5544,10 +5620,11 @@ impl DatabaseManager {
                 device_name: row.get("audio_device"),
                 is_input: row.get("is_input_device"),
                 audio_file_path: row.get("audio_path"),
-                duration_secs: row.get("duration_secs"),
+                duration_secs: window.duration_secs,
                 audio_chunk_id: row.get("audio_chunk_id"),
                 speaker_id: row.try_get("speaker_id").ok(),
                 speaker_name: row.try_get("speaker_name").ok(),
+                is_live: row.try_get::<bool, _>("is_live").unwrap_or(false),
                 start_time: start_offset,
                 end_time: end_offset,
             };
@@ -5585,6 +5662,58 @@ impl DatabaseManager {
             start_time: start,
             end_time: end,
         })
+    }
+
+    /// Where one timeline audio row sits in time. `start`/`end` are offsets in
+    /// seconds from the row's chunk timestamp and `duration` is the SQL-computed
+    /// length. Offsets that are not finite, negative, implausibly large or
+    /// reversed cannot place the transcript, so it stays at the chunk timestamp
+    /// (`offsets_valid == false`) instead of landing at a nonsense time or
+    /// overflowing the date arithmetic.
+    fn timeline_audio_window(
+        chunk_ts: DateTime<Utc>,
+        start: Option<f64>,
+        end: Option<f64>,
+        duration: Option<f64>,
+    ) -> TimelineAudioWindow {
+        /// Longer than any chunk or merged batch file.
+        const MAX_OFFSET_SECS: f64 = 86_400.0;
+        /// Assumed length of a row that has neither an end nor a duration.
+        const DEFAULT_SECS: f64 = 5.0;
+        let plausible = |v: f64| v.is_finite() && (0.0..=MAX_OFFSET_SECS).contains(&v);
+        let at = |secs: f64| chunk_ts + chrono::Duration::milliseconds((secs * 1000.0) as i64);
+
+        let offsets_valid = start.is_none_or(plausible)
+            && end.is_none_or(plausible)
+            && match (start, end) {
+                (Some(s), Some(e)) => e >= s,
+                _ => true,
+            };
+        let duration_secs = duration
+            .filter(|d| plausible(*d))
+            .or(match (start, end) {
+                (Some(s), Some(e)) if offsets_valid => Some(e - s),
+                _ => None,
+            })
+            .unwrap_or(0.0);
+
+        if !offsets_valid {
+            return TimelineAudioWindow {
+                start: chunk_ts,
+                end: at(duration_secs),
+                duration_secs,
+                offsets_valid,
+            };
+        }
+        TimelineAudioWindow {
+            start: start.map_or(chunk_ts, at),
+            end: match end {
+                Some(e) => at(e),
+                None => at(duration.filter(|d| plausible(*d)).unwrap_or(DEFAULT_SECS)),
+            },
+            duration_secs,
+            offsets_valid,
+        }
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -9761,6 +9890,9 @@ LIMIT ? OFFSET ?
         Err(last_error.unwrap_or_else(|| sqlx::Error::PoolTimedOut))
     }
 
+    /// Insert a segment that carries no stream scope (stored as
+    /// [`LEGACY_MEETING_STREAM_ID`] with no session speaker). Live finals go
+    /// through [`Self::insert_live_meeting_transcript_segment`].
     #[allow(clippy::too_many_arguments)]
     pub async fn insert_meeting_transcript_segment(
         &self,
@@ -9774,28 +9906,40 @@ LIMIT ? OFFSET ?
         transcript: &str,
         captured_at: DateTime<Utc>,
     ) -> Result<i64, SqlxError> {
-        let trimmed = transcript.trim();
-        if trimmed.is_empty() {
+        let segment = NewMeetingTranscriptSegment {
+            provider: provider.to_string(),
+            model: model.map(str::to_string),
+            item_id: item_id.to_string(),
+            device_name: device_name.to_string(),
+            device_type: device_type.to_string(),
+            stream_id: None,
+            session_speaker_id: None,
+            speaker_name: speaker_name.map(str::to_string),
+            transcript: transcript.to_string(),
+            captured_at,
+        };
+        self.insert_live_meeting_transcript_segment(meeting_id, &segment)
+            .await
+    }
+
+    /// Store one live final with its stream scope. A segment whose
+    /// `(meeting_id, provider, item_id, device_name, device_type)` already
+    /// exists is ignored. Returns the new row id, or 0 when nothing was
+    /// written (blank text or a duplicate).
+    pub async fn insert_live_meeting_transcript_segment(
+        &self,
+        meeting_id: i64,
+        segment: &NewMeetingTranscriptSegment,
+    ) -> Result<i64, SqlxError> {
+        if segment.transcript.trim().is_empty() {
             return Ok(0);
         }
 
         let mut tx = self.begin_immediate_with_retry().await?;
-        let result = sqlx::query(
-            "INSERT OR IGNORE INTO meeting_transcript_segments \
-             (meeting_id, provider, model, item_id, device_name, device_type, speaker_name, transcript, captured_at) \
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
-        )
-        .bind(meeting_id)
-        .bind(provider)
-        .bind(model)
-        .bind(item_id)
-        .bind(device_name)
-        .bind(device_type)
-        .bind(speaker_name)
-        .bind(trimmed)
-        .bind(captured_at.to_rfc3339())
-        .execute(&mut **tx.conn())
-        .await?;
+        let result =
+            bind_meeting_segment_insert(INSERT_OR_IGNORE_MEETING_SEGMENT, meeting_id, segment)
+                .execute(&mut **tx.conn())
+                .await?;
 
         let id = if result.rows_affected() == 0 {
             0
@@ -9834,26 +9978,12 @@ LIMIT ? OFFSET ?
 
         let mut inserted = 0usize;
         for segment in segments {
-            let trimmed = segment.transcript.trim();
-            if trimmed.is_empty() {
+            if segment.transcript.trim().is_empty() {
                 continue;
             }
-            let result = sqlx::query(
-                "INSERT INTO meeting_transcript_segments \
-                 (meeting_id, provider, model, item_id, device_name, device_type, speaker_name, transcript, captured_at) \
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
-            )
-            .bind(meeting_id)
-            .bind(&segment.provider)
-            .bind(segment.model.as_deref())
-            .bind(&segment.item_id)
-            .bind(&segment.device_name)
-            .bind(&segment.device_type)
-            .bind(segment.speaker_name.as_deref())
-            .bind(trimmed)
-            .bind(segment.captured_at.to_rfc3339())
-            .execute(&mut **tx.conn())
-            .await?;
+            let result = bind_meeting_segment_insert(INSERT_MEETING_SEGMENT, meeting_id, segment)
+                .execute(&mut **tx.conn())
+                .await?;
 
             if result.rows_affected() > 0 {
                 inserted += 1;
@@ -10081,79 +10211,196 @@ LIMIT ? OFFSET ?
         Ok(inserted)
     }
 
-    /// Give live meeting-transcript segments the SAME global `speaker_id` that the
-    /// engine-agnostic backfill (`backfill_missing_speakers`) resolved on
-    /// `audio_transcriptions` — so the Meeting view shows the cross-meeting, nameable
-    /// identity instead of Deepgram's per-stream "speaker N" label.
+    /// Give the rows of one audio chunk the speaker the background backfill
+    /// identified from the chunk's audio, but only when nothing in the database
+    /// says the chunk holds more than one voice. One guarded UPDATE writes the
+    /// rows of `audio_chunk_id` that have no speaker yet, and only when all of
+    /// these hold:
     ///
-    /// For each segment still missing a speaker (and `captured_at >= since`), take the
-    /// `speaker_id` of the nearest already-identified `audio_transcriptions` row within
-    /// `coverage_window_secs`. The mirrored live row shares the segment's exact
-    /// timestamp, so once the chunk backfill stamps it, it matches first. Idempotent —
-    /// only fills NULLs, and the `EXISTS` guard avoids no-op NULL writes. Returns rows
-    /// updated. Cheap: runs on the reconciliation sweep, never the hot path.
+    /// - no row of the chunk already names a different speaker;
+    /// - no diarization segment of the chunk is flagged as overlapping speech
+    ///   or names a different speaker;
+    /// - no diarization run of the chunk found more than one provider label;
+    /// - when the chunk holds mirrored `live` rows, every one of them matches a
+    ///   live meeting segment (same instant, device, direction and text), all
+    ///   matches share exactly one labelled stream-scoped identity
+    ///   (`stream_id` plus `COALESCE(session_speaker_id, speaker_name)`), and no
+    ///   matched segment is already mapped to another global speaker.
+    ///
+    /// Returns the number of rows written; 0 means the chunk was ambiguous (or
+    /// already fully labelled) and its rows stay NULL.
+    pub async fn assign_chunk_speaker_if_unambiguous(
+        &self,
+        audio_chunk_id: i64,
+        speaker_id: i64,
+    ) -> Result<u64, SqlxError> {
+        let mut tx = self.begin_immediate_with_retry().await?;
+        let rows = sqlx::query(
+            r#"
+            WITH chunk_rows AS (
+                SELECT at.id,
+                       at.timestamp,
+                       at.transcription,
+                       at.device,
+                       at.speaker_id,
+                       at.transcription_engine,
+                       CASE WHEN COALESCE(at.is_input_device, 1) THEN 'input'
+                            ELSE 'output' END AS direction
+                FROM audio_transcriptions at
+                WHERE at.audio_chunk_id = ?1
+            ),
+            live_rows AS (
+                SELECT * FROM chunk_rows WHERE transcription_engine = 'live'
+            ),
+            live_evidence AS (
+                SELECT lr.id AS row_id,
+                       m.stream_id || ':' || COALESCE(
+                           NULLIF(TRIM(m.session_speaker_id), ''),
+                           NULLIF(TRIM(m.speaker_name), '')
+                       ) AS identity,
+                       m.speaker_id AS mapped_speaker_id
+                FROM live_rows lr
+                JOIN meeting_transcript_segments m
+                  ON julianday(m.captured_at) = julianday(lr.timestamp)
+                 AND m.device_name = lr.device
+                 AND m.device_type = lr.direction
+                 AND m.transcript = lr.transcription
+            ),
+            live_identities AS (
+                SELECT COUNT(DISTINCT identity) AS identities,
+                       COUNT(*) - COUNT(identity) AS unlabelled,
+                       COUNT(DISTINCT row_id) AS matched_rows,
+                       SUM(CASE WHEN mapped_speaker_id IS NOT NULL
+                                 AND mapped_speaker_id != ?2 THEN 1 ELSE 0 END)
+                           AS conflicting
+                FROM live_evidence
+            )
+            UPDATE audio_transcriptions
+            SET speaker_id = ?2
+            WHERE audio_chunk_id = ?1
+              AND speaker_id IS NULL
+              AND NOT EXISTS (
+                  SELECT 1 FROM chunk_rows
+                  WHERE speaker_id IS NOT NULL AND speaker_id != ?2
+              )
+              AND NOT EXISTS (
+                  SELECT 1 FROM diarization_segments ds
+                  WHERE ds.audio_chunk_id = ?1
+                    AND (ds.overlap != 0
+                         OR (ds.speaker_id IS NOT NULL AND ds.speaker_id != ?2))
+              )
+              AND NOT EXISTS (
+                  SELECT 1 FROM diarization_segments ds
+                  WHERE ds.audio_chunk_id = ?1
+                  GROUP BY ds.diarization_run_id
+                  HAVING COUNT(DISTINCT ds.provider_speaker_label) > 1
+              )
+              AND (
+                  NOT EXISTS (SELECT 1 FROM live_rows)
+                  OR EXISTS (
+                      SELECT 1 FROM live_identities li
+                      WHERE li.identities = 1
+                        AND li.unlabelled = 0
+                        AND li.conflicting = 0
+                        AND li.matched_rows = (SELECT COUNT(*) FROM live_rows)
+                  )
+              )
+            "#,
+        )
+        .bind(audio_chunk_id)
+        .bind(speaker_id)
+        .execute(&mut **tx.conn())
+        .await?
+        .rows_affected();
+        tx.commit().await?;
+        Ok(rows)
+    }
+
+    /// Give live meeting-transcript segments the global `speaker_id` the chunk
+    /// backfill resolved on their mirrored `audio_transcriptions` rows, so the
+    /// meeting view shows the nameable cross-meeting identity instead of the
+    /// provider's stream-local "speaker N".
+    ///
+    /// A segment (no speaker yet, `captured_at >= since`) is mapped only from
+    /// mirrored `live` rows with the identical capture instant, device name,
+    /// direction and text, and only when those rows carry exactly one distinct
+    /// speaker. A segment that has an identical-text twin at the same instant
+    /// and device is skipped: its mirror cannot tell the two apart. The
+    /// `coverage_window_secs` range only narrows the timestamp index scan; the
+    /// match itself is exact. At most `MEETING_SEGMENT_MAPPING_LIMIT` segments,
+    /// newest first, are looked at per call. Returns the segments updated.
     pub async fn backfill_meeting_segment_speakers(
         &self,
         since: DateTime<Utc>,
         coverage_window_secs: f64,
     ) -> Result<u64, SqlxError> {
-        // SQLite can't correlate the UPDATE target table inside a SET subquery, so
-        // do it as fetch-candidates → per-row nearest-lookup → update-by-id (the
-        // same shape as the mirror). Capped per pass; resolved segments drop out of
-        // the candidate set, so steady-state work is just newly-mirrored segments.
-        const PER_PASS_LIMIT: i64 = 500;
-        let window_days = coverage_window_secs / 86_400.0;
-
-        let segs = sqlx::query(
-            "SELECT id, captured_at, device_type FROM meeting_transcript_segments \
-             WHERE speaker_id IS NULL AND julianday(captured_at) >= julianday(?1) \
-             ORDER BY captured_at DESC LIMIT ?2",
-        )
-        .bind(since)
-        .bind(PER_PASS_LIMIT)
-        .fetch_all(&self.pool)
-        .await?;
-        if segs.is_empty() {
-            return Ok(0);
-        }
+        // Resolved segments leave the candidate set, so steady-state work is
+        // just the newly mirrored segments.
+        const MEETING_SEGMENT_MAPPING_LIMIT: i64 = 500;
+        // Whole-second minimum: the range bounds are compared as text, and a
+        // bound inside the same second as the row could sort on the zone
+        // suffix instead of the time.
+        let window_secs = if coverage_window_secs.is_finite() {
+            coverage_window_secs.max(1.0)
+        } else {
+            1.0
+        };
+        let window_modifier = format!("{window_secs:.3} seconds");
 
         let mut tx = self.begin_immediate_with_retry().await?;
-        let mut updated: u64 = 0;
-        for seg in &segs {
-            let seg_id: i64 = seg.get("id");
-            let captured_at: DateTime<Utc> = seg.get("captured_at");
-            let is_input: bool =
-                seg.try_get::<String, _>("device_type").unwrap_or_default() == "input";
-            // The global speaker_id of the nearest already-identified audio row OF
-            // THE SAME DEVICE (input vs output), so a mic segment can't pick up a
-            // remote speaker. The mirrored live row shares this exact timestamp +
-            // device, so it wins.
-            let speaker_id: Option<i64> = sqlx::query_scalar(
-                "SELECT at.speaker_id FROM audio_transcriptions at \
-                 WHERE at.speaker_id IS NOT NULL \
-                   AND COALESCE(at.is_input_device, 1) = ?3 \
-                   AND ABS(julianday(at.timestamp) - julianday(?1)) <= ?2 \
-                 ORDER BY ABS(julianday(at.timestamp) - julianday(?1)) ASC LIMIT 1",
+        let rows = sqlx::query(
+            r#"
+            WITH candidates AS (
+                SELECT m.id, m.captured_at, m.device_name, m.device_type, m.transcript
+                FROM meeting_transcript_segments m
+                WHERE m.speaker_id IS NULL
+                  AND julianday(m.captured_at) >= julianday(?1)
+                  AND TRIM(m.transcript) != ''
+                  AND m.device_type IN ('input', 'output')
+                  AND NOT EXISTS (
+                      SELECT 1 FROM meeting_transcript_segments twin
+                      WHERE twin.id != m.id
+                        AND twin.device_name = m.device_name
+                        AND twin.device_type = m.device_type
+                        AND twin.transcript = m.transcript
+                        AND julianday(twin.captured_at) = julianday(m.captured_at)
+                  )
+                ORDER BY julianday(m.captured_at) DESC
+                LIMIT ?3
+            ),
+            resolved AS (
+                SELECT c.id AS segment_id, MIN(at.speaker_id) AS speaker_id
+                FROM candidates c
+                JOIN audio_transcriptions at INDEXED BY idx_audio_transcriptions_timestamp
+                  ON at.timestamp >= strftime('%Y-%m-%dT%H:%M:%f', c.captured_at, '-' || ?2)
+                 AND at.timestamp <= strftime('%Y-%m-%dT%H:%M:%f', c.captured_at, '+' || ?2)
+                 AND julianday(at.timestamp) = julianday(c.captured_at)
+                 AND at.transcription_engine = 'live'
+                 AND at.device = c.device_name
+                 AND (CASE WHEN COALESCE(at.is_input_device, 1) THEN 'input'
+                           ELSE 'output' END) = c.device_type
+                 AND at.transcription = c.transcript
+                 AND at.speaker_id IS NOT NULL
+                GROUP BY c.id
+                HAVING COUNT(DISTINCT at.speaker_id) = 1
             )
-            .bind(captured_at)
-            .bind(window_days)
-            .bind(is_input)
-            .fetch_optional(&mut **tx.conn())
-            .await?;
-            if let Some(sid) = speaker_id {
-                let r = sqlx::query(
-                    "UPDATE meeting_transcript_segments SET speaker_id = ?1 \
-                     WHERE id = ?2 AND speaker_id IS NULL",
-                )
-                .bind(sid)
-                .bind(seg_id)
-                .execute(&mut **tx.conn())
-                .await?;
-                updated += r.rows_affected();
-            }
-        }
+            UPDATE meeting_transcript_segments
+            SET speaker_id = (
+                SELECT r.speaker_id FROM resolved r
+                WHERE r.segment_id = meeting_transcript_segments.id
+            )
+            WHERE speaker_id IS NULL
+              AND id IN (SELECT segment_id FROM resolved)
+            "#,
+        )
+        .bind(since)
+        .bind(window_modifier)
+        .bind(MEETING_SEGMENT_MAPPING_LIMIT)
+        .execute(&mut **tx.conn())
+        .await?
+        .rows_affected();
         tx.commit().await?;
-        Ok(updated)
+        Ok(rows)
     }
 
     pub async fn list_meeting_transcript_segments(
@@ -10191,6 +10438,9 @@ LIMIT ? OFFSET ?
                     -- free-text Deepgram label until backfilled / if the speaker is
                     -- unnamed (NULLIF treats '' as "no name yet").
                     COALESCE(NULLIF(s.name, ''), mts.speaker_name) AS speaker_name,
+                    -- Stream-local speaker identity: views group live rows on
+                    -- COALESCE(session_speaker_id, speaker_name).
+                    mts.session_speaker_id AS session_speaker_id,
                     mts.transcript,
                     mts.captured_at,
                     mts.created_at
@@ -10216,6 +10466,7 @@ LIMIT ? OFFSET ?
                     ac.file_path AS audio_file_path,
                     at.speaker_id AS speaker_id,
                     s.name AS speaker_name,
+                    NULL AS session_speaker_id,
                     at.transcription AS transcript,
                     at.timestamp AS captured_at,
                     at.timestamp AS created_at
@@ -11927,5 +12178,54 @@ mod truncation_tests {
         // New code works safely with char boundaries:
         let safe = trimmed.chars().take(50).collect::<String>();
         assert_eq!(safe.chars().count(), 50);
+    }
+}
+
+#[cfg(test)]
+mod timeline_audio_window_tests {
+    use super::*;
+
+    fn ts() -> DateTime<Utc> {
+        DateTime::parse_from_rfc3339("2026-10-20T10:00:00Z")
+            .unwrap()
+            .with_timezone(&Utc)
+    }
+
+    #[test]
+    fn valid_offsets_place_the_transcript_inside_the_chunk() {
+        let w = DatabaseManager::timeline_audio_window(ts(), Some(2.0), Some(4.5), Some(2.5));
+        assert!(w.offsets_valid);
+        assert_eq!(w.start, ts() + chrono::Duration::seconds(2));
+        assert_eq!(w.end, ts() + chrono::Duration::milliseconds(4_500));
+        assert_eq!(w.duration_secs, 2.5);
+    }
+
+    #[test]
+    fn missing_offsets_use_the_duration_or_a_default() {
+        let live = DatabaseManager::timeline_audio_window(ts(), None, None, Some(0.0));
+        assert!(live.offsets_valid);
+        assert_eq!((live.start, live.end), (ts(), ts()));
+
+        let unknown = DatabaseManager::timeline_audio_window(ts(), None, None, None);
+        assert!(unknown.offsets_valid);
+        assert_eq!(unknown.end, ts() + chrono::Duration::seconds(5));
+        assert_eq!(unknown.duration_secs, 0.0);
+    }
+
+    #[test]
+    fn invalid_offsets_keep_the_chunk_timestamp() {
+        for (start, end) in [
+            (Some(f64::NAN), Some(1.0)),
+            (Some(-3.0), Some(1.0)),
+            (Some(5.0), Some(2.0)),
+            (Some(0.0), Some(f64::INFINITY)),
+            (Some(1e15), None),
+        ] {
+            let w = DatabaseManager::timeline_audio_window(ts(), start, end, None);
+            assert!(!w.offsets_valid, "{start:?}..{end:?} should be invalid");
+            assert_eq!(w.start, ts());
+            assert_eq!(w.end, ts());
+            assert_eq!(w.duration_secs, 0.0);
+        }
     }
 }

@@ -1210,13 +1210,24 @@ pub async fn backfill_missing_speakers(
 
         let speaker_id = extract_speaker_id(db, &samples, sample_rate, &segmentation_manager).await;
         if let Some(speaker_id) = speaker_id {
-            match db.update_transcriptions_speaker(chunk.id, speaker_id).await {
+            // Guarded: rows stay NULL when other evidence (another speaker on
+            // the chunk, multi-speaker diarization, or live meeting segments
+            // from more than one stream speaker) says the chunk is mixed.
+            match db
+                .assign_chunk_speaker_if_unambiguous(chunk.id, speaker_id)
+                .await
+            {
                 Ok(rows_updated) => {
                     if rows_updated > 0 {
                         updated += 1;
                         info!(
                             "reconciliation: backfilled speaker_id={} for chunk {}",
                             speaker_id, chunk.id
+                        );
+                    } else {
+                        debug!(
+                            "reconciliation: left chunk {} without a speaker (candidate {} is ambiguous)",
+                            chunk.id, speaker_id
                         );
                     }
                 }

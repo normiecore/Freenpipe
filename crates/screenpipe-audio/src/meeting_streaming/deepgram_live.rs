@@ -30,7 +30,10 @@ use url::Url;
 use crate::{
     core::device::DeviceType,
     meeting_streaming::{
-        events::{MeetingStreamingError, MeetingTranscriptDelta, MeetingTranscriptFinal},
+        events::{
+            session_speaker_id, stream_turn_item_id, MeetingStreamingError, MeetingTranscriptDelta,
+            MeetingTranscriptFinal,
+        },
         net::connect_websocket_with_ipv4_fallback,
         MeetingAudioFrame, MeetingStreamingConfig, MeetingStreamingProvider,
     },
@@ -39,10 +42,16 @@ use crate::{
 
 const DEEPGRAM_PCM_SAMPLE_RATE: u32 = 16_000;
 const KEEP_ALIVE_INTERVAL: Duration = Duration::from_secs(8);
+/// Namespace of the diarization labels and turn ids this stream produces. The
+/// gateway relay speaks the same wire format, so both providers use it.
+const LABEL_SOURCE: &str = "deepgram";
 
+/// One websocket connection for one device of one meeting. `stream_id` is
+/// minted by the caller for this connection; every event it emits carries it.
 pub fn spawn_deepgram_live_stream(
     config: MeetingStreamingConfig,
     meeting_id: i64,
+    stream_id: String,
     device_name: String,
     device_type: DeviceType,
     rx: mpsc::Receiver<MeetingAudioFrame>,
@@ -50,9 +59,10 @@ pub fn spawn_deepgram_live_stream(
     tokio::spawn(async move {
         let device_type_label = device_type_label(&device_type).to_string();
         info!(
-            "meeting streaming: starting Deepgram live stream (meeting_id={}, provider={}, device={}, type={})",
+            "meeting streaming: starting Deepgram live stream (meeting_id={}, provider={}, stream_id={}, device={}, type={})",
             meeting_id,
             config.provider.as_str(),
+            stream_id,
             device_name,
             device_type_label
         );
@@ -60,6 +70,7 @@ pub fn spawn_deepgram_live_stream(
         if let Err(err) = run_stream(
             config.clone(),
             meeting_id,
+            stream_id,
             device_name.clone(),
             device_type_label,
             rx,
@@ -81,6 +92,7 @@ pub fn spawn_deepgram_live_stream(
 async fn run_stream(
     config: MeetingStreamingConfig,
     meeting_id: i64,
+    stream_id: String,
     device_name: String,
     device_type: String,
     mut rx: mpsc::Receiver<MeetingAudioFrame>,
@@ -126,6 +138,7 @@ async fn run_stream(
     let latest_audio_ms = Arc::new(AtomicU64::new(0));
 
     let read_config = config.clone();
+    let read_stream_id = stream_id.clone();
     let read_device_name = device_name.clone();
     let read_device_type = device_type.clone();
     let reader_latest_audio_ms = latest_audio_ms.clone();
@@ -136,6 +149,7 @@ async fn run_stream(
                     handle_server_event(
                         meeting_id,
                         &read_config,
+                        &read_stream_id,
                         &read_device_name,
                         &read_device_type,
                         &reader_latest_audio_ms,
@@ -193,9 +207,10 @@ async fn run_stream(
     let _ = reader.await;
 
     info!(
-        "meeting streaming: Deepgram live stream ended (meeting_id={}, provider={}, device={})",
+        "meeting streaming: Deepgram live stream ended (meeting_id={}, provider={}, stream_id={}, device={})",
         meeting_id,
         config.provider.as_str(),
+        stream_id,
         device_name
     );
     Ok(())
@@ -278,6 +293,7 @@ fn downmix_to_mono(samples: &[f32], channels: u16) -> Vec<f32> {
 fn handle_server_event(
     meeting_id: i64,
     config: &MeetingStreamingConfig,
+    stream_id: &str,
     device_name: &str,
     device_type: &str,
     latest_audio_ms: &AtomicU64,
@@ -292,6 +308,7 @@ fn handle_server_event(
         Some("Results") => handle_results_event(
             meeting_id,
             config,
+            stream_id,
             device_name,
             device_type,
             latest_audio_ms,
@@ -313,18 +330,57 @@ fn handle_server_event(
 fn handle_results_event(
     meeting_id: i64,
     config: &MeetingStreamingConfig,
+    stream_id: &str,
     device_name: &str,
     device_type: &str,
     latest_audio_ms: &AtomicU64,
     value: &Value,
 ) {
+    let captured_at = latest_audio_time(latest_audio_ms);
+    if let Some(event) = results_to_event(
+        meeting_id,
+        config,
+        stream_id,
+        device_name,
+        device_type,
+        captured_at,
+        value,
+    ) {
+        match event {
+            LiveTranscriptEvent::Final(event) => {
+                let _ = screenpipe_events::send_event("meeting_transcript_final", event);
+            }
+            LiveTranscriptEvent::Delta(event) => {
+                let _ = screenpipe_events::send_event("meeting_transcript_delta", event);
+            }
+        }
+    }
+}
+
+#[derive(Debug)]
+enum LiveTranscriptEvent {
+    Delta(MeetingTranscriptDelta),
+    Final(MeetingTranscriptFinal),
+}
+
+/// Turn one Deepgram `Results` payload into the event it stands for, or
+/// `None` when it carries no text.
+fn results_to_event(
+    meeting_id: i64,
+    config: &MeetingStreamingConfig,
+    stream_id: &str,
+    device_name: &str,
+    device_type: &str,
+    captured_at: DateTime<Utc>,
+    value: &Value,
+) -> Option<LiveTranscriptEvent> {
     let transcript = value
         .pointer("/channel/alternatives/0/transcript")
         .and_then(Value::as_str)
         .unwrap_or_default()
         .trim();
     if transcript.is_empty() {
-        return;
+        return None;
     }
 
     let is_final = value
@@ -335,67 +391,72 @@ fn handle_results_event(
             .get("speech_final")
             .and_then(Value::as_bool)
             .unwrap_or(false);
-    let item_id = item_id(value);
-    let captured_at = latest_audio_time(latest_audio_ms);
+    let item_id = item_id(value, stream_id);
 
     if is_final {
-        let speaker_name = resolve_speaker_name(value, device_type, config);
-        let event = MeetingTranscriptFinal {
+        let speaker = dominant_speaker(value);
+        let speaker_name = speaker.map(|label| speaker_display_name(label, device_type, config));
+        let session_speaker_id =
+            speaker.map(|label| session_speaker_id(LABEL_SOURCE, stream_id, label));
+        Some(LiveTranscriptEvent::Final(MeetingTranscriptFinal {
             meeting_id,
             provider: config.provider.as_str().to_string(),
             model: config.model.clone(),
+            stream_id: stream_id.to_string(),
             item_id,
             device_name: device_name.to_string(),
             device_type: device_type.to_string(),
+            session_speaker_id,
             speaker_name,
             transcript: transcript.to_string(),
             captured_at,
-        };
-        let _ = screenpipe_events::send_event("meeting_transcript_final", event);
+        }))
     } else {
-        let event = MeetingTranscriptDelta {
+        Some(LiveTranscriptEvent::Delta(MeetingTranscriptDelta {
             meeting_id,
             provider: config.provider.as_str().to_string(),
             model: config.model.clone(),
+            stream_id: stream_id.to_string(),
             item_id,
             device_name: device_name.to_string(),
             device_type: device_type.to_string(),
             delta: transcript.to_string(),
             replace: true,
             captured_at,
-        };
-        let _ = screenpipe_events::send_event("meeting_transcript_delta", event);
+        }))
     }
 }
 
-/// Pick a speaker label from a Deepgram `Results` payload with `diarize=true`.
-/// Counts speaker indices across the words array and returns the dominant one.
-/// `device_type == "input"` + `speaker 0` is treated as the local user when
-/// `local_speaker_name` is set, since deepgram numbers speakers in order of
-/// first utterance and the local user typically speaks first into their own
-/// mic. All other indices fall back to a generic `speaker N` (1-indexed).
-fn resolve_speaker_name(
-    value: &Value,
-    device_type: &str,
-    config: &MeetingStreamingConfig,
-) -> Option<String> {
+/// The diarization label (`speaker` index, 0-based) that owns most words of a
+/// `Results` payload with `diarize=true`. Ties go to the lower index so the
+/// choice does not depend on map iteration order.
+fn dominant_speaker(value: &Value) -> Option<i64> {
     let words = value
         .pointer("/channel/alternatives/0/words")
         .and_then(Value::as_array)?;
-    let mut counts: std::collections::HashMap<i64, usize> = std::collections::HashMap::new();
+    let mut counts: std::collections::BTreeMap<i64, usize> = std::collections::BTreeMap::new();
     for word in words {
         if let Some(speaker) = word.get("speaker").and_then(Value::as_i64) {
             *counts.entry(speaker).or_insert(0) += 1;
         }
     }
-    let (dominant, _) = counts.into_iter().max_by_key(|&(_, n)| n)?;
+    counts
+        .into_iter()
+        .max_by(|(la, na), (lb, nb)| na.cmp(nb).then(lb.cmp(la)))
+        .map(|(label, _)| label)
+}
 
-    if dominant == 0 && device_type == "input" {
+/// Display label for a diarization index. Deepgram numbers speakers in order
+/// of first utterance, and the local user usually speaks first into their own
+/// microphone, so label 0 on an input device takes `local_speaker_name` when
+/// one is configured. Every other label reads `speaker N` (1-based).
+fn speaker_display_name(label: i64, device_type: &str, config: &MeetingStreamingConfig) -> String {
+    if label == 0 && device_type == "input" {
         if let Some(name) = config.local_speaker_name.clone() {
-            return Some(name);
+            return name;
         }
     }
-    Some(format!("speaker {}", dominant + 1))
+    format!("speaker {}", label + 1)
 }
 
 fn latest_audio_time(latest_audio_ms: &AtomicU64) -> DateTime<Utc> {
@@ -406,7 +467,10 @@ fn latest_audio_time(latest_audio_ms: &AtomicU64) -> DateTime<Utc> {
     DateTime::<Utc>::from_timestamp_millis(ms as i64).unwrap_or_else(Utc::now)
 }
 
-fn item_id(value: &Value) -> String {
+/// Turn id inside one stream. Deepgram's `start` counts from the start of the
+/// connection, so the stream id keeps a reconnect from reusing ids; interim
+/// and final results of one turn share `start` and so share the id.
+fn item_id(value: &Value, stream_id: &str) -> String {
     let start_ms = value
         .get("start")
         .and_then(Value::as_f64)
@@ -418,7 +482,7 @@ fn item_id(value: &Value) -> String {
         .and_then(|channels| channels.first())
         .and_then(Value::as_i64)
         .unwrap_or(0);
-    format!("deepgram:{channel}:{start_ms}")
+    stream_turn_item_id(LABEL_SOURCE, stream_id, &format!("{channel}:{start_ms}"))
 }
 
 fn emit_error(
@@ -464,6 +528,145 @@ mod tests {
         let mut url = Url::parse(&config.endpoint).unwrap();
         configure_live_query(&mut url, &config);
         url.query().unwrap_or_default().to_string()
+    }
+
+    fn results_config(local_speaker_name: Option<&str>) -> MeetingStreamingConfig {
+        MeetingStreamingConfig {
+            enabled: true,
+            provider: MeetingStreamingProvider::DeepgramLive,
+            auth_token: None,
+            api_key: Some("test-key".to_string()),
+            endpoint: "wss://api.deepgram.com/v1/listen".to_string(),
+            model: Some("nova-3".to_string()),
+            language: None,
+            local_speaker_name: local_speaker_name.map(str::to_string),
+            persist_finals: true,
+        }
+    }
+
+    /// A `Results` payload shaped like the ones Deepgram streams back with
+    /// `diarize=true`: one word per speaker label in `speakers`.
+    fn results_payload(transcript: &str, is_final: bool, start: f64, speakers: &[i64]) -> Value {
+        let words: Vec<Value> = speakers
+            .iter()
+            .enumerate()
+            .map(|(i, label)| json!({ "word": format!("w{i}"), "speaker": label }))
+            .collect();
+        json!({
+            "type": "Results",
+            "channel_index": [0, 1],
+            "start": start,
+            "is_final": is_final,
+            "speech_final": is_final,
+            "channel": { "alternatives": [{ "transcript": transcript, "words": words }] }
+        })
+    }
+
+    fn to_event(
+        stream_id: &str,
+        device_type: &str,
+        local_speaker_name: Option<&str>,
+        value: &Value,
+    ) -> Option<LiveTranscriptEvent> {
+        results_to_event(
+            7,
+            &results_config(local_speaker_name),
+            stream_id,
+            "System Audio",
+            device_type,
+            Utc::now(),
+            value,
+        )
+    }
+
+    #[test]
+    fn final_carries_stream_scoped_speaker() {
+        let value = results_payload("we ship on friday", true, 1.5, &[1, 1, 0]);
+        let Some(LiveTranscriptEvent::Final(event)) = to_event("s1", "output", None, &value) else {
+            panic!("expected a final event");
+        };
+        assert_eq!(event.stream_id, "s1");
+        assert_eq!(event.item_id, "deepgram:s1:turn:0:1500");
+        assert_eq!(
+            event.session_speaker_id.as_deref(),
+            Some("deepgram:s1:speaker:1")
+        );
+        assert_eq!(event.speaker_name.as_deref(), Some("speaker 2"));
+        assert_eq!(event.transcript, "we ship on friday");
+    }
+
+    #[test]
+    fn same_label_in_two_streams_is_two_identities() {
+        let value = results_payload("hello", true, 0.0, &[0]);
+        let ids: Vec<Option<String>> = ["before-reconnect", "after-reconnect"]
+            .into_iter()
+            .map(|stream| match to_event(stream, "output", None, &value) {
+                Some(LiveTranscriptEvent::Final(event)) => event.session_speaker_id,
+                other => panic!("expected a final event, got {other:?}"),
+            })
+            .collect();
+        assert!(ids.iter().all(Option::is_some));
+        assert_ne!(ids[0], ids[1]);
+    }
+
+    #[test]
+    fn interim_and_final_of_one_turn_share_the_item_id() {
+        let interim = results_payload("we ship", false, 3.25, &[0, 0]);
+        let fin = results_payload("we ship friday", true, 3.25, &[0, 0, 0]);
+        let Some(LiveTranscriptEvent::Delta(delta)) = to_event("s9", "output", None, &interim)
+        else {
+            panic!("expected a delta event");
+        };
+        let Some(LiveTranscriptEvent::Final(event)) = to_event("s9", "output", None, &fin) else {
+            panic!("expected a final event");
+        };
+        assert_eq!(delta.stream_id, "s9");
+        assert!(delta.replace);
+        assert_eq!(delta.item_id, event.item_id);
+    }
+
+    #[test]
+    fn local_speaker_name_labels_input_speaker_zero_only() {
+        let value = results_payload("can you hear me", true, 0.0, &[0]);
+        let Some(LiveTranscriptEvent::Final(mic)) = to_event("mic", "input", Some("Alex"), &value)
+        else {
+            panic!("expected a final event");
+        };
+        assert_eq!(mic.speaker_name.as_deref(), Some("Alex"));
+        assert_eq!(
+            mic.session_speaker_id.as_deref(),
+            Some("deepgram:mic:speaker:0")
+        );
+
+        let Some(LiveTranscriptEvent::Final(out)) = to_event("sys", "output", Some("Alex"), &value)
+        else {
+            panic!("expected a final event");
+        };
+        assert_eq!(out.speaker_name.as_deref(), Some("speaker 1"));
+    }
+
+    #[test]
+    fn results_without_words_have_no_speaker() {
+        let value = results_payload("hm", true, 0.0, &[]);
+        let Some(LiveTranscriptEvent::Final(event)) = to_event("s1", "output", None, &value) else {
+            panic!("expected a final event");
+        };
+        assert_eq!(event.session_speaker_id, None);
+        assert_eq!(event.speaker_name, None);
+    }
+
+    #[test]
+    fn blank_results_produce_no_event() {
+        let value = results_payload("   ", true, 0.0, &[0]);
+        assert!(to_event("s1", "output", None, &value).is_none());
+    }
+
+    #[test]
+    fn dominant_speaker_ties_go_to_the_lower_label() {
+        let value = results_payload("x", true, 0.0, &[2, 1, 2, 1]);
+        assert_eq!(dominant_speaker(&value), Some(1));
+        let value = results_payload("x", true, 0.0, &[3, 2, 3]);
+        assert_eq!(dominant_speaker(&value), Some(3));
     }
 
     #[test]

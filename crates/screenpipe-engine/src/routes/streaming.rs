@@ -86,9 +86,14 @@ pub struct AudioData {
     pub audio_file_path: String,
     pub duration_secs: f64,
     pub start_offset: f64, // offset from frame timestamp
+    /// Unique per row: a real chunk id, or the negated meeting segment id for
+    /// live meeting transcript rows.
     pub audio_chunk_id: i64,
     pub speaker_id: Option<i64>,
     pub speaker_name: Option<String>,
+    /// Live meeting transcript row (or its `live` mirror) rather than
+    /// background transcription.
+    pub is_live: bool,
 }
 
 impl From<TimeSeriesFrame> for StreamTimeSeriesResponse {
@@ -127,6 +132,7 @@ impl From<TimeSeriesFrame> for StreamTimeSeriesResponse {
                                 audio_chunk_id: audio.audio_chunk_id,
                                 speaker_id: audio.speaker_id,
                                 speaker_name: audio.speaker_name,
+                                is_live: audio.is_live,
                             })
                             .collect(),
                         machine_id: device_frame.machine_id,
@@ -151,6 +157,7 @@ pub(crate) fn create_time_series_frame(chunk: FrameData) -> TimeSeriesFrame {
             audio_chunk_id: a.audio_chunk_id,
             speaker_id: a.speaker_id,
             speaker_name: a.speaker_name.clone(),
+            is_live: a.is_live,
             start_time: a.start_time,
             end_time: a.end_time,
         })
@@ -551,6 +558,7 @@ async fn handle_stream_frames_socket(
                                             audio_chunk_id: a.audio_chunk_id,
                                             speaker_id: a.speaker_id,
                                             speaker_name: a.speaker_name,
+                                            is_live: a.is_live,
                                         })
                                         .collect(),
                                     machine_id: hot_frame.machine_id.as_deref().map(String::from),
@@ -600,6 +608,7 @@ async fn handle_stream_frames_socket(
                                     "audio_chunk_id": hot_audio.audio_chunk_id,
                                     "speaker_id": hot_audio.speaker_id,
                                     "speaker_name": hot_audio.speaker_name,
+                                    "is_live": hot_audio.is_live,
                                 }
                             });
                             if let Err(e) = sender.send(Message::Text(update.to_string())).await {
@@ -742,6 +751,7 @@ mod tests {
                 audio_chunk_id: i as i64,
                 speaker_id: None,
                 speaker_name: None,
+                is_live: false,
                 start_time: None,
                 end_time: None,
             })
@@ -874,5 +884,39 @@ mod tests {
         let placeholder = &result.frame_data[0];
         assert_eq!(placeholder.device_id, "audio-only");
         assert_eq!(placeholder.metadata.app_name, "Audio Recording");
+    }
+
+    /// Live meeting rows reach the client flagged and with their own negative
+    /// ids, so a timeline keyed on `audio_chunk_id` keeps every segment.
+    #[test]
+    fn live_meeting_rows_keep_is_live_and_distinct_ids() {
+        let mut frame_data = create_test_frame_data(1, 0);
+        frame_data.audio_entries = [-7_i64, -8]
+            .into_iter()
+            .map(|id| DbAudioEntry {
+                transcription: format!("segment {id}"),
+                device_name: "System Audio".to_string(),
+                is_input: false,
+                audio_file_path: String::new(),
+                duration_secs: 0.0,
+                audio_chunk_id: id,
+                speaker_id: None,
+                speaker_name: Some("speaker 1".to_string()),
+                is_live: true,
+                start_time: None,
+                end_time: None,
+            })
+            .collect();
+
+        let response = StreamTimeSeriesResponse::from(create_time_series_frame(frame_data));
+        let json = serde_json::to_value(&response).unwrap();
+        let audio = json["devices"][0]["audio"].as_array().unwrap();
+        assert_eq!(audio.len(), 2);
+        assert!(audio.iter().all(|a| a["is_live"] == true));
+        let ids: Vec<i64> = audio
+            .iter()
+            .map(|a| a["audio_chunk_id"].as_i64().unwrap())
+            .collect();
+        assert_eq!(ids, vec![-7, -8]);
     }
 }

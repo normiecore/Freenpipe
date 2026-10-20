@@ -879,6 +879,7 @@ mod tests {
             privacy_filter: false,
             trigger: None,
             config: std::collections::HashMap::new(),
+            ..Default::default()
         };
         let perms = PipePermissions::from_config(&config);
         assert!(!perms.has_any_restrictions());
@@ -906,6 +907,7 @@ mod tests {
             privacy_filter: false,
             trigger: None,
             config: std::collections::HashMap::new(),
+            ..Default::default()
         };
         let perms = PipePermissions::from_config(&config);
         assert!(perms.has_any_restrictions());
@@ -945,6 +947,7 @@ mod tests {
             privacy_filter: false,
             trigger: None,
             config: std::collections::HashMap::new(),
+            ..Default::default()
         };
         let perms = PipePermissions::from_config(&config);
         assert!(perms.has_any_restrictions());
