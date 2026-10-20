@@ -364,7 +364,7 @@ export function NotificationBell() {
                           });
                           setOpen(false);
                           showChatWithPrefill({
-                            context: `notification from ${entry.pipe_name || "screenpipe"}:\n\n**${entry.title}**\n${entry.body}`,
+                            context: `notification from ${entry.pipe_name || "Freenpipe"}:\n\n**${entry.title}**\n${entry.body}`,
                             prompt: `tell me more about this: "${entry.title}"`,
                             displayLabel: buildNotificationDisplayLabel(entry.title),
                             autoSend: true,

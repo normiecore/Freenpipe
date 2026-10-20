@@ -138,7 +138,7 @@ export function DisplaySection() {
         {/* Disable Timeline / rewind. Gates timeline-only backend work
             (hot-cache warm-up + frame/audio buffering) and the native macOS
             Live Text overlay. Lives in Display next to Timeline Mode, but
-            unlike the other display toggles it needs a full screenpipe restart
+            unlike the other display toggles it needs a full Freenpipe restart
             to take effect, so the handler restarts the server inline. */}
         <Card className="border-border bg-card">
           <CardContent className="px-3 py-2.5">
@@ -148,7 +148,7 @@ export function DisplaySection() {
                 <div>
                   <h3 className="text-sm font-medium text-foreground flex items-center gap-1.5">
                     Disable Timeline
-                    <HelpTooltip text="Turn off the timeline / rewind feature. Skips the in-memory hot frame cache (warm-up + per-frame/audio buffering) that only the timeline uses, and disables the native macOS Live Text overlay that can otherwise leak a selection layer over other windows (e.g. the chat input) and block typing. Restarts screenpipe to apply." />
+                    <HelpTooltip text="Turn off the timeline / rewind feature. Skips the in-memory hot frame cache (warm-up + per-frame/audio buffering) that only the timeline uses, and disables the native macOS Live Text overlay that can otherwise leak a selection layer over other windows (e.g. the chat input) and block typing. Restarts Freenpipe to apply." />
                   </h3>
                   <p className="text-xs text-muted-foreground">Hide rewind and skip its background work</p>
                 </div>
@@ -184,12 +184,12 @@ export function DisplaySection() {
                       await commands.spawnScreenpipe(null);
                       toast({
                         title: checked ? "timeline disabled" : "timeline enabled",
-                        description: "screenpipe restarted to apply the change.",
+                        description: "Freenpipe restarted to apply the change.",
                       });
                     } catch (e) {
                       toast({
-                        title: "failed to restart screenpipe",
-                        description: "restart screenpipe manually to apply the change.",
+                        title: "failed to restart Freenpipe",
+                        description: "restart Freenpipe manually to apply the change.",
                         variant: "destructive",
                       });
                     }
@@ -304,7 +304,7 @@ export function DisplaySection() {
                 <div>
                   <h3 className="text-sm font-medium text-foreground flex items-center gap-1.5">
                     Show Overlay in Screen Recording
-                    <HelpTooltip text="When enabled, the screenpipe overlay will be visible in screen recordings and screenshots made by other apps like OBS or Screen Studio." />
+                    <HelpTooltip text="When enabled, the Freenpipe overlay will be visible in screen recordings and screenshots made by other apps like OBS or Screen Studio." />
                   </h3>
                   <p className="text-xs text-muted-foreground">Let OBS, Screen Studio capture the overlay</p>
                 </div>
@@ -370,7 +370,7 @@ export function DisplaySection() {
                   <div>
                     <h3 className="text-sm font-medium text-foreground flex items-center gap-1.5">
                       Minimize to System Tray on Close
-                      <HelpTooltip text="When enabled, clicking the X on the Home window hides it and removes it from the Windows taskbar. screenpipe keeps running in the system tray — click the tray icon to bring the window back." />
+                      <HelpTooltip text="When enabled, clicking the X on the Home window hides it and removes it from the Windows taskbar. Freenpipe keeps running in the system tray — click the tray icon to bring the window back." />
                     </h3>
                     <p className="text-xs text-muted-foreground">
                       Keep running in the tray when the window is closed
@@ -386,7 +386,7 @@ export function DisplaySection() {
                         ? "Close button will hide to system tray"
                         : "Close button will minimize to taskbar",
                       description: checked
-                        ? "Click the tray icon to bring screenpipe back."
+                        ? "Click the tray icon to bring Freenpipe back."
                         : undefined,
                     });
                   }}
@@ -407,7 +407,7 @@ export function DisplaySection() {
                 <Monitor className="h-4 w-4 text-muted-foreground shrink-0" />
                 <div>
                   <h3 className="text-sm font-medium text-foreground">Show Shortcut Reminder</h3>
-                  <p className="text-xs text-muted-foreground">Overlay showing the screenpipe shortcut</p>
+                  <p className="text-xs text-muted-foreground">Overlay showing the Freenpipe shortcut</p>
                 </div>
               </div>
               <Switch

@@ -17,7 +17,7 @@ export function OpenClawCard() {
     <AgentCard
       name="OpenClaw"
       iconSrc="/openclaw-icon.svg"
-      description="Run any AI agent on your VPS 24/7. Three ways to wire it to screenpipe — sync your data, register an MCP server, or install the screenpipe skill."
+      description="Run any AI agent on your VPS 24/7. Three ways to wire it to Freenpipe — sync your data, register an MCP server, or install the screenpipe skill."
       homepage="https://github.com/openclaw/openclaw"
       mcp={{
         format: "json",

@@ -24,12 +24,12 @@ export function GoogleOAuthUnverifiedAppHint() {
         <ShieldAlert className="mt-0.5 h-3.5 w-3.5 shrink-0 text-amber-500" />
         <div className="min-w-0 flex-1 space-y-1">
           <span className="block leading-relaxed">
-            Google may show a blocked-app warning. Click{" "}
+            Google may warn that your own OAuth app is unverified. Click{" "}
             <span className="whitespace-nowrap">
               <span className="font-medium text-foreground">Advanced</span>{" "}
               <ArrowRight className="mx-1 inline h-3 w-3 align-[-2px] text-muted-foreground" />
               <span className="font-medium text-foreground">
-                Go to Screenpipe
+                Go to &lt;your app&gt; (unsafe)
               </span>
             </span>
             .
@@ -54,7 +54,7 @@ export function GoogleOAuthUnverifiedAppHint() {
           </DialogHeader>
           <img
             src={WALKTHROUGH_IMAGE}
-            alt="Google OAuth warning walkthrough showing Advanced, then Go to Screenpipe unsafe"
+            alt="Google OAuth warning walkthrough showing Advanced, then Go to your app (unsafe)"
             className="max-h-[calc(100vh-10rem)] w-full rounded-md border border-border object-contain"
           />
         </DialogContent>

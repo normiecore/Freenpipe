@@ -22,7 +22,7 @@ const ShortcutSection = () => {
       </p>
 
       <div className="space-y-2">
-        <ShortcutRow type="global" shortcut="showScreenpipeShortcut" title="toggle screenpipe overlay" description="show/hide the main interface" value={settings.showScreenpipeShortcut} />
+        <ShortcutRow type="global" shortcut="showScreenpipeShortcut" title="toggle Freenpipe overlay" description="show/hide the main interface" value={settings.showScreenpipeShortcut} />
         <ShortcutRow type="global" shortcut="showChatShortcut" title="toggle ai chat" description="show/hide the ai chat window" value={settings.showChatShortcut} />
         <ShortcutRow type="global" shortcut="searchShortcut" title="open search" description="open search when overlay is visible" value={settings.searchShortcut} />
         <ShortcutRow type="global" shortcut="startRecordingShortcut" title="start recording" description="start screen recording" value={settings.startRecordingShortcut} />

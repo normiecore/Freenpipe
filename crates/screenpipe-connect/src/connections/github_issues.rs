@@ -58,7 +58,7 @@ impl Integration for GithubIssues {
                 credential_key: "api_key",
             },
             extra_headers: &[
-                ("User-Agent", "screenpipe"),
+                ("User-Agent", screenpipe_core::endpoints::DEFAULT_USER_AGENT),
                 ("Accept", "application/vnd.github+json"),
                 ("X-GitHub-Api-Version", "2022-11-28"),
             ],
@@ -78,7 +78,7 @@ impl Integration for GithubIssues {
         let resp: Value = client
             .get("https://api.github.com/user")
             .bearer_auth(token)
-            .header("User-Agent", "screenpipe")
+            .header("User-Agent", screenpipe_core::endpoints::DEFAULT_USER_AGENT)
             .send()
             .await?
             .error_for_status()?

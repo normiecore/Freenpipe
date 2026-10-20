@@ -763,7 +763,7 @@ async fn fetch_provider_identity(
             let resp: serde_json::Value = client
                 .get("https://api.github.com/user")
                 .bearer_auth(access_token)
-                .header("User-Agent", "screenpipe")
+                .header("User-Agent", screenpipe_core::endpoints::DEFAULT_USER_AGENT)
                 .send()
                 .await
                 .ok()?

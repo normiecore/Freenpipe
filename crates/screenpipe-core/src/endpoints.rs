@@ -301,6 +301,12 @@ pub fn user_agent(product: &str, version: &str) -> String {
     format!("{product}/{version} (+{FREENPIPE_REPO_URL})")
 }
 
+/// Fixed User-Agent for places that need a `&'static str` (static header
+/// tables, `HeaderValue::from_static`). Third-party APIs such as GitHub's
+/// refuse requests without one. It names this project, never the upstream
+/// vendor.
+pub const DEFAULT_USER_AGENT: &str = "Freenpipe (+https://github.com/normiecore/Freenpipe)";
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -443,6 +449,9 @@ mod tests {
         let ua = user_agent("freenpipe-app", "1.2.3");
         assert!(ua.starts_with("freenpipe-app/1.2.3 "));
         assert!(ua.contains(FREENPIPE_REPO_URL));
+        assert!(DEFAULT_USER_AGENT.starts_with("Freenpipe "));
+        assert!(DEFAULT_USER_AGENT.contains(FREENPIPE_REPO_URL));
+        assert!(!DEFAULT_USER_AGENT.to_lowercase().contains("screenpipe"));
     }
 
     #[test]

@@ -102,7 +102,7 @@ export default function PermissionsStep({
       id: "screen",
       icon: <Monitor className="w-3.5 h-3.5" strokeWidth={1.5} />,
       title: "Capture your screen",
-      subtitle: "Lets Screenpipe index what's on your screen — windows, docs, chats, code",
+      subtitle: "Lets Freenpipe index what's on your screen — windows, docs, chats, code",
       check: () => commands.checkScreenRecordingPermission(),
       request: () => requestPermissionWithFlow("screenRecording"),
     },
@@ -110,7 +110,7 @@ export default function PermissionsStep({
       id: "mic",
       icon: <Mic className="w-3.5 h-3.5" strokeWidth={1.5} />,
       title: "Capture what you say",
-      subtitle: "Lets Screenpipe transcribe your voice in meetings and calls",
+      subtitle: "Lets Freenpipe transcribe your voice in meetings and calls",
       check: () => commands.checkMicrophonePermission(),
       request: () => commands.requestPermission("microphone"),
     },
@@ -118,7 +118,7 @@ export default function PermissionsStep({
       id: "accessibility",
       icon: <Keyboard className="w-3.5 h-3.5" strokeWidth={1.5} />,
       title: "Read on-screen text",
-      subtitle: "Lets Screenpipe understand app content without OCR",
+      subtitle: "Lets Freenpipe understand app content without OCR",
       check: () => commands.checkAccessibilityPermissionCmd(),
       request: () => requestPermissionWithFlow("accessibility"),
       macOnly: true,
@@ -127,7 +127,7 @@ export default function PermissionsStep({
       id: "browsers",
       icon: <Globe className="w-3.5 h-3.5" strokeWidth={1.5} />,
       title: "Capture browser URLs",
-      subtitle: "So Screenpipe knows what you were reading, not just what the pixels say",
+      subtitle: "So Freenpipe knows what you were reading, not just what the pixels say",
       check: async () => {
         const granted = await commands.checkBrowsersAutomationPermission();
         return granted ? "granted" : "denied";
@@ -249,12 +249,12 @@ export default function PermissionsStep({
       {/* Branding */}
       <div className="flex flex-col items-center mb-6">
         {/* eslint-disable-next-line @next/next/no-img-element */}
-        <img className="w-12 h-12 mb-2" src="/128x128.png" alt="screenpipe" />
+        <img className="w-12 h-12 mb-2" src="/128x128.png" alt="Freenpipe" />
         <h1 className="font-mono text-base font-bold text-foreground">
           Unlock the full experience
         </h1>
         <p className="font-mono text-[10px] text-muted-foreground mt-1 text-center max-w-xs">
-          Enable these permissions to get the most out of Screenpipe
+          Enable these permissions to get the most out of Freenpipe
         </p>
       </div>
 

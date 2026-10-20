@@ -263,7 +263,7 @@ function NativeCalendarConnect({
   return (
     <div className="space-y-4">
       <p className="text-sm text-muted-foreground">
-        ScreenPipe reads event titles, times, and attendees so meeting notes can
+        Freenpipe reads event titles, times, and attendees so meeting notes can
         start at the right moment. It does not write to your calendar.
       </p>
       <div className="border border-border bg-muted/20 px-3 py-2 text-xs text-muted-foreground">
@@ -333,7 +333,7 @@ function GoogleCalendarConnect({
   return (
     <div className="space-y-4">
       <p className="text-sm text-muted-foreground">
-        Connect your Google Calendar directly. ScreenPipe uses read-only access
+        Connect your Google Calendar directly. Freenpipe uses read-only access
         for meeting detection and note metadata.
       </p>
       <Button onClick={connect} disabled={busy} className="w-full rounded-none">
@@ -409,7 +409,7 @@ function IcsCalendarConnect({
   return (
     <div className="space-y-4">
       <p className="text-sm text-muted-foreground">
-        Paste a private or public ICS/webcal subscription URL. ScreenPipe polls
+        Paste a private or public ICS/webcal subscription URL. Freenpipe polls
         it read-only for upcoming meetings.
       </p>
       <div className="space-y-2">

@@ -1,6 +1,6 @@
 {
     "bundle": {
-        "publisher": "Mediar, Inc.",
+        "publisher": "normiecore",
         "windows": {
             "nsis": {
                 "headerImage": "assets/nsis-header.bmp",

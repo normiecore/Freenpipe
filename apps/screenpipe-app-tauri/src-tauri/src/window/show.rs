@@ -83,15 +83,17 @@ impl RewindWindowId {
         }
     }
 
-    pub fn title(&self) -> &str {
-        match self {
-            RewindWindowId::Main => "screenpipe",
-            RewindWindowId::Home => "screenpipe",
-            RewindWindowId::Search => "search",
-            RewindWindowId::Onboarding => "onboarding",
-            RewindWindowId::Chat => "ai chat",
-            RewindWindowId::PermissionRecovery => "fix permissions",
-        }
+    /// Native window title. Every window names the product so it reads as
+    /// Freenpipe in the taskbar, Alt-Tab and the Dock menu.
+    pub fn title(&self) -> String {
+        let suffix = match self {
+            RewindWindowId::Main | RewindWindowId::Home => None,
+            RewindWindowId::Search => Some("search"),
+            RewindWindowId::Onboarding => Some("onboarding"),
+            RewindWindowId::Chat => Some("ai chat"),
+            RewindWindowId::PermissionRecovery => Some("fix permissions"),
+        };
+        crate::brand::window_title(suffix)
     }
 
     pub fn min_size(&self) -> Option<(f64, f64)> {
@@ -712,7 +714,7 @@ impl ShowRewindWindow {
                                 "/overlay",
                                 main_label_for_mode("window"),
                             )
-                            .title("screenpipe")
+                            .title(crate::brand::PRODUCT_NAME)
                             .inner_size(win_w, win_h)
                             .min_inner_size(800.0, 600.0)
                             .decorations(true)
@@ -734,7 +736,7 @@ impl ShowRewindWindow {
                                 "/overlay",
                                 main_label_for_mode("window"),
                             )
-                            .title("screenpipe")
+                            .title(crate::brand::PRODUCT_NAME)
                             .inner_size(win_w, win_h)
                             .min_inner_size(800.0, 600.0)
                             .decorations(true)
@@ -1077,7 +1079,7 @@ impl ShowRewindWindow {
                             "/overlay",
                             main_label_for_mode("fullscreen"),
                         )
-                        .title("screenpipe")
+                        .title(crate::brand::PRODUCT_NAME)
                         .visible_on_all_workspaces(true)
                         .always_on_top(true)
                         .decorations(false)
@@ -1132,7 +1134,7 @@ impl ShowRewindWindow {
                             "/overlay",
                             main_label_for_mode("fullscreen"),
                         )
-                        .title("screenpipe")
+                        .title(crate::brand::PRODUCT_NAME)
                         .inner_size(linux_w, linux_h)
                         .min_inner_size(800.0, 600.0)
                         .decorations(true)

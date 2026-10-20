@@ -14,6 +14,7 @@ import { listen } from "@tauri-apps/api/event";
 import { showNotificationPanel } from "@/lib/hooks/use-notification-panel";
 import { showChatWithPrefill } from "@/lib/chat-utils";
 import { localFetch } from "@/lib/api";
+import { isAppDeepLink, isDeepLinkTo } from "@/lib/brand";
 
 // notify_rust on Linux calls block_on for D-Bus inside the tokio runtime,
 // which panics and kills the worker thread. Skip OS notifications on Linux.
@@ -28,8 +29,7 @@ type NotificationRequested = {
 };
 
 function windowForDeeplink(url: string) {
-  return url.startsWith("screenpipe://meeting/") ||
-    url.startsWith("screenpipe://meeting?")
+  return isDeepLinkTo(url, "meeting")
     ? { Home: { page: "meetings" } }
     : "Main";
 }
@@ -51,8 +51,8 @@ const NotificationHandler: React.FC = () => {
 
           if (!welcomeShown) {
             sendNotification({
-              title: "welcome to screenpipe",
-              body: "thank you for using screenpipe! we're dedicated to help you get the most out of screenpipe.",
+              title: "welcome to Freenpipe",
+              body: "thank you for using Freenpipe! we're dedicated to help you get the most out of Freenpipe.",
             });
             localStorage?.setItem("welcomeNotificationShown", "true");
           }
@@ -206,7 +206,7 @@ const NotificationHandler: React.FC = () => {
           await open(action.url);
 
           const deeplink = action.deeplink_url || action.deeplinkUrl;
-          if (typeof deeplink === "string" && deeplink.startsWith("screenpipe://")) {
+          if (typeof deeplink === "string" && isAppDeepLink(deeplink)) {
             await commands.showWindowActivated(windowForDeeplink(deeplink));
             await new Promise((r) => setTimeout(r, 150));
             const { emit } = await import("@tauri-apps/api/event");
@@ -218,7 +218,7 @@ const NotificationHandler: React.FC = () => {
         // URL-opening actions. Two explicit types so senders can't conflate
         // them:
         //   "link"      — external URL, opens in default browser
-        //   "deeplink"  — screenpipe:// in-app route
+        //   "deeplink"  — freenpipe:// (or screenpipe://) in-app route
         //
         // Note: these are also handled in Rust inside `native_notif_action_callback`
         // for the native macOS panel case (where this JS listener may not be
@@ -226,7 +226,7 @@ const NotificationHandler: React.FC = () => {
         // Routing is on URL scheme, not the declared type, so a mislabeled
         // payload still works.
         if ((action.type === "link" || action.type === "deeplink") && action.url) {
-          if (typeof action.url === "string" && action.url.startsWith("screenpipe://")) {
+          if (typeof action.url === "string" && isAppDeepLink(action.url)) {
             await commands.showWindowActivated(windowForDeeplink(action.url));
             await new Promise((r) => setTimeout(r, 150));
             const { emit } = await import("@tauri-apps/api/event");
@@ -299,17 +299,17 @@ const NotificationHandler: React.FC = () => {
   return null;
 };
 
-const PIPE_SUGGESTION_PROMPT = `you are a screenpipe automation advisor. the user wants ideas for pipes (scheduled AI agents) they can create based on their actual workflow.
+const PIPE_SUGGESTION_PROMPT = `you are a Freenpipe automation advisor. the user wants ideas for pipes (scheduled AI agents) they can create based on their actual workflow.
 
-## what is screenpipe?
+## what is Freenpipe?
 
-screenpipe is a desktop app that continuously captures screen text (via accessibility APIs) and audio (transcription).
+Freenpipe is a desktop app that continuously captures screen text (via accessibility APIs) and audio (transcription).
 it runs a local API at http://localhost:3030 that lets you query everything you've seen, said, or heard.
 
 ## what is a pipe?
 
 a pipe is a scheduled AI agent defined as a single markdown file: ~/.screenpipe/pipes/{name}/pipe.md
-every N minutes, screenpipe runs a coding agent with the pipe's prompt.
+every N minutes, Freenpipe runs a coding agent with the pipe's prompt.
 the agent can query screen data, write files, call external APIs, send notifications, etc.
 
 ## your task

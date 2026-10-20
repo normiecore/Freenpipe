@@ -19,7 +19,7 @@ export function HermesCard() {
     <AgentCard
       name="Hermes"
       iconSrc="/images/hermes.png"
-      description="Self-improving agent with messaging gateways (Telegram, Discord, Slack, WhatsApp). Three ways to wire it to screenpipe."
+      description="Self-improving agent with messaging gateways (Telegram, Discord, Slack, WhatsApp). Three ways to wire it to Freenpipe."
       homepage="https://hermes-agent.nousresearch.com"
       mcp={{
         format: "yaml",

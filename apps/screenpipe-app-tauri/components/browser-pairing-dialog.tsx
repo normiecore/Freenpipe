@@ -109,8 +109,8 @@ export function BrowserPairingDialog() {
           <DialogTitle>connect browser</DialogTitle>
           <DialogDescription>
             {pending
-              ? `${labelBrowser(pending.browser)} wants to connect to Screenpipe. This lets agents use your open tabs when browser context is needed.`
-              : "A browser wants to connect to Screenpipe."}
+              ? `${labelBrowser(pending.browser)} wants to connect to Freenpipe. This lets agents use your open tabs when browser context is needed.`
+              : "A browser wants to connect to Freenpipe."}
           </DialogDescription>
         </DialogHeader>
 

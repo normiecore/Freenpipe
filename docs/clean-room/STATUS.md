@@ -2,30 +2,32 @@
 
 > Generated file: the merger routine regenerates it with `python3 tools/plan/status.py --write`. Do not edit it by hand. The plan is [PLAN.md](PLAN.md); the process is [docs/dev/cloud-runbook.md](../dev/cloud-runbook.md).
 
-Generated 2026-10-19T22:28:50Z from `origin/main` (latest code commit `7b684de`). GitHub data: available (via gh).
+Generated 2026-10-20T01:13:12Z from `origin/main` (latest code commit `06383cc`). GitHub data: available (via gh).
 
 ## Progress
 
-**11 of 154 work packages merged (7.1%)**: 0 in review, 0 claimed, 2 ready, 141 blocked.
+**12 of 154 work packages merged (7.8%)**: 1 in review, 0 claimed, 7 ready, 134 blocked.
 
 | Wave | Theme | Merged | In review | Claimed | Ready | Blocked | Progress |
 |---|---|---|---|---|---|---|---|
-| 0 | Foundation: build, ee/ stubs, de-cloud, rebrand | 11/13 | 0 | 0 | 2 | 0 | `########--` 85% |
-| 1 | Cross-cutting foundations: schema v2.7, settings schema, integration seams | 0/4 | 0 | 0 | 0 | 4 | `----------` 0% |
-| 2 | Engine data layer and core backends | 0/27 | 0 | 0 | 0 | 27 | `----------` 0% |
+| 0 | Foundation: build, ee/ stubs, de-cloud, rebrand | 12/13 | 1 | 0 | 0 | 0 | `#########-` 92% |
+| 1 | Cross-cutting foundations: schema v2.7, settings schema, integration seams | 0/4 | 0 | 0 | 4 | 0 | `----------` 0% |
+| 2 | Engine data layer and core backends | 0/27 | 0 | 0 | 3 | 24 | `----------` 0% |
 | 3 | Feature backends (search, pipes, connections, capture, audio) | 0/31 | 0 | 0 | 0 | 31 | `----------` 0% |
 | 4 | Advanced backends, agents runtime, app shell | 0/22 | 0 | 0 | 0 | 22 | `----------` 0% |
 | 5 | Feature UIs and second-tier backends | 0/24 | 0 | 0 | 0 | 24 | `----------` 0% |
 | 6 | Agent/workflow UIs, piggyback, hybrid bulk | 0/21 | 0 | 0 | 0 | 21 | `----------` 0% |
 | 7 | Hybrid lifecycle, overlays, chat follow-ups | 0/9 | 0 | 0 | 0 | 9 | `----------` 0% |
 | 8 | Final UI pieces and surface audit | 0/3 | 0 | 0 | 0 | 3 | `----------` 0% |
-| all | | 11/154 | 0 | 0 | 2 | 141 | `#---------` 7.1% |
+| all | | 12/154 | 1 | 0 | 7 | 134 | `#---------` 7.8% |
 
-CI on main (merge gate on the latest non-status commit `7b684de`): **pending** (gates: in_progress; linux: in_progress; test-windows: in_progress; trufflehog: in_progress; windows: in_progress)
+CI on main (merge gate on the latest non-status commit `06383cc`): **pending** (linux: in_progress; test-windows: in_progress; windows: in_progress)
 
 ## In review
 
-None.
+| WP | PR | Head | CI | Review | Mergeable | Worker |
+|---|---|---|---|---|---|---|
+| W0-13 | [#10](https://github.com/normiecore/Freenpipe/pull/10) | `e8cf3e2` | pending (windows: in_progress) | pending | conflict | - |
 
 ## Claimed
 
@@ -35,8 +37,13 @@ None.
 
 | WP | Wave | Size | Title |
 |---|---|---|---|
-| W0-12 | 0 | M | Rebrand user-visible identity to Freenpipe |
-| W0-13 | 0 | M | Vendor git dependencies into third_party/ |
+| W1-01 | 1 | L | Schema v2.7.104: 28 migrations and ocr_text retirement |
+| W1-02 | 1 | L | Settings schema v2 and store compatibility |
+| W1-03 | 1 | M | Integration seams, stub modules and shared constants |
+| W1-04 | 1 | S | Enterprise and plan-gate no-op surface |
+| W2-06 | 2 | XL | screenpipe-semantic parser crate |
+| W2-12 | 2 | L | Native WinRT/D3D11 Windows Graphics Capture and frame-diff hardening |
+| W2-19 | 2 | L | GPU runtimes and bundled models: Vulkan whisper, DirectML, install layout |
 
 ## Wave integration log
 
@@ -44,7 +51,7 @@ No wave integration has been recorded by the merger yet.
 
 ## Board
 
-### Wave 0: Foundation: build, ee/ stubs, de-cloud, rebrand (11/13 merged)
+### Wave 0: Foundation: build, ee/ stubs, de-cloud, rebrand (12/13 merged)
 
 | WP | Size | Status | Title | Detail |
 |---|---|---|---|---|
@@ -59,17 +66,17 @@ No wave integration has been recorded by the merger yet.
 | W0-09 | M | merged | Bundled CLI/MCP runtime and self-hosted model sources | merge `c83b674` |
 | W0-10 | M | merged | Logs and feedback upload replaced by a local diagnostics bundle | merge `7869d46` |
 | W0-11 | L | merged | SQLite toolchain upgrade (sqlx 0.9, libsqlite3-sys 0.37, rusqlite vtab) | merge `7b684de` |
-| W0-12 | M | ready | Rebrand user-visible identity to Freenpipe |  |
-| W0-13 | M | ready | Vendor git dependencies into third_party/ |  |
+| W0-12 | M | merged | Rebrand user-visible identity to Freenpipe | merge `06383cc` |
+| W0-13 | M | in_review | Vendor git dependencies into third_party/ | PR #10: CI pending, review pending |
 
 ### Wave 1: Cross-cutting foundations: schema v2.7, settings schema, integration seams (0/4 merged)
 
 | WP | Size | Status | Title | Detail |
 |---|---|---|---|---|
-| W1-01 | L | blocked | Schema v2.7.104: 28 migrations and ocr_text retirement | waits for W0-12 |
-| W1-02 | L | blocked | Settings schema v2 and store compatibility | waits for W0-12 |
-| W1-03 | M | blocked | Integration seams, stub modules and shared constants | waits for W0-12 |
-| W1-04 | S | blocked | Enterprise and plan-gate no-op surface | waits for W0-12 |
+| W1-01 | L | ready | Schema v2.7.104: 28 migrations and ocr_text retirement |  |
+| W1-02 | L | ready | Settings schema v2 and store compatibility |  |
+| W1-03 | M | ready | Integration seams, stub modules and shared constants |  |
+| W1-04 | S | ready | Enterprise and plan-gate no-op surface |  |
 
 ### Wave 2: Engine data layer and core backends (0/27 merged)
 
@@ -80,20 +87,20 @@ No wave integration has been recorded by the merger yet.
 | W2-03 | M | blocked | Unified AI feedback table and /feedback | waits for W1-01, W1-03 |
 | W2-04 | M | blocked | Starred work sessions backend and HD binding | waits for W1-01, W1-03 |
 | W2-05 | M | blocked | Semantic store: runs, items, FTS, actors | waits for W1-01, W1-03 |
-| W2-06 | XL | blocked | screenpipe-semantic parser crate | waits for W0-12 |
+| W2-06 | XL | ready | screenpipe-semantic parser crate |  |
 | W2-07 | L | blocked | Activity ledger store and deterministic reconciler | waits for W1-01, W1-03 |
 | W2-08 | L | blocked | Meetings API v2: calendar binding, summary endpoints, room-change route | waits for W1-01, W1-03 |
 | W2-09 | M | blocked | Response formats, calendar time literals, tag autocomplete | waits for W1-01, W1-03 |
 | W2-10 | L | blocked | Frame media routes: thumbnail, preview samples, preview media, typed errors, auth | waits for W1-01, W1-03 |
 | W2-11 | L | blocked | Per-monitor vision control and display layout persistence | waits for W1-01, W1-03 |
-| W2-12 | L | blocked | Native WinRT/D3D11 Windows Graphics Capture and frame-diff hardening | waits for W0-12 |
+| W2-12 | L | ready | Native WinRT/D3D11 Windows Graphics Capture and frame-diff hardening |  |
 | W2-13 | L | blocked | Health v2, vision metrics and recording coverage | waits for W1-03 |
 | W2-14 | L | blocked | Resource monitor v2: process tree, breakdown, leak trend | waits for W1-03 |
 | W2-15 | L | blocked | Snapshot compaction v2 and suspend/lock awareness | waits for W1-01, W1-03 |
 | W2-16 | L | blocked | Speakers v2: samples, search paging, merge integrity, reassign v2 | waits for W1-01 |
 | W2-17 | L | blocked | Stream-scoped live speakers and strict meeting-segment mapping | waits for W1-01 |
 | W2-18 | L | blocked | Windows WASAPI loopback engine and exe-based audio exclusions | waits for W1-02 |
-| W2-19 | L | blocked | GPU runtimes and bundled models: Vulkan whisper, DirectML, install layout | waits for W0-12 |
+| W2-19 | L | ready | GPU runtimes and bundled models: Vulkan whisper, DirectML, install layout |  |
 | W2-20 | L | blocked | Connections core: secret-safe reads, webhook proxy, Telegram send, router deltas, MCP refs | waits for W1-03 |
 | W2-21 | L | blocked | OAuth v2 flow and new OAuth integrations | waits for W1-03 |
 | W2-22 | L | blocked | Pipe config v2: new frontmatter, schedule_config and preview, ids, preamble | waits for W1-03 |

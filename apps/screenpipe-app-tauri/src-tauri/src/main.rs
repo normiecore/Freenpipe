@@ -34,6 +34,7 @@ mod icons;
 mod agent_event_emitter;
 mod ai_gateway;
 mod audio_exclusions;
+mod brand;
 mod calendar;
 mod capture_session;
 mod chatgpt_oauth;
@@ -446,10 +447,7 @@ async fn main() {
     // zbus/tokio conflict) and acts as a fallback on macOS/Windows.
     {
         let args: Vec<String> = std::env::args().collect();
-        let deep_link_url = args
-            .iter()
-            .find(|a| a.starts_with("screenpipe://"))
-            .cloned();
+        let deep_link_url = crate::brand::find_deep_link_arg(&args);
 
         let focus_port: u16 = std::env::var("SCREENPIPE_FOCUS_PORT")
             .ok()
@@ -466,7 +464,7 @@ async fn main() {
             .await
         {
             if resp.status().is_success() {
-                eprintln!("screenpipe: another instance is already running — focused existing window, exiting.");
+                eprintln!("{}: another instance is already running — focused existing window, exiting.", crate::brand::PRODUCT_NAME);
                 std::process::exit(0);
             }
         }
@@ -738,8 +736,8 @@ async fn main() {
             }
 
             // Forward deep-link URL from args
-            if let Some(url) = args_clone.iter().find(|a| a.starts_with("screenpipe://")) {
-                let _ = app_for_closure.emit("deep-link-received", url.clone());
+            if let Some(url) = crate::brand::find_deep_link_arg(&args_clone) {
+                let _ = app_for_closure.emit("deep-link-received", url);
             }
 
             // Forward CLI args
@@ -779,8 +777,10 @@ async fn main() {
                 use tauri::menu::{MenuBuilder, SubmenuBuilder, PredefinedMenuItem, MenuItemBuilder};
                 let app_ui_hidden = crate::enterprise_policy::is_app_ui_hidden();
 
-                let mut app_submenu_builder = SubmenuBuilder::new(app, "screenpipe")
-                    .item(&PredefinedMenuItem::about(app, Some("About screenpipe"), None)?)
+                let about_label = format!("About {}", crate::brand::PRODUCT_NAME);
+                let quit_label = format!("Quit {}", crate::brand::PRODUCT_NAME);
+                let mut app_submenu_builder = SubmenuBuilder::new(app, crate::brand::PRODUCT_NAME)
+                    .item(&PredefinedMenuItem::about(app, Some(about_label.as_str()), None)?)
                     .separator();
                 if !crate::updates::is_enterprise_build(&app_handle) {
                     app_submenu_builder = app_submenu_builder
@@ -796,7 +796,7 @@ async fn main() {
                         .separator();
                 }
                 let app_submenu = app_submenu_builder
-                    .item(&PredefinedMenuItem::quit(app, Some("Quit screenpipe"))?)
+                    .item(&PredefinedMenuItem::quit(app, Some(quit_label.as_str()))?)
                     .build()?;
 
                 let edit_submenu = SubmenuBuilder::new(app, "Edit")

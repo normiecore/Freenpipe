@@ -95,17 +95,17 @@ import { MemoizedReactMarkdown } from "@/components/markdown";
 import { useDeviceMonitor } from "@/lib/hooks/use-device-monitor";
 import { Monitor, Wifi, WifiOff, ScanSearch } from "lucide-react";
 
-const PIPE_CREATION_PROMPT = `create a screenpipe pipe that does the following.
+const PIPE_CREATION_PROMPT = `create a Freenpipe pipe that does the following.
 
-## what is screenpipe?
+## what is Freenpipe?
 
-screenpipe is a desktop app that continuously captures your screen text (via accessibility APIs, with OCR as fallback for apps that don't support accessibility) and audio (transcription).
+Freenpipe is a desktop app that continuously captures your screen text (via accessibility APIs, with OCR as fallback for apps that don't support accessibility) and audio (transcription).
 it runs a local API at http://localhost:3030 that lets you query everything you've seen, said, or heard.
 
 ## what is a pipe?
 
 a pipe is a scheduled AI agent defined as a single markdown file: ~/.screenpipe/pipes/{name}/pipe.md
-every N minutes, screenpipe runs a coding agent (like pi or claude-code) with the pipe's prompt.
+every N minutes, Freenpipe runs a coding agent (like pi or claude-code) with the pipe's prompt.
 the agent can query your screen data, write files, call external APIs, send notifications, etc.
 
 ## pipe.md format
@@ -123,16 +123,16 @@ Your prompt instructions here...
 
 ## context header
 
-before execution, screenpipe prepends a context header to the prompt with:
+before execution, Freenpipe prepends a context header to the prompt with:
 - time range (start/end timestamps based on the schedule interval)
 - current date
 - user's timezone
-- screenpipe API base URL
+- local API base URL
 - output directory
 
 the AI agent uses this context to query the right time range. no template variables needed in the prompt.
 
-## screenpipe search API
+## search API
 
 the agent queries screen data via the local REST API:
 
@@ -152,7 +152,7 @@ curl "http://localhost:3030/search?limit=20&content_type=all&start_time=<ISO8601
 
 ## after creating the file
 
-use the screenpipe CLI that came with the app. in your shell it is the \`screenpipe\` command (its full path is in $SCREENPIPE_CLI); never fetch a CLI with npx or bun x:
+use the CLI that came with the app. in your shell it is the \`screenpipe\` command (its full path is in $SCREENPIPE_CLI); never fetch a CLI with npx or bun x:
 
 install: screenpipe pipe install ~/.screenpipe/pipes/my-pipe
 enable:  screenpipe pipe enable my-pipe
@@ -186,13 +186,13 @@ function buildCreatePipeDisplayLabel(prompt: string): string {
 
 function buildOptimizePrompt(pipeName: string): string {
   const sessionDir = `~/.pi/agent/sessions/`;
-  return `i need help optimizing my screenpipe pipe "${pipeName}".
+  return `i need help optimizing my Freenpipe pipe "${pipeName}".
 
 ## your task
 
 1. first, ask me: what do i expect this pipe to produce? what's the ideal output?
 2. then read the pipe prompt: ~/.screenpipe/pipes/${pipeName}/pipe.md
-3. check the last few execution logs by querying the screenpipe API: GET http://localhost:3030/pipes/${pipeName}/executions?limit=5
+3. check the last few execution logs by querying the local Freenpipe API: GET http://localhost:3030/pipes/${pipeName}/executions?limit=5
 4. look at the pi agent session files in ${sessionDir} for the full conversation history (tool calls, reasoning, errors)
 5. based on all of this, suggest specific improvements to the pipe.md prompt
 
@@ -1336,7 +1336,7 @@ export function PipesSection() {
       <div className="flex flex-col items-center justify-center py-16 gap-3 text-muted-foreground">
         <Monitor className="h-8 w-8 opacity-40" />
         <p className="text-sm font-medium">{selectedDeviceInfo.label} is offline</p>
-        <p className="text-xs opacity-70">check that screenpipe is running on the remote device</p>
+        <p className="text-xs opacity-70">check that Freenpipe is running on the remote device</p>
         <Button variant="outline" size="sm" onClick={() => setSelectedDevice(null)}>
           back to this device
         </Button>

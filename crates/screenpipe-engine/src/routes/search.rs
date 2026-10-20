@@ -225,9 +225,9 @@ pub fn truncate_middle(text: &str, max_chars: usize) -> String {
 }
 
 /// Case-insensitive check for whether an app row should be filtered out
-/// because it belongs to screenpipe itself.
+/// because it belongs to the app itself (Freenpipe, or screenpipe data).
 pub fn is_screenpipe_app(app_name: &str) -> bool {
-    app_name.to_lowercase().contains("screenpipe")
+    screenpipe_core::brand::is_own_app_name(app_name)
 }
 
 /// Convert a `SearchResult` row into the public `ContentItem` shape used by
@@ -730,7 +730,7 @@ pub(crate) async fn keyword_search_handler(
 
         let filtered: Vec<_> = matches
             .into_iter()
-            .filter(|m| !m.app_name.to_lowercase().contains("screenpipe"))
+            .filter(|m| !is_screenpipe_app(&m.app_name))
             .collect();
 
         let groups = DatabaseManager::cluster_search_matches(filtered, 120);
@@ -760,7 +760,7 @@ pub(crate) async fn keyword_search_handler(
 
         let filtered: Vec<_> = matches
             .into_iter()
-            .filter(|m| !m.app_name.to_lowercase().contains("screenpipe"))
+            .filter(|m| !is_screenpipe_app(&m.app_name))
             .collect();
 
         Ok(JsonResponse(json!(filtered)))
@@ -858,6 +858,16 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn own_app_rows_are_filtered_under_either_name() {
+        // On Windows the captured app name is the exe's file description,
+        // which is the product name after the rebrand.
+        for name in ["Freenpipe", "Freenpipe Dev", "screenpipe", "screenpipe-app"] {
+            assert!(is_screenpipe_app(name), "{name}");
+        }
+        assert!(!is_screenpipe_app("Google Chrome"));
+    }
 
     #[test]
     fn flexible_bool_accepts_common_truthy_falsy_values() {

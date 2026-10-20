@@ -1247,7 +1247,7 @@ const AISection = ({
               type="screenpipe-cloud"
               title="AI gateway"
               description="Your own OpenAI-compatible gateway (LiteLLM, a self-hosted proxy, …). Also used for gateway transcription, media analysis and web search."
-              imageSrc="/images/screenpipe.png"
+              imageSrc="/images/freenpipe.png"
               selected={settingsPreset?.provider === "screenpipe-cloud"}
               onClick={() => handleAiProviderChange("screenpipe-cloud")}
               warningText={!aiGateway.loading && !aiGateway.configured ? "Set a gateway URL below" : undefined}
@@ -1559,7 +1559,7 @@ const AISection = ({
                           ))}
                         </CommandGroup>
                       )}
-                      <CommandGroup heading={models?.some((m) => m.free) ? "Included with Screenpipe" : "Available Models"}>
+                      <CommandGroup heading={models?.some((m) => m.free) ? "Included with your gateway" : "Available Models"}>
                         {models?.filter((m) => !m.free).map((model) => {
                           const costLabel = model.cost_tier === 'low' ? '$' : model.cost_tier === 'medium' ? '$$' : model.cost_tier === 'high' ? '$$$' : model.cost_tier === 'very_high' ? '$$$$' : '';
                           return (
@@ -1871,9 +1871,9 @@ const providerImageSrc: Record<string, string> = {
   anthropic: "/images/claude-ai.svg",
   "native-ollama": "/images/ollama.png",
   custom: "/images/custom.png",
-  pi: "/images/screenpipe.png",
-  screenpipe: "/images/screenpipe.png",
-  "screenpipe-cloud": "/images/screenpipe.png",
+  pi: "/images/freenpipe.png",
+  screenpipe: "/images/freenpipe.png",
+  "screenpipe-cloud": "/images/freenpipe.png",
 };
 
 // Sortable preset card for drag-and-drop reordering

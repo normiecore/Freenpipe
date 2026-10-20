@@ -66,7 +66,7 @@ export function useVoiceTraining(opts: {
 
     try {
       await commands.trainVoice(name, startTime.toISOString(), now.toISOString());
-      toast({ title: "voice training started", description: "screenpipe will match your voice in the background — this may take a few minutes" });
+      toast({ title: "voice training started", description: "Freenpipe will match your voice in the background — this may take a few minutes" });
     } catch (e) {
       toast({ title: "failed to start voice training", description: String(e), variant: "destructive" });
     }

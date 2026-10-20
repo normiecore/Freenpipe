@@ -125,8 +125,8 @@ export default function GeneralSettings() {
       toast({
         title: checked ? "auto-start enabled" : "auto-start disabled",
         description: checked
-          ? "screenpipe will launch when your computer starts"
-          : "screenpipe won't launch at startup",
+          ? "Freenpipe will launch when your computer starts"
+          : "Freenpipe won't launch at startup",
       });
     } catch (e: any) {
       handleSettingsChange({ autoStartEnabled: !checked });
