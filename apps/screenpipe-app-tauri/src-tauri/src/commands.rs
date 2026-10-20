@@ -761,17 +761,25 @@ pub fn get_enterprise_team_api_token() -> Option<String> {
         .map(String::from)
 }
 
-/// Read the token stored in `auth.json` under the screenpipe data dir.
-/// Returns None when the file is missing, malformed, or the token field is
-/// empty.
+/// Read the cached account token: the secret store's `cloud.auth_token`
+/// first, then the legacy `auth.json` under the data dir. Returns None when
+/// neither holds a non-empty token.
 ///
 /// Freenpipe never signs in to a hosted account, so nothing here comes from
-/// a login flow. The file is kept as local key plumbing: a token placed there
-/// (or pushed with [`set_cloud_token`]) is what the engine forwards to a
-/// user-configured, self-hosted AI gateway.
+/// a login flow. A token only exists when a store came over from screenpipe
+/// (moved out of `store.bin` at startup, see `store::migrate_cloud_token`)
+/// or was placed in `auth.json` by hand.
 #[tauri::command]
 #[specta::specta]
-pub fn get_cloud_token() -> Option<String> {
+pub async fn get_cloud_token() -> Option<String> {
+    match crate::store::open_secret_store().await {
+        Ok(secrets) => match crate::store::read_cloud_token(&secrets).await {
+            Ok(Some(token)) => return Some(token),
+            Ok(None) => {}
+            Err(e) => warn!("get_cloud_token: {}", e),
+        },
+        Err(e) => warn!("get_cloud_token: secret store unavailable: {}", e),
+    }
     let path = screenpipe_core::paths::default_screenpipe_data_dir().join("auth.json");
     let raw = std::fs::read_to_string(&path).ok()?;
     let parsed: serde_json::Value = serde_json::from_str(&raw).ok()?;
@@ -780,6 +788,31 @@ pub fn get_cloud_token() -> Option<String> {
         .and_then(|t| t.as_str())
         .filter(|s| !s.is_empty())
         .map(String::from)
+}
+
+/// Directory that holds `store.bin` (normally `~/.screenpipe`, or
+/// `SCREENPIPE_DATA_DIR`). The frontend opens the settings store here so it
+/// always reads the same file as the backend.
+#[tauri::command]
+#[specta::specta]
+pub fn get_screenpipe_base_dir(app: tauri::AppHandle) -> Result<String, String> {
+    crate::get_base_dir(&app, None)
+        .map(|dir| dir.display().to_string())
+        .map_err(|e| format!("failed to resolve the settings directory: {}", e))
+}
+
+/// Recording data directory in use: the custom `dataDir` chosen in settings
+/// when it is usable, otherwise the default directory. Uses the settings
+/// loaded at startup, because a data-dir change only applies after a restart.
+#[tauri::command]
+#[specta::specta]
+pub fn get_active_data_dir(app: tauri::AppHandle) -> Result<String, String> {
+    let dir = match app.try_state::<crate::store::SettingsStore>() {
+        Some(settings) => crate::config::resolve_data_dir(&settings.data_dir).0,
+        None => crate::log_files::get_data_dir(&app)
+            .map_err(|e| format!("failed to resolve the data directory: {}", e))?,
+    };
+    Ok(dir.display().to_string())
 }
 
 /// Push a gateway token into the running engine, or clear it with `None`.

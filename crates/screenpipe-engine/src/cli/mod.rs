@@ -364,6 +364,28 @@ pub struct RecordArgs {
     #[arg(long, default_value_t = false)]
     pub macos_input_vpio_enabled: bool,
 
+    /// When audio is recorded: `always`, `meetings-only` (devices open only
+    /// while a meeting is detected) or `disabled`. Without the flag the
+    /// stored setting applies (a store without one records always).
+    #[arg(long, value_parser = ["always", "meetings-only", "disabled"])]
+    pub audio_capture_mode: Option<String>,
+
+    /// Echo cancellation for the microphone: `off`, `screenpipe` (software,
+    /// any platform), `windows` (WASAPI, Windows only) or `macos`
+    /// (VoiceProcessingIO, macOS only). Overrides the two platform flags above.
+    #[arg(long, value_parser = ["off", "screenpipe", "windows", "macos"])]
+    pub aec_mode: Option<String>,
+
+    /// During a meeting, record the meeting app's own audio instead of the
+    /// configured devices (`--meeting-piggyback false` turns it off).
+    #[arg(long)]
+    pub meeting_piggyback: Option<bool>,
+
+    /// Keep a Bluetooth headset microphone open outside meetings too. Off by
+    /// default because an open headset microphone lowers playback quality.
+    #[arg(long, default_value_t = false)]
+    pub always_record_bluetooth_mic: bool,
+
     /// Data directory. Default to $HOME/.screenpipe
     #[arg(long, value_hint = ValueHint::DirPath)]
     pub data_dir: Option<String>,
@@ -440,6 +462,22 @@ pub struct RecordArgs {
     #[arg(long, default_value_t = false)]
     pub disable_vision: bool,
 
+    /// Store no screenshot images. Accessibility text and frame metadata are
+    /// still captured.
+    #[arg(long, default_value_t = false)]
+    pub disable_screenshots: bool,
+
+    /// Cap the width of captured frames, in pixels, before any analysis.
+    /// Without the flag the cap follows `--video-quality`.
+    #[arg(long)]
+    pub capture_max_width: Option<u32>,
+
+    /// How often snapshots are taken while scrolling: `auto` (adapts to
+    /// capture cost and power profile), `low_impact` (about every 5 s),
+    /// `balanced` (about every 2 s) or `more_detail` (about every second).
+    #[arg(long, value_parser = ["auto", "low_impact", "balanced", "more_detail"])]
+    pub recording_detail: Option<String>,
+
     /// Windows to ignore (case-insensitive contains). Use `App::Title` to
     /// scope to one window of one app (e.g. `Slack::#hr`). `::title` matches
     /// any app whose focused window title contains `title`. `App::` blocks
@@ -457,6 +495,13 @@ pub struct RecordArgs {
     /// URLs to ignore for browser privacy filtering
     #[arg(long)]
     pub ignored_urls: Vec<String>,
+
+    /// Websites to record exclusively (allow list). `example.com` covers that
+    /// host; `*.example.com` also covers its subdomains. Repeatable. When set,
+    /// browser windows on other sites are not recorded; `--ignored-urls`
+    /// still wins.
+    #[arg(long)]
+    pub included_urls: Vec<String>,
 
     /// Apps / meeting services to exclude from automatic meeting detection
     /// (case-insensitive contains). Matches the running app's name/process or
@@ -670,6 +715,10 @@ pub struct RecordArgSources {
     pub experimental_coreaudio_system_audio: bool,
     pub windows_input_aec_enabled: bool,
     pub macos_input_vpio_enabled: bool,
+    pub audio_capture_mode: bool,
+    pub aec_mode: bool,
+    pub meeting_piggyback: bool,
+    pub always_record_bluetooth_mic: bool,
     pub audio_transcription_engine: bool,
     pub monitor_id: bool,
     pub use_all_monitors: bool,
@@ -681,9 +730,13 @@ pub struct RecordArgSources {
     pub pii_redaction_labels: bool,
     pub filter_music: bool,
     pub disable_vision: bool,
+    pub disable_screenshots: bool,
+    pub capture_max_width: bool,
+    pub recording_detail: bool,
     pub ignored_windows: bool,
     pub included_windows: bool,
     pub ignored_urls: bool,
+    pub included_urls: bool,
     pub ignored_meeting_apps: bool,
     pub deepgram_api_key: bool,
     pub transcription_mode: bool,
@@ -719,6 +772,10 @@ impl RecordArgSources {
             ),
             windows_input_aec_enabled: from_command_line(record, "windows_input_aec_enabled"),
             macos_input_vpio_enabled: from_command_line(record, "macos_input_vpio_enabled"),
+            audio_capture_mode: from_command_line(record, "audio_capture_mode"),
+            aec_mode: from_command_line(record, "aec_mode"),
+            meeting_piggyback: from_command_line(record, "meeting_piggyback"),
+            always_record_bluetooth_mic: from_command_line(record, "always_record_bluetooth_mic"),
             audio_transcription_engine: from_command_line(record, "audio_transcription_engine"),
             monitor_id: from_command_line(record, "monitor_id"),
             use_all_monitors: from_command_line(record, "use_all_monitors"),
@@ -730,9 +787,13 @@ impl RecordArgSources {
             pii_redaction_labels: from_command_line(record, "pii_redaction_labels"),
             filter_music: from_command_line(record, "filter_music"),
             disable_vision: from_command_line(record, "disable_vision"),
+            disable_screenshots: from_command_line(record, "disable_screenshots"),
+            capture_max_width: from_command_line(record, "capture_max_width"),
+            recording_detail: from_command_line(record, "recording_detail"),
             ignored_windows: from_command_line(record, "ignored_windows"),
             included_windows: from_command_line(record, "included_windows"),
             ignored_urls: from_command_line(record, "ignored_urls"),
+            included_urls: from_command_line(record, "included_urls"),
             ignored_meeting_apps: from_command_line(record, "ignored_meeting_apps"),
             deepgram_api_key: from_command_line(record, "deepgram_api_key"),
             transcription_mode: from_command_line(record, "transcription_mode"),
@@ -760,6 +821,10 @@ impl RecordArgSources {
             || self.experimental_coreaudio_system_audio
             || self.windows_input_aec_enabled
             || self.macos_input_vpio_enabled
+            || self.audio_capture_mode
+            || self.aec_mode
+            || self.meeting_piggyback
+            || self.always_record_bluetooth_mic
             || self.audio_transcription_engine
             || self.monitor_id
             || self.use_all_monitors
@@ -771,9 +836,13 @@ impl RecordArgSources {
             || self.pii_redaction_labels
             || self.filter_music
             || self.disable_vision
+            || self.disable_screenshots
+            || self.capture_max_width
+            || self.recording_detail
             || self.ignored_windows
             || self.included_windows
             || self.ignored_urls
+            || self.included_urls
             || self.ignored_meeting_apps
             || self.deepgram_api_key
             || self.transcription_mode
@@ -895,7 +964,7 @@ impl RecordArgs {
             CliTranscriptionMode::Batch => "batch",
         };
 
-        screenpipe_config::RecordingSettings {
+        let mut settings = screenpipe_config::RecordingSettings {
             audio_chunk_duration: self.audio_chunk_duration as i32,
             port: self.port,
             disable_audio: self.disable_audio,
@@ -924,7 +993,8 @@ impl RecordArgs {
             use_all_monitors: self.use_all_monitors && self.monitor_id.is_empty(),
             ignored_windows: self.ignored_windows.clone(),
             included_windows: self.included_windows.clone(),
-            ignored_urls: self.ignored_urls.clone(),
+            ignored_urls: self.ignored_url_rules(),
+            included_urls: self.included_url_rules(),
             ignored_meeting_apps: self.ignored_meeting_apps.clone(),
             languages: self
                 .language
@@ -954,7 +1024,49 @@ impl RecordArgs {
             // Passing any `--schedule-rule` implies the schedule is on.
             schedule_enabled: self.schedule_enabled || !self.schedule_rules.is_empty(),
             schedule_rules: self.schedule_rules.clone(),
+            always_record_bluetooth_mic: self.always_record_bluetooth_mic,
+            disable_screenshots: self.disable_screenshots,
+            capture_max_width: self.capture_max_width,
             ..screenpipe_config::RecordingSettings::default()
+        };
+        if let Some(mode) = &self.audio_capture_mode {
+            settings.audio_capture_mode = mode.clone();
+        }
+        if let Some(piggyback) = self.meeting_piggyback {
+            settings.experimental_meeting_piggyback = piggyback;
+        }
+        if let Some(detail) = &self.recording_detail {
+            settings.recording_detail = detail.clone();
+        }
+        self.apply_aec_mode(&mut settings);
+        settings
+    }
+
+    /// `--ignored-urls` values as stored block-list entries.
+    fn ignored_url_rules(&self) -> Vec<screenpipe_config::UrlRule> {
+        self.ignored_urls
+            .iter()
+            .map(|url| screenpipe_config::UrlRule::from(url.as_str()))
+            .collect()
+    }
+
+    /// `--included-urls` values as allow-list rules; empty values are skipped.
+    fn included_url_rules(&self) -> Vec<screenpipe_config::DomainRule> {
+        self.included_urls
+            .iter()
+            .filter_map(|pattern| screenpipe_config::DomainRule::from_pattern(pattern))
+            .collect()
+    }
+
+    /// Apply `--aec-mode` (validated for this platform), keeping `aecMode`
+    /// and the three AEC booleans in step.
+    fn apply_aec_mode(&self, settings: &mut screenpipe_config::RecordingSettings) {
+        if let Some(mode) = self
+            .aec_mode
+            .as_deref()
+            .and_then(screenpipe_config::AecMode::parse)
+        {
+            settings.set_aec_mode(mode, screenpipe_config::SettingsPlatform::current());
         }
     }
 
@@ -1135,6 +1247,22 @@ impl RecordArgs {
         if sources.macos_input_vpio_enabled {
             settings.macos_input_vpio_enabled = self.macos_input_vpio_enabled;
         }
+        if sources.aec_mode {
+            self.apply_aec_mode(settings);
+        }
+        if sources.audio_capture_mode {
+            if let Some(mode) = &self.audio_capture_mode {
+                settings.audio_capture_mode = mode.clone();
+            }
+        }
+        if sources.meeting_piggyback {
+            if let Some(piggyback) = self.meeting_piggyback {
+                settings.experimental_meeting_piggyback = piggyback;
+            }
+        }
+        if sources.always_record_bluetooth_mic {
+            settings.always_record_bluetooth_mic = self.always_record_bluetooth_mic;
+        }
         if sources.audio_transcription_engine {
             settings.audio_transcription_engine =
                 cli_engine_to_str(&self.audio_transcription_engine).to_string();
@@ -1176,6 +1304,17 @@ impl RecordArgs {
         if sources.disable_vision {
             settings.disable_vision = self.disable_vision;
         }
+        if sources.disable_screenshots {
+            settings.disable_screenshots = self.disable_screenshots;
+        }
+        if sources.capture_max_width {
+            settings.capture_max_width = self.capture_max_width;
+        }
+        if sources.recording_detail {
+            if let Some(detail) = &self.recording_detail {
+                settings.recording_detail = detail.clone();
+            }
+        }
         // An explicit --monitor-id or --use-all-monitors means the user wants
         // vision on, so it clears a persisted disable_vision:true (the #3648
         // analog for screen capture: otherwise the monitor is set but vision
@@ -1196,7 +1335,10 @@ impl RecordArgs {
             settings.included_windows = self.included_windows.clone();
         }
         if sources.ignored_urls {
-            settings.ignored_urls = self.ignored_urls.clone();
+            settings.ignored_urls = self.ignored_url_rules();
+        }
+        if sources.included_urls {
+            settings.included_urls = self.included_url_rules();
         }
         if sources.ignored_meeting_apps {
             settings.ignored_meeting_apps = self.ignored_meeting_apps.clone();
@@ -2284,6 +2426,111 @@ mod tests {
         assert!(
             settings.disable_vision,
             "absent vision flags must not flip a persisted disable_vision"
+        );
+    }
+
+    #[test]
+    fn settings_v2_flags_flow_into_recording_settings() {
+        let cli = Cli::try_parse_from([
+            "screenpipe",
+            "record",
+            "--audio-capture-mode",
+            "meetings-only",
+            "--aec-mode",
+            "screenpipe",
+            "--meeting-piggyback",
+            "false",
+            "--always-record-bluetooth-mic",
+            "--disable-screenshots",
+            "--capture-max-width",
+            "1280",
+            "--recording-detail",
+            "low_impact",
+            "--ignored-urls",
+            "bank.example",
+            "--included-urls",
+            "*.example.org",
+        ])
+        .unwrap();
+        let Command::Record(args) = cli.command else {
+            panic!("expected Record command");
+        };
+        let settings = args.to_recording_settings();
+        assert_eq!(settings.audio_capture_mode, "meetings-only");
+        assert_eq!(settings.aec_mode, "screenpipe");
+        assert!(settings.screenpipe_aec_enabled);
+        assert!(!settings.experimental_meeting_piggyback);
+        assert!(settings.always_record_bluetooth_mic);
+        assert!(settings.disable_screenshots);
+        assert_eq!(settings.capture_max_width, Some(1280));
+        assert_eq!(settings.recording_detail, "low_impact");
+        assert_eq!(
+            settings.ignored_urls,
+            vec![screenpipe_config::UrlRule::from("bank.example")]
+        );
+        assert_eq!(settings.included_urls.len(), 1);
+        assert_eq!(settings.included_urls[0].domain, "example.org");
+        assert!(settings.included_urls[0].include_subdomains);
+    }
+
+    #[test]
+    fn settings_v2_flags_absent_keep_defaults() {
+        let cli = Cli::try_parse_from(["screenpipe", "record"]).unwrap();
+        let Command::Record(args) = cli.command else {
+            panic!("expected Record command");
+        };
+        let settings = args.to_recording_settings();
+        let defaults = screenpipe_config::RecordingSettings::default();
+        assert_eq!(settings.audio_capture_mode, defaults.audio_capture_mode);
+        assert_eq!(settings.aec_mode, "off");
+        assert_eq!(
+            settings.experimental_meeting_piggyback,
+            defaults.experimental_meeting_piggyback
+        );
+        assert!(!settings.disable_screenshots);
+        assert_eq!(settings.capture_max_width, None);
+        assert_eq!(settings.recording_detail, "auto");
+        assert!(settings.included_urls.is_empty());
+    }
+
+    #[test]
+    fn settings_v2_flags_override_a_persisted_store_only_when_given() {
+        let args = [
+            "screenpipe",
+            "record",
+            "--audio-capture-mode",
+            "disabled",
+            "--included-urls",
+            "docs.example.org",
+        ];
+        let cli = Cli::try_parse_from(args).unwrap();
+        let sources = record_sources(args);
+        assert!(sources.has_recording_override());
+        let mut settings = screenpipe_config::RecordingSettings {
+            audio_capture_mode: "always".to_string(),
+            disable_screenshots: true,
+            recording_detail: "more_detail".to_string(),
+            ..Default::default()
+        };
+        let Command::Record(args) = cli.command else {
+            panic!("expected Record command");
+        };
+        args.apply_explicit_overrides(&mut settings, &sources);
+        assert_eq!(settings.audio_capture_mode, "disabled");
+        assert_eq!(settings.included_urls[0].domain, "docs.example.org");
+        assert!(settings.disable_screenshots, "absent flag keeps the stored value");
+        assert_eq!(settings.recording_detail, "more_detail");
+    }
+
+    #[test]
+    fn settings_v2_flags_reject_unknown_values() {
+        assert!(
+            Cli::try_parse_from(["screenpipe", "record", "--audio-capture-mode", "sometimes"])
+                .is_err()
+        );
+        assert!(Cli::try_parse_from(["screenpipe", "record", "--aec-mode", "linux"]).is_err());
+        assert!(
+            Cli::try_parse_from(["screenpipe", "record", "--recording-detail", "max"]).is_err()
         );
     }
 }

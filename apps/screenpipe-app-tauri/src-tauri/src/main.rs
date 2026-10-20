@@ -930,11 +930,16 @@ async fn main() {
             // Store setup and initialization - must be done first
             // Note: StoreBuilder handles file creation internally — pre-creating
             // store.bin here caused TOCTOU race conditions ("File exists" os error 17).
-            // Use unwrap_or_default to prevent crashes from corrupted stores
-            let mut store = store::init_store(&app.handle()).unwrap_or_else(|e| {
-                error!("Failed to init settings store, using defaults: {}", e);
-                store::SettingsStore::default()
-            });
+            // Fail closed: if the settings store cannot be read, stop here with
+            // an error dialog instead of running on defaults, which a later
+            // save would write over the user's real settings.
+            let mut store = match store::init_store(&app.handle()) {
+                Ok(store) => store,
+                Err(e) => {
+                    store::report_store_init_failure(&app.handle(), &e);
+                    return Ok(());
+                }
+            };
 
             // E2E seed: when SCREENPIPE_E2E_SEED contains "no-recording", flip
             // disable_vision + disable_audio so the e2e harness can drive the

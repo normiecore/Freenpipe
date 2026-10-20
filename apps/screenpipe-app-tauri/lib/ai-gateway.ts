@@ -125,8 +125,9 @@ export interface MigrationContext {
  *   is cleared for the user to re-pick. With a gateway they stay, and a
  *   legacy `pi` provider is renamed to `screenpipe-cloud`.
  * - A remote PII backend goes back to `local`, the legacy analytics flag
- *   goes off and cloud media analysis goes off. The user can turn remote
- *   options back on after configuring their own endpoints.
+ *   goes off, enhanced AI goes off and cloud media analysis goes off. The
+ *   user can turn remote options back on after configuring their own
+ *   endpoints.
  */
 export function applyFreenpipeMigrations<T extends Record<string, any>>(
   input: T,
@@ -162,6 +163,9 @@ export function applyFreenpipeMigrations<T extends Record<string, any>>(
       settings.piiBackend = "local";
     }
     settings.analyticsEnabled = false;
+    // Enhanced AI sends recent activity to the default preset's provider;
+    // an imported store turns it back on only by the user's choice.
+    settings.enhancedAI = false;
     settings.cloudMediaAnalysisEnabled = false;
     settings[PRIVACY_DEFAULTS_MIGRATION_FLAG] = true;
     changed = true;
