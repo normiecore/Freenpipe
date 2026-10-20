@@ -26,6 +26,12 @@ export interface EnterprisePolicy {
   aiPresetPolicy: EnterpriseAiPresetPolicy;
   appUpdatePolicy: EnterpriseAppUpdatePolicy;
   managedPipes: unknown[];
+  /** Team skills an organisation would install and keep in sync. */
+  managedSkills: unknown[];
+  /** Whether an organisation lets this seat record at all. */
+  recordingAllowed: boolean;
+  /** Whether an organisation requires signing in before recording. */
+  requireAccountLogin: boolean;
   orgName: string;
 }
 
@@ -36,6 +42,9 @@ export const EMPTY_ENTERPRISE_POLICY: EnterprisePolicy = Object.freeze({
   aiPresetPolicy: DEFAULT_ENTERPRISE_AI_PRESET_POLICY,
   appUpdatePolicy: DEFAULT_ENTERPRISE_APP_UPDATE_POLICY,
   managedPipes: [],
+  managedSkills: [],
+  recordingAllowed: true,
+  requireAccountLogin: false,
   orgName: "",
 });
 
@@ -46,6 +55,7 @@ export const ENTERPRISE_UNAVAILABLE_MESSAGE =
 
 const nothingHidden = (_id: string): boolean => false;
 const nothingLocked = (_key: string): boolean => false;
+const noPipeManaged = (_pipeName: string): boolean => false;
 const noManagedValue = (_key: string): string | undefined => undefined;
 const rejectLicenseKey = async (_key: string): Promise<LicenseKeySubmitResult> => ({
   ok: false,
@@ -55,7 +65,17 @@ const rejectLicenseKey = async (_key: string): Promise<LicenseKeySubmitResult> =
 const PERSONAL_INSTALL = Object.freeze({
   policy: EMPTY_ENTERPRISE_POLICY,
   isEnterprise: false as const,
+  /** Settings pushed by an organisation are never merged in. */
+  isManagedDeployment: false as const,
+  /**
+   * Reads of older history are never refused. The backend command
+   * `is_history_access_restricted` gives the same answer, so there is no
+   * need to ask it.
+   */
+  historyAccessRestricted: false as const,
   isSectionHidden: nothingHidden,
+  /** No pipe is locked against local edits, toggles or deletion. */
+  isPipeManaged: noPipeManaged,
   isSettingLocked: nothingLocked,
   getManagedValue: noManagedValue,
   needsLicenseKey: false as const,
@@ -66,7 +86,8 @@ const PERSONAL_INSTALL = Object.freeze({
  * Organisation policy for the current install.
  *
  * Always the personal-install answer: no section is hidden, no setting is
- * locked, no license key is asked for, and nothing is fetched or reported.
+ * locked, no pipe or skill is managed, history is never limited, no license
+ * key is asked for, and nothing is fetched or reported.
  * The returned functions are module constants, so callers that list them as
  * effect dependencies never re-run because of this hook.
  */
