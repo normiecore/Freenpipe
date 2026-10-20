@@ -36,7 +36,8 @@ use tracing::{debug, error, info, warn};
 static TEARDOWN_STARTED: AtomicBool = AtomicBool::new(false);
 static TEARDOWN_FINISHED: AtomicBool = AtomicBool::new(false);
 static PROTECTED_DB_RECOVERY: AtomicBool = AtomicBool::new(false);
-static FINISHED_SIGNAL: (Mutex<()>, std::sync::Condvar) = (Mutex::new(()), std::sync::Condvar::new());
+static FINISHED_SIGNAL: (Mutex<()>, std::sync::Condvar) =
+    (Mutex::new(()), std::sync::Condvar::new());
 
 /// True from the moment a quit, exit or relaunch teardown starts. The engine
 /// watchdog stays idle while this is set.
@@ -49,7 +50,10 @@ pub fn is_shutting_down() -> bool {
 #[allow(dead_code)] // used by the database recovery flow (shell-014)
 pub fn set_protected_db_recovery(active: bool) {
     PROTECTED_DB_RECOVERY.store(active, Ordering::SeqCst);
-    info!("protected database recovery {}", if active { "started" } else { "ended" });
+    info!(
+        "protected database recovery {}",
+        if active { "started" } else { "ended" }
+    );
 }
 
 /// Answer to a quit or relaunch request.
@@ -201,9 +205,15 @@ async fn run_step<F>(
     let elapsed = started.elapsed();
     if outcome == StepOutcome::TimedOut {
         report.overran = true;
-        warn!("teardown step {name} did not finish within {}ms", limit.as_millis());
+        warn!(
+            "teardown step {name} did not finish within {}ms",
+            limit.as_millis()
+        );
     } else {
-        debug!("teardown step {name}: {outcome:?} in {}ms", elapsed.as_millis());
+        debug!(
+            "teardown step {name}: {outcome:?} in {}ms",
+            elapsed.as_millis()
+        );
     }
     report.steps.push(StepReport {
         name,
@@ -267,13 +277,19 @@ async fn teardown(app: &tauri::AppHandle, reason: &str, budget: TeardownBudget) 
     })
     .await;
 
-    run_step(&mut report, "http_drain", budget.http_drain, deadline, async {
-        if crate::recording::wait_for_retired_generations(budget.http_drain).await {
-            StepOutcome::Done
-        } else {
-            StepOutcome::TimedOut
-        }
-    })
+    run_step(
+        &mut report,
+        "http_drain",
+        budget.http_drain,
+        deadline,
+        async {
+            if crate::recording::wait_for_retired_generations(budget.http_drain).await {
+                StepOutcome::Done
+            } else {
+                StepOutcome::TimedOut
+            }
+        },
+    )
     .await;
 
     run_step(&mut report, "sqlite_pools", budget.pools, deadline, async {
@@ -421,11 +437,12 @@ pub fn on_run_exit(app: &tauri::AppHandle) {
             // Another teardown is in flight (an OS session end during a
             // quit, say). Give it the rest of its budget.
             let guard = FINISHED_SIGNAL.0.lock().unwrap_or_else(|e| e.into_inner());
-            let _ = FINISHED_SIGNAL.1.wait_timeout_while(
-                guard,
-                budget.overall + GUARD_MARGIN,
-                |_| !TEARDOWN_FINISHED.load(Ordering::SeqCst),
-            );
+            let _ =
+                FINISHED_SIGNAL
+                    .1
+                    .wait_timeout_while(guard, budget.overall + GUARD_MARGIN, |_| {
+                        !TEARDOWN_FINISHED.load(Ordering::SeqCst)
+                    });
         }
         debug!("exit: teardown already done");
         return;
@@ -740,18 +757,32 @@ mod tests {
         let start = Instant::now();
         let deadline = start + Duration::from_millis(300);
         let mut report = TeardownReport::default();
-        run_step(&mut report, "fast", Duration::from_secs(1), deadline, async {
-            StepOutcome::Done
-        })
+        run_step(
+            &mut report,
+            "fast",
+            Duration::from_secs(1),
+            deadline,
+            async { StepOutcome::Done },
+        )
         .await;
-        run_step(&mut report, "stuck", Duration::from_secs(10), deadline, async {
-            tokio::time::sleep(Duration::from_secs(60)).await;
-            StepOutcome::Done
-        })
+        run_step(
+            &mut report,
+            "stuck",
+            Duration::from_secs(10),
+            deadline,
+            async {
+                tokio::time::sleep(Duration::from_secs(60)).await;
+                StepOutcome::Done
+            },
+        )
         .await;
-        run_step(&mut report, "late", Duration::from_secs(1), deadline, async {
-            StepOutcome::Done
-        })
+        run_step(
+            &mut report,
+            "late",
+            Duration::from_secs(1),
+            deadline,
+            async { StepOutcome::Done },
+        )
         .await;
         assert!(start.elapsed() < Duration::from_secs(2));
         assert!(report.overran);

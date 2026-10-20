@@ -302,8 +302,7 @@ pub fn plan(holders: &[PortHolder]) -> ConflictPlan {
 /// Whether an HTTP body is a screenpipe health document: a JSON object with
 /// a string `status` and at least one of the capture-status fields.
 pub fn looks_like_screenpipe_health(body: &str) -> bool {
-    let Ok(serde_json::Value::Object(map)) = serde_json::from_str::<serde_json::Value>(body)
-    else {
+    let Ok(serde_json::Value::Object(map)) = serde_json::from_str::<serde_json::Value>(body) else {
         return false;
     };
     let has_status = map.get("status").map_or(false, |v| v.is_string());
@@ -322,6 +321,7 @@ pub fn looks_like_screenpipe_health(body: &str) -> bool {
 /// PIDs of TCP sockets listening on `port`, from `netstat -ano` output.
 /// A listener is recognised by its foreign port being 0, which (unlike the
 /// state column) is not localised.
+#[cfg_attr(not(windows), allow(dead_code))]
 pub fn parse_netstat_listeners(text: &str, port: u16) -> Vec<u32> {
     let wanted = port.to_string();
     let mut pids = Vec::new();
@@ -346,6 +346,7 @@ pub fn parse_netstat_listeners(text: &str, port: u16) -> Vec<u32> {
 
 /// Listener PIDs and command names from `lsof -Fpc` output: a `p<pid>`
 /// line followed by its `c<command>` line.
+#[cfg_attr(not(unix), allow(dead_code))]
 pub fn parse_lsof_fields(text: &str) -> Vec<(u32, Option<String>)> {
     let mut out: Vec<(u32, Option<String>)> = Vec::new();
     let mut current: Option<usize> = None;
@@ -435,7 +436,10 @@ pub(crate) async fn resolve<P: PortOps>(
 
     for round in 0..MAX_ROUNDS {
         let holders = classify_listeners(ops, port, self_pid, own_exe).await;
-        for h in holders.iter().filter(|h| h.class != HolderClass::OwnProcess) {
+        for h in holders
+            .iter()
+            .filter(|h| h.class != HolderClass::OwnProcess)
+        {
             info!(
                 "port {port}: {} classified as {}{}",
                 h.identity.describe(),
@@ -600,6 +604,18 @@ pub async fn port_in_use(port: u16) -> bool {
         .is_err()
 }
 
+/// Whether the engine could take `port` now: nothing accepts on
+/// `127.0.0.1:<port>` and the OS lists no other process listening on it
+/// (which also catches a wildcard listener that a loopback bind would not
+/// collide with on Windows).
+pub async fn port_free_for_engine(port: u16) -> bool {
+    if port_in_use(port).await {
+        return false;
+    }
+    let me = std::process::id();
+    !system::listeners(port).await.iter().any(|pid| *pid != me)
+}
+
 mod system {
     use super::ProcessIdentity;
     #[allow(unused_imports)]
@@ -664,7 +680,7 @@ mod system {
     #[cfg(windows)]
     pub fn identify(pid: u32) -> ProcessIdentity {
         use windows::core::PWSTR;
-        use windows::Win32::Foundation::CloseHandle;
+        use windows::Win32::Foundation::{CloseHandle, BOOL};
         use windows::Win32::System::Threading::{
             OpenProcess, QueryFullProcessImageNameW, PROCESS_NAME_WIN32,
             PROCESS_QUERY_LIMITED_INFORMATION,
@@ -674,7 +690,8 @@ mod system {
         // SAFETY: plain Win32 calls on a handle we own and close; the buffer
         // outlives the call and its capacity is passed in `len`.
         unsafe {
-            let Ok(handle) = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, pid) else {
+            let Ok(handle) = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, BOOL::from(false), pid)
+            else {
                 return identity;
             };
             let mut buf = vec![0u16; 32768];
@@ -688,8 +705,7 @@ mod system {
             .is_ok();
             let _ = CloseHandle(handle);
             if ok {
-                let path =
-                    std::path::PathBuf::from(String::from_utf16_lossy(&buf[..len as usize]));
+                let path = std::path::PathBuf::from(String::from_utf16_lossy(&buf[..len as usize]));
                 identity.image_name = path.file_name().map(|n| n.to_string_lossy().into_owned());
                 identity.exe_path = Some(path);
             }
@@ -992,7 +1008,10 @@ Active Connections
     fn netstat_only_matches_listeners_on_the_exact_port() {
         // Clients connected *to* 3030 (pid 7777), ports that merely contain
         // "3030" (pid 5555) and UDP sockets are not listeners.
-        assert_eq!(parse_netstat_listeners(NETSTAT_WINDOWS, 3030), vec![4242, 6060]);
+        assert_eq!(
+            parse_netstat_listeners(NETSTAT_WINDOWS, 3030),
+            vec![4242, 6060]
+        );
         assert_eq!(parse_netstat_listeners(NETSTAT_WINDOWS, 135), vec![1100]);
         assert_eq!(parse_netstat_listeners(NETSTAT_WINDOWS, 3035), vec![1000]);
         assert!(parse_netstat_listeners(NETSTAT_WINDOWS, 4000).is_empty());
@@ -1064,7 +1083,10 @@ Active Connections
         let c = |id: &ProcessIdentity, probe| classify(id, SELF_PID, own(), probe).class;
 
         // Self, whatever the probe says.
-        assert_eq!(c(&ident(SELF_PID, Some(OWN_EXE)), NoAnswer), HolderClass::OwnProcess);
+        assert_eq!(
+            c(&ident(SELF_PID, Some(OWN_EXE)), NoAnswer),
+            HolderClass::OwnProcess
+        );
         assert_eq!(
             c(&ProcessIdentity::unknown(SELF_PID), ScreenpipeHealth),
             HolderClass::OwnProcess
@@ -1088,7 +1110,10 @@ Active Connections
         let node = ident(6060, Some(NODE_EXE));
         assert_eq!(c(&node, OtherHttp), HolderClass::Foreign);
         assert_eq!(c(&node, NoAnswer), HolderClass::Foreign);
-        assert_eq!(c(&ProcessIdentity::unknown(6061), NoAnswer), HolderClass::Foreign);
+        assert_eq!(
+            c(&ProcessIdentity::unknown(6061), NoAnswer),
+            HolderClass::Foreign
+        );
 
         // Without knowing our own path nothing is ever "ours".
         assert_eq!(
@@ -1235,7 +1260,10 @@ Active Connections
     #[test]
     fn free_port_needs_no_action() {
         let os = FakeOs::new(NETSTAT_ONE, vec![HealthProbe::NoAnswer]);
-        assert_eq!(block_on(resolve(&os, 3035, SELF_PID, own())), ReclaimOutcome::Free);
+        assert_eq!(
+            block_on(resolve(&os, 3035, SELF_PID, own())),
+            ReclaimOutcome::Free
+        );
         assert!(os.terminated.borrow().is_empty());
     }
 
@@ -1243,14 +1271,17 @@ Active Connections
     fn own_process_on_the_port_is_left_alone() {
         let netstat = NETSTAT_ONE.replace("4242", &SELF_PID.to_string());
         let os = FakeOs::new(&netstat, vec![HealthProbe::NoAnswer]);
-        assert_eq!(block_on(resolve(&os, 3030, SELF_PID, own())), ReclaimOutcome::Free);
+        assert_eq!(
+            block_on(resolve(&os, 3030, SELF_PID, own())),
+            ReclaimOutcome::Free
+        );
         assert!(os.terminated.borrow().is_empty());
     }
 
     #[test]
     fn unhealthy_copy_of_our_executable_is_terminated() {
-        let os = FakeOs::new(NETSTAT_ONE, vec![HealthProbe::NoAnswer])
-            .with(ident(4242, Some(OWN_EXE)));
+        let os =
+            FakeOs::new(NETSTAT_ONE, vec![HealthProbe::NoAnswer]).with(ident(4242, Some(OWN_EXE)));
         let outcome = block_on(resolve(&os, 3030, SELF_PID, own()));
         assert_eq!(
             outcome,
@@ -1348,8 +1379,8 @@ Active Connections
 
     #[test]
     fn stubborn_copy_reports_reclaim_failed() {
-        let mut os = FakeOs::new(NETSTAT_ONE, vec![HealthProbe::NoAnswer])
-            .with(ident(4242, Some(OWN_EXE)));
+        let mut os =
+            FakeOs::new(NETSTAT_ONE, vec![HealthProbe::NoAnswer]).with(ident(4242, Some(OWN_EXE)));
         os.kill_frees = false;
         let outcome = block_on(resolve(&os, 3030, SELF_PID, own()));
         assert_eq!(
@@ -1415,7 +1446,14 @@ Active Connections
             ident(pids[1], Some("/usr/local/bin/node")),
         ]
         .iter()
-        .map(|id| classify(id, SELF_PID, Some(Path::new(own_unix)), HealthProbe::NoAnswer))
+        .map(|id| {
+            classify(
+                id,
+                SELF_PID,
+                Some(Path::new(own_unix)),
+                HealthProbe::NoAnswer,
+            )
+        })
         .collect();
         assert_eq!(
             holders.iter().map(|h| h.class).collect::<Vec<_>>(),

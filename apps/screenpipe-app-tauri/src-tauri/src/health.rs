@@ -619,7 +619,9 @@ pub(crate) mod watchdog {
             after_port_freed: bool,
         },
         /// Respawns are paused by the rate limit (returned once per pause).
-        RateLimited { retry_in: Duration },
+        RateLimited {
+            retry_in: Duration,
+        },
         /// The port freed up while recording is off: clear the error only.
         ClearPortError,
         /// Our engine answers again after a port conflict.
@@ -981,8 +983,7 @@ pub async fn start_health_check(app: tauri::AppHandle) -> Result<()> {
             );
 
             let (capture_running, start_in_progress, server_starting, engine_present) =
-                if let Some(recording_state) = app.try_state::<crate::recording::RecordingState>()
-                {
+                if let Some(recording_state) = app.try_state::<crate::recording::RecordingState>() {
                     let server_starting = recording_state.is_starting.load(Ordering::SeqCst);
                     let start_in_progress = server_starting
                         || recording_state.is_starting_capture.load(Ordering::SeqCst);
@@ -996,7 +997,12 @@ pub async fn start_health_check(app: tauri::AppHandle) -> Result<()> {
                         .try_lock()
                         .ok()
                         .map(|server| server.is_some());
-                    (capture_running, start_in_progress, server_starting, engine_present)
+                    (
+                        capture_running,
+                        start_in_progress,
+                        server_starting,
+                        engine_present,
+                    )
                 } else {
                     (None, false, false, None)
                 };
@@ -1019,7 +1025,9 @@ pub async fn start_health_check(app: tauri::AppHandle) -> Result<()> {
             );
             if start_in_progress && !tray_start_in_progress && !stale_flag_logged {
                 stale_flag_logged = true;
-                info!("ignoring a stale start-in-progress flag for tray status: the server answers");
+                info!(
+                    "ignoring a stale start-in-progress flag for tray status: the server answers"
+                );
             }
 
             let status = apply_capture_session_status(
@@ -1044,7 +1052,7 @@ pub async fn start_health_check(app: tauri::AppHandle) -> Result<()> {
                 last_watchdog_sample = Some(now_tick);
                 let port_free = if watchdog.port_conflict() {
                     let port = local_api_context_from_app(&app).port;
-                    Some(!crate::port_conflict::port_in_use(port).await)
+                    Some(crate::port_conflict::port_free_for_engine(port).await)
                 } else {
                     None
                 };
@@ -2278,8 +2286,7 @@ mod tests {
             let cfg = WatchdogConfig::default();
             let mut wd = EngineWatchdog::new(cfg);
             let t0 = Instant::now();
-            let (_, at) =
-                first_respawn(&mut wd, t0, &vec![sample(EngineProbe::Down); 5]).unwrap();
+            let (_, at) = first_respawn(&mut wd, t0, &vec![sample(EngineProbe::Down); 5]).unwrap();
             wd.on_result(RespawnResult::PortHeld, at);
             assert!(wd.port_conflict());
 
@@ -2287,7 +2294,10 @@ mod tests {
             let mut held = sample(EngineProbe::Down);
             held.port_free = Some(false);
             for i in 1..50u32 {
-                assert_eq!(wd.observe(held, at + cfg.sample_every * i), WatchdogAction::None);
+                assert_eq!(
+                    wd.observe(held, at + cfg.sample_every * i),
+                    WatchdogAction::None
+                );
             }
             // Port frees up: restart on that very sample.
             let mut freed = sample(EngineProbe::Down);
@@ -2305,8 +2315,7 @@ mod tests {
         fn port_freed_while_recording_is_off_only_clears_the_error() {
             let mut wd = EngineWatchdog::new(WatchdogConfig::default());
             let t0 = Instant::now();
-            let (_, at) =
-                first_respawn(&mut wd, t0, &vec![sample(EngineProbe::Down); 5]).unwrap();
+            let (_, at) = first_respawn(&mut wd, t0, &vec![sample(EngineProbe::Down); 5]).unwrap();
             wd.on_result(RespawnResult::PortHeld, at);
             let mut s = sample(EngineProbe::Down);
             s.port_free = Some(true);
@@ -2322,8 +2331,7 @@ mod tests {
         fn engine_back_during_a_conflict_is_reported() {
             let mut wd = EngineWatchdog::new(WatchdogConfig::default());
             let t0 = Instant::now();
-            let (_, at) =
-                first_respawn(&mut wd, t0, &vec![sample(EngineProbe::Down); 5]).unwrap();
+            let (_, at) = first_respawn(&mut wd, t0, &vec![sample(EngineProbe::Down); 5]).unwrap();
             wd.on_result(RespawnResult::PortHeld, at);
             assert_eq!(
                 wd.observe(sample(EngineProbe::Serving), at + Duration::from_secs(5)),
@@ -2333,12 +2341,22 @@ mod tests {
 
         #[test]
         fn health_results_map_to_probes() {
-            assert_eq!(engine_probe(&make_healthy_response(), true), EngineProbe::Serving);
+            assert_eq!(
+                engine_probe(&make_healthy_response(), true),
+                EngineProbe::Serving
+            );
             // Something else answers our port while our engine is gone.
-            assert_eq!(engine_probe(&make_healthy_response(), false), EngineProbe::Down);
-            assert_eq!(engine_probe(&make_connection_error(), true), EngineProbe::Down);
-            let timeout: anyhow::Result<super::super::HealthCheckResponse> =
-                Err(anyhow::anyhow!("health check timeout, sidecar may not be running"));
+            assert_eq!(
+                engine_probe(&make_healthy_response(), false),
+                EngineProbe::Down
+            );
+            assert_eq!(
+                engine_probe(&make_connection_error(), true),
+                EngineProbe::Down
+            );
+            let timeout: anyhow::Result<super::super::HealthCheckResponse> = Err(anyhow::anyhow!(
+                "health check timeout, sidecar may not be running"
+            ));
             assert_eq!(engine_probe(&timeout, true), EngineProbe::Slow);
             assert_eq!(engine_probe(&timeout, false), EngineProbe::Down);
         }
@@ -2348,7 +2366,12 @@ mod tests {
             let old = STALE_START_FLAG_AFTER + Duration::from_secs(1);
             assert!(!effective_start_in_progress(true, true, true, old));
             // Fresh flag, server down, or boot not ready: still starting.
-            assert!(effective_start_in_progress(true, true, true, Duration::from_secs(1)));
+            assert!(effective_start_in_progress(
+                true,
+                true,
+                true,
+                Duration::from_secs(1)
+            ));
             assert!(effective_start_in_progress(true, false, true, old));
             assert!(effective_start_in_progress(true, true, false, old));
             assert!(!effective_start_in_progress(false, true, true, old));

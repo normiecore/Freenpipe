@@ -40,10 +40,16 @@ pub fn send_typed_with_actions(
     if let Some(ms) = auto_dismiss_ms {
         payload["autoDismissMs"] = json!(ms);
     }
+    // The control server listens on SCREENPIPE_FOCUS_PORT when set (dev
+    // builds use 11436 so they never reach an installed screenpipe).
+    let port: u16 = std::env::var(screenpipe_core::env::SCREENPIPE_FOCUS_PORT)
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(11435);
     tauri::async_runtime::spawn(async move {
         let client = reqwest::Client::new();
         if let Err(e) = client
-            .post("http://127.0.0.1:11435/notify")
+            .post(format!("http://127.0.0.1:{port}/notify"))
             .json(&payload)
             .send()
             .await

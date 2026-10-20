@@ -13,9 +13,9 @@ use crate::config;
 use crate::permissions::do_permissions_check;
 use crate::server_core::ServerCore;
 use crate::store::SettingsStore;
+use once_cell::sync::Lazy;
 use screenpipe_engine::RecordingConfig;
 use serde::{Deserialize, Serialize};
-use once_cell::sync::Lazy;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Weak};
 use std::time::{Duration, Instant};
@@ -748,9 +748,11 @@ pub async fn spawn_screenpipe(
     // Classify anything else on the API port. Only an unresponsive copy of
     // this executable is ever terminated; a healthy or foreign holder (the
     // installed screenpipe, a dev server) is left alone and reported.
-    let conflict =
-        crate::port_conflict::resolve_before_bind(port, crate::port_conflict::PortPurpose::EngineApi)
-            .await;
+    let conflict = crate::port_conflict::resolve_before_bind(
+        port,
+        crate::port_conflict::PortPurpose::EngineApi,
+    )
+    .await;
     if !conflict.port_available() {
         let msg = format!(
             "Cannot start the engine: {}",
