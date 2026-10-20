@@ -68,6 +68,11 @@ pub const PI_FAMILY: &[&str] = &[
     "@earendil-works/pi-telemetry",
 ];
 
+/// Packages the managed install never carries, even when a manifest written
+/// by another build lists them: `tinfoil` is AGPL-3.0 and only serves a
+/// vendor-hosted provider (decision 7 keeps it out of default builds).
+pub const EXCLUDED_PACKAGES: &[&str] = &["tinfoil"];
+
 /// `hosted-git-info` 9 needs `lru-cache` 11. Kept as a nested override so a
 /// package manager that hoists an older, incompatible `lru-cache` cannot
 /// break it (bun on Windows once did, with lru-cache 7).
@@ -215,10 +220,11 @@ fn apply_pins(pkg: &mut Value) -> bool {
         changed = true;
     }
     let deps = deps.as_object_mut().expect("object");
-    // Packages from before the upstream namespace rename.
+    // Packages from before the upstream namespace rename, and packages the
+    // runtime must not install.
     let legacy: Vec<String> = deps
         .keys()
-        .filter(|k| k.starts_with("@mariozechner/"))
+        .filter(|k| k.starts_with("@mariozechner/") || EXCLUDED_PACKAGES.contains(&k.as_str()))
         .cloned()
         .collect();
     for key in legacy {
@@ -238,6 +244,11 @@ fn apply_pins(pkg: &mut Value) -> bool {
         changed = true;
     }
     let overrides = overrides.as_object_mut().expect("object");
+    for name in EXCLUDED_PACKAGES {
+        if overrides.remove(*name).is_some() {
+            changed = true;
+        }
+    }
     for (name, value) in pinned_overrides() {
         if overrides.get(name) != Some(&value) {
             overrides.insert(name.to_string(), value);
@@ -775,6 +786,20 @@ mod tests {
         assert_eq!(pkg["overrides"]["custom"], "1");
         assert_eq!(pkg["overrides"]["@earendil-works/pi-agent-core"], "0.84.1");
         assert!(!dir.path().join("bun.lock").exists());
+    }
+
+    #[test]
+    fn excluded_packages_are_dropped_from_a_foreign_manifest() {
+        let dir = tmp();
+        std::fs::write(
+            dir.path().join("package.json"),
+            r#"{"dependencies":{"tinfoil":"1.0.0","@earendil-works/pi-coding-agent":"0.84.1"},"overrides":{"tinfoil":"1.0.0"}}"#,
+        )
+        .unwrap();
+        assert_eq!(seed_package_json(dir.path()).unwrap(), SeedOutcome::Updated);
+        let pkg = read_json_object(&dir.path().join("package.json"));
+        assert!(pkg["dependencies"].get("tinfoil").is_none());
+        assert!(pkg["overrides"].get("tinfoil").is_none());
     }
 
     #[test]
