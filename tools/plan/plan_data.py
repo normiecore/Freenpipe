@@ -2048,6 +2048,26 @@ wp("WR-04", 7, "L", "Composio integrations (BYO key) and workflow sharing",
     "UI smoke: gallery lists entries from the registry index; import shows the permission review"],
    ["specs/cloud.md cloud-035, cloud-038"])
 
+wp("W1-05", 1, "M", "Licence gating for commercial builds",
+   ["(owner decision 7) commercial-ready default builds"],
+   ["crates/screenpipe-redact/Cargo.toml (opf-text, tinfoil features)", RD + "adapters/ (tinfoil and opf adapters behind features)",
+    "crates/screenpipe-engine/Cargo.toml (feature flags)", E + "privacy_filter.rs (enclave path behind a feature)",
+    E + "bin/screenpipe-engine.rs (opf fallback behind a feature)", AT + "Cargo.toml (feature flags)",
+    "scripts/ci/licence-guard.test.ts (new)", ".github/workflows/freenpipe-ci.yml (gates step)", "third_party/README.md"],
+   ["W0-13"],
+   "Make every build the project ships commercially usable by default. opf-rs (CC BY-NC 4.0) and tinfoil (AGPL-3.0) move behind "
+   "opt-in Cargo features that no default build and no release-app.yml feature set enables: screenpipe-redact `opf-text` and a new "
+   "`tinfoil-enclave` feature, forwarded by screenpipe-engine and the app crate as opt-in features of their own. With the features "
+   "off, the text PII worker skips the opf fallback (v45 ONNX, then regex), and the BYO-enclave paths (search filter_pii enclave, "
+   "tinfoil text and image adapters) report 'not built with enclave support' instead of compiling the client. Add a CI gate that "
+   "resolves the default and release feature sets of the engine and app crates and fails if any package licensed CC BY-NC, AGPL, "
+   "GPL (other than LGPL), SSPL or without any licence declaration enters them, with a short commented allow-list for "
+   "declared exceptions. Record both crates' status in third_party/README.md.",
+   ["cargo tree for screenpipe-engine and the app crate with default and release features contains neither opf nor tinfoil",
+    "cargo check of screenpipe-redact and screenpipe-engine passes both with and without the opt-in features",
+    "the licence gate passes on main and fails on a branch that re-enables opf-text by default (negative test in the gate's tests)"],
+   ["docs/clean-room/DECISIONS.md decision 7", "third_party/README.md"])
+
 wp("W0-13", 0, "M", "Vendor git dependencies into third_party/",
    ["(owner decision 2) vendor git deps"],
    ["third_party/ (new)", "third_party/README.md (new)", "Cargo.toml ([patch] / path deps)", "Cargo.lock",
