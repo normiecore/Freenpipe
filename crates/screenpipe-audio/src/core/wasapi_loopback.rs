@@ -39,7 +39,7 @@ use anyhow::{anyhow, Result};
 use tokio::sync::broadcast;
 use tracing::{debug, error, info, warn};
 
-use windows::core::{implement, Interface, IUnknown, HRESULT, PCWSTR, PROPVARIANT};
+use windows::core::{implement, IUnknown, Interface, HRESULT, PCWSTR, PROPVARIANT};
 use windows::Wdk::System::SystemServices::RtlGetVersion;
 use windows::Win32::Devices::FunctionDiscovery::PKEY_Device_FriendlyName;
 use windows::Win32::Foundation::{
@@ -64,8 +64,7 @@ use windows::Win32::System::Com::{
     COINIT_MULTITHREADED, STGM,
 };
 use windows::Win32::System::Diagnostics::ToolHelp::{
-    CreateToolhelp32Snapshot, Process32FirstW, Process32NextW, PROCESSENTRY32W,
-    TH32CS_SNAPPROCESS,
+    CreateToolhelp32Snapshot, Process32FirstW, Process32NextW, PROCESSENTRY32W, TH32CS_SNAPPROCESS,
 };
 use windows::Win32::System::SystemInformation::OSVERSIONINFOW;
 use windows::Win32::System::Threading::{
@@ -292,9 +291,7 @@ fn run_capture_thread(
     }
     info!(
         "{ENGINE_LABEL}: capturing {} as {} at {} Hz",
-        ctx.label,
-        engine.client.target,
-        engine.output_rate
+        ctx.label, engine.client.target, engine.output_rate
     );
     engine.run(&ctx);
     debug!("{ENGINE_LABEL}: capture thread for {} exited", ctx.label);
@@ -610,7 +607,8 @@ fn activate_process_loopback(pid: u32, exclude: bool) -> Result<IAudioClient> {
             blob_data: std::ptr::null(),
         },
     });
-    payload.blob.blob_data = &payload.params as *const AUDIOCLIENT_ACTIVATION_PARAMS as *const c_void;
+    payload.blob.blob_data =
+        &payload.params as *const AUDIOCLIENT_ACTIVATION_PARAMS as *const c_void;
     let blob_ptr = &payload.blob as *const BlobPropVariant as *const PROPVARIANT;
 
     let (done_tx, done_rx) = std::sync::mpsc::channel();
@@ -630,7 +628,9 @@ fn activate_process_loopback(pid: u32, exclude: bool) -> Result<IAudioClient> {
             &handler,
         )
     }
-    .map_err(|e| anyhow!("{ENGINE_LABEL}: ActivateAudioInterfaceAsync failed for pid {pid}: {e}"))?;
+    .map_err(|e| {
+        anyhow!("{ENGINE_LABEL}: ActivateAudioInterfaceAsync failed for pid {pid}: {e}")
+    })?;
 
     if done_rx.recv_timeout(ACTIVATION_TIMEOUT).is_err() {
         return Err(anyhow!(
@@ -648,7 +648,9 @@ fn activate_process_loopback(pid: u32, exclude: bool) -> Result<IAudioClient> {
         anyhow!("{ENGINE_LABEL}: process-loopback activation failed for pid {pid}: {e}")
     })?;
     let activated = activated.ok_or_else(|| {
-        anyhow!("{ENGINE_LABEL}: process-loopback activation for pid {pid} returned no IAudioClient")
+        anyhow!(
+            "{ENGINE_LABEL}: process-loopback activation for pid {pid} returned no IAudioClient"
+        )
     })?;
     activated.cast::<IAudioClient>().map_err(|e| {
         anyhow!("{ENGINE_LABEL}: activated interface for pid {pid} is not an IAudioClient: {e}")
@@ -674,9 +676,9 @@ impl LoopbackClient {
         // SAFETY: COM calls on a valid device; the mix format is freed after
         // Initialize copied it.
         unsafe {
-            let client: IAudioClient = device
-                .Activate(CLSCTX_ALL, None)
-                .map_err(|e| anyhow!("{ENGINE_LABEL}: activating IAudioClient on the endpoint failed: {e}"))?;
+            let client: IAudioClient = device.Activate(CLSCTX_ALL, None).map_err(|e| {
+                anyhow!("{ENGINE_LABEL}: activating IAudioClient on the endpoint failed: {e}")
+            })?;
             let mix = client
                 .GetMixFormat()
                 .map_err(|e| anyhow!("{ENGINE_LABEL}: GetMixFormat failed: {e}"))?;
@@ -690,8 +692,11 @@ impl LoopbackClient {
                 None,
             );
             CoTaskMemFree(Some(mix as *const c_void));
-            init.map_err(|e| anyhow!("{ENGINE_LABEL}: initialising the loopback client failed: {e}"))?;
-            let layout = SampleLayout::from_format(&desc).map_err(|e| anyhow!("{ENGINE_LABEL}: {e}"))?;
+            init.map_err(|e| {
+                anyhow!("{ENGINE_LABEL}: initialising the loopback client failed: {e}")
+            })?;
+            let layout =
+                SampleLayout::from_format(&desc).map_err(|e| anyhow!("{ENGINE_LABEL}: {e}"))?;
             Self::finish(target, client, layout, None)
         }
     }
@@ -701,7 +706,11 @@ impl LoopbackClient {
         let (pid, exclude) = match &target {
             LoopbackTarget::ProcessTree { pid } => (*pid, false),
             LoopbackTarget::ExcludeProcessTree { pid } => (*pid, true),
-            other => return Err(anyhow!("{ENGINE_LABEL}: {other} is not a per-process target")),
+            other => {
+                return Err(anyhow!(
+                    "{ENGINE_LABEL}: {other} is not a per-process target"
+                ))
+            }
         };
         let client = activate_process_loopback(pid, exclude)?;
         // The virtual device has no mix format; ask for 16-bit stereo PCM at
@@ -767,9 +776,9 @@ impl LoopbackClient {
             let event = CreateEventW(None, BOOL(0), BOOL(0), PCWSTR::null())
                 .map_err(|e| anyhow!("{ENGINE_LABEL}: CreateEventW failed: {e}"))?;
             let event = OwnedHandle(event);
-            client
-                .SetEventHandle(event.0)
-                .map_err(|e| anyhow!("{ENGINE_LABEL}: setting the loopback event handle failed: {e}"))?;
+            client.SetEventHandle(event.0).map_err(|e| {
+                anyhow!("{ENGINE_LABEL}: setting the loopback event handle failed: {e}")
+            })?;
             let capture: IAudioCaptureClient = client
                 .GetService()
                 .map_err(|e| anyhow!("{ENGINE_LABEL}: getting IAudioCaptureClient failed: {e}"))?;
@@ -909,7 +918,9 @@ impl Engine {
         // fails falls back to the plain default loopback right here.
         let first = match &role {
             CaptureRole::SystemDefault => {
-                let state = exclusions.as_mut().expect("system stream has exclusion state");
+                let state = exclusions
+                    .as_mut()
+                    .expect("system stream has exclusion state");
                 evaluate_exclusions(state, support, &ctx.label);
                 desired_system_target(support, state.choice.as_ref(), state.untappable.set())
             }
@@ -1449,7 +1460,10 @@ mod tests {
 
     #[test]
     fn device_key_strips_the_output_suffix() {
-        assert_eq!(device_key("Speakers (Realtek(R) Audio) (output)"), "Speakers (Realtek(R) Audio)");
+        assert_eq!(
+            device_key("Speakers (Realtek(R) Audio) (output)"),
+            "Speakers (Realtek(R) Audio)"
+        );
         assert_eq!(device_key("Meeting Tap"), "Meeting Tap");
     }
 

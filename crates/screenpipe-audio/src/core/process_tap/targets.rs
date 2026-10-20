@@ -664,7 +664,9 @@ mod tests {
     fn bad_labels_are_rejected() {
         assert!("process-tree:".parse::<LoopbackTarget>().is_err());
         assert!("process-tree:0".parse::<LoopbackTarget>().is_err());
-        assert!("exclude-process-tree:abc".parse::<LoopbackTarget>().is_err());
+        assert!("exclude-process-tree:abc"
+            .parse::<LoopbackTarget>()
+            .is_err());
         assert!("endpoint: ".parse::<LoopbackTarget>().is_err());
         assert!("loopback".parse::<LoopbackTarget>().is_err());
     }
@@ -764,7 +766,9 @@ mod tests {
         // Equal trees: lowest pid wins.
         let s = ProcessSnapshot::new(vec![p(70, 10, "x.exe"), p(80, 10, "x.exe")]);
         assert_eq!(
-            choose_exclusion(&s, &["x.exe".to_string()]).unwrap().root_pid,
+            choose_exclusion(&s, &["x.exe".to_string()])
+                .unwrap()
+                .root_pid,
             70
         );
     }
@@ -879,12 +883,7 @@ mod tests {
             LoopbackTarget::ProcessTree { pid: 9 }
         );
         assert_eq!(
-            initial_include_target(
-                ok,
-                &IncludeRoot::MultipleRoots {
-                    roots: vec![1, 2]
-                }
-            ),
+            initial_include_target(ok, &IncludeRoot::MultipleRoots { roots: vec![1, 2] }),
             LoopbackTarget::DefaultRenderEndpoint
         );
         assert_eq!(

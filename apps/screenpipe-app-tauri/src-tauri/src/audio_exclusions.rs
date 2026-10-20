@@ -271,7 +271,8 @@ mod exe_metadata {
     }
 
     fn u16_at(b: &[u8], off: usize) -> Option<u16> {
-        b.get(off..off + 2).map(|s| u16::from_le_bytes([s[0], s[1]]))
+        b.get(off..off + 2)
+            .map(|s| u16::from_le_bytes([s[0], s[1]]))
     }
 
     fn u32_at(b: &[u8], off: usize) -> Option<u32> {
@@ -304,7 +305,7 @@ mod exe_metadata {
         let optional_size = u16_at(head, pe + 20)? as usize;
         let opt = pe + 24;
         let (count_off, dirs_off) = match u16_at(head, opt)? {
-            0x10b => (92, 96),  // PE32
+            0x10b => (92, 96),   // PE32
             0x20b => (108, 112), // PE32+
             _ => return None,
         };
@@ -515,7 +516,10 @@ mod exe_metadata {
         })
     }
 
-    fn read_resource_strings(file: &mut File, headers: &Headers) -> Option<HashMap<String, String>> {
+    fn read_resource_strings(
+        file: &mut File,
+        headers: &Headers,
+    ) -> Option<HashMap<String, String>> {
         if headers.resource_rva == 0 || headers.resource_size == 0 {
             return None;
         }
@@ -796,7 +800,10 @@ mod tests {
             )]);
             let dir = tempfile::tempdir().unwrap();
             let path = write(&dir, "suite.exe", &fixtures::pe_image(Some(&info)));
-            assert_eq!(exe_metadata::read_exe_metadata(&path).unwrap().name, "Suite");
+            assert_eq!(
+                exe_metadata::read_exe_metadata(&path).unwrap().name,
+                "Suite"
+            );
 
             let bare = write(&dir, "tool.exe", &fixtures::pe_image(None));
             let meta = exe_metadata::read_exe_metadata(&bare).unwrap();
@@ -807,11 +814,20 @@ mod tests {
         #[test]
         fn prefers_the_english_string_table() {
             let info = fixtures::version_info(&[
-                ("040704B0", vec![fixtures::string("FileDescription", "Abspieler")]),
-                ("040904B0", vec![fixtures::string("FileDescription", "Player")]),
+                (
+                    "040704B0",
+                    vec![fixtures::string("FileDescription", "Abspieler")],
+                ),
+                (
+                    "040904B0",
+                    vec![fixtures::string("FileDescription", "Player")],
+                ),
             ]);
             let strings = exe_metadata::version_strings(&info);
-            assert_eq!(strings.get("FileDescription").map(String::as_str), Some("Player"));
+            assert_eq!(
+                strings.get("FileDescription").map(String::as_str),
+                Some("Player")
+            );
 
             let only_german = fixtures::version_info(&[(
                 "040704B0",

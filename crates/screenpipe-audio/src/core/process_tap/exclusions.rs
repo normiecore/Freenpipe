@@ -184,13 +184,19 @@ mod tests {
     #[test]
     fn blank_override_falls_back_to_home() {
         let p = resolve_path(Some("  "), Some(Path::new("/home/a")));
-        assert_eq!(p, PathBuf::from("/home/a/.screenpipe/audio-exclusions.json"));
+        assert_eq!(
+            p,
+            PathBuf::from("/home/a/.screenpipe/audio-exclusions.json")
+        );
     }
 
     #[test]
     fn default_path_is_under_home() {
         let p = resolve_path(None, Some(Path::new("/home/a")));
-        assert_eq!(p, PathBuf::from("/home/a/.screenpipe/audio-exclusions.json"));
+        assert_eq!(
+            p,
+            PathBuf::from("/home/a/.screenpipe/audio-exclusions.json")
+        );
     }
 
     #[test]
@@ -198,7 +204,10 @@ mod tests {
         let ids = parse_bundle_ids(
             r#"{"excluded_apps":[{"bundle_id":"spotify.exe"},{},{"bundle_id":"  "},{"bundle_id":3},{"bundle_id":"Chrome.exe","name":"Chrome"}]}"#,
         );
-        assert_eq!(ids, vec!["spotify.exe".to_string(), "Chrome.exe".to_string()]);
+        assert_eq!(
+            ids,
+            vec!["spotify.exe".to_string(), "Chrome.exe".to_string()]
+        );
     }
 
     #[test]
@@ -228,13 +237,19 @@ mod tests {
 
     #[test]
     fn exe_names_are_normalised() {
-        assert_eq!(normalize_exe_name("Spotify.EXE").as_deref(), Some("spotify.exe"));
+        assert_eq!(
+            normalize_exe_name("Spotify.EXE").as_deref(),
+            Some("spotify.exe")
+        );
         assert_eq!(normalize_exe_name("chrome").as_deref(), Some("chrome.exe"));
         assert_eq!(
             normalize_exe_name(r"C:\Program Files\Google\Chrome\Application\chrome.exe").as_deref(),
             Some("chrome.exe")
         );
-        assert_eq!(normalize_exe_name("/opt/x/app.exe").as_deref(), Some("app.exe"));
+        assert_eq!(
+            normalize_exe_name("/opt/x/app.exe").as_deref(),
+            Some("app.exe")
+        );
         assert_eq!(normalize_exe_name("  ").as_deref(), None);
         assert_eq!(normalize_exe_name(r"C:\dir\").as_deref(), None);
     }
