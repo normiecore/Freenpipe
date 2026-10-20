@@ -264,7 +264,9 @@ pub(crate) fn not_built_error() -> RedactError {
 /// The target a request may go to: fails with [`NOT_BUILT_MESSAGE`] in a
 /// build without enclave support, then with the "not configured" error when
 /// no target was resolved. Shared with the image adapter.
-pub(crate) fn require_target(target: Option<&TinfoilTarget>) -> Result<&TinfoilTarget, RedactError> {
+pub(crate) fn require_target(
+    target: Option<&TinfoilTarget>,
+) -> Result<&TinfoilTarget, RedactError> {
     if !ENCLAVE_SUPPORT_BUILT {
         return Err(not_built_error());
     }
@@ -367,7 +369,10 @@ impl AttestedClient {
 /// comparison and the TLS pinning inside its constructor. `who` names the
 /// adapter in error messages. In a build without enclave support this fails
 /// with [`NOT_BUILT_MESSAGE`] and nothing is sent.
-pub(crate) async fn attest(target: &TinfoilTarget, who: &str) -> Result<AttestedClient, RedactError> {
+pub(crate) async fn attest(
+    target: &TinfoilTarget,
+    who: &str,
+) -> Result<AttestedClient, RedactError> {
     #[cfg(feature = "tinfoil-enclave")]
     {
         // The api_key passed here only flows through the SDK's

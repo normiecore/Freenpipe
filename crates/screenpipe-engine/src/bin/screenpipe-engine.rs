@@ -328,7 +328,10 @@ async fn fallback_text_pii_model(
                 ..Default::default()
             })));
         }
-        info!("text-PII enclave fallback not used: {}", availability.describe());
+        info!(
+            "text-PII enclave fallback not used: {}",
+            availability.describe()
+        );
     }
 
     let _ = labels;

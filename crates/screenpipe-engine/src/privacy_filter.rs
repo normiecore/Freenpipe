@@ -118,6 +118,14 @@ impl std::fmt::Display for FilterError {
     }
 }
 
+impl std::error::Error for FilterError {}
+
+impl From<reqwest::Error> for FilterError {
+    fn from(e: reqwest::Error) -> Self {
+        FilterError::Request(e)
+    }
+}
+
 /// Where `filter_pii` redaction runs. Reported in the startup log and
 /// available to status surfaces through [`PrivacyFilter::backend`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -143,14 +151,6 @@ fn enclave_for_build(
         None => (None, FilterBackend::Local),
         Some(_) if !built => (None, FilterBackend::LocalEnclaveNotBuilt),
         Some(target) => (Some(target), FilterBackend::Enclave),
-    }
-}
-
-impl std::error::Error for FilterError {}
-
-impl From<reqwest::Error> for FilterError {
-    fn from(e: reqwest::Error) -> Self {
-        FilterError::Request(e)
     }
 }
 
