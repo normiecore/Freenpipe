@@ -145,12 +145,12 @@ screenpipe-events = { path = "../../../crates/screenpipe-events" }
 eventkit-rs = { path = "../../../third_party/eventkit-rs", default-features = false, features = ["events"] }
 # Async PII reconciliation (issue #3185 / PR #3188). `onnx-coreml` is
 # the right execution-provider for Apple Silicon (image PII via
-# rfdetr_v8); `opf-text` enables the local pure-Rust candle text
-# redactor (OPF v3) so the desktop app no longer has to round-trip
-# every transcript through the Tinfoil enclave. Windows builds should
-# switch onnx-coreml → onnx-directml via a build-target override. No
-# CUDA / Vulkan / GPU-vendor SDKs bundled.
-screenpipe-redact = { path = "../../../crates/screenpipe-redact", features = ["onnx-coreml", "opf-text"] }
+# rfdetr_v8). Windows builds should switch onnx-coreml → onnx-directml
+# via a build-target override. No CUDA / Vulkan / GPU-vendor SDKs bundled.
+# The licence-gated backends (opf-rs text model, Tinfoil enclave client)
+# are not enabled here; see the opt-in `redact-opf-text` and
+# `tinfoil-enclave` features below.
+screenpipe-redact = { path = "../../../crates/screenpipe-redact", features = ["onnx-coreml"] }
 # Keep in step with the root workspace: sqlx 0.9 and rusqlite 0.39 both sit on
 # libsqlite3-sys 0.37, so the app links a single bundled SQLite (3.51.3).
 sqlx = { version = "0.9.0", features = ["sqlite", "runtime-tokio"] }
@@ -270,6 +270,18 @@ rfdetr-mlx = ["screenpipe-engine/rfdetr-mlx"]
 redact-onnx-cpu = ["screenpipe-engine/redact-onnx-cpu"]
 redact-onnx-coreml = ["screenpipe-engine/redact-onnx-coreml"]
 redact-onnx-directml = ["screenpipe-engine/redact-onnx-directml"]
+
+# Licence-gated backends (DECISIONS.md decision 7). Opt-in only: never add
+# them to `default` or to a release-app.yml feature set;
+# scripts/ci/licence-guard.test.ts fails CI if a shipped feature set reaches
+# opf-rs or tinfoil.
+# Local opf-rs text redactor as the fallback after the v45 ONNX model.
+# opf-rs is CC BY-NC 4.0: a build with it is for non-commercial use only.
+redact-opf-text = ["screenpipe-engine/redact-opf-text", "screenpipe-redact/opf-text"]
+# Attested client for a user-run Tinfoil enclave (the "Your enclave" PII
+# backend and the search-time enclave filter). The SDK is AGPL-3.0. Without
+# it the settings page never offers the enclave backend.
+tinfoil-enclave = ["screenpipe-engine/tinfoil-enclave", "screenpipe-redact/tinfoil-enclave"]
 
 jemalloc = ["tikv-jemallocator"]
 

@@ -90,7 +90,10 @@ pub fn get_ai_gateway_key_configured(app: AppHandle) -> bool {
 #[tauri::command]
 #[specta::specta]
 pub fn get_privacy_filter_enclave_configured() -> bool {
-    screenpipe_redact::adapters::tinfoil::is_configured_for(
+    // Also false in a build without the opt-in `tinfoil-enclave` feature
+    // (the enclave client is AGPL-3.0 and left out of default and release
+    // builds), so such a build never offers the enclave backend.
+    screenpipe_redact::adapters::tinfoil::is_available_for(
         screenpipe_core::endpoints::privacy_filter_base(),
     )
 }

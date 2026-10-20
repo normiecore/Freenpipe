@@ -27,6 +27,13 @@
 //!   switchboard, plus `SCREENPIPE_PRIVACY_FILTER_REPO`). There is no
 //!   built-in enclave.
 //!
+//! The enclave client links the Tinfoil SDK, which is AGPL-3.0, so it is
+//! compiled only with the opt-in `tinfoil-enclave` feature (owner decision 7
+//! in `docs/clean-room/DECISIONS.md`). Default and release builds leave it
+//! out: there a configured enclave is reported as unavailable ("not built
+//! with enclave support", see [`FilterBackend::LocalEnclaveNotBuilt`]) and
+//! search results keep the local redaction, so `filter_pii=true` still works.
+//!
 //! Enclave design notes:
 //! - Tinfoil SDK does AMD SEV-SNP attestation + Sigstore code-provenance
 //!   verification + TLS certificate pinning at first use. This proves the
@@ -55,6 +62,7 @@ use moka::future::Cache;
 use once_cell::sync::OnceCell;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
+#[cfg(feature = "tinfoil-enclave")]
 use tokio::sync::OnceCell as AsyncOnceCell;
 
 /// Minimum text length worth sending through the filter. Below this we
@@ -83,7 +91,9 @@ const LOCAL_MODEL_BUDGET: Duration = Duration::from_millis(1000);
 const LOCAL_MODEL_GRACE: Duration = Duration::from_millis(750);
 
 use screenpipe_redact::adapters::regex::redact_one;
-use screenpipe_redact::adapters::tinfoil::{resolve_target, TinfoilTarget};
+use screenpipe_redact::adapters::tinfoil::{
+    resolve_target, TinfoilTarget, ENCLAVE_SUPPORT_BUILT, NOT_BUILT_MESSAGE,
+};
 use screenpipe_redact::Redactor;
 
 #[derive(Debug)]
@@ -91,6 +101,8 @@ pub enum FilterError {
     Request(reqwest::Error),
     Status(reqwest::StatusCode),
     Attestation(String),
+    /// The enclave path cannot run in this build (no `tinfoil-enclave`).
+    EnclaveUnavailable(&'static str),
 }
 
 impl std::fmt::Display for FilterError {
@@ -99,6 +111,9 @@ impl std::fmt::Display for FilterError {
             FilterError::Request(e) => write!(f, "privacy filter request failed: {}", e),
             FilterError::Status(s) => write!(f, "privacy filter returned status: {}", s),
             FilterError::Attestation(e) => write!(f, "privacy filter attestation failed: {}", e),
+            FilterError::EnclaveUnavailable(why) => {
+                write!(f, "privacy filter enclave unavailable: {}", why)
+            }
         }
     }
 }
@@ -108,6 +123,34 @@ impl std::error::Error for FilterError {}
 impl From<reqwest::Error> for FilterError {
     fn from(e: reqwest::Error) -> Self {
         FilterError::Request(e)
+    }
+}
+
+/// Where `filter_pii` redaction runs. Reported in the startup log and
+/// available to status surfaces through [`PrivacyFilter::backend`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FilterBackend {
+    /// On this device: the deterministic pass, plus the local model once
+    /// one is registered. No enclave is configured.
+    Local,
+    /// An enclave is configured, but this build has no enclave support
+    /// (`tinfoil-enclave` is off), so redaction runs on this device.
+    LocalEnclaveNotBuilt,
+    /// The configured enclave.
+    Enclave,
+}
+
+/// Decide which enclave target `filter_pii` may use. `built` stands for
+/// [`ENCLAVE_SUPPORT_BUILT`]; a configured target is dropped in a build
+/// that cannot reach it, so search keeps working with the local redactor.
+fn enclave_for_build(
+    configured: Option<TinfoilTarget>,
+    built: bool,
+) -> (Option<TinfoilTarget>, FilterBackend) {
+    match configured {
+        None => (None, FilterBackend::Local),
+        Some(_) if !built => (None, FilterBackend::LocalEnclaveNotBuilt),
+        Some(target) => (Some(target), FilterBackend::Enclave),
     }
 }
 
@@ -125,9 +168,12 @@ struct FilterResponse {
 pub struct PrivacyFilter {
     /// The configured enclave; `None` selects the local redactor.
     target: Option<TinfoilTarget>,
+    /// What the startup configuration resolved to (see [`FilterBackend`]).
+    backend: FilterBackend,
     /// Built lazily on first `filter()` call so attestation cost (~1-2s
     /// hardware-attestation + Sigstore + cert-pinning) doesn't fire at
     /// engine startup for users who never enable PII filtering.
+    #[cfg(feature = "tinfoil-enclave")]
     client: AsyncOnceCell<tinfoil::Client>,
     /// Enclave results, or local model results (keys of the two never mix:
     /// local keys also hash the model's name and version).
@@ -141,7 +187,26 @@ pub struct PrivacyFilter {
 }
 
 impl PrivacyFilter {
+    /// A filter that uses `target` as given, whatever this build supports
+    /// (tests exercise the enclave path through it).
+    #[cfg(test)]
     fn new(target: Option<TinfoilTarget>) -> Self {
+        let backend = if target.is_some() {
+            FilterBackend::Enclave
+        } else {
+            FilterBackend::Local
+        };
+        Self::with_backend(target, backend)
+    }
+
+    /// The filter for a configured enclave (or none) in a build with or
+    /// without enclave support (`built`).
+    fn for_build(configured: Option<TinfoilTarget>, built: bool) -> Self {
+        let (target, backend) = enclave_for_build(configured, built);
+        Self::with_backend(target, backend)
+    }
+
+    fn with_backend(target: Option<TinfoilTarget>, backend: FilterBackend) -> Self {
         let cache = Cache::builder()
             .max_capacity(CACHE_CAPACITY)
             .time_to_live(CACHE_TTL)
@@ -149,6 +214,8 @@ impl PrivacyFilter {
 
         Self {
             target,
+            backend,
+            #[cfg(feature = "tinfoil-enclave")]
             client: AsyncOnceCell::new(),
             cache,
             local_model: RwLock::new(None),
@@ -174,6 +241,7 @@ impl PrivacyFilter {
     /// does the AMD SEV-SNP attestation, Sigstore signature check, and
     /// measurement comparison all inside `Client::new`; we cache the result
     /// so subsequent calls reuse the verified connection pool.
+    #[cfg(feature = "tinfoil-enclave")]
     async fn http(&self, target: &TinfoilTarget) -> Result<&reqwest::Client, FilterError> {
         let client = self
             .client
@@ -192,10 +260,25 @@ impl PrivacyFilter {
             .map_err(|e| FilterError::Attestation(e.to_string()))
     }
 
+    /// Without enclave support there is no attested client to build: the
+    /// enclave path fails closed before anything is sent. (The global
+    /// filter never gets here, see [`enclave_for_build`].)
+    #[cfg(not(feature = "tinfoil-enclave"))]
+    async fn http(&self, target: &TinfoilTarget) -> Result<&reqwest::Client, FilterError> {
+        let _ = target;
+        Err(FilterError::EnclaveUnavailable(NOT_BUILT_MESSAGE))
+    }
+
     /// Whether search results go to a configured enclave (`false`: the
     /// local redactor).
     pub fn uses_enclave(&self) -> bool {
         self.target.is_some()
+    }
+
+    /// Where redaction runs, including the case of an enclave that is
+    /// configured but cannot be used by this build.
+    pub fn backend(&self) -> FilterBackend {
+        self.backend
     }
 
     /// Redact a single text. Returns the original unchanged if it's shorter
@@ -404,18 +487,27 @@ static INSTANCE: OnceCell<Arc<PrivacyFilter>> = OnceCell::new();
 pub fn global() -> Arc<PrivacyFilter> {
     INSTANCE
         .get_or_init(|| {
-            let target = resolve_target(screenpipe_core::endpoints::privacy_filter_base(), None);
-            match &target {
-                Some(t) => tracing::info!(
+            let configured =
+                resolve_target(screenpipe_core::endpoints::privacy_filter_base(), None);
+            let configured_host = configured.as_ref().map(|t| t.enclave.clone());
+            let filter = PrivacyFilter::for_build(configured, ENCLAVE_SUPPORT_BUILT);
+            match filter.backend() {
+                FilterBackend::Enclave => tracing::info!(
                     "filter_pii: redacting search results through the configured enclave {}",
-                    t.enclave
+                    configured_host.as_deref().unwrap_or_default()
                 ),
-                None => tracing::info!(
+                FilterBackend::LocalEnclaveNotBuilt => tracing::warn!(
+                    "filter_pii: enclave {} is configured but unavailable ({}); search \
+                     results are redacted on this device",
+                    configured_host.as_deref().unwrap_or_default(),
+                    NOT_BUILT_MESSAGE
+                ),
+                FilterBackend::Local => tracing::info!(
                     "filter_pii: no privacy-filter enclave configured; search results are \
                      redacted on this device"
                 ),
             }
-            Arc::new(PrivacyFilter::new(target))
+            Arc::new(filter)
         })
         .clone()
 }
@@ -562,6 +654,62 @@ mod tests {
             enclave: "never.invalid".to_string(),
             repo: "test/never".to_string(),
         })
+    }
+
+    #[test]
+    fn a_configured_enclave_is_dropped_when_the_build_cannot_reach_it() {
+        assert_eq!(enclave_for_build(None, true), (None, FilterBackend::Local));
+        assert_eq!(enclave_for_build(None, false), (None, FilterBackend::Local));
+        assert_eq!(
+            enclave_for_build(test_target(), true),
+            (test_target(), FilterBackend::Enclave)
+        );
+        assert_eq!(
+            enclave_for_build(test_target(), false),
+            (None, FilterBackend::LocalEnclaveNotBuilt)
+        );
+    }
+
+    #[tokio::test]
+    async fn without_enclave_support_a_configured_enclave_keeps_local_redaction() {
+        let f = PrivacyFilter::for_build(test_target(), false);
+        assert!(!f.uses_enclave());
+        assert_eq!(f.backend(), FilterBackend::LocalEnclaveNotBuilt);
+        // The deterministic pass and the local model still apply.
+        let model = Arc::new(FakeModel::new());
+        f.set_local_model(model.clone());
+        let out = f.filter(MIXED).await.expect("local filtering never fails");
+        assert!(!out.contains("rowan.pell@example.test"), "{out}");
+        assert!(out.contains("[PERSON]"), "{out}");
+        assert_eq!(model.calls.load(Ordering::SeqCst), 1);
+    }
+
+    /// In a build without enclave support the enclave path itself reports
+    /// that it is unavailable, before any network activity.
+    #[cfg(not(feature = "tinfoil-enclave"))]
+    #[tokio::test]
+    async fn enclave_path_without_support_reports_unavailable() {
+        let f = PrivacyFilter::new(test_target());
+        assert_eq!(f.backend(), FilterBackend::Enclave);
+        let err = f
+            .filter("a text long enough that it would go to the enclave")
+            .await
+            .unwrap_err();
+        assert!(matches!(err, FilterError::EnclaveUnavailable(_)), "{err:?}");
+        assert!(
+            err.to_string().contains("not built with enclave support"),
+            "{err}"
+        );
+        // The batch form fails closed the same way.
+        assert!(f
+            .filter_batch(vec!["another text that needs the enclave".into()])
+            .await
+            .is_err());
+    }
+
+    #[test]
+    fn build_flag_matches_the_feature() {
+        assert_eq!(ENCLAVE_SUPPORT_BUILT, cfg!(feature = "tinfoil-enclave"));
     }
 
     #[tokio::test]

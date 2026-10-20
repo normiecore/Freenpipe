@@ -16,6 +16,19 @@
 //! "not configured" error before anything leaves the device, and callers
 //! keep using the local redactor ([`is_configured`]).
 //!
+//! ## Build support
+//!
+//! The attested client comes from the Tinfoil SDK, which is AGPL-3.0, so it
+//! is linked only when the opt-in `tinfoil-enclave` cargo feature is on.
+//! Default and release builds leave it out (owner decision 7 in
+//! `docs/clean-room/DECISIONS.md`). In such a build this module still
+//! resolves and validates the configuration, but every request that would
+//! reach the enclave fails with [`NOT_BUILT_MESSAGE`] before any network
+//! activity, and [`availability_for`] reports
+//! [`EnclaveAvailability::NotBuilt`] so callers never select or offer the
+//! enclave backend. [`ENCLAVE_SUPPORT_BUILT`] says which kind of build this
+//! is.
+//!
 //! Wire format kept compatible with the existing
 //! `screenpipe-engine::privacy_filter` HTTP shape so we can phase the
 //! old code out without breaking the search-time path.
@@ -92,6 +105,15 @@ pub const LEGACY_URL_ENV: &str = "SCREENPIPE_PRIVACY_FILTER_URL";
 pub const REPO_ENV: &str = "SCREENPIPE_PRIVACY_FILTER_REPO";
 /// Bearer token for the enclave.
 pub const API_KEY_ENV: &str = "SCREENPIPE_PRIVACY_FILTER_API_KEY";
+
+/// Whether this build links the attested enclave client (the opt-in
+/// `tinfoil-enclave` feature). `false` in default and release builds.
+pub const ENCLAVE_SUPPORT_BUILT: bool = cfg!(feature = "tinfoil-enclave");
+
+/// Error text for a request that needs the enclave in a build without
+/// enclave support.
+pub const NOT_BUILT_MESSAGE: &str = "not built with enclave support: this build leaves out the \
+     optional tinfoil-enclave feature, so PII redaction stays on this device";
 
 /// A user-configured enclave and the repo its attestation is checked
 /// against.
@@ -172,13 +194,93 @@ pub fn is_configured_for_with(
     resolve_target_with(enclave, None, &env).is_some() && resolve_api_key_with(None, &env).is_some()
 }
 
+/// Whether the remote enclave backend can be used in this process.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EnclaveAvailability {
+    /// The build has no enclave client (`tinfoil-enclave` is off).
+    NotBuilt,
+    /// The client is built in, but the enclave host, the attestation repo or
+    /// the API key is missing.
+    NotConfigured,
+    /// Built in and fully configured.
+    Ready,
+}
+
+impl EnclaveAvailability {
+    /// Only [`EnclaveAvailability::Ready`] may be selected or offered.
+    pub fn is_ready(self) -> bool {
+        self == EnclaveAvailability::Ready
+    }
+
+    /// One-line reason for logs and status output.
+    pub fn describe(self) -> &'static str {
+        match self {
+            EnclaveAvailability::NotBuilt => NOT_BUILT_MESSAGE,
+            EnclaveAvailability::NotConfigured => {
+                "no enclave configured: set SCREENPIPE_PRIVACY_FILTER_ENCLAVE (or _URL), \
+                 SCREENPIPE_PRIVACY_FILTER_REPO and SCREENPIPE_PRIVACY_FILTER_API_KEY"
+            }
+            EnclaveAvailability::Ready => "enclave configured",
+        }
+    }
+}
+
+/// Pure form of [`availability_for`]: `built` stands for
+/// [`ENCLAVE_SUPPORT_BUILT`] so both kinds of build can be tested.
+pub fn availability_for_with(
+    built: bool,
+    enclave: Option<String>,
+    env: impl Fn(&str) -> Option<String>,
+) -> EnclaveAvailability {
+    if !built {
+        EnclaveAvailability::NotBuilt
+    } else if is_configured_for_with(enclave, env) {
+        EnclaveAvailability::Ready
+    } else {
+        EnclaveAvailability::NotConfigured
+    }
+}
+
+/// Whether the enclave backend is usable here: built in (see
+/// [`ENCLAVE_SUPPORT_BUILT`]) and configured as [`is_configured_for`]
+/// checks. Callers that pick or list PII backends use this rather than
+/// [`is_configured_for`], so a build without enclave support never offers
+/// the enclave.
+pub fn availability_for(enclave: Option<String>) -> EnclaveAvailability {
+    availability_for_with(ENCLAVE_SUPPORT_BUILT, enclave, |name| {
+        std::env::var(name).ok()
+    })
+}
+
+/// `availability_for(enclave).is_ready()`.
+pub fn is_available_for(enclave: Option<String>) -> bool {
+    availability_for(enclave).is_ready()
+}
+
+pub(crate) fn not_built_error() -> RedactError {
+    RedactError::Unavailable(NOT_BUILT_MESSAGE.to_string())
+}
+
+/// The target a request may go to: fails with [`NOT_BUILT_MESSAGE`] in a
+/// build without enclave support, then with the "not configured" error when
+/// no target was resolved. Shared with the image adapter.
+pub(crate) fn require_target(
+    target: Option<&TinfoilTarget>,
+) -> Result<&TinfoilTarget, RedactError> {
+    if !ENCLAVE_SUPPORT_BUILT {
+        return Err(not_built_error());
+    }
+    target.ok_or_else(not_configured_error)
+}
+
 pub(crate) fn not_configured_error() -> RedactError {
     RedactError::Runtime(format!(
         "tinfoil enclave is not configured: set {ENCLAVE_ENV} and {REPO_ENV} \
          (and {API_KEY_ENV}), or use the local redactor"
     ))
 }
-/// Re-attest at least this often even on success.
+/// Re-attest at least this often even on success. Shared by the text and
+/// image adapters so both pick up an enclave redeploy at the same cadence.
 ///
 /// The Tinfoil SDK pins the TLS cert to the SPKI from the attestation
 /// document, so a redeploy that rotates the cert silently breaks every
@@ -189,7 +291,7 @@ pub(crate) fn not_configured_error() -> RedactError {
 /// re-attest = ~1-2 s of latency on the first request after expiry)
 /// and frequent enough that a same-day redeploy is recovered before
 /// the user notices anything.
-const CLIENT_REFRESH: Duration = Duration::from_secs(60 * 60 * 12);
+pub(crate) const CLIENT_REFRESH: Duration = Duration::from_secs(60 * 60 * 12);
 // OPF inference latency on the Tinfoil enclave scales with sequence
 // length: short payloads (~50 chars) come back in ~1 s, but real OCR
 // rows (~2 kB / hundreds of tokens) routinely take 10-15 s. The
@@ -240,16 +342,68 @@ struct FilterResponse {
     redacted: String,
 }
 
-/// What we cache from a successful attestation handshake. We hold on
-/// to the [`tinfoil::Client`] so the SDK's internal verifier state
-/// stays alive for the lifetime of the cached reqwest client (the
+/// What we cache from a successful attestation handshake. With enclave
+/// support built in we hold on to the SDK client so its internal verifier
+/// state stays alive for the lifetime of the cached reqwest client (the
 /// attested cert pinning lives there), but expose the bare
-/// [`reqwest::Client`] for actual request dispatch.
-struct CachedClient {
+/// [`reqwest::Client`] for actual request dispatch. Without enclave support
+/// nothing can construct one: [`attest`] refuses first.
+#[cfg_attr(not(feature = "tinfoil-enclave"), allow(dead_code))]
+pub(crate) struct AttestedClient {
     /// Keeps the SDK verifier alive for `http`'s lifetime.
-    _inner: tinfoil::Client,
-    http: reqwest::Client,
+    #[cfg(feature = "tinfoil-enclave")]
+    _sdk: tinfoil::Client,
+    pub(crate) http: reqwest::Client,
     created_at: Instant,
+}
+
+impl AttestedClient {
+    /// Still inside the [`CLIENT_REFRESH`] window.
+    pub(crate) fn is_fresh(&self) -> bool {
+        self.created_at.elapsed() < CLIENT_REFRESH
+    }
+}
+
+/// Attest `target` and return its pinned HTTP client. The SDK does the AMD
+/// SEV-SNP attestation, the Sigstore signature check, the measurement
+/// comparison and the TLS pinning inside its constructor. `who` names the
+/// adapter in error messages. In a build without enclave support this fails
+/// with [`NOT_BUILT_MESSAGE`] and nothing is sent.
+pub(crate) async fn attest(
+    target: &TinfoilTarget,
+    who: &str,
+) -> Result<AttestedClient, RedactError> {
+    #[cfg(feature = "tinfoil-enclave")]
+    {
+        // The api_key passed here only flows through the SDK's
+        // async-openai chat path (which we don't use). For our direct
+        // POSTs the adapters attach the Bearer header themselves — pass
+        // empty here to keep this constructor purely about transport.
+        let sdk = tinfoil::Client::new(&target.enclave, &target.repo, "")
+            .await
+            .map_err(|e| {
+                RedactError::Runtime(format!(
+                    "{who} attestation failed for {}: {e}",
+                    target.enclave
+                ))
+            })?;
+        // `http_client()` borrows from the SDK client; the clone is cheap
+        // (reqwest::Client is Arc-shaped) and lets the cache own its copy.
+        let http = sdk
+            .http_client()
+            .map_err(|e| RedactError::Runtime(format!("{who} http_client: {e}")))?
+            .clone();
+        Ok(AttestedClient {
+            _sdk: sdk,
+            http,
+            created_at: Instant::now(),
+        })
+    }
+    #[cfg(not(feature = "tinfoil-enclave"))]
+    {
+        let _ = (target, who);
+        Err(not_built_error())
+    }
 }
 
 pub struct TinfoilRedactor {
@@ -268,7 +422,7 @@ pub struct TinfoilRedactor {
     /// Cached attested client. RwLock so reads (the hot path) don't
     /// serialize, write lock only on (re-)attest. Lazy: the first
     /// `http()` call pays the ~1-2 s attestation handshake.
-    client: RwLock<Option<CachedClient>>,
+    client: RwLock<Option<AttestedClient>>,
     /// Reflects whether a Bearer was successfully parsed at construction.
     has_auth: bool,
 }
@@ -278,7 +432,9 @@ impl TinfoilRedactor {
     /// env var fallback chain.
     pub fn new(cfg: TinfoilConfig) -> Self {
         let target = resolve_target(cfg.enclave, cfg.repo);
-        if target.is_none() {
+        if !ENCLAVE_SUPPORT_BUILT {
+            tracing::info!("tinfoil redactor: {NOT_BUILT_MESSAGE}");
+        } else if target.is_none() {
             tracing::info!("tinfoil redactor has no enclave configured; it will not send anything");
         }
         let api_key = resolve_api_key_with(cfg.api_key, |name| std::env::var(name).ok());
@@ -339,10 +495,10 @@ impl TinfoilRedactor {
     /// flight that look like cert/attestation drift also evict (see
     /// [`invalidate`] and the call site in [`redact_one`]).
     async fn http(&self) -> Result<reqwest::Client, RedactError> {
-        let target = self.target.as_ref().ok_or_else(not_configured_error)?;
+        let target = require_target(self.target.as_ref())?;
         // Fast path: read lock, return clone if cached and fresh.
         if let Some(c) = self.client.read().await.as_ref() {
-            if c.created_at.elapsed() < CLIENT_REFRESH {
+            if c.is_fresh() {
                 return Ok(c.http.clone());
             }
         }
@@ -350,38 +506,14 @@ impl TinfoilRedactor {
         // just rebuilt while we were waiting), then attest.
         let mut g = self.client.write().await;
         if let Some(c) = g.as_ref() {
-            if c.created_at.elapsed() < CLIENT_REFRESH {
+            if c.is_fresh() {
                 return Ok(c.http.clone());
             }
         }
-        // The api_key passed here only flows through the SDK's
-        // async-openai chat path (which we don't use). For our direct
-        // `/filter` POST we attach the Bearer header ourselves via
-        // `self.bearer` below — pass empty here to keep this
-        // constructor purely about transport.
-        let inner = tinfoil::Client::new(&target.enclave, &target.repo, "")
-            .await
-            .map_err(|e| {
-                RedactError::Runtime(format!(
-                    "tinfoil attestation failed for {}: {}",
-                    target.enclave, e
-                ))
-            })?;
-        // `http_client()` returns `&reqwest::Client` borrowed from the
-        // SDK Client — we clone (cheap: reqwest::Client is Arc-shaped)
-        // so the cached struct owns its copy and we can hand more
-        // clones to call sites without borrowing through the RwLock.
-        let http = inner
-            .http_client()
-            .map_err(|e| RedactError::Runtime(format!("tinfoil http_client: {}", e)))?
-            .clone();
-        let http_clone = http.clone();
-        *g = Some(CachedClient {
-            _inner: inner,
-            http,
-            created_at: Instant::now(),
-        });
-        Ok(http_clone)
+        let fresh = attest(target, "tinfoil").await?;
+        let http = fresh.http.clone();
+        *g = Some(fresh);
+        Ok(http)
     }
 
     /// Drop the cached attested client so the next call re-attests.
@@ -458,7 +590,7 @@ impl TinfoilRedactor {
             });
         }
 
-        let target = self.target.as_ref().ok_or_else(not_configured_error)?;
+        let target = require_target(self.target.as_ref())?;
         let http = self.http().await?;
         let mut req = http
             .post(format!("https://{}/filter", target.enclave))
@@ -597,7 +729,12 @@ mod tests {
             .redact("this text is long enough to need the enclave")
             .await
             .unwrap_err();
-        assert!(err.to_string().contains("not configured"), "{err}");
+        let expected = if ENCLAVE_SUPPORT_BUILT {
+            "not configured"
+        } else {
+            "not built with enclave support"
+        };
+        assert!(err.to_string().contains(expected), "{err}");
         // Short text still bypasses without any configuration.
         assert_eq!(r.redact("hi").await.unwrap().redacted, "hi");
     }
@@ -682,6 +819,75 @@ mod tests {
             !is_configured_for_with(Some("e.example.test".into()), &key_only),
             "the attestation repo is still required"
         );
+    }
+
+    #[test]
+    fn availability_needs_the_build_feature_and_a_complete_setup() {
+        let complete = env_from(&[
+            (ENCLAVE_ENV, "e.example.test"),
+            (REPO_ENV, "org/repo"),
+            (API_KEY_ENV, "enclave-key"),
+        ]);
+        assert_eq!(
+            availability_for_with(false, None, &complete),
+            EnclaveAvailability::NotBuilt,
+            "a complete setup is still unusable without the client"
+        );
+        assert_eq!(
+            availability_for_with(true, None, &complete),
+            EnclaveAvailability::Ready
+        );
+        let no_key = env_from(&[(ENCLAVE_ENV, "e.example.test"), (REPO_ENV, "org/repo")]);
+        assert_eq!(
+            availability_for_with(true, None, &no_key),
+            EnclaveAvailability::NotConfigured
+        );
+        assert_eq!(
+            availability_for_with(false, None, env_from(&[])),
+            EnclaveAvailability::NotBuilt
+        );
+        assert!(EnclaveAvailability::Ready.is_ready());
+        assert!(!EnclaveAvailability::NotBuilt.is_ready());
+        assert!(!EnclaveAvailability::NotConfigured.is_ready());
+        assert!(EnclaveAvailability::NotBuilt
+            .describe()
+            .contains("not built with enclave support"));
+    }
+
+    #[test]
+    fn build_constant_matches_the_feature() {
+        assert_eq!(ENCLAVE_SUPPORT_BUILT, cfg!(feature = "tinfoil-enclave"));
+        // The process-environment form agrees with the pure one.
+        if !ENCLAVE_SUPPORT_BUILT {
+            assert_eq!(
+                availability_for(Some("e.example.test".into())),
+                EnclaveAvailability::NotBuilt
+            );
+            assert!(!is_available_for(Some("e.example.test".into())));
+        }
+    }
+
+    /// In a build without enclave support a fully configured redactor
+    /// refuses before any attestation or request is attempted.
+    #[cfg(not(feature = "tinfoil-enclave"))]
+    #[tokio::test]
+    async fn configured_redactor_without_enclave_support_refuses() {
+        let r = TinfoilRedactor::new(TinfoilConfig {
+            api_key: Some("enclave-key".into()),
+            ..cfg("enclave.example.test")
+        });
+        assert!(r.is_configured());
+        let err = r
+            .redact("this text is long enough to need the enclave")
+            .await
+            .unwrap_err();
+        assert!(matches!(err, RedactError::Unavailable(_)), "{err:?}");
+        assert!(
+            err.to_string().contains("not built with enclave support"),
+            "{err}"
+        );
+        // Short text still bypasses the enclave entirely.
+        assert_eq!(r.redact("hi").await.unwrap().redacted, "hi");
     }
 
     #[test]

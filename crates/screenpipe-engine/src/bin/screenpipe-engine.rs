@@ -278,6 +278,66 @@ fn setup_logging(local_data_dir: &PathBuf, debug: bool) -> anyhow::Result<Worker
     Ok(guard)
 }
 
+/// The text-PII model to use when the v45 ONNX redactor cannot load, in
+/// preference order: the local opf-rs model (opt-in `redact-opf-text`
+/// feature), then an enclave the user configured (opt-in `tinfoil-enclave`
+/// feature). Both features are licence-gated (opf-rs is CC BY-NC 4.0, the
+/// Tinfoil SDK AGPL-3.0; DECISIONS.md decision 7), so default and release
+/// builds have neither and get `None`: the worker then runs regex-only.
+async fn fallback_text_pii_model(
+    labels: &[String],
+) -> Option<Arc<dyn screenpipe_redact::Redactor>> {
+    #[cfg(feature = "redact-opf-text")]
+    {
+        use screenpipe_redact::adapters::opf::{OpfAdapter, OpfConfig};
+
+        info!(
+            "fetching local OPF v6 checkpoint (~2.8 GB on first run, cached at \
+             ~/.screenpipe/models/opf-v6/)"
+        );
+        match OpfAdapter::load_or_download(OpfConfig::default()).await {
+            Ok(adapter) => {
+                info!(
+                    "text-PII AI step: local opf-rs (candle) fallback — lazy load \
+                     on first batch, idle-unload after 60s of no work"
+                );
+                // Wrap in Arc first so we can spawn the idle unloader (which
+                // needs `Arc<Self>`) and still hand the same Arc to the
+                // pipeline.
+                let adapter = Arc::new(adapter);
+                let _unloader = Arc::clone(&adapter).spawn_idle_unloader();
+                return Some(adapter);
+            }
+            Err(e) => warn!("opf-rs text redactor unavailable ({e})"),
+        }
+    }
+
+    #[cfg(feature = "tinfoil-enclave")]
+    {
+        use screenpipe_redact::adapters::tinfoil::{
+            availability_for, TinfoilConfig, TinfoilRedactor,
+        };
+
+        let enclave = screenpipe_core::endpoints::privacy_filter_base();
+        let availability = availability_for(enclave.clone());
+        if availability.is_ready() {
+            info!("text-PII AI step: the configured enclave (local models unavailable)");
+            return Some(Arc::new(TinfoilRedactor::new(TinfoilConfig {
+                enclave,
+                labels: labels.to_vec(),
+                ..Default::default()
+            })));
+        }
+        info!(
+            "text-PII enclave fallback not used: {}",
+            availability.describe()
+        );
+    }
+
+    let _ = labels;
+    None
+}
+
 #[tokio::main]
 #[tracing::instrument]
 async fn main() -> anyhow::Result<()> {
@@ -1647,17 +1707,13 @@ async fn main() -> anyhow::Result<()> {
     if !config.async_pii_redaction {
         info!(
             "text-PII worker skipped at startup — async_pii_redaction=false. \
-             OPF model (~2.8 GB) will NOT be downloaded or loaded. \
+             No text-PII model will be downloaded or loaded. \
              Toggle via Settings → Privacy → AI PII removal."
         );
     }
     if config.async_pii_redaction {
         use screenpipe_redact::{
-            adapters::{
-                onnx::{OnnxConfig, OnnxRedactor},
-                opf::{OpfAdapter, OpfConfig},
-                tinfoil::{TinfoilConfig, TinfoilRedactor},
-            },
+            adapters::onnx::{OnnxConfig, OnnxRedactor},
             pipeline::{Pipeline, PipelineConfig},
             worker::{Worker, WorkerConfig, ALL_TARGET_TABLES},
             Redactor, TextRedactionPolicy,
@@ -1678,18 +1734,22 @@ async fn main() -> anyhow::Result<()> {
         //      across surfaces.
         //   2. Legacy opf-rs (candle, OPF v6, ~74 ms p50 on Mac CPU,
         //      ~2.8 GB) if v45 ONNX isn't compiled in or the download
-        //      fails.
-        //   3. Tinfoil confidential-compute enclave when TINFOIL_*
-        //      env vars are set and both local adapters are unavailable.
+        //      fails. Only in builds with the opt-in `redact-opf-text`
+        //      feature (opf-rs is CC BY-NC 4.0).
+        //   3. A user-configured Tinfoil enclave when both local adapters
+        //      are unavailable. Only in builds with the opt-in
+        //      `tinfoil-enclave` feature (the SDK is AGPL-3.0).
         //   4. Regex-only otherwise (still destructive — overwrites
         //      regex-redacted text into the source columns).
+        // Default and release builds have neither 2 nor 3, so they go from
+        // v45 ONNX straight to regex-only (see `fallback_text_pii_model`).
         let pool = db.pool.clone();
         let labels = config.pii_redaction_labels.clone();
         tokio::spawn(async move {
             // Per-label allow-list from the `piiRedactionLabels` setting
             // (default ["secret"]). Local adapters filter client-side via
-            // this policy; the env-gated tinfoil fallback forwards the
-            // raw labels so the enclave filters server-side.
+            // this policy; the optional enclave fallback forwards the raw
+            // labels so the enclave filters server-side.
             let policy = TextRedactionPolicy::from_labels(&labels);
             info!(
                 "fetching v45 phase 3 ONNX text redactor (~278 MB INT8 on first run, \
@@ -1715,62 +1775,24 @@ async fn main() -> anyhow::Result<()> {
                 }
                 Err(onnx_err) => {
                     tracing::warn!(
-                        "couldn't load v45 phase 3 ONNX redactor ({onnx_err}); falling back \
-                         to OPF v6 candle"
+                        "couldn't load v45 phase 3 ONNX redactor ({onnx_err}); trying the \
+                         fallbacks this build includes"
                     );
-                    info!(
-                        "fetching local OPF v6 checkpoint (~2.8 GB on first run, cached at \
-                         ~/.screenpipe/models/opf-v6/)"
-                    );
-                    match OpfAdapter::load_or_download(OpfConfig::default()).await {
-                        Ok(adapter) => {
-                            info!(
-                                "text-PII AI step: local opf-rs (candle) fallback — lazy load \
-                                 on first batch, idle-unload after 60s of no work"
+                    match fallback_text_pii_model(&labels).await {
+                        Some(ai) => Pipeline::regex_then_ai(
+                            ai,
+                            PipelineConfig {
+                                policy: policy.clone(),
+                                ..Default::default()
+                            },
+                        ),
+                        None => {
+                            tracing::warn!(
+                                "text-PII AI step disabled — the v45 ONNX model is unavailable \
+                                 and no fallback model is usable in this build. Worker will run \
+                                 regex-only."
                             );
-                            // Wrap in Arc first so we can spawn the idle
-                            // unloader (which needs `Arc<Self>`) and still
-                            // hand the same Arc to the Pipeline.
-                            let adapter = Arc::new(adapter);
-                            let _unloader = Arc::clone(&adapter).spawn_idle_unloader();
-                            let ai: Arc<dyn Redactor> = adapter;
-                            Pipeline::regex_then_ai(
-                                ai,
-                                PipelineConfig {
-                                    policy: policy.clone(),
-                                    ..Default::default()
-                                },
-                            )
-                        }
-                        Err(e) => {
-                            if std::env::var("TINFOIL_API_KEY").is_ok()
-                                || std::env::var("TINFOIL_BASE_URL").is_ok()
-                            {
-                                info!(
-                                    "text-PII AI step: tinfoil enclave (local adapters \
-                                     unavailable: opf-rs={e})"
-                                );
-                                let ai: Arc<dyn Redactor> =
-                                    Arc::new(TinfoilRedactor::new(TinfoilConfig {
-                                        enclave: screenpipe_core::endpoints::privacy_filter_base(),
-                                        labels: labels.clone(),
-                                        ..Default::default()
-                                    }));
-                                Pipeline::regex_then_ai(
-                                    ai,
-                                    PipelineConfig {
-                                        policy: policy.clone(),
-                                        ..Default::default()
-                                    },
-                                )
-                            } else {
-                                tracing::warn!(
-                                    "text-PII AI step disabled — both v45 ONNX and opf-rs \
-                                     unavailable ({e}), and no TINFOIL_* env vars set. Worker \
-                                     will run regex-only."
-                                );
-                                Pipeline::regex_only_with_policy(policy.clone())
-                            }
+                            Pipeline::regex_only_with_policy(policy.clone())
                         }
                     }
                 }
