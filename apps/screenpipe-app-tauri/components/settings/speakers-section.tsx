@@ -38,11 +38,19 @@ import {
   Users,
   AlertCircle,
 } from "lucide-react";
-import { localFetch } from "@/lib/api";
+import {
+  appendAuthToken,
+  ensureApiReady,
+  getApiBaseUrl,
+  localFetch,
+} from "@/lib/api";
 import { showChatWithPrefill } from "@/lib/chat-utils";
+import { buildSpeakerSampleUrl } from "@/lib/speaker-sample";
 
 interface AudioSample {
   path: string;
+  /** Set by engines that serve `/speakers/sample/:audio_chunk_id`. */
+  audio_chunk_id?: number;
   transcript: string;
   start_time: number;
   end_time: number;
@@ -98,11 +106,13 @@ function buildOrganizeSpeakersDisplayLabel(): string {
 
 function AudioClip({
   path,
+  audioChunkId,
   startTime,
   duration,
   large,
 }: {
   path: string;
+  audioChunkId?: number | null;
   startTime: number;
   duration: number;
   large?: boolean;
@@ -111,39 +121,65 @@ function AudioClip({
   const [playing, setPlaying] = useState(false);
   const [progress, setProgress] = useState(0);
   const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const timeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-  const toggle = (e?: React.MouseEvent) => {
+  // Samples with a chunk id stream from the engine as a WAV clip that
+  // already starts at the segment, so playback begins at 0. Older samples
+  // play the chunk file itself and seek to the segment start.
+  const streamed =
+    buildSpeakerSampleUrl(getApiBaseUrl(), audioChunkId, startTime, duration) !== null;
+  const playbackOffset = streamed ? 0 : startTime;
+
+  const clearTimers = () => {
+    if (intervalRef.current) clearInterval(intervalRef.current);
+    if (timeoutRef.current) clearTimeout(timeoutRef.current);
+    intervalRef.current = null;
+    timeoutRef.current = null;
+  };
+
+  const stop = () => {
+    audioRef.current?.pause();
+    setPlaying(false);
+    setProgress(0);
+    clearTimers();
+  };
+
+  const toggle = async (e?: React.MouseEvent) => {
     e?.stopPropagation();
     const el = audioRef.current;
     if (!el) return;
     if (playing) {
-      el.pause();
-      setPlaying(false);
-      setProgress(0);
-      if (intervalRef.current) clearInterval(intervalRef.current);
-    } else {
-      el.currentTime = startTime;
-      el.play()
-        .then(() => {
-          setPlaying(true);
-          intervalRef.current = setInterval(() => {
-            const elapsed = el.currentTime - startTime;
-            setProgress(Math.min((elapsed / duration) * 100, 100));
-          }, 50);
-        })
-        .catch(() => setPlaying(false));
-      setTimeout(() => {
-        el.pause();
-        setPlaying(false);
-        setProgress(0);
-        if (intervalRef.current) clearInterval(intervalRef.current);
-      }, duration * 1000);
+      stop();
+      return;
     }
+    if (streamed) {
+      // `<audio>` cannot send an Authorization header: wait for the API key,
+      // then pass it as the `token` query parameter.
+      await ensureApiReady();
+      const url = buildSpeakerSampleUrl(getApiBaseUrl(), audioChunkId, startTime, duration);
+      if (url) {
+        const src = appendAuthToken(url);
+        if (el.src !== src) el.src = src;
+      }
+    }
+    clearTimers();
+    el.currentTime = playbackOffset;
+    el.play()
+      .then(() => {
+        setPlaying(true);
+        intervalRef.current = setInterval(() => {
+          const elapsed = el.currentTime - playbackOffset;
+          setProgress(Math.min((elapsed / duration) * 100, 100));
+        }, 50);
+      })
+      .catch(() => setPlaying(false));
+    timeoutRef.current = setTimeout(stop, duration * 1000);
   };
 
   useEffect(() => {
     return () => {
       if (intervalRef.current) clearInterval(intervalRef.current);
+      if (timeoutRef.current) clearTimeout(timeoutRef.current);
     };
   }, []);
 
@@ -154,12 +190,12 @@ function AudioClip({
     <div className="flex items-center gap-1.5">
       <audio
         ref={audioRef}
-        src={convertFileSrc(path)}
+        src={streamed ? undefined : convertFileSrc(path)}
         preload="none"
         onEnded={() => {
           setPlaying(false);
           setProgress(0);
-          if (intervalRef.current) clearInterval(intervalRef.current);
+          clearTimers();
         }}
       />
       <Button
@@ -334,6 +370,7 @@ function ClusterCard({
               >
                 <AudioClip
                   path={sample.path}
+                  audioChunkId={sample.audio_chunk_id}
                   startTime={sample.start_time}
                   duration={sample.end_time - sample.start_time}
                 />
@@ -477,6 +514,7 @@ function IdentifiedSpeakerCard({
               <div className="shrink-0" onClick={(e) => e.stopPropagation()}>
                 <AudioClip
                   path={samples[0].path}
+                  audioChunkId={samples[0].audio_chunk_id}
                   startTime={samples[0].start_time}
                   duration={Math.min(
                     samples[0].end_time - samples[0].start_time,
@@ -600,6 +638,7 @@ function SpeakerDetail({
           >
             <AudioClip
               path={s.path}
+              audioChunkId={s.audio_chunk_id}
               startTime={s.start_time}
               duration={s.end_time - s.start_time}
             />
@@ -641,6 +680,7 @@ function SpeakerDetail({
               {simSamples[0] && (
                 <AudioClip
                   path={simSamples[0].path}
+                  audioChunkId={simSamples[0].audio_chunk_id}
                   startTime={simSamples[0].start_time}
                   duration={simSamples[0].end_time - simSamples[0].start_time}
                 />
@@ -759,6 +799,7 @@ function MergeBanner({
             <div className="space-y-1">
               <AudioClip
                 path={speakerSamples[0].path}
+                audioChunkId={speakerSamples[0].audio_chunk_id}
                 startTime={speakerSamples[0].start_time}
                 duration={
                   speakerSamples[0].end_time - speakerSamples[0].start_time
@@ -788,6 +829,7 @@ function MergeBanner({
             <div className="space-y-1">
               <AudioClip
                 path={similarSamples[0].path}
+                audioChunkId={similarSamples[0].audio_chunk_id}
                 startTime={similarSamples[0].start_time}
                 duration={
                   similarSamples[0].end_time - similarSamples[0].start_time
