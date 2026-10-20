@@ -288,9 +288,13 @@ fn unreadable_v2_values_are_set_aside_instead_of_failing_the_file() {
     assert_eq!(again.config, config.config);
     assert_eq!(again.trigger.unwrap().extra, trigger.extra);
 
-    // A file that is broken outside the v2 fields still fails.
+    // A file that is broken outside the v2 fields still fails, and the
+    // error names the real problem.
     assert!(parse_frontmatter("---\nschedule: [1, 2\n---\n\nB").is_err());
-    assert!(parse_frontmatter("---\nenabled: 5\neffort: max\n---\n\nB").is_err());
+    let err = parse_frontmatter("---\ntimeout: soon\neffort: max\n---\n\nB")
+        .unwrap_err()
+        .to_string();
+    assert!(err.contains("timeout"), "{err}");
 }
 
 #[tokio::test]

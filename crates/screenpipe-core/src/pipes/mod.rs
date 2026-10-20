@@ -4504,7 +4504,9 @@ pub fn parse_frontmatter_with_notes(content: &str) -> Result<(PipeConfig, String
     match serde_yaml::from_str::<PipeConfig>(yaml_str) {
         Ok(config) => Ok((config, body, Vec::new())),
         Err(strict) => match parse_config_setting_aside(yaml_str) {
-            Some((config, notes)) => Ok((config, body, notes)),
+            Some(Ok((config, notes))) => Ok((config, body, notes)),
+            // The rest is broken too: report that, not the set-aside field.
+            Some(Err(rest)) => Err(anyhow!(rest)),
             None => Err(strict.into()),
         },
     }
@@ -4512,8 +4514,10 @@ pub fn parse_frontmatter_with_notes(content: &str) -> Result<(PipeConfig, String
 
 /// Second attempt at a frontmatter block that did not parse as a whole: set
 /// aside every [`LENIENT_FIELDS`] value that fails on its own and parse the
-/// rest. `None` when the failure lies elsewhere.
-fn parse_config_setting_aside(yaml_str: &str) -> Option<(PipeConfig, Vec<String>)> {
+/// rest. `None` when no such value was found.
+fn parse_config_setting_aside(
+    yaml_str: &str,
+) -> Option<std::result::Result<(PipeConfig, Vec<String>), String>> {
     use serde_yaml::{Mapping, Value as Yaml};
 
     // Each field is tried as the only key of a frontmatter block, so it goes
@@ -4565,7 +4569,17 @@ fn parse_config_setting_aside(yaml_str: &str) -> Option<(PipeConfig, Vec<String>
         return None;
     }
 
-    let mut config: PipeConfig = serde_yaml::from_value(Yaml::Mapping(map)).ok()?;
+    let mut config: PipeConfig = match serde_yaml::from_value(Yaml::Mapping(map.clone())) {
+        Ok(config) => config,
+        Err(e) => {
+            // A value carries no location here, so name the key that fails.
+            let culprit = map.iter().find_map(|(k, v)| {
+                let key = k.as_str()?;
+                readable(key, v).err().map(|e| format!("{key}: {e}"))
+            });
+            return Some(Err(culprit.unwrap_or_else(|| e.to_string())));
+        }
+    };
     let as_json =
         |key: &str, value: &Yaml, notes: &mut Vec<String>| match serde_json::to_value(value) {
             Ok(json) => Some(json),
@@ -4584,7 +4598,7 @@ fn parse_config_setting_aside(yaml_str: &str) -> Option<(PipeConfig, Vec<String>
             trigger.extra.insert("sources".to_string(), json);
         }
     }
-    Some((config, notes))
+    Some(Ok((config, notes)))
 }
 
 /// True when the typed field `key` (one of [`LENIENT_FIELDS`]) holds a value
