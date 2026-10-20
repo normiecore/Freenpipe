@@ -429,14 +429,24 @@ impl VisionManager {
         *status = VisionManagerStatus::ShuttingDown;
         drop(status);
 
-        // Stop all monitors
-        let monitor_ids: Vec<u32> = self
+        // Wait for the per-monitor operation in flight, if any, and keep new
+        // ones out until the manager is Stopped. A resume that passed its
+        // Running check before ShuttingDown was set inserts its task before
+        // the lock is released, so the drain below stops it; anything that
+        // takes the lock later sees the manager is not running and starts
+        // nothing. Every insert into the task maps happens under this lock.
+        let _ops = self.monitor_ops.lock().await;
+
+        // Stop all monitors, including HD recorders whose capture task has
+        // already exited and been reaped by `active_monitors`.
+        let mut monitor_ids: std::collections::BTreeSet<u32> = self
             .recording_tasks
             .iter()
             .map(|entry| *entry.key())
             .collect();
+        monitor_ids.extend(self.hd_recording_tasks.iter().map(|entry| *entry.key()));
         for monitor_id in monitor_ids {
-            if let Err(e) = self.stop_monitor(monitor_id).await {
+            if let Err(e) = self.stop_monitor_locked(monitor_id).await {
                 warn!(
                     "Failed to stop recording on monitor {}: {:?}",
                     monitor_id, e
@@ -465,7 +475,8 @@ impl VisionManager {
     }
 
     /// Start recording on a specific monitor. A monitor the user paused is
-    /// left alone (returns Ok without starting anything).
+    /// left alone (returns Ok without starting anything). Refused while the
+    /// manager is not running, so no capture task outlives a `stop()`.
     pub async fn start_monitor(&self, monitor_id: u32) -> Result<()> {
         let _ops = self.monitor_ops.lock().await;
         self.start_monitor_locked(monitor_id).await
@@ -479,6 +490,15 @@ impl VisionManager {
                 "not starting vision capture on monitor {}: it is paused by the user", monitor_id
             );
             return Ok(());
+        }
+
+        let status = *self.status.read().await;
+        if status != VisionManagerStatus::Running {
+            return Err(anyhow::anyhow!(
+                "not starting vision capture on monitor {}: the vision manager is {:?}",
+                monitor_id,
+                status
+            ));
         }
 
         // Check if already recording
@@ -640,7 +660,11 @@ impl VisionManager {
                     Arc::new(AtomicBool::new(false)),
                     high_fps_controller.clone(),
                 ));
-            self.hd_recording_tasks.insert(monitor_id, hd_handle);
+            // A recorder left over from a capture task that exited on its
+            // own would be detached, not stopped, by dropping its handle.
+            if let Some(previous) = self.hd_recording_tasks.insert(monitor_id, hd_handle) {
+                previous.abort();
+            }
         }
 
         info!(
@@ -707,6 +731,11 @@ impl VisionManager {
     /// Resume a monitor the user paused. The pause is lifted first; when the
     /// manager is running the monitor starts right away, otherwise it starts
     /// with the next `start()`.
+    ///
+    /// The Running check and the task insert both happen under `monitor_ops`,
+    /// which `stop()` takes after marking the manager ShuttingDown, so a
+    /// resume racing a stop either starts nothing or starts a task that the
+    /// stop then ends.
     pub async fn resume_monitor(&self, monitor_id: u32) -> Result<(), DeviceControlError> {
         let _ops = self.monitor_ops.lock().await;
         if self.device_control.clear_paused(monitor_id) {
@@ -894,11 +923,36 @@ impl std::fmt::Display for DeviceControlError {
 
 impl std::error::Error for DeviceControlError {}
 
+/// The display a pause was set on, as the latest enumeration that saw it
+/// under the paused id reported it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct PausedDisplay {
+    stable_id: String,
+    name: String,
+}
+
+impl PausedDisplay {
+    fn of(monitor: &MonitorSummary) -> Self {
+        Self {
+            stable_id: monitor.stable_id.clone(),
+            name: monitor.name.clone(),
+        }
+    }
+}
+
+/// Most pauses kept for displays whose id went to another display. Older
+/// ones are forgotten first.
+const MAX_DETACHED_PAUSES: usize = 16;
+
 #[derive(Default)]
 struct DeviceControlState {
-    /// Paused monitor id -> its `stable_id` when last enumerated (None when
-    /// the monitor was paused before any enumeration saw it).
-    paused: BTreeMap<u32, Option<String>>,
+    /// Paused monitor id -> the display it was set on (None when the monitor
+    /// was paused before any enumeration saw it).
+    paused: BTreeMap<u32, Option<PausedDisplay>>,
+    /// Pauses taken off their id because a display with another name now
+    /// holds that id, as `(old_id, display)`, oldest first. Each goes back
+    /// on when its display shows up again under any unpaused id.
+    detached: Vec<(u32, PausedDisplay)>,
     /// Latest enumeration, in the order the OS reported it.
     monitors: Vec<MonitorSummary>,
     /// The manager that currently owns capture, if any.
@@ -913,10 +967,13 @@ struct DeviceControlState {
 /// every new manager honours the same set. Nothing is written to disk, so a
 /// fresh process starts with every monitor unpaused.
 ///
-/// Pauses are keyed by numeric monitor id, the id the API uses. When a paused
-/// monitor disappears and a monitor with the same `stable_id` shows up under a
-/// new id (Windows hands out a new `HMONITOR` after a reconnect), the pause
-/// moves to the new id, so hot-plugging a paused display keeps it paused.
+/// Pauses are keyed by numeric monitor id, the id the API uses, and remember
+/// the display (`stable_id` and name) they were set on. When a paused monitor
+/// disappears and a monitor with the same `stable_id` shows up under a new id
+/// (Windows hands out a new `HMONITOR` after a reconnect), the pause moves to
+/// the new id, so hot-plugging a paused display keeps it paused. When a paused
+/// id comes back as a display with a different name, the pause leaves that id
+/// (the new display records) and waits for its own display to return.
 #[derive(Default)]
 pub struct VisionDeviceControl {
     state: std::sync::Mutex<DeviceControlState>,
@@ -953,20 +1010,20 @@ impl VisionDeviceControl {
     /// Add a monitor to the paused set. Returns false when it already was.
     pub fn mark_paused(&self, monitor_id: u32) -> bool {
         let mut state = self.lock();
-        let stable_id = state
+        let display = state
             .monitors
             .iter()
             .find(|m| m.id == monitor_id)
-            .map(|m| m.stable_id.clone());
+            .map(PausedDisplay::of);
         match state.paused.get_mut(&monitor_id) {
             Some(existing) => {
-                if stable_id.is_some() {
-                    *existing = stable_id;
+                if display.is_some() {
+                    *existing = display;
                 }
                 false
             }
             None => {
-                state.paused.insert(monitor_id, stable_id);
+                state.paused.insert(monitor_id, display);
                 true
             }
         }
@@ -980,10 +1037,11 @@ impl VisionDeviceControl {
     /// Store a fresh enumeration and carry pauses over to monitors that came
     /// back under a new id. Returns the `(old_id, new_id)` moves it made.
     pub fn publish_monitors(&self, monitors: Vec<MonitorSummary>) -> Vec<(u32, u32)> {
-        let mut state = self.lock();
-        let moves = carry_pauses_over(&mut state.paused, &monitors);
+        let mut guard = self.lock();
+        let state = &mut *guard;
+        let moves = carry_pauses_over(&mut state.paused, &mut state.detached, &monitors);
         state.monitors = monitors;
-        drop(state);
+        drop(guard);
         for (old_id, new_id) in &moves {
             info!(
                 old_id,
@@ -1114,36 +1172,86 @@ impl VisionDeviceControl {
     }
 }
 
-/// Keep pauses attached to the right monitors after a re-enumeration:
-/// refresh the remembered `stable_id` of every paused monitor that is still
-/// present, then move the pause of each paused id that vanished to a present,
-/// unpaused monitor with the same `stable_id`.
+/// Keep pauses attached to the right displays after a re-enumeration.
+///
+/// 1. A paused id that is present under the same display name keeps its
+///    pause, and the remembered `stable_id` is refreshed (the display may have
+///    moved or changed resolution). Under a different name the id now belongs
+///    to another display: the pause comes off the id and is kept, detached,
+///    for the display it was set on.
+/// 2. The pause of each paused id that vanished, and each detached pause,
+///    moves to a present, unpaused monitor with the remembered `stable_id`.
+///    A vanished pause with no match stays on its id, so the display keeps it
+///    when it returns under the same id; a detached one waits in `detached`.
+///
+/// Returns the `(old_id, new_id)` moves.
 fn carry_pauses_over(
-    paused: &mut BTreeMap<u32, Option<String>>,
+    paused: &mut BTreeMap<u32, Option<PausedDisplay>>,
+    detached: &mut Vec<(u32, PausedDisplay)>,
     monitors: &[MonitorSummary],
 ) -> Vec<(u32, u32)> {
     for monitor in monitors {
-        if let Some(stable_id) = paused.get_mut(&monitor.id) {
-            *stable_id = Some(monitor.stable_id.clone());
+        let same_display = match paused.get(&monitor.id) {
+            None => continue,
+            Some(None) => true,
+            Some(Some(remembered)) => remembered.name == monitor.name,
+        };
+        if same_display {
+            paused.insert(monitor.id, Some(PausedDisplay::of(monitor)));
+        } else if let Some(Some(remembered)) = paused.remove(&monitor.id) {
+            info!(
+                monitor_id = monitor.id,
+                "monitor id {} now belongs to {:?}, not the paused {:?}; it records, \
+                 and the pause waits for {:?} to return",
+                monitor.id,
+                monitor.name,
+                remembered.name,
+                remembered.stable_id
+            );
+            detached.retain(|(_, kept)| kept.stable_id != remembered.stable_id);
+            detached.push((monitor.id, remembered));
         }
     }
+
+    // A present monitor showing that display, whose id is not paused yet.
+    fn unpaused_match<'a>(
+        monitors: &'a [MonitorSummary],
+        paused: &BTreeMap<u32, Option<PausedDisplay>>,
+        stable_id: &str,
+    ) -> Option<&'a MonitorSummary> {
+        monitors
+            .iter()
+            .find(|m| m.stable_id == stable_id && !paused.contains_key(&m.id))
+    }
+
     let present: HashSet<u32> = monitors.iter().map(|m| m.id).collect();
     let vanished: Vec<(u32, String)> = paused
         .iter()
         .filter(|(id, _)| !present.contains(id))
-        .filter_map(|(id, stable_id)| stable_id.clone().map(|s| (*id, s)))
+        .filter_map(|(id, remembered)| remembered.as_ref().map(|d| (*id, d.stable_id.clone())))
         .collect();
     let mut moves = Vec::new();
     for (old_id, stable_id) in vanished {
-        let target = monitors
-            .iter()
-            .find(|m| m.stable_id == stable_id && !paused.contains_key(&m.id));
-        if let Some(target) = target {
+        if let Some(target) = unpaused_match(monitors, paused, &stable_id) {
             paused.remove(&old_id);
-            paused.insert(target.id, Some(stable_id));
+            paused.insert(target.id, Some(PausedDisplay::of(target)));
             moves.push((old_id, target.id));
         }
     }
+
+    let mut waiting = Vec::with_capacity(detached.len());
+    for (old_id, remembered) in detached.drain(..) {
+        match unpaused_match(monitors, paused, &remembered.stable_id) {
+            Some(target) => {
+                paused.insert(target.id, Some(PausedDisplay::of(target)));
+                moves.push((old_id, target.id));
+            }
+            None => waiting.push((old_id, remembered)),
+        }
+    }
+    let excess = waiting.len().saturating_sub(MAX_DETACHED_PAUSES);
+    waiting.drain(..excess);
+    *detached = waiting;
     moves
 }
 
@@ -1285,22 +1393,129 @@ mod tests {
         assert!(!control.is_paused(1));
     }
 
+    fn display(stable_id: &str, name: &str) -> Option<PausedDisplay> {
+        Some(PausedDisplay {
+            stable_id: stable_id.to_string(),
+            name: name.to_string(),
+        })
+    }
+
+    fn named(id: u32, name: &str, stable_id: &str) -> MonitorSummary {
+        MonitorSummary {
+            name: name.to_string(),
+            ..summary(id, stable_id, true)
+        }
+    }
+
     #[test]
     fn pauses_do_not_move_onto_an_already_paused_or_different_monitor() {
         let mut paused = BTreeMap::new();
-        paused.insert(5, Some("A_1x1_0,0".to_string()));
-        paused.insert(6, Some("B_1x1_0,0".to_string()));
+        paused.insert(5, display("A_1x1_0,0", "Display 5"));
+        paused.insert(6, display("B_1x1_0,0", "Display 6"));
         paused.insert(7, None);
+        let mut detached = Vec::new();
         // 5 vanished; its stable id now belongs to 6 which is already paused.
         // 7 was paused before any enumeration saw it and has no stable id.
         let moves = carry_pauses_over(
             &mut paused,
+            &mut detached,
             &[summary(6, "A_1x1_0,0", true), summary(8, "C_1x1_0,0", true)],
         );
         assert!(moves.is_empty());
+        assert!(detached.is_empty());
         assert_eq!(paused.keys().copied().collect::<Vec<_>>(), vec![5, 6, 7]);
-        // The present paused monitor's stable id was refreshed.
-        assert_eq!(paused[&6].as_deref(), Some("A_1x1_0,0"));
+        // The present paused monitor kept its name, so its stable id was refreshed.
+        assert_eq!(paused[&6], display("A_1x1_0,0", "Display 6"));
+    }
+
+    #[test]
+    fn a_paused_display_that_moves_or_changes_resolution_stays_paused() {
+        let control = VisionDeviceControl::new();
+        control.publish_monitors(vec![named(
+            5,
+            r"\\.\DISPLAY1",
+            r"\\.\DISPLAY1_1920x1080_0,0",
+        )]);
+        control.mark_paused(5);
+        let moves = control.publish_monitors(vec![named(
+            5,
+            r"\\.\DISPLAY1",
+            r"\\.\DISPLAY1_2560x1440_-2560,0",
+        )]);
+        assert!(moves.is_empty());
+        assert_eq!(control.paused_ids(), vec![5]);
+        assert_eq!(
+            control.lock().paused[&5],
+            display(r"\\.\DISPLAY1_2560x1440_-2560,0", r"\\.\DISPLAY1")
+        );
+    }
+
+    #[test]
+    fn a_reused_id_does_not_inherit_the_pause_of_another_display() {
+        let paused_display = r"\\.\DISPLAY2_2560x1440_1920,0";
+        let control = VisionDeviceControl::new();
+        control.publish_monitors(vec![named(10, r"\\.\DISPLAY2", paused_display)]);
+        assert!(control.mark_paused(10));
+
+        // Unplugged: the pause stays on id 10.
+        control.publish_monitors(vec![]);
+        assert_eq!(control.paused_ids(), vec![10]);
+
+        // Windows hands id 10 to another display: it records.
+        let other = named(10, r"\\.\DISPLAY3", r"\\.\DISPLAY3_1920x1080_-1920,0");
+        assert!(control.publish_monitors(vec![other.clone()]).is_empty());
+        assert!(!control.is_paused(10));
+        assert!(control.paused_ids().is_empty());
+        let status = control.status();
+        assert!(
+            !status[0].user_disabled,
+            "the other display is not shown paused"
+        );
+
+        // The paused display comes back unchanged under a new id: paused again.
+        let moves =
+            control.publish_monitors(vec![other, named(12, r"\\.\DISPLAY2", paused_display)]);
+        assert_eq!(moves, vec![(10, 12)]);
+        assert_eq!(control.paused_ids(), vec![12]);
+        assert!(control.lock().detached.is_empty());
+    }
+
+    #[test]
+    fn a_pause_follows_its_display_when_two_ids_swap() {
+        let a = r"\\.\DISPLAY1_1920x1080_0,0";
+        let b = r"\\.\DISPLAY2_1920x1080_1920,0";
+        let control = VisionDeviceControl::new();
+        control.publish_monitors(vec![
+            named(1, r"\\.\DISPLAY1", a),
+            named(2, r"\\.\DISPLAY2", b),
+        ]);
+        control.mark_paused(1);
+        let moves = control.publish_monitors(vec![
+            named(1, r"\\.\DISPLAY2", b),
+            named(2, r"\\.\DISPLAY1", a),
+        ]);
+        assert_eq!(moves, vec![(1, 2)]);
+        assert_eq!(control.paused_ids(), vec![2]);
+    }
+
+    #[test]
+    fn detached_pauses_are_bounded() {
+        let mut paused = BTreeMap::new();
+        for id in 0..20u32 {
+            paused.insert(
+                id,
+                display(&format!("old{id}_1x1_0,0"), &format!("old{id}")),
+            );
+        }
+        let monitors: Vec<MonitorSummary> = (0..20u32)
+            .map(|id| named(id, &format!("new{id}"), &format!("new{id}_1x1_0,0")))
+            .collect();
+        let mut detached = Vec::new();
+        let moves = carry_pauses_over(&mut paused, &mut detached, &monitors);
+        assert!(moves.is_empty());
+        assert!(paused.is_empty(), "every id now shows another display");
+        assert_eq!(detached.len(), MAX_DETACHED_PAUSES);
+        assert_eq!(detached[0].0, 4, "the oldest are forgotten first");
     }
 
     #[test]
@@ -1429,6 +1644,80 @@ mod tests {
         control.detach(&first);
         let attached = control.manager().expect("second stays attached");
         assert!(Arc::ptr_eq(&attached, &second));
+    }
+
+    /// A resume that holds `monitor_ops` when `stop()` begins finishes first,
+    /// and the stop then ends the task it started.
+    #[tokio::test]
+    async fn stop_ends_a_task_inserted_by_a_resume_in_flight() {
+        let vm = Arc::new(
+            make_vm_with_monitor_ids(vec![])
+                .await
+                .with_device_control(Arc::new(VisionDeviceControl::new())),
+        );
+        *vm.status.write().await = VisionManagerStatus::Running;
+
+        // Stand in for resume_monitor after its Running check.
+        let ops = vm.monitor_ops.lock().await;
+        let stopper = tokio::spawn({
+            let vm = vm.clone();
+            async move { vm.stop().await }
+        });
+        tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            while vm.status().await == VisionManagerStatus::Running {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("stop() marks the manager ShuttingDown");
+
+        let (alive_tx, alive_rx) = tokio::sync::oneshot::channel::<()>();
+        vm.recording_tasks.insert(
+            3,
+            tokio::spawn(async move {
+                let _alive = alive_tx;
+                tokio::time::sleep(std::time::Duration::from_secs(3600)).await;
+            }),
+        );
+        vm.hd_recording_tasks.insert(3, idle_task());
+        tokio::task::yield_now().await;
+        assert!(
+            !stopper.is_finished(),
+            "stop() waits for the operation in flight"
+        );
+        drop(ops);
+
+        tokio::time::timeout(std::time::Duration::from_secs(10), stopper)
+            .await
+            .expect("stop() finishes")
+            .expect("stop task")
+            .expect("stop() succeeds");
+        assert!(vm.recording_tasks.is_empty());
+        assert!(vm.hd_recording_tasks.is_empty());
+        assert_eq!(vm.status().await, VisionManagerStatus::Stopped);
+        let ended = tokio::time::timeout(std::time::Duration::from_secs(5), alive_rx)
+            .await
+            .expect("the capture task ends");
+        assert!(
+            ended.is_err(),
+            "the capture task was aborted, not left running"
+        );
+    }
+
+    #[tokio::test]
+    async fn start_monitor_is_refused_while_the_manager_is_not_running() {
+        let vm = make_vm_with_monitor_ids(vec![])
+            .await
+            .with_device_control(Arc::new(VisionDeviceControl::new()));
+        for status in [
+            VisionManagerStatus::ShuttingDown,
+            VisionManagerStatus::Stopped,
+        ] {
+            *vm.status.write().await = status;
+            let err = vm.start_monitor(5).await.expect_err("refused");
+            assert!(format!("{err:#}").contains("vision manager is"), "{err:#}");
+            assert!(vm.recording_tasks.is_empty());
+        }
     }
 
     /// Verify that stop_monitor completes promptly when the task finishes normally.
