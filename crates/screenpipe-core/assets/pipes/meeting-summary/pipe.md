@@ -49,7 +49,7 @@ Stick to what the transcript supports: no invented names, numbers or promises. F
 
 `body.json` is `{"summary": "<the markdown from step 3>", "title": "<optional>"}`. Produce it with a JSON encoder (for example a one-line bun script) so quotes and line breaks are escaped. Send only the summary, not the existing note: the server replaces an earlier `## Summary` section or adds one at the end, and keeps everything else the user wrote.
 
-Add `title` only when the current title is empty, generic ("Untitled", "Meeting", just the app name) or plainly wrong. Then give a plain descriptive title of three to eight words, without quotes. Otherwise leave the field out so a title the user picked stays.
+Add `title` only when the meeting has no real name yet (its title is empty, a placeholder such as "Untitled" or "Meeting", or only the app's name) or the name is plainly wrong. Then send a plain descriptive title of three to eight words, without quotes. Otherwise leave the field out so a title the user picked stays.
 
 A `400` reply means the text was empty or read like an error message rather than a summary. Fix the text and try once more.
 
