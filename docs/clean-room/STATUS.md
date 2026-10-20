@@ -2,16 +2,16 @@
 
 > Generated file: the merger routine regenerates it with `python3 tools/plan/status.py --write`. Do not edit it by hand. The plan is [PLAN.md](PLAN.md); the process is [docs/dev/cloud-runbook.md](../dev/cloud-runbook.md).
 
-Generated 2026-10-20T05:34:35Z from `origin/main` (latest code commit `4d052c5`). GitHub data: available (via gh).
+Generated 2026-10-20T06:15:34Z from `origin/main` (latest code commit `40c94a6`). GitHub data: available (via gh).
 
 ## Progress
 
-**14 of 155 work packages merged (9.0%)**: 1 in review, 0 claimed, 8 ready, 132 blocked.
+**15 of 155 work packages merged (9.7%)**: 0 in review, 0 claimed, 8 ready, 132 blocked.
 
 | Wave | Theme | Merged | In review | Claimed | Ready | Blocked | Progress |
 |---|---|---|---|---|---|---|---|
 | 0 | Foundation: build, ee/ stubs, de-cloud, rebrand | 13/13 | 0 | 0 | 0 | 0 | `##########` 100% |
-| 1 | Cross-cutting foundations: schema v2.7, settings schema, integration seams | 1/5 | 1 | 0 | 3 | 0 | `##--------` 20% |
+| 1 | Cross-cutting foundations: schema v2.7, settings schema, integration seams | 2/5 | 0 | 0 | 3 | 0 | `####------` 40% |
 | 2 | Engine data layer and core backends | 0/27 | 0 | 0 | 5 | 22 | `----------` 0% |
 | 3 | Feature backends (search, pipes, connections, capture, audio) | 0/31 | 0 | 0 | 0 | 31 | `----------` 0% |
 | 4 | Advanced backends, agents runtime, app shell | 0/22 | 0 | 0 | 0 | 22 | `----------` 0% |
@@ -19,15 +19,13 @@ Generated 2026-10-20T05:34:35Z from `origin/main` (latest code commit `4d052c5`)
 | 6 | Agent/workflow UIs, piggyback, hybrid bulk | 0/21 | 0 | 0 | 0 | 21 | `----------` 0% |
 | 7 | Hybrid lifecycle, overlays, chat follow-ups | 0/9 | 0 | 0 | 0 | 9 | `----------` 0% |
 | 8 | Final UI pieces and surface audit | 0/3 | 0 | 0 | 0 | 3 | `----------` 0% |
-| all | | 14/155 | 1 | 0 | 8 | 132 | `#---------` 9.0% |
+| all | | 15/155 | 0 | 0 | 8 | 132 | `#---------` 9.7% |
 
-CI on main (merge gate on the latest non-status commit `4d052c5`): **success**
+CI on main (merge gate on the latest non-status commit `40c94a6`): **pending** (gates: in_progress; linux: in_progress; test-windows: in_progress; trufflehog: in_progress; windows: in_progress)
 
 ## In review
 
-| WP | PR | Head | CI | Review | Mergeable | Worker |
-|---|---|---|---|---|---|---|
-| W1-05 | [#12](https://github.com/normiecore/Freenpipe/pull/12) | `0a238de` | success | pending | yes | - |
+None.
 
 ## Claimed
 
@@ -112,7 +110,7 @@ Recorded 2026-10-20 on main `4d052c5`, which carries all 13 wave 0 work packages
 | W0-12 | M | merged | Rebrand user-visible identity to Freenpipe | merge `06383cc` |
 | W0-13 | M | merged | Vendor git dependencies into third_party/ | merge `d482528` |
 
-### Wave 1: Cross-cutting foundations: schema v2.7, settings schema, integration seams (1/5 merged)
+### Wave 1: Cross-cutting foundations: schema v2.7, settings schema, integration seams (2/5 merged)
 
 | WP | Size | Status | Title | Detail |
 |---|---|---|---|---|
@@ -120,7 +118,7 @@ Recorded 2026-10-20 on main `4d052c5`, which carries all 13 wave 0 work packages
 | W1-02 | L | ready | Settings schema v2 and store compatibility |  |
 | W1-03 | M | ready | Integration seams, stub modules and shared constants |  |
 | W1-04 | S | ready | Enterprise and plan-gate no-op surface |  |
-| W1-05 | M | in_review | Licence gating for commercial builds | PR #12: CI success, review pending |
+| W1-05 | M | merged | Licence gating for commercial builds | merge `40c94a6` |
 
 ### Wave 2: Engine data layer and core backends (0/27 merged)
 
