@@ -65,6 +65,7 @@ pub struct LowDiskGuardConfig {
 /// How long the command waits for a free-space read of its own.
 const CONFIG_READ_TIMEOUT: Duration = Duration::from_secs(5);
 
+/// Threshold and check interval of the low-disk guard for the active data dir.
 #[tauri::command]
 #[specta::specta]
 pub async fn get_low_disk_guard_config(app: AppHandle) -> Result<LowDiskGuardConfig, String> {

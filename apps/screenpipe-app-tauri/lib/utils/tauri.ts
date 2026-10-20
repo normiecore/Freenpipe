@@ -670,6 +670,17 @@ async getLogFiles() : Promise<Result<LogFile[], string>> {
     else return { status: "error", error: e  as any };
 }
 },
+/**
+ * Threshold and check interval of the low-disk guard for the active data dir.
+ */
+async getLowDiskGuardConfig() : Promise<Result<LowDiskGuardConfig, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("get_low_disk_guard_config") };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
 async getMediaFile(filePath: string) : Promise<Result<JsonValue, string>> {
     try {
     return { status: "ok", data: await TAURI_INVOKE("get_media_file", { filePath }) };
@@ -2036,6 +2047,17 @@ async setEnterpriseRecordingAuthorized(authorized: boolean, credentialType: stri
     else return { status: "error", error: e  as any };
 }
 },
+/**
+ * Turn keep-awake on or off now.
+ */
+async setKeepAwake(enabled: boolean) : Promise<Result<null, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("set_keep_awake", { enabled }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
 async setNativeTheme(theme: string) : Promise<Result<null, string>> {
     try {
     return { status: "ok", data: await TAURI_INVOKE("set_native_theme", { theme }) };
@@ -2597,6 +2619,18 @@ path: string }
 export type JsonValue = null | boolean | number | string | JsonValue[] | { [key in string]: JsonValue }
 export type KeychainStatus = { state: string }
 export type LogFile = { name: string; path: string; modified_at: number }
+/**
+ * What the settings page shows next to the low-disk switch.
+ */
+export type LowDiskGuardConfig = {
+/**
+ * Capture stops when free space on the data-dir volume is at or below this.
+ */
+thresholdBytes: number;
+/**
+ * How often the engine reads the free space.
+ */
+checkIntervalSeconds: number }
 /**
  * A skill an organisation installed on this machine and keeps in sync.
  */
