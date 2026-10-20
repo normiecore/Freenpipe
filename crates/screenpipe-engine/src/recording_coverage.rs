@@ -28,6 +28,9 @@ use std::time::{Duration, Instant};
 use oasgen::OaSchema;
 use screenpipe_screen::PipelineMetrics;
 use serde::{Deserialize, Serialize};
+use tokio::task::JoinHandle;
+use tokio_stream::wrappers::IntervalStream;
+use tokio_stream::{Stream, StreamExt};
 use tracing::debug;
 
 /// How often the ticker classifies "now".
@@ -254,10 +257,24 @@ impl Drop for TickerGuard {
 /// process; a second call just points it at the new metrics. Must be called
 /// inside a tokio runtime.
 pub fn start_coverage_ticker(vision: Arc<PipelineMetrics>) {
-    start_ticker_every(vision, TICK_INTERVAL);
+    start_ticker_with(vision, interval_ticks(TICK_INTERVAL));
 }
 
-fn start_ticker_every(vision: Arc<PipelineMetrics>, period: Duration) {
+/// The instants at which a tokio interval of `period` fires, read from
+/// tokio's clock when each tick is delivered (so a late tick reports how late
+/// it really was). The first item comes at once.
+fn interval_ticks(period: Duration) -> impl Stream<Item = Instant> + Send + Unpin + 'static {
+    IntervalStream::new(tokio::time::interval(period))
+        .map(|_| tokio::time::Instant::now().into_std())
+}
+
+/// Point the ticker at `vision` and, when no ticker runs yet, spawn one that
+/// credits time at each instant `ticks` yields. Returns the spawned task, or
+/// `None` when a ticker was already running (`ticks` is then dropped unread).
+fn start_ticker_with<S>(vision: Arc<PipelineMetrics>, ticks: S) -> Option<JoinHandle<()>>
+where
+    S: Stream<Item = Instant> + Send + Unpin + 'static,
+{
     if let Ok(mut source) = VISION_SOURCE.lock() {
         *source = Some(vision);
     }
@@ -265,26 +282,31 @@ fn start_ticker_every(vision: Arc<PipelineMetrics>, period: Duration) {
         .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
         .is_err()
     {
-        return;
+        return None;
     }
-    tokio::spawn(async move {
-        let _guard = TickerGuard;
-        run_ticker(period).await;
-    });
+    // Made before the spawn so the flag is cleared even if the task is
+    // dropped before its first poll (a runtime shutting down).
+    let guard = TickerGuard;
+    Some(tokio::spawn(async move {
+        let _guard = guard;
+        run_ticker(ticks).await;
+    }))
 }
 
-async fn run_ticker(period: Duration) {
-    let mut interval = tokio::time::interval(period);
-    // The first tick of a tokio interval fires immediately; consume it so the
-    // clock starts from a real tick. Elapsed time is read from tokio's clock
-    // (the monotonic clock at runtime, a controllable one in tests).
-    interval.tick().await;
-    let mut clock = TickClock::new(tokio::time::Instant::now().into_std());
-    let mut ticks: u64 = 0;
-    loop {
-        interval.tick().await;
-        ticks = ticks.wrapping_add(1);
-        let Some(secs) = clock.tick(tokio::time::Instant::now().into_std()) else {
+/// Credit coverage time at each instant `ticks` yields; the first instant
+/// only starts the clock. Ends when the stream ends.
+async fn run_ticker<S>(mut ticks: S)
+where
+    S: Stream<Item = Instant> + Unpin,
+{
+    let Some(start) = ticks.next().await else {
+        return;
+    };
+    let mut clock = TickClock::new(start);
+    let mut count: u64 = 0;
+    while let Some(now) = ticks.next().await {
+        count = count.wrapping_add(1);
+        let Some(secs) = clock.tick(now) else {
             continue;
         };
         let vision = VISION_SOURCE.lock().ok().and_then(|s| s.clone());
@@ -293,7 +315,7 @@ async fn run_ticker(period: Duration) {
         };
         record(classify(&current_inputs(&vision)), secs);
 
-        if ticks.is_multiple_of(SUMMARY_EVERY_TICKS) {
+        if count.is_multiple_of(SUMMARY_EVERY_TICKS) {
             let s = snapshot();
             debug!(
                 "recording coverage: ratio={:.3}, recording={}s, stalled={}s, paused={}s, idle={}s",
@@ -310,6 +332,7 @@ async fn run_ticker(period: Duration) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use tokio_stream::wrappers::UnboundedReceiverStream;
 
     const NOW: u64 = 1_800_000_000;
 
@@ -456,28 +479,58 @@ mod tests {
         assert_eq!(value.as_object().unwrap().len(), order.len());
     }
 
+    /// Ticks are fed as synthetic instants, so no real time passes and the
+    /// credited seconds are exact on any runner.
     #[tokio::test]
     async fn ticker_credits_whole_seconds_per_tick_and_runs_once() {
         let before = snapshot();
-        let vision = Arc::new(PipelineMetrics::new());
-        // A short period keeps the test quick; each tick is ~1.05 s apart,
-        // which credits one whole second.
-        let period = Duration::from_millis(1_050);
-        start_ticker_every(vision.clone(), period);
-        // A second start only re-points the running ticker.
-        start_ticker_every(vision, period);
-        tokio::time::sleep(Duration::from_millis(3_400)).await;
+        let start = Instant::now();
+        let (ticks, rx) = tokio::sync::mpsc::unbounded_channel::<Instant>();
+        let ticker = start_ticker_with(
+            Arc::new(PipelineMetrics::new()),
+            UnboundedReceiverStream::new(rx),
+        )
+        .expect("the first start spawns the ticker");
+
+        // A second start while it runs only re-points it: its ticks are
+        // dropped unread, so time is never counted twice.
+        let (second_ticks, second_rx) = tokio::sync::mpsc::unbounded_channel::<Instant>();
+        assert!(start_ticker_with(
+            Arc::new(PipelineMetrics::new()),
+            UnboundedReceiverStream::new(second_rx),
+        )
+        .is_none());
+        assert!(second_ticks.is_closed());
+
+        // Start, three ticks 1.05 s apart (1 s each), a 20 s gap (dropped),
+        // then a tick 2.5 s later (2 s).
+        for ms in [0, 1_050, 2_100, 3_150, 23_150, 25_650] {
+            ticks.send(start + Duration::from_millis(ms)).unwrap();
+        }
+        drop(ticks);
+        ticker.await.unwrap();
         let after = snapshot();
-        // Ticks at 1.05, 2.1 and 3.15 s credit 1 s each (timer jitter may
-        // cost one); a duplicate ticker would double that. Another test adds
-        // to `active_paused` directly, so that bucket only counts towards the
-        // lower bound.
+
+        // Another test adds to `active_paused` directly, so only the other
+        // buckets give an exact figure; the ticker's own credits may land in
+        // any bucket, so the total is a lower bound.
         let unpaused =
             |s: &CoverageSnapshot| s.recording_secs + s.active_stalled_secs + s.idle_secs;
         let gained =
             (after.active_secs + after.idle_secs) - (before.active_secs + before.idle_secs);
-        assert!(gained >= 2, "gained {} ({:?})", gained, after);
-        assert!(unpaused(&after) - unpaused(&before) <= 3, "{:?}", after);
+        assert!(gained >= 5, "gained {} ({:?})", gained, after);
+        assert!(unpaused(&after) - unpaused(&before) <= 5, "{:?}", after);
+
+        // The finished ticker released its slot, so a later server start in
+        // the same process gets a fresh one.
+        let (late_ticks, late_rx) = tokio::sync::mpsc::unbounded_channel::<Instant>();
+        let late = start_ticker_with(
+            Arc::new(PipelineMetrics::new()),
+            UnboundedReceiverStream::new(late_rx),
+        )
+        .expect("a stopped ticker is replaced");
+        drop(late_ticks);
+        late.await.unwrap();
     }
 
     #[test]

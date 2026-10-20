@@ -615,11 +615,9 @@ async fn execute_batch(
         }
     }
 
-    // COMMIT or ROLLBACK
-    if any_fatal {
-        crate::write_queue_health::record_batch_failed(
-            crate::write_queue_health::BatchFailure::Fatal,
-        );
+    // COMMIT or ROLLBACK. `batch_end` is what /health counts for this batch;
+    // it is recorded exactly once, after the outcome is known.
+    let batch_end = if any_fatal {
         if let Err(e) = sqlx::query("ROLLBACK").execute(&mut *conn).await {
             warn!("write_queue: ROLLBACK failed: {}, detaching connection", e);
             let _raw = conn.detach();
@@ -631,6 +629,7 @@ async fn execute_batch(
                 *result = Err(sqlx::Error::WorkerCrashed);
             }
         }
+        crate::write_queue_health::BatchEnd::RolledBack
     } else if let Err(e) = sqlx::query("COMMIT").execute(&mut *conn).await {
         warn!("write_queue: COMMIT failed: {}", e);
         // Always detach. The previous code skipped detaching when the
@@ -646,8 +645,8 @@ async fn execute_batch(
         // until its lifetime ends.
         warn!("write_queue: detaching connection due to commit failure");
         let _raw = conn.detach();
-        crate::write_queue_health::record_batch_failed(
-            crate::write_queue_health::BatchFailure::Fatal,
+        crate::write_queue_health::record_batch_end(
+            crate::write_queue_health::BatchEnd::CommitFailed,
         );
         crate::write_queue_health::record_writer_reopen();
         // All results become the commit error
@@ -655,9 +654,11 @@ async fn execute_batch(
             let _ = pw.respond.send(Err(sqlx::Error::WorkerCrashed));
         }
         return;
-    }
+    } else {
+        crate::write_queue_health::committed_batch_end(&results)
+    };
 
-    crate::write_queue_health::record_batch_committed();
+    crate::write_queue_health::record_batch_end(batch_end);
 
     // Send results to callers
     for (pw, result) in batch.drain(..).zip(results.into_iter()) {

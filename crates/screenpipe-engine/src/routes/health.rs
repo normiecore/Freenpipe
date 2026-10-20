@@ -506,17 +506,28 @@ pub async fn health_check(State(state): State<Arc<AppState>>) -> JsonResponse<He
                 );
             }
             let cached = HEALTH_CACHE.read().await.1.clone();
-            JsonResponse(tag_snapshot_timeout(
-                cached.unwrap_or_else(degraded_response),
-            ))
+            JsonResponse(tag_snapshot_timeout(cached.unwrap_or_else(|| {
+                degraded_response(state.vision_disabled, state.audio_disabled)
+            })))
         }
     }
 }
 
 /// Minimal response served when `/health` times out before any cached
 /// snapshot is available (cold start + slow inner). Status 503 so callers
-/// can tell this apart from a normal response.
-fn degraded_response() -> HealthCheckResponse {
+/// can tell this apart from a normal response. Only facts known without the
+/// computation are filled in; the rest are the documented "nothing yet"
+/// values (`vision_reason` `not_started`, the configured capture mode).
+fn degraded_response(vision_disabled: bool, audio_disabled: bool) -> HealthCheckResponse {
+    let vision_reason = if vision_disabled {
+        "disabled_by_setting"
+    } else {
+        "not_started"
+    };
+    let audio_capture_mode = health_reasons::audio_capture_mode_value(
+        audio_disabled,
+        published_capture_settings().audio_capture_mode,
+    );
     HealthCheckResponse {
         status: "degraded".to_string(),
         status_code: 503,
@@ -527,10 +538,10 @@ fn degraded_response() -> HealthCheckResponse {
         last_frame_timestamp: None,
         last_audio_timestamp: None,
         frame_status: "unknown".to_string(),
-        vision_reason: "unknown".to_string(),
+        vision_reason: vision_reason.to_string(),
         loop_stage: None,
         loop_stage_age_secs: None,
-        audio_capture_mode: String::new(),
+        audio_capture_mode: audio_capture_mode.to_string(),
         audio_status: "unknown".to_string(),
         message: "health check timed out before producing a snapshot".to_string(),
         verbose_instructions: None,
@@ -749,38 +760,60 @@ fn probe_tool(path: &std::path::Path) -> DependencyStatus {
 }
 
 fn run_version_probe(path: &std::path::Path) -> Result<String, String> {
-    let mut child = screenpipe_core::ffmpeg::ffmpeg_cmd(path)
-        .arg("-version")
+    let mut command = screenpipe_core::ffmpeg::ffmpeg_cmd(path);
+    command.arg("-version");
+    run_with_deadline(&mut command, VERSION_PROBE_TIMEOUT)
+}
+
+/// Run `command` and return its stdout, killing it after `timeout`.
+///
+/// Stdout is drained on a helper thread while the child runs: a banner larger
+/// than the pipe buffer (full ffmpeg builds print a long configure line, and
+/// Windows anonymous pipes are small) would otherwise block the child on its
+/// write until the deadline.
+fn run_with_deadline(
+    command: &mut std::process::Command,
+    timeout: std::time::Duration,
+) -> Result<String, String> {
+    let mut child = command
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::null())
         .spawn()
         .map_err(|e| format!("could not start: {}", e))?;
-    let deadline = std::time::Instant::now() + VERSION_PROBE_TIMEOUT;
-    loop {
+    let (out_tx, out_rx) = std::sync::mpsc::channel::<String>();
+    if let Some(mut stdout) = child.stdout.take() {
+        std::thread::spawn(move || {
+            use std::io::Read;
+            let mut bytes = Vec::new();
+            let _ = stdout.read_to_end(&mut bytes);
+            let _ = out_tx.send(String::from_utf8_lossy(&bytes).into_owned());
+        });
+    }
+    let deadline = std::time::Instant::now() + timeout;
+    let status = loop {
         match child.try_wait() {
-            Ok(Some(status)) => {
-                let mut out = String::new();
-                if let Some(mut stdout) = child.stdout.take() {
-                    use std::io::Read;
-                    let _ = stdout.read_to_string(&mut out);
-                }
-                return if status.success() {
-                    Ok(out)
-                } else {
-                    Err(format!("exited with {}", status))
-                };
-            }
+            Ok(Some(status)) => break status,
             Ok(None) if std::time::Instant::now() < deadline => {
                 std::thread::sleep(std::time::Duration::from_millis(50));
             }
             Ok(None) => {
                 let _ = child.kill();
                 let _ = child.wait();
-                return Err(format!("no answer within {:?}", VERSION_PROBE_TIMEOUT));
+                return Err(format!("no answer within {:?}", timeout));
             }
             Err(e) => return Err(format!("could not wait for it: {}", e)),
         }
+    };
+    // The reader sees end-of-file once the child has exited; the short grace
+    // only matters if something else inherited the pipe.
+    let output = out_rx
+        .recv_timeout(std::time::Duration::from_secs(1))
+        .unwrap_or_default();
+    if status.success() {
+        Ok(output)
+    } else {
+        Err(format!("exited with {}", status))
     }
 }
 
@@ -1863,7 +1896,7 @@ mod tests {
             frame_status: "ok".to_string(),
             audio_status: "ok".to_string(),
             message: "test".to_string(),
-            ..degraded_response()
+            ..degraded_response(false, false)
         }
     }
 
@@ -2076,9 +2109,51 @@ mod tests {
         // The cached status itself is kept.
         assert_eq!(tagged.status, "healthy");
 
-        let cold = tag_snapshot_timeout(degraded_response());
+        let cold = tag_snapshot_timeout(degraded_response(false, false));
         assert_eq!(cold.status_code, 503);
         assert_eq!(cold.unhealthy_reasons[0].component, "health");
+    }
+
+    /// The cold-start skeleton only uses values from the documented sets.
+    #[test]
+    fn cold_skeleton_uses_documented_values() {
+        let cold = degraded_response(false, false);
+        assert_eq!(cold.vision_reason, "not_started");
+        assert!(
+            ["always", "meetings-only"].contains(&cold.audio_capture_mode.as_str()),
+            "{}",
+            cold.audio_capture_mode
+        );
+
+        let off = degraded_response(true, true);
+        assert_eq!(off.vision_reason, "disabled_by_setting");
+        assert_eq!(off.audio_capture_mode, "disabled");
+    }
+
+    /// A tool that prints far more than a pipe buffer before exiting still
+    /// answers: its output is read while it runs.
+    #[cfg(unix)]
+    #[test]
+    fn version_probe_reads_output_larger_than_the_pipe_buffer() {
+        let mut command = std::process::Command::new("sh");
+        command
+            .arg("-c")
+            .arg("echo 'ffmpeg version 7.1 Copyright'; yes configuration | head -n 100000");
+        let output = run_with_deadline(&mut command, std::time::Duration::from_secs(5))
+            .expect("probe answered");
+        assert!(output.len() > 1_000_000, "{} bytes", output.len());
+        assert_eq!(parse_tool_version(&output), Some("7.1".to_string()));
+
+        let mut silent = std::process::Command::new("sleep");
+        silent.arg("5");
+        let err =
+            run_with_deadline(&mut silent, std::time::Duration::from_millis(200)).unwrap_err();
+        assert!(err.starts_with("no answer within"), "{}", err);
+
+        let mut failing = std::process::Command::new("sh");
+        failing.arg("-c").arg("exit 3");
+        let err = run_with_deadline(&mut failing, std::time::Duration::from_secs(5)).unwrap_err();
+        assert!(err.starts_with("exited with"), "{}", err);
     }
 
     #[test]

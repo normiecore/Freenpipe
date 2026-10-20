@@ -8,7 +8,9 @@
 //! Everything here is in-process state: nothing is persisted or sent anywhere.
 //!
 //! - A *fatal* batch failure is one where the writer connection itself broke
-//!   (I/O error, corruption signal, closed pool, failed COMMIT).
+//!   (I/O error, corruption signal, closed pool, failed COMMIT), or where the
+//!   batch committed without storing a single write because the database
+//!   could not take more data (disk full, read-only file).
 //! - A *contention* failure is one where the batch could not get the write
 //!   lock in time (semaphore or pool acquire timeout, `SQLITE_BUSY`).
 //! - Both run counters count failed batches since the last committed batch.
@@ -33,6 +35,39 @@ pub const DEGRADED_CONTENTION_BATCHES: u64 = 2;
 pub enum BatchFailure {
     Fatal,
     Contention,
+}
+
+/// How a batch that got its transaction ended. Each batch reports exactly one
+/// of these, so a rolled-back batch can never also count as committed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BatchEnd {
+    /// A write broke the connection partway through; the batch was rolled back.
+    RolledBack,
+    /// Every write ran but COMMIT failed.
+    CommitFailed,
+    /// COMMIT succeeded. `writes_ok` writes were stored; `storage_errors` of
+    /// the failed writes failed because the database could not store data.
+    Committed {
+        writes_ok: usize,
+        storage_errors: usize,
+    },
+}
+
+impl BatchEnd {
+    /// The failure this ending counts as, or `None` when the writer made
+    /// progress. A committed batch in which writes failed only for their own
+    /// reasons (constraint violations, a missing row) is progress: the writer
+    /// works and a retry of other data would be stored.
+    pub fn failure(self) -> Option<BatchFailure> {
+        match self {
+            BatchEnd::RolledBack | BatchEnd::CommitFailed => Some(BatchFailure::Fatal),
+            BatchEnd::Committed {
+                writes_ok: 0,
+                storage_errors,
+            } if storage_errors > 0 => Some(BatchFailure::Fatal),
+            BatchEnd::Committed { .. } => None,
+        }
+    }
 }
 
 /// Point-in-time view of the write queue's health.
@@ -94,6 +129,18 @@ impl WriteQueueHealthState {
         crossed
     }
 
+    /// A batch that got its transaction ended. Returns true when this ending
+    /// made a failure run reach its persistent-failure threshold.
+    pub fn on_batch_end(&mut self, end: BatchEnd) -> bool {
+        match end.failure() {
+            Some(kind) => self.on_failure(kind),
+            None => {
+                self.on_commit();
+                false
+            }
+        }
+    }
+
     /// A writer connection was discarded (or the file recreated) so the pool
     /// has to open a fresh one.
     pub fn on_reopen(&mut self) {
@@ -132,9 +179,15 @@ pub fn write_queue_health() -> WriteQueueHealth {
         .unwrap_or_default()
 }
 
-pub(crate) fn record_batch_committed() {
-    if let Ok(mut state) = STATE.lock() {
-        state.on_commit();
+/// Report how a batch that got its transaction ended. Call once per batch.
+pub(crate) fn record_batch_end(end: BatchEnd) {
+    match end.failure() {
+        Some(kind) => record_batch_failed(kind),
+        None => {
+            if let Ok(mut state) = STATE.lock() {
+                state.on_commit();
+            }
+        }
     }
 }
 
@@ -155,6 +208,31 @@ pub(crate) fn record_writer_reopen() {
     if let Ok(mut state) = STATE.lock() {
         state.on_reopen();
     }
+}
+
+/// The [`BatchEnd`] of a batch whose COMMIT succeeded, from its per-write
+/// results.
+pub(crate) fn committed_batch_end<T>(results: &[Result<T, sqlx::Error>]) -> BatchEnd {
+    BatchEnd::Committed {
+        writes_ok: results.iter().filter(|r| r.is_ok()).count(),
+        storage_errors: results
+            .iter()
+            .filter(|r| matches!(r, Err(e) if is_storage_error(e)))
+            .count(),
+    }
+}
+
+/// A write failed because SQLite could not store data: the disk (or the
+/// database's page limit) is full, or the database file became read-only.
+/// SQLite reports these per statement and keeps the transaction open, so
+/// they arrive as per-row errors rather than connection errors.
+pub(crate) fn is_storage_error(error: &sqlx::Error) -> bool {
+    let message = match error {
+        sqlx::Error::Database(db) => db.message().to_lowercase(),
+        sqlx::Error::Protocol(text) => text.to_lowercase(),
+        _ => return false,
+    };
+    message.contains("database or disk is full") || message.contains("readonly database")
 }
 
 /// Classify the error a whole batch failed with.
@@ -216,6 +294,107 @@ mod tests {
             s.on_failure(BatchFailure::Contention);
         }
         assert_eq!(s.snapshot().persistent_failure_signals, 3);
+    }
+
+    /// A writer that rolls back every batch (a corrupt file, an I/O error in
+    /// the middle of a batch) stays degraded and reaches the persistent
+    /// threshold; nothing in the rollback path counts as a commit.
+    #[test]
+    fn rolled_back_batches_keep_the_queue_degraded() {
+        let mut s = WriteQueueHealthState::new();
+        assert!(!s.on_batch_end(BatchEnd::RolledBack));
+        let h = s.snapshot();
+        assert_eq!(h.consecutive_fatal, 1);
+        assert!(h.degraded);
+
+        assert!(!s.on_batch_end(BatchEnd::CommitFailed));
+        assert!(s.on_batch_end(BatchEnd::RolledBack));
+        let h = s.snapshot();
+        assert_eq!(h.consecutive_fatal, PERSISTENT_FATAL_BATCHES);
+        assert_eq!(h.persistent_failure_signals, 1);
+        assert!(h.degraded);
+
+        // One batch that stores something ends the run.
+        s.on_batch_end(BatchEnd::Committed {
+            writes_ok: 1,
+            storage_errors: 0,
+        });
+        assert!(!s.snapshot().degraded);
+    }
+
+    #[test]
+    fn a_committed_batch_counts_by_what_it_stored() {
+        let full = sqlx::Error::Protocol("database or disk is full".into());
+        let constraint = sqlx::Error::Protocol("UNIQUE constraint failed: t.id".into());
+
+        // Nothing stored because the disk is full: a failure.
+        let end = committed_batch_end::<()>(&[Err(full)]);
+        assert_eq!(
+            end,
+            BatchEnd::Committed {
+                writes_ok: 0,
+                storage_errors: 1
+            }
+        );
+        assert_eq!(end.failure(), Some(BatchFailure::Fatal));
+
+        // Writes rejected for their own reasons: the writer still works.
+        let end = committed_batch_end::<()>(&[Err(constraint)]);
+        assert_eq!(end.failure(), None);
+
+        // Something was stored: progress, even if another write hit the limit.
+        let full = sqlx::Error::Protocol("database or disk is full".into());
+        let end = committed_batch_end(&[Ok(()), Err(full)]);
+        assert_eq!(end.failure(), None);
+
+        let mut s = WriteQueueHealthState::new();
+        s.on_batch_end(BatchEnd::Committed {
+            writes_ok: 0,
+            storage_errors: 2,
+        });
+        assert!(s.snapshot().degraded);
+    }
+
+    /// The storage-error test matches the messages SQLite really returns.
+    #[tokio::test]
+    async fn storage_errors_match_what_sqlite_reports() {
+        let pool = sqlx::sqlite::SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .unwrap();
+        sqlx::query("CREATE TABLE t (b BLOB)")
+            .execute(&pool)
+            .await
+            .unwrap();
+
+        // Cap the database at its current size (SQLite never sets the cap
+        // below it) so the next insert finds it full.
+        sqlx::query("PRAGMA max_page_count = 1")
+            .execute(&pool)
+            .await
+            .unwrap();
+        let full = sqlx::query("INSERT INTO t VALUES (zeroblob(1000000))")
+            .execute(&pool)
+            .await
+            .unwrap_err();
+        assert!(is_storage_error(&full), "{}", full);
+
+        let missing_table = sqlx::query("INSERT INTO missing VALUES (1)")
+            .execute(&pool)
+            .await
+            .unwrap_err();
+        assert!(!is_storage_error(&missing_table), "{}", missing_table);
+
+        sqlx::query("PRAGMA query_only = 1")
+            .execute(&pool)
+            .await
+            .unwrap();
+        let read_only = sqlx::query("INSERT INTO t VALUES (x'00')")
+            .execute(&pool)
+            .await
+            .unwrap_err();
+        assert!(is_storage_error(&read_only), "{}", read_only);
     }
 
     #[test]
