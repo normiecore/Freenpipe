@@ -6,12 +6,16 @@
 //!
 //! All routes expect [`AppState`] to contain a `pipe_manager` field.
 
+use axum::extract::rejection::JsonRejection;
 use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
 use axum::Json;
 use screenpipe_connect::connections::render_context;
 use screenpipe_connect::mcp_servers::render_context as mcp_render_context;
-use screenpipe_core::pipes::PipeManager;
+use screenpipe_core::pipes::schedule_config::PREVIEW_COUNT;
+use screenpipe_core::pipes::{
+    InvalidPipeId, PipeConfigUpdateError, PipeManager, PipeStatus, ScheduleConfig,
+};
 use screenpipe_secrets::SecretStore;
 use serde::Deserialize;
 use serde_json::{json, Value};
@@ -55,6 +59,8 @@ pub struct ExecutionsQuery {
 #[derive(Deserialize)]
 pub struct ListPipesQuery {
     pub include_executions: Option<bool>,
+    /// Fill in each pipe's `execution_count`.
+    pub include_execution_counts: Option<bool>,
 }
 
 // ---------------------------------------------------------------------------
@@ -72,12 +78,24 @@ pub async fn list_pipes(
     if let Err(e) = mgr.reload_pipes().await {
         tracing::warn!("failed to reload pipes from disk: {}", e);
     }
+    let counts = if query.include_execution_counts.unwrap_or(false) {
+        Some(mgr.execution_counts().await)
+    } else {
+        None
+    };
+    let with_count = |mut status: PipeStatus| {
+        if let Some(ref counts) = counts {
+            status.execution_count = Some(counts.get(&status.config.name).copied().unwrap_or(0));
+        }
+        status
+    };
     if query.include_executions.unwrap_or(false) {
         let pipes_with_execs = mgr.list_pipes_with_executions(5).await;
         let total = pipes_with_execs.len();
         let data: Vec<Value> = pipes_with_execs
             .into_iter()
             .map(|(status, execs)| {
+                let status = with_count(status);
                 let mut obj = serde_json::to_value(&status).unwrap_or(json!({}));
                 if let Some(map) = obj.as_object_mut() {
                     map.insert("recent_executions".to_string(), json!(execs));
@@ -87,7 +105,7 @@ pub async fn list_pipes(
             .collect();
         Json(json!({ "data": data, "total": total }))
     } else {
-        let pipes = mgr.list_pipes().await;
+        let pipes: Vec<PipeStatus> = mgr.list_pipes().await.into_iter().map(with_count).collect();
         let total = pipes.len();
         Json(json!({ "data": pipes, "total": total }))
     }
@@ -307,6 +325,11 @@ pub async fn get_pipe_session(
 }
 
 /// POST /pipes/:id/config — update pipe config fields.
+///
+/// The body carries frontmatter fields at the top level (plus `prompt_body`
+/// or `raw_content`). A body wrapped in a `config` object, an unknown field
+/// or a value that fails its field's checks is refused with 400 and nothing
+/// is written; an unknown pipe is 404.
 pub async fn update_pipe_config(
     State(pm): State<SharedPipeManager>,
     Path(id): Path<String>,
@@ -315,6 +338,53 @@ pub async fn update_pipe_config(
     let mgr = pm.lock().await;
     match mgr.update_config(&id, body.config).await {
         Ok(()) => (StatusCode::OK, Json(json!({ "success": true }))),
+        Err(e) => (
+            config_error_status(&e),
+            Json(json!({ "error": e.to_string() })),
+        ),
+    }
+}
+
+/// HTTP status for a refused config change.
+fn config_error_status(e: &anyhow::Error) -> StatusCode {
+    match e.downcast_ref::<PipeConfigUpdateError>() {
+        Some(PipeConfigUpdateError::NotFound(_)) => StatusCode::NOT_FOUND,
+        Some(PipeConfigUpdateError::Managed(_)) => StatusCode::FORBIDDEN,
+        Some(_) => StatusCode::BAD_REQUEST,
+        None if e.downcast_ref::<InvalidPipeId>().is_some() => StatusCode::BAD_REQUEST,
+        None => StatusCode::INTERNAL_SERVER_ERROR,
+    }
+}
+
+/// POST /pipes/schedule/preview — describe a structured schedule.
+///
+/// Body: a `schedule_config` object. Response: `{summary, next}` with a
+/// one-line description and the next run times (RFC 3339, in the schedule's
+/// timezone). An incomplete or invalid schedule is refused with 400 and an
+/// error naming the field.
+pub async fn preview_schedule(
+    body: Result<Json<Value>, JsonRejection>,
+) -> (StatusCode, Json<Value>) {
+    let value = match body {
+        Ok(Json(value)) => value,
+        Err(rejection) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(json!({ "error": rejection.body_text() })),
+            )
+        }
+    };
+    let schedule: ScheduleConfig = match serde_json::from_value(value) {
+        Ok(schedule) => schedule,
+        Err(e) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(json!({ "error": format!("invalid schedule_config: {e}") })),
+            )
+        }
+    };
+    match schedule.preview(chrono::Utc::now(), PREVIEW_COUNT) {
+        Ok(preview) => (StatusCode::OK, Json(json!(preview))),
         Err(e) => (
             StatusCode::BAD_REQUEST,
             Json(json!({ "error": e.to_string() })),
@@ -390,5 +460,198 @@ pub async fn set_pipe_favorite(
     match screenpipe_core::pipes::favorites::set(&dir, &id, body.favorite) {
         Ok(list) => Json(json!({ "success": true, "data": list })),
         Err(e) => Json(json!({ "error": e.to_string() })),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use axum::body::Body;
+    use axum::http::Request;
+    use axum::routing::{get, post};
+    use axum::Router;
+    use tower::ServiceExt;
+
+    fn manager(dir: &std::path::Path) -> SharedPipeManager {
+        let pipes_dir = dir.join("pipes");
+        std::fs::create_dir_all(&pipes_dir).unwrap();
+        Arc::new(Mutex::new(PipeManager::new(
+            pipes_dir,
+            HashMap::new(),
+            None,
+            3035,
+        )))
+    }
+
+    /// The pipe routes this module serves, laid out as `server.rs` mounts
+    /// them (static `schedule/preview` beside `/:id/...`).
+    fn router(pm: SharedPipeManager) -> Router {
+        Router::new().nest(
+            "/pipes",
+            Router::new()
+                .route("/", get(list_pipes))
+                .route("/schedule/preview", post(preview_schedule))
+                .route("/:id", get(get_pipe))
+                .route("/:id/config", post(update_pipe_config))
+                .with_state(pm),
+        )
+    }
+
+    async fn post_json(router: &Router, uri: &str, body: Value) -> (StatusCode, Value) {
+        let response = router
+            .clone()
+            .oneshot(
+                Request::post(uri)
+                    .header("content-type", "application/json")
+                    .body(Body::from(body.to_string()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let status = response.status();
+        let bytes = http_body_util::BodyExt::collect(response.into_body())
+            .await
+            .unwrap()
+            .to_bytes();
+        (status, serde_json::from_slice(&bytes).unwrap())
+    }
+
+    async fn get_json(router: &Router, uri: &str) -> (StatusCode, Value) {
+        let response = router
+            .clone()
+            .oneshot(Request::get(uri).body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        let status = response.status();
+        let bytes = http_body_util::BodyExt::collect(response.into_body())
+            .await
+            .unwrap()
+            .to_bytes();
+        (status, serde_json::from_slice(&bytes).unwrap())
+    }
+
+    fn write_pipe(dir: &std::path::Path, name: &str, content: &str) {
+        let pipe_dir = dir.join("pipes").join(name);
+        std::fs::create_dir_all(&pipe_dir).unwrap();
+        std::fs::write(pipe_dir.join("pipe.md"), content).unwrap();
+    }
+
+    #[tokio::test]
+    async fn schedule_preview_returns_summary_and_next_runs() {
+        let tmp = tempfile::tempdir().unwrap();
+        let router = router(manager(tmp.path()));
+        let (status, body) = post_json(
+            &router,
+            "/pipes/schedule/preview",
+            json!({"frequency": "days", "interval": 1, "at_hour": 9, "at_minute": 0}),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        assert_eq!(body["summary"], "Every day at 09:00");
+        let next = body["next"].as_array().unwrap();
+        assert_eq!(next.len(), PREVIEW_COUNT);
+        let mut previous = None;
+        for item in next {
+            let t = chrono::DateTime::parse_from_rfc3339(item.as_str().unwrap()).unwrap();
+            assert!(t > chrono::Utc::now());
+            if let Some(p) = previous {
+                assert!(t > p);
+            }
+            previous = Some(t);
+        }
+    }
+
+    #[tokio::test]
+    async fn schedule_preview_refuses_incomplete_schedules() {
+        let tmp = tempfile::tempdir().unwrap();
+        let router = router(manager(tmp.path()));
+        for (body, needle) in [
+            (json!({"frequency": "weeks", "interval": 1}), "days_of_week"),
+            (json!({"frequency": "days", "at_hour": 25}), "at_hour"),
+            (json!({"frequency": "yearly"}), "yearly"),
+            (json!({"interval": 1}), "frequency"),
+        ] {
+            let (status, reply) = post_json(&router, "/pipes/schedule/preview", body.clone()).await;
+            assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+            let error = reply["error"].as_str().unwrap();
+            assert!(error.contains(needle), "{body}: {error}");
+        }
+    }
+
+    #[tokio::test]
+    async fn config_update_status_codes() {
+        let tmp = tempfile::tempdir().unwrap();
+        write_pipe(tmp.path(), "demo", "---\nschedule: every 1h\n---\n\nBody");
+        let pm = manager(tmp.path());
+        pm.lock().await.load_pipes().await.unwrap();
+        let router = router(pm);
+
+        let (status, body) =
+            post_json(&router, "/pipes/demo/config", json!({"not_a_field": true})).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert!(body["error"].as_str().unwrap().contains("not_a_field"));
+
+        let (status, body) = post_json(
+            &router,
+            "/pipes/demo/config",
+            json!({"config": {"schedule": "every 2h"}}),
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert!(body["error"].as_str().unwrap().contains("top level"));
+
+        let (status, _) =
+            post_json(&router, "/pipes/demo/config", json!({"effort": "maximum"})).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+
+        let (status, _) = post_json(&router, "/pipes/nope/config", json!({"enabled": false})).await;
+        assert_eq!(status, StatusCode::NOT_FOUND);
+
+        // A percent-encoded traversal reaches the handler decoded as "../x".
+        let (status, body) =
+            post_json(&router, "/pipes/..%2Fx/config", json!({"enabled": false})).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert!(body["error"]
+            .as_str()
+            .unwrap()
+            .contains("invalid pipe identifier"));
+
+        let (status, body) = post_json(
+            &router,
+            "/pipes/demo/config",
+            json!({"schedule_config": {"frequency": "hours", "interval": 2, "at_minute": 15}}),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        let (_, pipe) = get_json(&router, "/pipes/demo").await;
+        assert_eq!(
+            pipe["data"]["config"]["schedule_config"]["frequency"],
+            "hours"
+        );
+        assert!(pipe["data"]["next_run"].is_string(), "{pipe}");
+        assert_eq!(pipe["data"]["has_saved_context"], false);
+        assert_eq!(pipe["data"]["is_bundled_builtin"], false);
+    }
+
+    #[tokio::test]
+    async fn list_can_include_execution_counts() {
+        let tmp = tempfile::tempdir().unwrap();
+        write_pipe(tmp.path(), "demo", "---\nschedule: manual\n---\n\nBody");
+        let pm = manager(tmp.path());
+        pm.lock().await.load_pipes().await.unwrap();
+        let router = router(pm);
+
+        let (_, plain) = get_json(&router, "/pipes").await;
+        assert!(plain["data"][0].get("execution_count").is_none());
+        let (_, counted) = get_json(&router, "/pipes?include_execution_counts=true").await;
+        // No execution store here, so the count is zero rather than absent.
+        assert_eq!(counted["data"][0]["execution_count"], 0);
+        let (_, both) = get_json(
+            &router,
+            "/pipes?include_execution_counts=true&include_executions=true",
+        )
+        .await;
+        assert_eq!(both["data"][0]["execution_count"], 0);
+        assert!(both["data"][0]["recent_executions"].is_array());
     }
 }

@@ -7,7 +7,8 @@ use anyhow::Result;
 use dark_light::Mode;
 use once_cell::sync::Lazy;
 use serde::Deserialize;
-use std::sync::{atomic::Ordering, RwLock};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, RwLock};
 use std::time::Instant;
 use tauri::{path::BaseDirectory, Emitter, Manager};
 use tokio::time::{interval, Duration};
@@ -101,10 +102,35 @@ pub fn set_boot_phase(phase: &str, message: Option<&str>) {
 
 pub fn set_boot_error(err: &str) {
     let mut guard = BOOT_PHASE.write().unwrap_or_else(|e| e.into_inner());
+    write_boot_error(&mut guard, err);
+}
+
+fn write_boot_error(guard: &mut BootPhaseSnapshot, err: &str) {
     guard.phase = "error".to_string();
     guard.error = Some(err.to_string());
     guard.since_epoch_secs = now_epoch();
     tracing::error!("boot phase → error: {}", err);
+}
+
+/// `ready`, `error` and `idle` end a boot; every other phase means a start
+/// is (or claims to be) under way.
+fn boot_phase_is_terminal(phase: &str) -> bool {
+    matches!(phase, "ready" | "error" | "idle")
+}
+
+/// Record a failed start as a boot error, unless the boot already reached a
+/// terminal phase (a capture failure after the server came up leaves
+/// `ready`, which stays). Start error paths that do not set their own error
+/// call this, so a failed start can never leave a phase such as `starting`
+/// behind; the engine watchdog stays idle while a boot looks in progress.
+/// Returns true when it wrote the error.
+pub fn fail_boot_if_pending(err: &str) -> bool {
+    let mut guard = BOOT_PHASE.write().unwrap_or_else(|e| e.into_inner());
+    if boot_phase_is_terminal(&guard.phase) {
+        return false;
+    }
+    write_boot_error(&mut guard, err);
+    true
 }
 
 pub fn get_boot_phase_snapshot() -> BootPhaseSnapshot {
@@ -524,6 +550,419 @@ fn parse_devices_from_health(health_result: &Result<HealthCheckResponse>) -> Vec
     devices
 }
 
+// ─────────────────────────────────────────────────────────────────────────
+// Engine watchdog (auto-respawn) and the recording intent it follows.
+//
+// The health loop samples the engine every few seconds. When recording is
+// meant to be on and the embedded engine stops answering for several samples
+// in a row, the watchdog stops what is left of it and starts a new
+// generation. Respawns are rate-limited, a failed respawn schedules a later
+// attempt, and a respawn that finds the API port held by another process is
+// parked until the port frees up (see `port_conflict`).
+// ─────────────────────────────────────────────────────────────────────────
+
+/// Whether the user wants recording on. Starts true because the app starts
+/// the engine and capture at launch; pausing or stopping recording clears it
+/// and starting it sets it again.
+static RECORDING_INTENDED: AtomicBool = AtomicBool::new(true);
+
+pub fn set_recording_intended(on: bool) {
+    if RECORDING_INTENDED.swap(on, Ordering::SeqCst) != on {
+        info!("recording intent: {}", if on { "on" } else { "off" });
+    }
+}
+
+pub fn recording_intended() -> bool {
+    RECORDING_INTENDED.load(Ordering::SeqCst)
+}
+
+pub(crate) mod watchdog {
+    use std::collections::VecDeque;
+    use std::time::{Duration, Instant};
+
+    /// Freenpipe's constants: sample every 5 s, respawn after 3 refused
+    /// samples (12 when the engine only times out, since a busy database
+    /// pool can stall /health for a while), at most 3 respawns per 10
+    /// minutes, and a failed respawn retried after 1, 2, 4 then 5 minutes.
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    pub struct WatchdogConfig {
+        pub sample_every: Duration,
+        pub misses_before_respawn: u32,
+        pub slow_misses_before_respawn: u32,
+        pub max_respawns: usize,
+        pub window: Duration,
+        pub failure_backoff: Duration,
+        pub max_failure_backoff: Duration,
+    }
+
+    impl Default for WatchdogConfig {
+        fn default() -> Self {
+            Self {
+                sample_every: Duration::from_secs(5),
+                misses_before_respawn: 3,
+                slow_misses_before_respawn: 12,
+                max_respawns: 3,
+                window: Duration::from_secs(600),
+                failure_backoff: Duration::from_secs(60),
+                max_failure_backoff: Duration::from_secs(300),
+            }
+        }
+    }
+
+    /// What one health sample says about the embedded engine.
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    pub enum EngineProbe {
+        /// Our engine exists and answered /health.
+        Serving,
+        /// Refused, no engine in state, or something else answering our port.
+        Down,
+        /// Our engine exists but /health timed out or returned garbage.
+        Slow,
+    }
+
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    pub struct Sample {
+        pub probe: EngineProbe,
+        pub recording_intended: bool,
+        /// A start or respawn is under way (boot phases, start flag, or our
+        /// own respawn task). Misses are not counted meanwhile.
+        pub start_in_progress: bool,
+        pub shutting_down: bool,
+        /// Only read while a port conflict is pending: whether the API port
+        /// can be bound right now.
+        pub port_free: Option<bool>,
+    }
+
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    pub enum WatchdogAction {
+        None,
+        /// Stop and start the engine.
+        Respawn {
+            misses: u32,
+            /// Respawns in the current window, this one included.
+            recent: usize,
+            after_port_freed: bool,
+        },
+        /// Respawns are paused by the rate limit (returned once per pause).
+        RateLimited {
+            retry_in: Duration,
+        },
+        /// The port freed up while recording is off: clear the error only.
+        ClearPortError,
+        /// Our engine answers again after a port conflict.
+        RecoveredFromConflict,
+    }
+
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    pub enum RespawnResult {
+        Started,
+        PortHeld,
+        Failed,
+    }
+
+    #[derive(Debug)]
+    pub struct EngineWatchdog {
+        cfg: WatchdogConfig,
+        hard_misses: u32,
+        soft_misses: u32,
+        respawns: VecDeque<Instant>,
+        retry_at: Option<Instant>,
+        failures: u32,
+        port_conflict: bool,
+        rate_limited: bool,
+    }
+
+    impl EngineWatchdog {
+        pub fn new(cfg: WatchdogConfig) -> Self {
+            Self {
+                cfg,
+                hard_misses: 0,
+                soft_misses: 0,
+                respawns: VecDeque::new(),
+                retry_at: None,
+                failures: 0,
+                port_conflict: false,
+                rate_limited: false,
+            }
+        }
+
+        pub fn config(&self) -> &WatchdogConfig {
+            &self.cfg
+        }
+
+        /// A respawn found the port held and is waiting for it to free up.
+        pub fn port_conflict(&self) -> bool {
+            self.port_conflict
+        }
+
+        fn reset_misses(&mut self) {
+            self.hard_misses = 0;
+            self.soft_misses = 0;
+        }
+
+        pub fn observe(&mut self, s: Sample, now: Instant) -> WatchdogAction {
+            if s.shutting_down {
+                self.reset_misses();
+                return WatchdogAction::None;
+            }
+
+            let mut after_port_freed = false;
+            if self.port_conflict {
+                if s.probe == EngineProbe::Serving {
+                    self.port_conflict = false;
+                    self.reset_misses();
+                    return WatchdogAction::RecoveredFromConflict;
+                }
+                if s.port_free != Some(true) {
+                    return WatchdogAction::None;
+                }
+                self.port_conflict = false;
+                if !s.recording_intended {
+                    self.reset_misses();
+                    return WatchdogAction::ClearPortError;
+                }
+                // The port is free and recording is wanted: act on this sample.
+                after_port_freed = true;
+                self.hard_misses = self.cfg.misses_before_respawn.saturating_sub(1);
+                self.retry_at = None;
+            }
+
+            if !s.recording_intended || s.start_in_progress {
+                self.reset_misses();
+                return WatchdogAction::None;
+            }
+
+            match s.probe {
+                EngineProbe::Serving => {
+                    self.reset_misses();
+                    self.failures = 0;
+                    self.retry_at = None;
+                    return WatchdogAction::None;
+                }
+                EngineProbe::Down => {
+                    self.hard_misses = self.hard_misses.saturating_add(1);
+                    self.soft_misses = self.soft_misses.saturating_add(1);
+                }
+                EngineProbe::Slow => {
+                    self.hard_misses = 0;
+                    self.soft_misses = self.soft_misses.saturating_add(1);
+                }
+            }
+
+            let due = self.hard_misses >= self.cfg.misses_before_respawn
+                || self.soft_misses >= self.cfg.slow_misses_before_respawn;
+            if !due {
+                return WatchdogAction::None;
+            }
+            if let Some(at) = self.retry_at {
+                if now < at {
+                    return WatchdogAction::None;
+                }
+            }
+
+            while let Some(&oldest) = self.respawns.front() {
+                if now.duration_since(oldest) >= self.cfg.window {
+                    self.respawns.pop_front();
+                } else {
+                    break;
+                }
+            }
+            if self.respawns.len() >= self.cfg.max_respawns {
+                let oldest = *self.respawns.front().expect("non-empty window");
+                let at = oldest + self.cfg.window;
+                self.retry_at = Some(at);
+                if !self.rate_limited {
+                    self.rate_limited = true;
+                    return WatchdogAction::RateLimited {
+                        retry_in: at.saturating_duration_since(now),
+                    };
+                }
+                return WatchdogAction::None;
+            }
+
+            self.rate_limited = false;
+            self.respawns.push_back(now);
+            let misses = self.hard_misses.max(self.soft_misses);
+            self.reset_misses();
+            WatchdogAction::Respawn {
+                misses,
+                recent: self.respawns.len(),
+                after_port_freed,
+            }
+        }
+
+        pub fn on_result(&mut self, result: RespawnResult, now: Instant) {
+            match result {
+                RespawnResult::Started => {
+                    self.failures = 0;
+                    self.retry_at = None;
+                }
+                RespawnResult::PortHeld => {
+                    self.port_conflict = true;
+                }
+                RespawnResult::Failed => {
+                    self.failures = self.failures.saturating_add(1);
+                    let factor = 1u32 << (self.failures - 1).min(8);
+                    let backoff = self
+                        .cfg
+                        .failure_backoff
+                        .saturating_mul(factor)
+                        .min(self.cfg.max_failure_backoff);
+                    self.retry_at = Some(now + backoff);
+                }
+            }
+        }
+    }
+}
+
+/// Map a health result to what the watchdog needs to know.
+fn engine_probe(
+    health_result: &Result<HealthCheckResponse>,
+    engine_present: bool,
+) -> watchdog::EngineProbe {
+    use watchdog::EngineProbe;
+    match health_result {
+        Ok(_) if engine_present => EngineProbe::Serving,
+        // Something answers on our port, but our engine is not running.
+        Ok(_) => EngineProbe::Down,
+        Err(e) if engine_present && is_slow_health_error(e) => EngineProbe::Slow,
+        Err(_) => EngineProbe::Down,
+    }
+}
+
+/// Timeouts and unparseable bodies mean "alive but struggling", not "gone".
+fn is_slow_health_error(e: &anyhow::Error) -> bool {
+    let msg = e.to_string();
+    msg.contains("timeout") || msg.contains("parse")
+}
+
+/// A non-terminal boot phase older than this is treated as abandoned: the
+/// start that set it died without reporting. The same 30-minute ceiling a
+/// caller of `spawn_screenpipe` gives an in-flight start (a migration of a
+/// very large database takes minutes, not half an hour).
+const BOOT_PHASE_STALE_AFTER: Duration = Duration::from_secs(30 * 60);
+
+/// Pure rule behind [`boot_in_progress`]. A clock that went backwards reads
+/// as "just entered", so it never makes a live boot look stale.
+fn boot_phase_in_progress(
+    phase: &str,
+    since_epoch_secs: u64,
+    now_epoch_secs: u64,
+    stale_after: Duration,
+) -> bool {
+    !boot_phase_is_terminal(phase)
+        && now_epoch_secs.saturating_sub(since_epoch_secs) < stale_after.as_secs()
+}
+
+/// `since_epoch_secs` of the stale phase last logged, so it is logged once.
+static STALE_BOOT_PHASE_LOGGED: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// Boot is between "starting" and "ready" (database migration, audio, pipes)
+/// and has not been stuck there past [`BOOT_PHASE_STALE_AFTER`].
+fn boot_in_progress() -> bool {
+    let snap = get_boot_phase_snapshot();
+    if boot_phase_is_terminal(&snap.phase) {
+        return false;
+    }
+    let now = now_epoch();
+    if boot_phase_in_progress(
+        &snap.phase,
+        snap.since_epoch_secs,
+        now,
+        BOOT_PHASE_STALE_AFTER,
+    ) {
+        return true;
+    }
+    if STALE_BOOT_PHASE_LOGGED.swap(snap.since_epoch_secs, Ordering::SeqCst)
+        != snap.since_epoch_secs
+    {
+        warn!(
+            "boot phase '{}' unchanged for {} min; treating that start as abandoned",
+            snap.phase,
+            now.saturating_sub(snap.since_epoch_secs) / 60
+        );
+    }
+    false
+}
+
+/// After this long with a start flag set while the server answers and boot
+/// is ready, the tray treats the flag as stale. `spawn_screenpipe` leaves
+/// `is_starting` set after a successful start, so without this a paused
+/// recording would show "Starting" forever.
+const STALE_START_FLAG_AFTER: Duration = Duration::from_secs(20);
+
+fn effective_start_in_progress(
+    flag: bool,
+    server_responding: bool,
+    boot_ready: bool,
+    flag_age: Duration,
+) -> bool {
+    flag && !(server_responding && boot_ready && flag_age >= STALE_START_FLAG_AFTER)
+}
+
+/// Act on a watchdog decision. Respawns run on their own task so the health
+/// loop keeps ticking.
+fn handle_watchdog_action(
+    app: &tauri::AppHandle,
+    action: watchdog::WatchdogAction,
+    window_mins: u64,
+    respawn_in_flight: &Arc<AtomicBool>,
+    results: &tokio::sync::mpsc::UnboundedSender<watchdog::RespawnResult>,
+) {
+    use watchdog::{RespawnResult, WatchdogAction};
+    match action {
+        WatchdogAction::None => {}
+        WatchdogAction::Respawn {
+            misses,
+            recent,
+            after_port_freed,
+        } => {
+            if after_port_freed {
+                info!("API port is free again and recording is on; restarting the engine");
+            } else {
+                warn!(
+                    "engine unreachable for {misses} checks while recording is on; respawning it ({recent} respawn(s) in the last {window_mins} min)"
+                );
+            }
+            respawn_in_flight.store(true, Ordering::SeqCst);
+            let app = app.clone();
+            let flag = respawn_in_flight.clone();
+            let results = results.clone();
+            tokio::spawn(async move {
+                let result = match crate::recording::respawn_engine(&app).await {
+                    Ok(()) => {
+                        info!("engine respawn finished");
+                        RespawnResult::Started
+                    }
+                    Err(crate::recording::RespawnError::PortHeld(e)) => {
+                        warn!("engine respawn skipped, the API port is held: {e}. It will restart once the port is free.");
+                        RespawnResult::PortHeld
+                    }
+                    Err(crate::recording::RespawnError::Failed(e)) => {
+                        warn!("engine respawn failed: {e}. Later attempts stay scheduled.");
+                        RespawnResult::Failed
+                    }
+                };
+                flag.store(false, Ordering::SeqCst);
+                let _ = results.send(result);
+            });
+        }
+        WatchdogAction::RateLimited { retry_in } => warn!(
+            "engine still down, but auto-respawn is paused after too many attempts in {window_mins} min; next attempt in {}s",
+            retry_in.as_secs()
+        ),
+        WatchdogAction::ClearPortError => {
+            info!("API port freed while recording is off; clearing the error only");
+            if read_boot_phase() == "error" {
+                set_boot_phase("idle", None);
+            }
+        }
+        WatchdogAction::RecoveredFromConflict => {
+            info!("engine answers again after the port conflict");
+        }
+    }
+}
+
 /// How many consecutive stale/not_started checks before showing a notification.
 /// At 1-second polling, 90 = 90 seconds of sustained failure.
 const CAPTURE_STALL_THRESHOLD: u32 = 90;
@@ -555,6 +994,17 @@ pub async fn start_health_check(app: tauri::AppHandle) -> Result<()> {
     let mut last_restart_triggered: Option<Instant> = None;
     // Track last known spawn epoch to detect user-initiated restarts
     let mut last_known_spawn_epoch: u64 = 0;
+
+    // Engine watchdog state.
+    let mut watchdog = watchdog::EngineWatchdog::new(watchdog::WatchdogConfig::default());
+    let watchdog_window_mins = watchdog.config().window.as_secs() / 60;
+    let mut last_watchdog_sample: Option<Instant> = None;
+    let respawn_in_flight = Arc::new(AtomicBool::new(false));
+    let (respawn_results_tx, mut respawn_results_rx) =
+        tokio::sync::mpsc::unbounded_channel::<watchdog::RespawnResult>();
+    // When the start flag was first seen set (for the stale-flag rule).
+    let mut start_flag_since: Option<Instant> = None;
+    let mut stale_flag_logged = false;
 
     tokio::spawn(async move {
         loop {
@@ -599,27 +1049,98 @@ pub async fn start_health_check(app: tauri::AppHandle) -> Result<()> {
                 current_status,
             );
 
-            let (capture_running, start_in_progress) = if let Some(recording_state) =
-                app.try_state::<crate::recording::RecordingState>()
-            {
-                let start_in_progress = recording_state.is_starting.load(Ordering::SeqCst)
-                    || recording_state.is_starting_capture.load(Ordering::SeqCst);
-                let capture_running = recording_state
-                    .capture
-                    .try_lock()
-                    .ok()
-                    .map(|capture| capture.is_some());
-                (capture_running, start_in_progress)
+            let (capture_running, start_in_progress, server_starting, engine_present) =
+                if let Some(recording_state) = app.try_state::<crate::recording::RecordingState>() {
+                    let server_starting = recording_state.is_starting.load(Ordering::SeqCst);
+                    let start_in_progress = server_starting
+                        || recording_state.is_starting_capture.load(Ordering::SeqCst);
+                    let capture_running = recording_state
+                        .capture
+                        .try_lock()
+                        .ok()
+                        .map(|capture| capture.is_some());
+                    let engine_present = recording_state
+                        .server
+                        .try_lock()
+                        .ok()
+                        .map(|server| server.is_some());
+                    (
+                        capture_running,
+                        start_in_progress,
+                        server_starting,
+                        engine_present,
+                    )
+                } else {
+                    (None, false, false, None)
+                };
+
+            // A start flag left set while the server answers and boot is
+            // done is stale: do not let it pin the tray on "Starting".
+            let now_tick = Instant::now();
+            let flag_age = if start_in_progress {
+                now_tick.duration_since(*start_flag_since.get_or_insert(now_tick))
             } else {
-                (None, false)
+                start_flag_since = None;
+                stale_flag_logged = false;
+                Duration::ZERO
             };
+            let tray_start_in_progress = effective_start_in_progress(
+                start_in_progress,
+                health_result.is_ok(),
+                boot_readiness() == BootReadiness::Ready,
+                flag_age,
+            );
+            if start_in_progress && !tray_start_in_progress && !stale_flag_logged {
+                stale_flag_logged = true;
+                info!(
+                    "ignoring a stale start-in-progress flag for tray status: the server answers"
+                );
+            }
 
             let status = apply_capture_session_status(
                 status,
                 health_result.is_ok(),
                 capture_running,
-                start_in_progress,
+                tray_start_in_progress,
             );
+
+            // ── Engine watchdog ──
+            while let Ok(result) = respawn_results_rx.try_recv() {
+                watchdog.on_result(result, Instant::now());
+            }
+            let sample_due = last_watchdog_sample.map_or(true, |t| {
+                now_tick.duration_since(t) >= watchdog.config().sample_every
+            });
+            // A busy server lock (start or stop under way) skips this sample.
+            if let (true, Some(engine_present)) = (
+                sample_due && start_time.elapsed() >= STARTUP_GRACE_PERIOD,
+                engine_present,
+            ) {
+                last_watchdog_sample = Some(now_tick);
+                let port_free = if watchdog.port_conflict() {
+                    let port = local_api_context_from_app(&app).port;
+                    Some(crate::port_conflict::port_free_for_engine(port).await)
+                } else {
+                    None
+                };
+                let sample = watchdog::Sample {
+                    probe: engine_probe(&health_result, engine_present),
+                    recording_intended: recording_intended(),
+                    start_in_progress: respawn_in_flight.load(Ordering::SeqCst)
+                        || boot_in_progress()
+                        || (server_starting && !engine_present),
+                    shutting_down: crate::relaunch::is_shutting_down(),
+                    port_free,
+                };
+                let action = watchdog.observe(sample, now_tick);
+                handle_watchdog_action(
+                    &app,
+                    action,
+                    watchdog_window_mins,
+                    &respawn_in_flight,
+                    &respawn_results_tx,
+                );
+            }
 
             // NOTE: Runtime permission-loss detection has moved to
             // `screenpipe-engine::permission_monitor` + capture-module emissions.
@@ -1683,5 +2204,345 @@ mod tests {
         let result = wait_for_boot_ready(Duration::from_secs(5)).await;
         assert_eq!(result, BootReadiness::Ready);
         set_boot_phase("idle", None);
+    }
+
+    #[test]
+    fn a_failed_start_always_leaves_a_terminal_phase() {
+        let _guard = BOOT_PHASE_TEST_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        // ServerCore::start failed after "starting" without its own error
+        // (the data-dir case): the phase becomes terminal and the watchdog
+        // stops reading the boot as in progress.
+        for phase in [
+            "starting",
+            "migrating_database",
+            "building_audio",
+            "starting_pipes",
+        ] {
+            set_boot_phase(phase, None);
+            assert!(boot_in_progress(), "{phase}");
+            assert!(fail_boot_if_pending("Failed to create data dir: denied"));
+            assert_eq!(boot_readiness(), BootReadiness::Errored, "{phase}");
+            assert!(!boot_in_progress(), "{phase}");
+            assert_eq!(
+                get_boot_phase_snapshot().error.as_deref(),
+                Some("Failed to create data dir: denied")
+            );
+        }
+        // A capture failure after the server came up keeps "ready", and an
+        // existing error or idle phase is left as it is.
+        set_boot_phase("ready", None);
+        assert!(!fail_boot_if_pending("Failed to start capture"));
+        assert_eq!(boot_readiness(), BootReadiness::Ready);
+        set_boot_error("first error");
+        assert!(!fail_boot_if_pending("second error"));
+        assert_eq!(
+            get_boot_phase_snapshot().error.as_deref(),
+            Some("first error")
+        );
+        set_boot_phase("idle", None);
+        assert!(!fail_boot_if_pending("ignored"));
+        assert_eq!(read_boot_phase(), "idle");
+    }
+
+    #[test]
+    fn a_non_terminal_phase_past_the_ceiling_is_stale() {
+        let ceiling = BOOT_PHASE_STALE_AFTER;
+        let entered = 1_000_000u64;
+        let at = |secs: u64| entered + secs;
+        // Within the ceiling: still in progress, however slow.
+        assert!(boot_phase_in_progress(
+            "migrating_database",
+            entered,
+            at(0),
+            ceiling
+        ));
+        assert!(boot_phase_in_progress(
+            "migrating_database",
+            entered,
+            at(ceiling.as_secs() - 1),
+            ceiling
+        ));
+        // Past it: abandoned, so the watchdog may act again.
+        assert!(!boot_phase_in_progress(
+            "starting",
+            entered,
+            at(ceiling.as_secs()),
+            ceiling
+        ));
+        assert!(!boot_phase_in_progress(
+            "building_audio",
+            entered,
+            at(86_400),
+            ceiling
+        ));
+        // Terminal phases are never in progress; a clock that went back
+        // never makes a live phase look stale.
+        for phase in ["ready", "error", "idle"] {
+            assert!(!boot_phase_in_progress(phase, entered, at(1), ceiling));
+        }
+        assert!(boot_phase_in_progress(
+            "starting",
+            entered,
+            entered - 500,
+            ceiling
+        ));
+        assert!(ceiling >= Duration::from_secs(30 * 60));
+    }
+
+    #[test]
+    fn boot_in_progress_ignores_a_phase_stuck_past_the_ceiling() {
+        let _guard = BOOT_PHASE_TEST_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        set_boot_phase("starting", None);
+        assert!(boot_in_progress());
+        // Pretend the phase was entered long ago by a start that died.
+        BOOT_PHASE
+            .write()
+            .unwrap_or_else(|e| e.into_inner())
+            .since_epoch_secs = now_epoch() - BOOT_PHASE_STALE_AFTER.as_secs() - 60;
+        assert!(!boot_in_progress());
+        set_boot_phase("idle", None);
+    }
+
+    // ── engine watchdog ────────────────────────────────────────────────
+
+    mod watchdog_tests {
+        use super::super::watchdog::*;
+        use super::super::{effective_start_in_progress, engine_probe, STALE_START_FLAG_AFTER};
+        use super::{make_connection_error, make_healthy_response};
+        use std::time::{Duration, Instant};
+
+        fn sample(probe: EngineProbe) -> Sample {
+            Sample {
+                probe,
+                recording_intended: true,
+                start_in_progress: false,
+                shutting_down: false,
+                port_free: None,
+            }
+        }
+
+        /// Feed `samples` at the configured cadence starting at `t0`;
+        /// return the index of the first respawn and the time it fired.
+        fn first_respawn(
+            wd: &mut EngineWatchdog,
+            t0: Instant,
+            samples: &[Sample],
+        ) -> Option<(usize, Instant)> {
+            let step = wd.config().sample_every;
+            for (i, s) in samples.iter().enumerate() {
+                let now = t0 + step * i as u32;
+                if let WatchdogAction::Respawn { .. } = wd.observe(*s, now) {
+                    return Some((i, now));
+                }
+            }
+            None
+        }
+
+        #[test]
+        fn respawns_after_the_configured_refused_checks() {
+            let cfg = WatchdogConfig::default();
+            let mut wd = EngineWatchdog::new(cfg);
+            let t0 = Instant::now();
+            let downs = vec![sample(EngineProbe::Down); 10];
+            let (i, at) = first_respawn(&mut wd, t0, &downs).unwrap();
+            assert_eq!(i as u32 + 1, cfg.misses_before_respawn);
+            // Within the configured checks: 3 samples, 5 s apart.
+            assert!(at.duration_since(t0) <= cfg.sample_every * cfg.misses_before_respawn);
+        }
+
+        #[test]
+        fn a_serving_sample_resets_the_count() {
+            let mut wd = EngineWatchdog::new(WatchdogConfig::default());
+            let t0 = Instant::now();
+            let mut seq = vec![sample(EngineProbe::Down); 2];
+            seq.push(sample(EngineProbe::Serving));
+            seq.extend(vec![sample(EngineProbe::Down); 2]);
+            assert!(first_respawn(&mut wd, t0, &seq).is_none());
+        }
+
+        #[test]
+        fn timeouts_alone_need_a_longer_streak() {
+            let cfg = WatchdogConfig::default();
+            let mut wd = EngineWatchdog::new(cfg);
+            let slow = vec![sample(EngineProbe::Slow); 20];
+            let (i, _) = first_respawn(&mut wd, Instant::now(), &slow).unwrap();
+            assert_eq!(i as u32 + 1, cfg.slow_misses_before_respawn);
+        }
+
+        #[test]
+        fn no_respawn_when_recording_is_off_starting_or_quitting() {
+            let t0 = Instant::now();
+            let tweaks: [fn(&mut Sample); 3] = [
+                |s| s.recording_intended = false,
+                |s| s.start_in_progress = true,
+                |s| s.shutting_down = true,
+            ];
+            for tweak in tweaks {
+                let mut wd = EngineWatchdog::new(WatchdogConfig::default());
+                let mut s = sample(EngineProbe::Down);
+                tweak(&mut s);
+                assert!(first_respawn(&mut wd, t0, &vec![s; 50]).is_none());
+            }
+        }
+
+        #[test]
+        fn respawns_are_rate_limited_per_window() {
+            let cfg = WatchdogConfig::default();
+            let mut wd = EngineWatchdog::new(cfg);
+            let t0 = Instant::now();
+            let mut respawns = Vec::new();
+            let mut limited = 0;
+            // 9 minutes of a dead engine, every respawn "succeeding".
+            for i in 0..108u32 {
+                let now = t0 + cfg.sample_every * i;
+                match wd.observe(sample(EngineProbe::Down), now) {
+                    WatchdogAction::Respawn { recent, .. } => {
+                        respawns.push((now, recent));
+                        wd.on_result(RespawnResult::Started, now);
+                    }
+                    WatchdogAction::RateLimited { retry_in } => {
+                        limited += 1;
+                        assert!(retry_in <= cfg.window);
+                    }
+                    _ => {}
+                }
+            }
+            assert_eq!(respawns.len(), cfg.max_respawns);
+            assert_eq!(respawns.last().unwrap().1, cfg.max_respawns);
+            assert_eq!(limited, 1, "the pause is reported once");
+            // Once the first respawn leaves the window, another is allowed.
+            let first = respawns[0].0;
+            let after = first + cfg.window + cfg.sample_every;
+            let mut fired = false;
+            for k in 0..cfg.misses_before_respawn + 1 {
+                if let WatchdogAction::Respawn { .. } =
+                    wd.observe(sample(EngineProbe::Down), after + cfg.sample_every * k)
+                {
+                    fired = true;
+                    break;
+                }
+            }
+            assert!(fired);
+        }
+
+        #[test]
+        fn failed_respawns_back_off_and_keep_trying() {
+            let cfg = WatchdogConfig::default();
+            let mut wd = EngineWatchdog::new(cfg);
+            let t0 = Instant::now();
+            let mut fired_at = Vec::new();
+            for i in 0..400u32 {
+                let now = t0 + cfg.sample_every * i;
+                if let WatchdogAction::Respawn { .. } = wd.observe(sample(EngineProbe::Down), now) {
+                    fired_at.push(now);
+                    wd.on_result(RespawnResult::Failed, now);
+                }
+            }
+            assert!(fired_at.len() >= 3, "later attempts stay scheduled");
+            let gap1 = fired_at[1].duration_since(fired_at[0]);
+            let gap2 = fired_at[2].duration_since(fired_at[1]);
+            assert!(gap1 >= cfg.failure_backoff);
+            assert!(gap2 >= cfg.failure_backoff * 2);
+        }
+
+        #[test]
+        fn port_conflict_waits_for_the_port_then_restarts() {
+            let cfg = WatchdogConfig::default();
+            let mut wd = EngineWatchdog::new(cfg);
+            let t0 = Instant::now();
+            let (_, at) = first_respawn(&mut wd, t0, &vec![sample(EngineProbe::Down); 5]).unwrap();
+            wd.on_result(RespawnResult::PortHeld, at);
+            assert!(wd.port_conflict());
+
+            // Port still held: nothing happens, however long it lasts.
+            let mut held = sample(EngineProbe::Down);
+            held.port_free = Some(false);
+            for i in 1..50u32 {
+                assert_eq!(
+                    wd.observe(held, at + cfg.sample_every * i),
+                    WatchdogAction::None
+                );
+            }
+            // Port frees up: restart on that very sample.
+            let mut freed = sample(EngineProbe::Down);
+            freed.port_free = Some(true);
+            match wd.observe(freed, at + cfg.sample_every * 50) {
+                WatchdogAction::Respawn {
+                    after_port_freed, ..
+                } => assert!(after_port_freed),
+                other => panic!("expected a respawn, got {other:?}"),
+            }
+            assert!(!wd.port_conflict());
+        }
+
+        #[test]
+        fn port_freed_while_recording_is_off_only_clears_the_error() {
+            let mut wd = EngineWatchdog::new(WatchdogConfig::default());
+            let t0 = Instant::now();
+            let (_, at) = first_respawn(&mut wd, t0, &vec![sample(EngineProbe::Down); 5]).unwrap();
+            wd.on_result(RespawnResult::PortHeld, at);
+            let mut s = sample(EngineProbe::Down);
+            s.port_free = Some(true);
+            s.recording_intended = false;
+            assert_eq!(
+                wd.observe(s, at + Duration::from_secs(5)),
+                WatchdogAction::ClearPortError
+            );
+            assert!(!wd.port_conflict());
+        }
+
+        #[test]
+        fn engine_back_during_a_conflict_is_reported() {
+            let mut wd = EngineWatchdog::new(WatchdogConfig::default());
+            let t0 = Instant::now();
+            let (_, at) = first_respawn(&mut wd, t0, &vec![sample(EngineProbe::Down); 5]).unwrap();
+            wd.on_result(RespawnResult::PortHeld, at);
+            assert_eq!(
+                wd.observe(sample(EngineProbe::Serving), at + Duration::from_secs(5)),
+                WatchdogAction::RecoveredFromConflict
+            );
+        }
+
+        #[test]
+        fn health_results_map_to_probes() {
+            assert_eq!(
+                engine_probe(&make_healthy_response(), true),
+                EngineProbe::Serving
+            );
+            // Something else answers our port while our engine is gone.
+            assert_eq!(
+                engine_probe(&make_healthy_response(), false),
+                EngineProbe::Down
+            );
+            assert_eq!(
+                engine_probe(&make_connection_error(), true),
+                EngineProbe::Down
+            );
+            let timeout: anyhow::Result<super::super::HealthCheckResponse> = Err(anyhow::anyhow!(
+                "health check timeout, sidecar may not be running"
+            ));
+            assert_eq!(engine_probe(&timeout, true), EngineProbe::Slow);
+            assert_eq!(engine_probe(&timeout, false), EngineProbe::Down);
+        }
+
+        #[test]
+        fn stale_start_flag_is_ignored_only_while_the_server_answers() {
+            let old = STALE_START_FLAG_AFTER + Duration::from_secs(1);
+            assert!(!effective_start_in_progress(true, true, true, old));
+            // Fresh flag, server down, or boot not ready: still starting.
+            assert!(effective_start_in_progress(
+                true,
+                true,
+                true,
+                Duration::from_secs(1)
+            ));
+            assert!(effective_start_in_progress(true, false, true, old));
+            assert!(effective_start_in_progress(true, true, false, old));
+            assert!(!effective_start_in_progress(false, true, true, old));
+        }
     }
 }

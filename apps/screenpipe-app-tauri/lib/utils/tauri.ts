@@ -285,6 +285,32 @@ async copyTextToClipboard(text: string) : Promise<Result<null, string>> {
     else return { status: "error", error: e  as any };
 }
 },
+/**
+ * Developer command: make the engine look crashed. Its runtime is stopped
+ * (taking the HTTP server and every engine task with it) while the dead
+ * `ServerCore` is put back in state, which is what a crashed engine thread
+ * leaves behind. The watchdog should respawn it within its configured
+ * checks. Needs a debug build or developer mode.
+ */
+async debugKillEngine() : Promise<Result<string, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("debug_kill_engine") };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
+ * Developer command: safe-relaunch the app now, keeping Home as it is.
+ */
+async debugRelaunchApp() : Promise<Result<null, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("debug_relaunch_app") };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
 async deleteCacheFiles(paths: string[]) : Promise<Result<number, string>> {
     try {
     return { status: "ok", data: await TAURI_INVOKE("delete_cache_files", { paths }) };
@@ -1748,6 +1774,19 @@ async resetPermission(permission: OSPermission) : Promise<Result<null, string>> 
 async resizeSearchWindow(width: number, height: number) : Promise<Result<null, string>> {
     try {
     return { status: "ok", data: await TAURI_INVOKE("resize_search_window", { width, height }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
+ * Relaunch after the user granted screen-recording permission. macOS only
+ * reads that permission at process start, so a new process is needed there;
+ * on Windows and Linux nothing needs to restart and this returns at once.
+ */
+async restartAfterScreenRecordingPermission() : Promise<Result<null, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("restart_after_screen_recording_permission") };
 } catch (e) {
     if(e instanceof Error) throw e;
     else return { status: "error", error: e  as any };

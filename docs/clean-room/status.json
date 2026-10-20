@@ -1,48 +1,49 @@
 {
- "generated_at": "2026-10-20T15:34:31Z",
+ "generated_at": "2026-10-20T18:48:25Z",
  "generator": "python3 tools/plan/status.py --write",
  "main": {
   "ref": "origin/main",
-  "sha": "584aac4288821b455fd9e26ba2c8073e4567f9f7",
-  "code_sha": "584aac4288821b455fd9e26ba2c8073e4567f9f7",
+  "sha": "94ea731f6118b015a90413c985ace6b0980df73e",
+  "code_sha": "94ea731f6118b015a90413c985ace6b0980df73e",
   "ci": {
    "state": "pending",
    "checks": {
-    "gates": "in_progress",
-    "linux": "in_progress",
     "test-windows": "in_progress",
-    "trufflehog": "success",
-    "windows": "in_progress"
+    "trufflehog": "success"
    },
-   "missing": [],
+   "missing": [
+    "windows",
+    "linux",
+    "gates"
+   ],
    "max_attempt": 1,
    "runs": [
     {
-     "id": 39449550301,
+     "id": 39477729497,
      "name": "Freenpipe CI",
      "event": "push",
-     "status": "in_progress",
+     "status": "pending",
      "conclusion": null,
      "attempt": 1,
-     "url": "https://github.com/normiecore/Freenpipe/actions/runs/39449550301"
+     "url": "https://github.com/normiecore/Freenpipe/actions/runs/39477729497"
     },
     {
-     "id": 39449550304,
-     "name": "Windows CLI Integration Test",
-     "event": "push",
-     "status": "in_progress",
-     "conclusion": null,
-     "attempt": 1,
-     "url": "https://github.com/normiecore/Freenpipe/actions/runs/39449550304"
-    },
-    {
-     "id": 39449550315,
+     "id": 39477729582,
      "name": "Secret Scan (trufflehog)",
      "event": "push",
      "status": "completed",
      "conclusion": "success",
      "attempt": 1,
-     "url": "https://github.com/normiecore/Freenpipe/actions/runs/39449550315"
+     "url": "https://github.com/normiecore/Freenpipe/actions/runs/39477729582"
+    },
+    {
+     "id": 39477729714,
+     "name": "Windows CLI Integration Test",
+     "event": "push",
+     "status": "in_progress",
+     "conclusion": null,
+     "attempt": 1,
+     "url": "https://github.com/normiecore/Freenpipe/actions/runs/39477729714"
     }
    ]
   }
@@ -62,13 +63,13 @@
   ]
  },
  "summary": {
-  "merged": 21,
-  "in_review": 4,
-  "claimed": 1,
-  "ready": 26,
-  "blocked": 103,
+  "merged": 25,
+  "in_review": 0,
+  "claimed": 3,
+  "ready": 28,
+  "blocked": 99,
   "total": 155,
-  "percent_merged": 13.5
+  "percent_merged": 16.1
  },
  "waves": [
   {
@@ -97,10 +98,10 @@
    "wave": 2,
    "name": "Engine data layer and core backends",
    "total": 27,
-   "merged": 3,
-   "in_review": 4,
-   "claimed": 1,
-   "ready": 19,
+   "merged": 7,
+   "in_review": 0,
+   "claimed": 3,
+   "ready": 17,
    "blocked": 0,
    "complete": false
   },
@@ -111,8 +112,8 @@
    "merged": 0,
    "in_review": 0,
    "claimed": 0,
-   "ready": 7,
-   "blocked": 24,
+   "ready": 10,
+   "blocked": 21,
    "complete": false
   },
   {
@@ -122,8 +123,8 @@
    "merged": 0,
    "in_review": 0,
    "claimed": 0,
-   "ready": 0,
-   "blocked": 22,
+   "ready": 1,
+   "blocked": 21,
    "complete": false
   },
   {
@@ -459,73 +460,9 @@
     "W1-01",
     "W1-03"
    ],
-   "branch": {
-    "name": "wp/W2-05",
-    "sha": "9980758b4fa61f1a20c5f6f79f81823738584f3b",
-    "claimed_by": null,
-    "claimed_at": null,
-    "last_commit_at": "2026-10-20T15:20:19Z",
-    "head_subject": "fix(W2-05): store a frame's parse only while the frame exists, reject padded parser ids",
-    "commits_ahead": 10,
-    "work_commits": 10
-   },
-   "status": "in_review",
-   "pr": {
-    "number": 20,
-    "url": "https://github.com/normiecore/Freenpipe/pull/20",
-    "head_sha": "9980758b4fa61f1a20c5f6f79f81823738584f3b",
-    "title": "W2-05: Semantic store: runs, items, FTS, actors",
-    "created_at": "2026-10-20T12:17:42Z",
-    "updated_at": "2026-10-20T15:26:29Z",
-    "ci": {
-     "state": "pending",
-     "checks": {
-      "gates": "success",
-      "linux": "in_progress",
-      "test-windows": "in_progress",
-      "trufflehog": "success",
-      "windows": "in_progress"
-     },
-     "missing": [],
-     "max_attempt": 1,
-     "runs": [
-      {
-       "id": 39447506484,
-       "name": "Windows CLI Integration Test",
-       "event": "pull_request",
-       "status": "in_progress",
-       "conclusion": null,
-       "attempt": 1,
-       "url": "https://github.com/normiecore/Freenpipe/actions/runs/39447506484"
-      },
-      {
-       "id": 39447506596,
-       "name": "Freenpipe CI",
-       "event": "pull_request",
-       "status": "in_progress",
-       "conclusion": null,
-       "attempt": 1,
-       "url": "https://github.com/normiecore/Freenpipe/actions/runs/39447506596"
-      },
-      {
-       "id": 39447506627,
-       "name": "Secret Scan (trufflehog)",
-       "event": "pull_request",
-       "status": "completed",
-       "conclusion": "success",
-       "attempt": 1,
-       "url": "https://github.com/normiecore/Freenpipe/actions/runs/39447506627"
-      }
-     ]
-    },
-    "review": {
-     "state": "pending",
-     "comment": null,
-     "reason": null
-    },
-    "mergeable": null,
-    "mergeable_state": "unknown"
-   }
+   "status": "merged",
+   "merge_commit": "94ea731f6118b015a90413c985ace6b0980df73e",
+   "merged_at": "2026-10-20T18:46:47Z"
   },
   {
    "id": "W2-06",
@@ -557,7 +494,18 @@
     "W1-01",
     "W1-03"
    ],
-   "status": "ready"
+   "branch": {
+    "name": "wp/W2-08",
+    "sha": "f3859e11ace272e4236261e717bbb912e7eff192",
+    "claimed_by": null,
+    "claimed_at": null,
+    "last_commit_at": "2026-10-20T16:01:45Z",
+    "head_subject": "wip(W2-08): meetings v2 routes (summary save/status, room change, calendar binding)",
+    "commits_ahead": 2,
+    "work_commits": 2
+   },
+   "status": "claimed",
+   "stale": false
   },
   {
    "id": "W2-09",
@@ -614,13 +562,13 @@
    ],
    "branch": {
     "name": "wp/W2-13",
-    "sha": "fd40f9eeb8f20bd3c44ff07db8149f1fc484914a",
+    "sha": "66a01185ec8113953e87c3ed8eb3d0da0265c508",
     "claimed_by": null,
     "claimed_at": null,
-    "last_commit_at": "2026-10-20T15:30:23Z",
-    "head_subject": "wip(W2-13): vision/audio metrics fields, write-queue health, coverage accumulator",
-    "commits_ahead": 1,
-    "work_commits": 1
+    "last_commit_at": "2026-10-20T15:58:49Z",
+    "head_subject": "wip(W2-13): keep JSON key order through the timestamp middleware; rustfmt",
+    "commits_ahead": 4,
+    "work_commits": 4
    },
    "status": "claimed",
    "stale": false
@@ -666,73 +614,9 @@
    "depends_on": [
     "W1-01"
    ],
-   "branch": {
-    "name": "wp/W2-17",
-    "sha": "0cefae6c2853a08dd12aedc63b9d7d72048afc4d",
-    "claimed_by": null,
-    "claimed_at": null,
-    "last_commit_at": "2026-10-20T14:46:13Z",
-    "head_subject": "W2-17: fix review round 1 (smoke expectations, follow-ups)",
-    "commits_ahead": 7,
-    "work_commits": 7
-   },
-   "status": "in_review",
-   "pr": {
-    "number": 22,
-    "url": "https://github.com/normiecore/Freenpipe/pull/22",
-    "head_sha": "0cefae6c2853a08dd12aedc63b9d7d72048afc4d",
-    "title": "W2-17: Stream-scoped live speakers and strict meeting-segment mapping",
-    "created_at": "2026-10-20T14:49:31Z",
-    "updated_at": "2026-10-20T14:49:48Z",
-    "ci": {
-     "state": "pending",
-     "checks": {
-      "gates": "success",
-      "linux": "success",
-      "test-windows": "success",
-      "trufflehog": "success",
-      "windows": "in_progress"
-     },
-     "missing": [],
-     "max_attempt": 1,
-     "runs": [
-      {
-       "id": 39442767037,
-       "name": "Windows CLI Integration Test",
-       "event": "pull_request",
-       "status": "completed",
-       "conclusion": "success",
-       "attempt": 1,
-       "url": "https://github.com/normiecore/Freenpipe/actions/runs/39442767037"
-      },
-      {
-       "id": 39442767085,
-       "name": "Secret Scan (trufflehog)",
-       "event": "pull_request",
-       "status": "completed",
-       "conclusion": "success",
-       "attempt": 1,
-       "url": "https://github.com/normiecore/Freenpipe/actions/runs/39442767085"
-      },
-      {
-       "id": 39442767109,
-       "name": "Freenpipe CI",
-       "event": "pull_request",
-       "status": "in_progress",
-       "conclusion": null,
-       "attempt": 1,
-       "url": "https://github.com/normiecore/Freenpipe/actions/runs/39442767109"
-      }
-     ]
-    },
-    "review": {
-     "state": "pending",
-     "comment": null,
-     "reason": null
-    },
-    "mergeable": null,
-    "mergeable_state": "unknown"
-   }
+   "status": "merged",
+   "merge_commit": "6b3a4ab75f56e310ac6e15db27c61977d484bcc4",
+   "merged_at": "2026-10-20T15:37:12Z"
   },
   {
    "id": "W2-18",
@@ -754,7 +638,18 @@
    "depends_on": [
     "W0-12"
    ],
-   "status": "ready"
+   "branch": {
+    "name": "wp/W2-19",
+    "sha": "2e284e9e4403d3ae37b8db015d7e44ab8e9558dd",
+    "claimed_by": null,
+    "claimed_at": null,
+    "last_commit_at": "2026-10-20T16:01:52Z",
+    "head_subject": "wip(W2-19): DirectML adapter choice, recycling and CPU recovery for Parakeet",
+    "commits_ahead": 2,
+    "work_commits": 2
+   },
+   "status": "claimed",
+   "stale": false
   },
   {
    "id": "W2-20",
@@ -784,73 +679,9 @@
    "depends_on": [
     "W1-03"
    ],
-   "branch": {
-    "name": "wp/W2-22",
-    "sha": "00722e331102425b88877e158cc4230f3186cfbc",
-    "claimed_by": null,
-    "claimed_at": null,
-    "last_commit_at": "2026-10-20T14:36:47Z",
-    "head_subject": "fix(W2-22): name the real problem when a pipe.md fails beyond the v2 fields",
-    "commits_ahead": 6,
-    "work_commits": 6
-   },
-   "status": "in_review",
-   "pr": {
-    "number": 23,
-    "url": "https://github.com/normiecore/Freenpipe/pull/23",
-    "head_sha": "00722e331102425b88877e158cc4230f3186cfbc",
-    "title": "W2-22: Pipe config v2: new frontmatter, schedule_config and preview, ids, preamble",
-    "created_at": "2026-10-20T14:53:52Z",
-    "updated_at": "2026-10-20T14:54:14Z",
-    "ci": {
-     "state": "pending",
-     "checks": {
-      "gates": "success",
-      "linux": "success",
-      "test-windows": "success",
-      "trufflehog": "success",
-      "windows": "in_progress"
-     },
-     "missing": [],
-     "max_attempt": 1,
-     "runs": [
-      {
-       "id": 39443433480,
-       "name": "Windows CLI Integration Test",
-       "event": "pull_request",
-       "status": "completed",
-       "conclusion": "success",
-       "attempt": 1,
-       "url": "https://github.com/normiecore/Freenpipe/actions/runs/39443433480"
-      },
-      {
-       "id": 39443433522,
-       "name": "Freenpipe CI",
-       "event": "pull_request",
-       "status": "in_progress",
-       "conclusion": null,
-       "attempt": 1,
-       "url": "https://github.com/normiecore/Freenpipe/actions/runs/39443433522"
-      },
-      {
-       "id": 39443433902,
-       "name": "Secret Scan (trufflehog)",
-       "event": "pull_request",
-       "status": "completed",
-       "conclusion": "success",
-       "attempt": 1,
-       "url": "https://github.com/normiecore/Freenpipe/actions/runs/39443433902"
-      }
-     ]
-    },
-    "review": {
-     "state": "pending",
-     "comment": null,
-     "reason": null
-    },
-    "mergeable": null,
-    "mergeable_state": "unknown"
-   }
+   "status": "merged",
+   "merge_commit": "8d2ceb11846bd93cb8852cf33a4c246508d8a848",
+   "merged_at": "2026-10-20T15:40:05Z"
   },
   {
    "id": "W2-23",
@@ -890,73 +721,9 @@
    "depends_on": [
     "W1-02"
    ],
-   "branch": {
-    "name": "wp/W2-26",
-    "sha": "bbca8d328aea5922beb5aebec403034a26670998",
-    "claimed_by": null,
-    "claimed_at": null,
-    "last_commit_at": "2026-10-20T15:10:22Z",
-    "head_subject": "Merge origin/main into wp/W2-26",
-    "commits_ahead": 13,
-    "work_commits": 13
-   },
-   "status": "in_review",
-   "pr": {
-    "number": 19,
-    "url": "https://github.com/normiecore/Freenpipe/pull/19",
-    "head_sha": "bbca8d328aea5922beb5aebec403034a26670998",
-    "title": "W2-26: App engine supervision: auto-respawn, port-conflict classification, safe relaunch",
-    "created_at": "2026-10-20T11:51:32Z",
-    "updated_at": "2026-10-20T15:10:41Z",
-    "ci": {
-     "state": "pending",
-     "checks": {
-      "gates": "success",
-      "linux": "in_progress",
-      "test-windows": "success",
-      "trufflehog": "success",
-      "windows": "in_progress"
-     },
-     "missing": [],
-     "max_attempt": 1,
-     "runs": [
-      {
-       "id": 39445986413,
-       "name": "Freenpipe CI",
-       "event": "pull_request",
-       "status": "in_progress",
-       "conclusion": null,
-       "attempt": 1,
-       "url": "https://github.com/normiecore/Freenpipe/actions/runs/39445986413"
-      },
-      {
-       "id": 39445986532,
-       "name": "Secret Scan (trufflehog)",
-       "event": "pull_request",
-       "status": "completed",
-       "conclusion": "success",
-       "attempt": 1,
-       "url": "https://github.com/normiecore/Freenpipe/actions/runs/39445986532"
-      },
-      {
-       "id": 39445989425,
-       "name": "Windows CLI Integration Test",
-       "event": "pull_request",
-       "status": "completed",
-       "conclusion": "success",
-       "attempt": 1,
-       "url": "https://github.com/normiecore/Freenpipe/actions/runs/39445989425"
-      }
-     ]
-    },
-    "review": {
-     "state": "pending",
-     "comment": null,
-     "reason": null
-    },
-    "mergeable": null,
-    "mergeable_state": "unknown"
-   }
+   "status": "merged",
+   "merge_commit": "b215b2f6d3d5811a17695df4ee38a30872ce419e",
+   "merged_at": "2026-10-20T18:46:33Z"
   },
   {
    "id": "W2-27",
@@ -978,7 +745,6 @@
     "W2-06"
    ],
    "unmet_deps": [
-    "W2-05",
     "W2-06"
    ],
    "status": "blocked"
@@ -995,7 +761,6 @@
    ],
    "unmet_deps": [
     "W2-04",
-    "W2-05",
     "W2-09"
    ],
    "status": "blocked"
@@ -1053,8 +818,7 @@
     "W2-22"
    ],
    "unmet_deps": [
-    "W2-08",
-    "W2-22"
+    "W2-08"
    ],
    "status": "blocked"
   },
@@ -1068,7 +832,6 @@
     "W2-13"
    ],
    "unmet_deps": [
-    "W2-17",
     "W2-13"
    ],
    "status": "blocked"
@@ -1096,7 +859,6 @@
     "W2-11"
    ],
    "unmet_deps": [
-    "W2-05",
     "W2-11"
    ],
    "status": "blocked"
@@ -1187,10 +949,7 @@
    "depends_on": [
     "W2-17"
    ],
-   "unmet_deps": [
-    "W2-17"
-   ],
-   "status": "blocked"
+   "status": "ready"
   },
   {
    "id": "W3-17",
@@ -1336,10 +1095,7 @@
    "depends_on": [
     "W2-26"
    ],
-   "unmet_deps": [
-    "W2-26"
-   ],
-   "status": "blocked"
+   "status": "ready"
   },
   {
    "id": "W3-29",
@@ -1349,10 +1105,7 @@
    "depends_on": [
     "W2-26"
    ],
-   "unmet_deps": [
-    "W2-26"
-   ],
-   "status": "blocked"
+   "status": "ready"
   },
   {
    "id": "W3-30",
@@ -1386,7 +1139,6 @@
     "W2-02"
    ],
    "unmet_deps": [
-    "W2-22",
     "W3-23",
     "W2-02"
    ],
@@ -1428,10 +1180,7 @@
    "depends_on": [
     "W2-22"
    ],
-   "unmet_deps": [
-    "W2-22"
-   ],
-   "status": "blocked"
+   "status": "ready"
   },
   {
    "id": "W4-05",
@@ -1984,7 +1733,6 @@
     "W4-22"
    ],
    "unmet_deps": [
-    "W2-26",
     "W4-22"
    ],
    "status": "blocked"
@@ -2324,7 +2072,6 @@
     "W5-01"
    ],
    "unmet_deps": [
-    "W2-22",
     "W5-01"
    ],
    "status": "blocked"
