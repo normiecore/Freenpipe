@@ -40,9 +40,11 @@ use crate::{
         },
         meetings::{
             bulk_delete_meetings_handler, delete_meeting_handler, export_handler,
-            get_meeting_handler, get_meeting_transcript_handler, list_meetings_handler,
-            meeting_status_handler, merge_meetings_handler, split_meeting_handler,
-            start_meeting_handler, stop_meeting_handler, update_meeting_handler,
+            get_meeting_handler, get_meeting_summary_status_handler,
+            get_meeting_transcript_handler, list_meetings_handler, meeting_status_handler,
+            merge_meetings_handler, resolve_room_change_handler, save_meeting_summary_handler,
+            split_meeting_handler, start_meeting_handler, stop_meeting_handler,
+            update_meeting_handler,
         },
         memories::{
             create_memory_handler, delete_memory_handler, get_memory_handler,
@@ -416,6 +418,14 @@ impl SCServer {
             }
         });
 
+        // Health v2 inputs: the 5 s recording-coverage ticker (runs even with
+        // vision disabled; local counters only, never sent anywhere), a
+        // one-shot ffmpeg/ffprobe probe, and the power profile that
+        // `/health` reads for `vision_reason`.
+        crate::recording_coverage::start_coverage_ticker(self.vision_metrics.clone());
+        crate::routes::health::spawn_dependency_probe();
+        crate::routes::health::install_power_source(self.power_manager.clone());
+
         // Use pre-set hot frame cache or create a new one, then warm from DB.
         // Spawn warm_from_db in the background — the cache starts empty but fills
         // within seconds. This avoids blocking server start for 40+ seconds on large DBs.
@@ -580,7 +590,13 @@ impl SCServer {
             .post("/meetings/bulk-delete", bulk_delete_meetings_handler)
             .post("/meetings/start", start_meeting_handler)
             .post("/meetings/stop", stop_meeting_handler)
+            .post("/meetings/room-change", resolve_room_change_handler)
             .get("/meetings/:id/transcript", get_meeting_transcript_handler)
+            .get(
+                "/meetings/:id/summary-status",
+                get_meeting_summary_status_handler,
+            )
+            .post("/meetings/:id/summary", save_meeting_summary_handler)
             .get("/meetings/:id", get_meeting_handler)
             .delete("/meetings/:id", delete_meeting_handler)
             .put("/meetings/:id", update_meeting_handler)

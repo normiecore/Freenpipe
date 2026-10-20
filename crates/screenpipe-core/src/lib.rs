@@ -5,6 +5,7 @@ pub mod agents;
 pub mod ai_gateway;
 pub mod brand;
 pub mod connections;
+pub mod cpu_features;
 pub mod endpoints;
 pub mod env;
 pub mod ffmpeg;
@@ -19,7 +20,7 @@ pub mod window_pattern;
 // screenpipe/sdk) can reuse the x265 pipeline without pulling the full
 // engine dep tree (db, connect, a11y, etc.).
 pub mod video;
-pub use ffmpeg::{ffmpeg_cmd, ffmpeg_cmd_async, find_ffmpeg_path};
+pub use ffmpeg::{ffmpeg_cmd, ffmpeg_cmd_async, find_ffmpeg_path, resolved_ffmpeg_path};
 
 mod language;
 #[cfg(feature = "security")]

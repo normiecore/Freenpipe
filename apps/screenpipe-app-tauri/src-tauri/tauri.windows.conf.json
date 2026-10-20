@@ -20,14 +20,15 @@
             "ffmpeg\\bin\\ffprobe.exe": "./",
             "ffmpeg\\bin\\*.dll": "./",
             "ffmpeg\\lib\\*": "./",
-            "onnxruntime*\\lib\\onnxruntime.dll": "./",
             "openblas\\bin\\*.dll": "./",
             "vcredist\\*.dll": "./",
             "assets/*": "./assets/",
             "bundled\\cli": "./",
             "bundled\\native": "./",
             "bundled\\mcp": "./mcp/",
-            "bundled\\models": "./models/"
+            "bundled\\models": "./models/",
+            "bundled\\vad": "./vad/",
+            "bundled\\runtime": "./"
         }
     }
 }

@@ -1,38 +1,56 @@
 ---
 schedule: manual
 enabled: true
-preset:
-  - screenpipe-cloud
 trigger:
   events:
     - meeting_ended
 template: true
 title: Meeting Summary
-description: Auto-summarizes the meeting that just ended and patches the summary back onto the meeting record (title + note).
+description: When a meeting ends, writes a short summary of it and saves it into the meeting's note (and names untitled meetings).
 icon: "🤝"
 featured: false
 ---
 
-a meeting just ended. find it, summarize it, and patch the summary back onto its record so the user sees it next time they open the meeting.
+A meeting has just finished. Work out what was discussed, write a compact summary, and store it in that meeting's note through the summary endpoint. The user reads it the next time they open the meeting.
 
-keep the wording of this prompt in sync with `buildMeetingSummarizeInstructions` in `apps/screenpipe-app-tauri/lib/utils/meeting-context.ts` (used by the in-app "summarize with AI" button) — the two surfaces should produce the same behavior.
+This prompt and `buildMeetingSummarizeInstructions` in `apps/screenpipe-app-tauri/lib/utils/meeting-context.ts` (the in-app "summarize with AI" action) describe the same job; change them together.
 
-read the screenpipe skill first so you know the meetings + search endpoints.
+In the commands below, `<API>` is the Screenpipe API address given in your instructions above (normally `http://localhost:3030`). Send the `Authorization` header shown on every request.
 
-step 1 — find the meeting that just ended:
+**1. Identify the meeting.** If you were already told which meeting to summarize, read that one with `<API>/meetings/<ID>` and go on to step 2. Otherwise list the latest meetings:
 
-  curl -s -H "Authorization: Bearer $SCREENPIPE_LOCAL_API_KEY" \
-    "http://localhost:3030/meetings?limit=1"
+    curl -s -H "Authorization: Bearer $SCREENPIPE_LOCAL_API_KEY" "<API>/meetings?limit=5"
 
-the most recent row is the one that just ended. capture its `id`, `meeting_start`, `meeting_end`, `title`, `note`, `meeting_app`, and `attendees`.
+Rows come newest first. Use the first row whose `meeting_end` is set; a newer meeting may already be open. Keep its `id`, `title`, `meeting_app`, `attendees`, `meeting_start` and `meeting_end`.
 
-step 2 — search screenpipe for what happened during this meeting and summarize it: key topics, decisions, action items. scope your searches to the meeting's `meeting_start`/`meeting_end` window. prefer `content_type=audio` for transcripts.
+**2. Collect what was said.**
 
-step 3 — if your summary is worth saving, append it to the meeting note (and refresh the title in the same call) via:
+    curl -s -H "Authorization: Bearer $SCREENPIPE_LOCAL_API_KEY" "<API>/meetings/<ID>/transcript"
 
-  curl -s -X PATCH "http://localhost:3030/meetings/<MEETING_ID>" \
-    -H "Authorization: Bearer $SCREENPIPE_LOCAL_API_KEY" \
-    -H "Content-Type: application/json" \
-    -d '{"title": "<NEW_TITLE_OR_OMIT>", "note": "<EXISTING_NOTE>\n\n## Summary\n<YOUR_SUMMARY>"}'
+Each row has `transcript`, `speakerName`, `capturedAt` and `source`, already in time order. When the list is empty, search audio in the meeting's time range instead (`/search?content_type=audio&start_time=<meeting_start>&end_time=<meeting_end>`; audio text is in `content.transcription`). Screen content from the same window can add context such as a shared document or ticket, but the conversation comes first.
 
-replace `<EXISTING_NOTE>` with the meeting's current `note` field (empty string if none) so you don't overwrite the user's work; just append your summary under a `## Summary` heading. for the title: if the current title is missing, generic ("untitled", "meeting", just the app name) or doesn't capture what actually happened, replace it with a 5-8 word plain-english title (no quotes, no "meeting about…" prefix) — otherwise omit the field so a user-set title is left alone. if there's nothing useful to summarize (empty transcript, irrelevant audio), say so out loud and skip the PATCH — don't write a placeholder.
+**3. Write the summary** in markdown, in the language the meeting was held in:
+
+- two or three sentences on what the meeting was for and how it ended,
+- **Decisions**: a bullet list, when decisions were made,
+- **Action items**: a bullet list with the owner and due date when they were said,
+- **Open questions**: only when something was left unresolved.
+
+Stick to what the transcript supports: no invented names, numbers or promises. For sub-headings use bold text or `###`, never `#` or `##`.
+
+**4. Show it.** Before saving, print the whole section in your reply, starting with the line `## Summary`.
+
+**5. Save it.**
+
+    curl -s -X POST "<API>/meetings/<ID>/summary" \
+      -H "Authorization: Bearer $SCREENPIPE_LOCAL_API_KEY" \
+      -H "Content-Type: application/json" \
+      --data-binary @body.json
+
+`body.json` is `{"summary": "<the markdown from step 3>", "title": "<optional>"}`. Produce it with a JSON encoder (for example a one-line bun script) so quotes and line breaks are escaped. Send only the summary, not the existing note: the server replaces an earlier `## Summary` section or adds one at the end, and keeps everything else the user wrote.
+
+Add `title` only when the meeting has no real name yet (its title is empty, a placeholder such as "Untitled" or "Meeting", or only the app's name) or the name is plainly wrong. Then send a plain descriptive title of three to eight words, without quotes. Otherwise leave the field out so a title the user picked stays.
+
+A `400` reply means the text was empty or read like an error message rather than a summary. Fix the text and try once more.
+
+**6. Nothing to summarize?** When no speech was captured or the audio is only noise, say so in your reply and stop. Do not save a placeholder.

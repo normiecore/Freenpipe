@@ -239,7 +239,11 @@ lazy_static = "1.5.0"
 default = ["custom-protocol", "qwen3-asr", "parakeet"]
 metal = ["screenpipe-audio/metal"]
 pulseaudio = ["screenpipe-audio/pulseaudio"]
+# DirectML for Parakeet; the installer ships the DirectML build of ONNX
+# Runtime (scripts/stage_bundled_runtime.js).
 directml = ["screenpipe-engine/directml"]
+# Whisper on ggml-vulkan (Windows x64 releases). Building needs the Vulkan SDK;
+# the exe then imports vulkan-1.dll, which the installer ships next to it.
 vulkan = ["screenpipe-audio/vulkan"]
 cargo-clippy = []
 e2e = ["tauri-plugin-webdriver"]

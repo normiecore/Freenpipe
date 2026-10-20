@@ -103,33 +103,76 @@ pub async fn timestamp_middleware(req: Request, next: Next) -> Response {
         Err(_) => return Response::from_parts(parts, axum::body::Body::empty()),
     };
 
-    // Parse as JSON, convert timestamps, re-serialize
-    match serde_json::from_slice::<Value>(&bytes) {
-        Ok(mut json_value) => {
-            convert_timestamps_to_local(&mut json_value);
-            let new_body = serde_json::to_vec(&json_value).unwrap_or_else(|_| bytes.to_vec());
-
+    // Convert timestamps in place. Rewriting the text rather than round-
+    // tripping through `serde_json::Value` keeps every object's keys in the
+    // order the handler serialised them (a `Value` map sorts them).
+    match std::str::from_utf8(&bytes)
+        .ok()
+        .and_then(localize_json_text)
+    {
+        Some(new_body) => {
             // Remove Content-Length to avoid mismatch after rewrite
             parts.headers.remove(header::CONTENT_LENGTH);
 
             Response::from_parts(parts, axum::body::Body::from(new_body))
         }
-        Err(_) => {
+        None => {
             // Not valid JSON, return as-is
             Response::from_parts(parts, axum::body::Body::from(bytes))
         }
     }
 }
 
+/// Rewrite every UTC timestamp string *value* in a JSON document to local
+/// time, leaving keys, key order, other values and formatting untouched.
+/// Same conversion rules as [`convert_timestamps_to_local`]. Returns `None`
+/// when `json` is not valid JSON.
+pub fn localize_json_text(json: &str) -> Option<String> {
+    serde_json::from_str::<serde::de::IgnoredAny>(json).ok()?;
+    let bytes = json.as_bytes();
+    let mut out = String::with_capacity(json.len() + 32);
+    let mut copied = 0;
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] != b'"' {
+            i += 1;
+            continue;
+        }
+        // `i` is an opening quote (the document is valid, and closing quotes
+        // are consumed below), so scan to its closing quote.
+        let open = i;
+        let mut j = open + 1;
+        let mut has_escape = false;
+        while j < bytes.len() && bytes[j] != b'"' {
+            if bytes[j] == b'\\' {
+                has_escape = true;
+                j += 1;
+            }
+            j += 1;
+        }
+        let close = j.min(bytes.len());
+        let mut next = close + 1;
+        while next < bytes.len() && bytes[next].is_ascii_whitespace() {
+            next += 1;
+        }
+        let is_key = bytes.get(next) == Some(&b':');
+        // Timestamps never need escapes, so escaped strings are left alone.
+        if !is_key && !has_escape {
+            if let Some(converted) = try_convert_timestamp(&json[open + 1..close]) {
+                out.push_str(&json[copied..open + 1]);
+                out.push_str(&converted);
+                copied = close;
+            }
+        }
+        i = close + 1;
+    }
+    out.push_str(&json[copied..]);
+    Some(out)
+}
+
 /// Helper for WebSocket endpoints: converts UTC timestamps in a JSON string to local time.
 pub fn localize_json_string(json_str: &str) -> String {
-    match serde_json::from_str::<Value>(json_str) {
-        Ok(mut value) => {
-            convert_timestamps_to_local(&mut value);
-            serde_json::to_string(&value).unwrap_or_else(|_| json_str.to_string())
-        }
-        Err(_) => json_str.to_string(),
-    }
+    localize_json_text(json_str).unwrap_or_else(|| json_str.to_string())
 }
 
 #[cfg(test)]
@@ -219,6 +262,39 @@ mod tests {
         let ts = parsed["timestamp"].as_str().unwrap();
         assert!(!ts.ends_with('Z'), "Expected local time, got: {}", ts);
         assert_eq!(parsed["name"], "test");
+    }
+
+    #[test]
+    fn text_rewrite_keeps_key_order_and_skips_keys() {
+        let input = r#"{"zeta":1,"last_frame_timestamp":"2026-03-04T14:30:00Z","alpha":{"2026-03-04T14:30:00Z":"x","b":["2026-03-04 14:30:00","plain"]},"esc":"a\"b"}"#;
+        let output = localize_json_text(input).unwrap();
+        // Keys keep their original order.
+        let z = output.find("\"zeta\"").unwrap();
+        let l = output.find("\"last_frame_timestamp\"").unwrap();
+        let a = output.find("\"alpha\"").unwrap();
+        assert!(z < l && l < a, "{}", output);
+        // A key that looks like a timestamp is not touched.
+        assert!(
+            output.contains("\"2026-03-04T14:30:00Z\":\"x\""),
+            "{}",
+            output
+        );
+        // Values are converted the same way the Value walk converts them.
+        let mut expected: Value = serde_json::from_str(input).unwrap();
+        convert_timestamps_to_local(&mut expected);
+        let actual: Value = serde_json::from_str(&output).unwrap();
+        assert_eq!(actual, expected);
+    }
+
+    #[test]
+    fn text_rewrite_rejects_invalid_json_and_handles_scalars() {
+        assert_eq!(localize_json_text("{not json"), None);
+        assert_eq!(localize_json_text("[]").as_deref(), Some("[]"));
+        let top = localize_json_text("\"2026-03-04T14:30:00Z\"").unwrap();
+        assert!(!top.ends_with("Z\"") || Local::now().offset().local_minus_utc() == 0);
+        // Escapes and non-ASCII text survive untouched.
+        let input = r#"{"t":"caf\u00e9 \\ \"q\"","n":"naïve"}"#;
+        assert_eq!(localize_json_text(input).as_deref(), Some(input));
     }
 
     #[test]
