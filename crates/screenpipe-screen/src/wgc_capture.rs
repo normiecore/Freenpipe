@@ -217,6 +217,13 @@ pub fn pool_needs_recreate(pool: (i32, i32), content: (i32, i32)) -> bool {
     content.0 > 0 && content.1 > 0 && content != pool
 }
 
+/// True when a frame's content size is usable. A frame with a zero or negative
+/// content size is dropped instead of published, so the capture loop keeps the
+/// previous frame rather than receiving a 1x1 image it would score as a change.
+pub fn content_is_publishable(content: (i32, i32)) -> bool {
+    content.0 > 0 && content.1 > 0
+}
+
 /// Why converting a mapped frame failed.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ReadbackError {
@@ -429,10 +436,10 @@ impl<T: Clone> FrameSlot<T> {
 #[cfg(target_os = "windows")]
 mod native {
     use super::{
-        after_hardware_probe, bgra_to_rgba, hardware_device_refused, hardware_retry_due,
-        is_device_lost, lock_recover, mapped_len, min_update_interval, pool_needs_recreate,
-        timespan_ticks, warp_session_step, FrameSlot, SharedDevice, SlotError, WarpSessionStep,
-        FRAME_POOL_BUFFERS, WARP_HARDWARE_RETRY,
+        after_hardware_probe, bgra_to_rgba, content_is_publishable, hardware_device_refused,
+        hardware_retry_due, is_device_lost, lock_recover, mapped_len, min_update_interval,
+        pool_needs_recreate, timespan_ticks, warp_session_step, FrameSlot, SharedDevice, SlotError,
+        WarpSessionStep, FRAME_POOL_BUFFERS, WARP_HARDWARE_RETRY,
     };
     use anyhow::{anyhow, bail, Context, Result};
     use image::{DynamicImage, RgbaImage};
@@ -799,6 +806,11 @@ mod native {
                     *pool_size = (content.Width, content.Height);
                     return Ok(());
                 }
+            }
+            if !content_is_publishable((content.Width, content.Height)) {
+                // Mode switch in progress: hand the buffer back and keep the last frame.
+                drop(frame);
+                return Ok(());
             }
 
             let surface = frame.Surface()?;
@@ -1250,6 +1262,15 @@ mod tests {
         assert!(pool_needs_recreate((1920, 1080), (1080, 1920)), "rotation");
         assert!(!pool_needs_recreate((1920, 1080), (0, 0)));
         assert!(!pool_needs_recreate((1920, 1080), (-1, 1080)));
+    }
+
+    #[test]
+    fn degenerate_content_sizes_are_not_published() {
+        assert!(content_is_publishable((1920, 1080)));
+        assert!(content_is_publishable((1, 1)));
+        assert!(!content_is_publishable((0, 0)));
+        assert!(!content_is_publishable((0, 1080)));
+        assert!(!content_is_publishable((1920, -1)));
     }
 
     #[test]
