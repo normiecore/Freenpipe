@@ -25,6 +25,12 @@ pub async fn handle_pipe_command(command: &PipeCommand) -> anyhow::Result<()> {
     let manager = PipeManager::new(pipes_dir.clone(), executors, None, 3030);
     manager.load_pipes().await?;
 
+    // A pipe name is a folder under the pipes directory; refuse anything that
+    // is not a single portable folder name before it reaches the disk.
+    if let Some(name) = pipe_name_argument(command) {
+        screenpipe_core::pipes::validate_pipe_id(name)?;
+    }
+
     match command {
         PipeCommand::List { json } => {
             let pipes = manager.list_pipes().await;
@@ -53,7 +59,10 @@ pub async fn handle_pipe_command(command: &PipeCommand) -> anyhow::Result<()> {
                     };
                     println!(
                         "{:<20} {:<10} {:<12} {:<20}",
-                        p.config.name, status, p.config.schedule, last
+                        p.config.name,
+                        status,
+                        p.config.schedule_label(),
+                        last
                     );
                 }
             }
@@ -158,6 +167,20 @@ pub async fn handle_pipe_command(command: &PipeCommand) -> anyhow::Result<()> {
     }
 
     Ok(())
+}
+
+/// The pipe name a subcommand acts on, for commands that take one.
+fn pipe_name_argument(command: &PipeCommand) -> Option<&str> {
+    match command {
+        PipeCommand::Enable { name }
+        | PipeCommand::Disable { name }
+        | PipeCommand::Run { name }
+        | PipeCommand::Logs { name, .. }
+        | PipeCommand::Delete { name }
+        | PipeCommand::Publish { name }
+        | PipeCommand::SetPreset { name, .. } => Some(name.as_str()),
+        _ => None,
+    }
 }
 
 /// Get the auth token, checking in order:
@@ -687,6 +710,24 @@ fn first_line(s: &str) -> String {
 #[cfg(test)]
 mod registry_command_tests {
     use super::*;
+
+    #[test]
+    fn pipe_name_arguments_are_found_for_checking() {
+        let run = PipeCommand::Run {
+            name: "../x".into(),
+        };
+        let name = pipe_name_argument(&run).unwrap();
+        assert!(screenpipe_core::pipes::validate_pipe_id(name).is_err());
+        let preset = PipeCommand::SetPreset {
+            name: "daily".into(),
+            preset: vec!["p".into()],
+        };
+        assert_eq!(pipe_name_argument(&preset), Some("daily"));
+        let search = PipeCommand::Search {
+            query: "../x".into(),
+        };
+        assert!(pipe_name_argument(&search).is_none());
+    }
 
     #[test]
     fn truncation_counts_characters_not_bytes() {

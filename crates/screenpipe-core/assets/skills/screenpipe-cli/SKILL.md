@@ -97,8 +97,13 @@ Edit frontmatter in `~/.screenpipe/pipes/<name>/pipe.md` directly, or use the AP
 ```bash
 curl -X POST http://localhost:3030/pipes/<name>/config \
   -H "Content-Type: application/json" \
-  -d '{"config": {"schedule": "every 1h", "enabled": true}}'
+  -d '{"schedule": "every 1h", "enabled": true}'
 ```
+
+Send the fields at the top level of the body; a body wrapped in `{"config": {...}}` and
+unknown field names are refused with HTTP 400. For a structured schedule send
+`schedule_config` (check it first with `POST /pipes/schedule/preview`, which returns a
+summary and the next run times).
 
 ### Rules
 
