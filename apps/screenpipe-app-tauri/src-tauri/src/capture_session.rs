@@ -45,6 +45,10 @@ pub struct CaptureSession {
     ui_recorder_handle: Option<screenpipe_engine::UiRecorderHandle>,
     audio_manager: Arc<screenpipe_audio::audio_manager::AudioManager>,
     audio_disabled: bool,
+    /// The speaker-identification loop has no shutdown signal of its own.
+    /// It is aborted on stop so pause/resume cycles do not pile up loops
+    /// that keep a retired engine generation's database open.
+    speaker_id_task: tokio::task::JoinHandle<()>,
 }
 
 impl CaptureSession {
@@ -244,7 +248,7 @@ impl CaptureSession {
         }
 
         // --- Speaker identification ---
-        let _speaker_id_handle = screenpipe_engine::start_speaker_identification(
+        let speaker_id_task = screenpipe_engine::start_speaker_identification(
             server.db.clone(),
             config.user_name.clone(),
         );
@@ -275,6 +279,7 @@ impl CaptureSession {
             ui_recorder_handle,
             audio_manager: server.audio_manager.clone(),
             audio_disabled: config.disable_audio,
+            speaker_id_task,
         })
     }
 
@@ -293,6 +298,7 @@ impl CaptureSession {
 
         // Broadcast shutdown to VisionManager, meeting watcher, schedule monitor, compaction
         let _ = self.shutdown_tx.send(());
+        self.speaker_id_task.abort();
 
         // Stop audio recording (but don't shutdown — keep the Arc valid for queries)
         if !self.audio_disabled {

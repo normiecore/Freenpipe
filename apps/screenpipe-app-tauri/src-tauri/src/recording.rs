@@ -1041,7 +1041,7 @@ async fn start_capture_internal(
 
 /// How long a new engine generation waits for the previous one to let go of
 /// the database before opening it anyway.
-const GENERATION_DRAIN_TIMEOUT: Duration = Duration::from_secs(15);
+const GENERATION_DRAIN_TIMEOUT: Duration = Duration::from_secs(8);
 /// Ceiling for stopping a generation's runtime once its keep-alive loop ends.
 const ENGINE_RUNTIME_SHUTDOWN: Duration = Duration::from_secs(10);
 
