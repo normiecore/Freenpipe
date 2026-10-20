@@ -431,6 +431,12 @@ pub async fn start_capture(
         info!("Capture session already running");
         return Ok(());
     }
+    // A resume that wins the capture lock after the teardown's capture step
+    // would leave a live session behind; refuse it like the other start paths.
+    if crate::relaunch::is_shutting_down() {
+        info!("start_capture: the app is quitting; not starting capture");
+        return Err("the app is quitting; capture is not started".to_string());
+    }
 
     // `state.server.is_some()` only means ServerCore was constructed once; it
     // does NOT mean the HTTP serve task is still alive. Long-running sessions
