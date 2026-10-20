@@ -61,7 +61,10 @@ or a brand-new coordinator session continues from there with nothing else.
 - Launch only the 32 core work packages listed in DECISIONS.md decision 6, in dependency order, even when
   `status.py` lists other WPs as ready. Everything else is parked until the owner widens the set.
 - Start every new run with `lean: true` in the workflow args: one combined reviewer per WP that reads the
-  diff (no full builds; CI builds and tests every PR) and at most one fix round.
+  diff (no full builds; CI builds and tests every PR) and at most one fix round. Under decision 7 an
+  APPROVE that still lists findings also gets that fix round and a re-review (`fix_minors`, on by
+  default), and reviewers rate findings by consequence: a user-visible regression, a hang path or
+  touching the wrong process is at least major however rare the path.
 - A merge of main into an approved branch with no code conflict needs no resolution review: merge it in
   the WP's worktree, run the vendor guard and the verbatim gate, push, wait for green CI, then approve with
   `--verification-file`/`--compliance-file` notes that name the reviewed head and state that the only
