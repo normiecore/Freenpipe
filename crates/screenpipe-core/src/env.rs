@@ -243,8 +243,15 @@ pub const SCREENPIPE_CHAT_CONTROL_ADDR: &str = "SCREENPIPE_CHAT_CONTROL_ADDR";
 pub const SCREENPIPE_CHAT_CONTROL_TOKEN: &str = "SCREENPIPE_CHAT_CONTROL_TOKEN";
 /// Turns the chat control channel off.
 pub const SCREENPIPE_CHAT_CONTROL_DISABLED: &str = "SCREENPIPE_CHAT_CONTROL_DISABLED";
-/// Directory of the bundled Pi agent.
+/// Pi's configuration directory (default `<data dir>/pi-agent/pi-config`).
+/// Read to override the default and given to Pi processes.
 pub const SCREENPIPE_PI_AGENT_DIR: &str = "SCREENPIPE_PI_AGENT_DIR";
+/// Freenpipe addition: `1` makes Windows x64 run Pi with bun's baseline
+/// (non-AVX2) build even when the CPU has AVX2. For testing that path.
+pub const SCREENPIPE_FORCE_BASELINE_BUN: &str = "SCREENPIPE_FORCE_BASELINE_BUN";
+/// Freenpipe addition: `1` leaves the installed Pi runtime unpatched and
+/// removes the runtime patch if it was applied.
+pub const SCREENPIPE_DISABLE_PI_PATCHES: &str = "SCREENPIPE_DISABLE_PI_PATCHES";
 /// Home directory searched for AI tool configs (`.claude`, `.codex`,
 /// `.cursor`, `.gemini`, `.openclaw`, `.hermes`) when auto-connecting MCP.
 pub const SCREENPIPE_AI_TOOLS_HOME: &str = "SCREENPIPE_AI_TOOLS_HOME";
@@ -295,6 +302,29 @@ pub const SCREENPIPE_MCP_PATH: &str = "SCREENPIPE_MCP_PATH";
 pub const SCREENPIPE_MCP_CLIENT: &str = "SCREENPIPE_MCP_CLIENT";
 /// MCP servers a pipe session may call.
 pub const SCREENPIPE_MCP_SERVER_ALLOWLIST: &str = "SCREENPIPE_MCP_SERVER_ALLOWLIST";
+
+// ---------------------------------------------------------------------------
+// Pi runtime (names defined by Pi and its loader, set on Pi processes)
+// ---------------------------------------------------------------------------
+
+/// Pi's configuration directory; set to the isolated `pi-config` directory.
+pub const PI_CODING_AGENT_DIR: &str = "PI_CODING_AGENT_DIR";
+/// `1` turns off Pi's own check for newer releases (the runtime pins Pi).
+pub const PI_SKIP_VERSION_CHECK: &str = "PI_SKIP_VERSION_CHECK";
+/// `0` makes jiti compile extensions instead of using native TypeScript
+/// loading.
+pub const JITI_TRY_NATIVE: &str = "JITI_TRY_NATIVE";
+/// `0` keeps Pi's install telemetry off.
+pub const PI_TELEMETRY: &str = "PI_TELEMETRY";
+
+/// The Pi runtime names above. They keep Pi's own spelling, so they are
+/// listed apart from [`ALL`].
+pub const PI_RUNTIME: &[&str] = &[
+    PI_CODING_AGENT_DIR,
+    PI_SKIP_VERSION_CHECK,
+    JITI_TRY_NATIVE,
+    PI_TELEMETRY,
+];
 
 /// Every name above, in declaration order.
 pub const ALL: &[&str] = &[
@@ -393,6 +423,8 @@ pub const ALL: &[&str] = &[
     SCREENPIPE_CHAT_CONTROL_TOKEN,
     SCREENPIPE_CHAT_CONTROL_DISABLED,
     SCREENPIPE_PI_AGENT_DIR,
+    SCREENPIPE_FORCE_BASELINE_BUN,
+    SCREENPIPE_DISABLE_PI_PATCHES,
     SCREENPIPE_AI_TOOLS_HOME,
     SCREENPIPE_ACP_ID,
     SCREENPIPE_ACP_CWD,
@@ -468,7 +500,7 @@ mod tests {
     fn every_name_is_documented() {
         let doc = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../docs/env.md");
         let text = std::fs::read_to_string(&doc).expect("docs/env.md is readable");
-        for name in ALL {
+        for name in ALL.iter().chain(PI_RUNTIME) {
             assert!(
                 text.contains(&format!("`{name}`")),
                 "{name} is not documented in docs/env.md"

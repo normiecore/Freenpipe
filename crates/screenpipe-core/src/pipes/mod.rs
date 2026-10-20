@@ -642,7 +642,7 @@ fn remove_pid_file(pipes_dir: &Path, pipe_name: &str) {
 }
 
 /// Check if a process with the given PID is still alive.
-fn is_process_alive(pid: u32) -> bool {
+pub(crate) fn is_process_alive(pid: u32) -> bool {
     // 0 is reserved as the "claimed-but-no-child-yet" placeholder. Treating it as
     // alive on unix would be catastrophic — kill(0, 0) targets the whole process
     // group, which means the existence check would return true and any kill that
@@ -2165,6 +2165,8 @@ impl PipeManager {
 
         // Check if history/session continuation is enabled for this pipe
         let history_enabled = config.history;
+        // `effort:` goes to the agent as its thinking level.
+        let run_effort = config.effort;
 
         let pipe_dir = self.pipes_dir.clone().join(name);
 
@@ -2292,6 +2294,7 @@ impl PipeManager {
                     // conversationId, so they stay out of whatever chat is on
                     // screen. See screenpipe-core::agents::bash_env.
                     Some(format!("pipe:{pipe_name}").as_str()),
+                    run_effort.map(|e| e.as_str()),
                 ),
             )
             .await;
@@ -2682,6 +2685,8 @@ impl PipeManager {
 
             // Check if history/session continuation is enabled for this pipe
             let history_enabled = config.history;
+            // `effort:` goes to the agent as its thinking level.
+            let run_effort = config.effort;
 
             // Build prompt with context header
             let pipe_system_prompt = render_pipe_system_prompt(
@@ -2798,6 +2803,7 @@ impl PipeManager {
                     // conversationId, so they stay out of whatever chat is on
                     // screen. See screenpipe-core::agents::bash_env.
                     Some(format!("pipe:{name}").as_str()),
+                    run_effort.map(|e| e.as_str()),
                 ),
             )
             .await;
@@ -3829,6 +3835,8 @@ impl PipeManager {
 
                     // Check if history/session continuation is enabled
                     let history_enabled = config.history;
+                    // `effort:` goes to the agent as its thinking level.
+                    let run_effort = config.effort;
 
                     let pipe_dir = pipes_dir.join(name);
 
@@ -3994,6 +4002,7 @@ impl PipeManager {
                                 Some(&pipe_system_prompt),
                                 // Owner tag — see run_pipe_with_trigger.
                                 Some(format!("pipe:{pipe_name}").as_str()),
+                                run_effort.map(|e| e.as_str()),
                             ),
                         )
                         .await;
@@ -5395,18 +5404,27 @@ fn copy_dir_recursive(src: &Path, dst: &Path) -> Result<()> {
 // ---------------------------------------------------------------------------
 
 /// Encode a working-directory path the same way Pi does for session storage.
-/// Pi uses the CWD as a key: `~/.pi/agent/sessions/<encoded-cwd>/`.
-/// The encoding wraps the path with `--` and replaces `/` (or `\`) with `-`.
-/// Example: `/Users/me/.screenpipe/pipes/foo/` → `--Users-me-.screenpipe-pipes-foo--`
+/// Pi keys sessions by CWD: `<pi config dir>/sessions/<encoded-cwd>/`, where
+/// the config dir is Freenpipe's own (`<data dir>/pi-agent/pi-config`, see
+/// `agents::pi_runtime`).
 fn encode_pi_session_dir(working_dir: &Path) -> Option<PathBuf> {
-    let home = dirs::home_dir()?;
-    let sessions_base = home.join(".pi").join("agent").join("sessions");
-    // Pi encodes: strip leading/trailing separators, replace all separators
-    // with `-`, wrap with `--` prefix and `--` suffix
-    let cwd_str = working_dir.to_string_lossy();
-    let stripped = cwd_str.trim_matches(|c| c == '/' || c == '\\');
-    let encoded = format!("--{}--", stripped.replace(['/', '\\'], "-"));
-    Some(sessions_base.join(encoded))
+    let sessions_base = crate::agents::pi_runtime::config_dir().join("sessions");
+    Some(sessions_base.join(pi_session_dir_name(working_dir)))
+}
+
+/// Pi 0.84's directory name for a working directory: one leading separator
+/// dropped, every `/`, `\` and `:` turned into `-`, wrapped in `--`.
+/// `/Users/me/.screenpipe/pipes/foo` → `--Users-me-.screenpipe-pipes-foo--`,
+/// `C:\Users\me\pipes\foo` → `--C--Users-me-pipes-foo--`.
+fn pi_session_dir_name(working_dir: &Path) -> String {
+    let cwd = working_dir.to_string_lossy();
+    // Pi resolves the path first, which drops trailing separators.
+    let cwd = cwd.trim_end_matches(['/', '\\']);
+    let rest = cwd
+        .strip_prefix('/')
+        .or_else(|| cwd.strip_prefix('\\'))
+        .unwrap_or(cwd);
+    format!("--{}--", rest.replace(['/', '\\', ':'], "-"))
 }
 
 /// Find the most recently modified Pi session file for a pipe's working directory.
@@ -5469,6 +5487,22 @@ impl Drop for PipeManager {
 mod tests {
     use super::*;
     use chrono::Timelike;
+
+    #[test]
+    fn pi_session_dirs_are_named_like_pi_names_them() {
+        assert_eq!(
+            pi_session_dir_name(Path::new("/Users/me/.screenpipe/pipes/foo")),
+            "--Users-me-.screenpipe-pipes-foo--"
+        );
+        assert_eq!(
+            pi_session_dir_name(Path::new("/home/me/pipes/foo/")),
+            "--home-me-pipes-foo--"
+        );
+        assert_eq!(
+            pi_session_dir_name(Path::new(r"C:\Users\me\.screenpipe\pipes\foo")),
+            "--C--Users-me-.screenpipe-pipes-foo--"
+        );
+    }
 
     // -- scheduler lifecycle tests ------------------------------------------
 

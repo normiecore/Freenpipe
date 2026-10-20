@@ -134,7 +134,9 @@ services used are left out.
 | `SCREENPIPE_CHAT_CONTROL_ADDR` | Address of the chat control channel. |
 | `SCREENPIPE_CHAT_CONTROL_TOKEN` | Token for the chat control channel. |
 | `SCREENPIPE_CHAT_CONTROL_DISABLED` | Turns the chat control channel off. |
-| `SCREENPIPE_PI_AGENT_DIR` | Directory of the bundled Pi agent. |
+| `SCREENPIPE_PI_AGENT_DIR` | Pi's configuration directory (default `<data dir>/pi-agent/pi-config`). Read to override the default and given to Pi processes. |
+| `SCREENPIPE_FORCE_BASELINE_BUN` | Freenpipe addition: `1` makes Windows x64 run Pi with bun's baseline (non-AVX2) build even when the CPU has AVX2. For testing that path. |
+| `SCREENPIPE_DISABLE_PI_PATCHES` | Freenpipe addition: `1` leaves the installed Pi runtime unpatched and removes the runtime patch if it was applied. |
 | `SCREENPIPE_AI_TOOLS_HOME` | Home directory searched for AI tool configs (`.claude`, `.codex`, `.cursor`, `.gemini`, `.openclaw`, `.hermes`) when auto-connecting MCP. |
 | `SCREENPIPE_ACP_ID` | ACP runtime: agent id. |
 | `SCREENPIPE_ACP_CWD` | ACP runtime: working directory. |
@@ -150,6 +152,15 @@ services used are left out.
 | `SCREENPIPE_ACP_UNATTENDED` | ACP runtime: run without a user present. |
 | `SCREENPIPE_INTERNAL_ACP_WRAPPED_COMMAND` | ACP runtime: the wrapped command (internal). |
 | `SCREENPIPE_INTERNAL_ACP_WRAPPED_ARGS_JSON` | ACP runtime: the wrapped command's arguments as JSON (internal). |
+
+## Pi runtime (Pi's own names, set on Pi processes)
+
+| Variable | Meaning |
+|---|---|
+| `PI_CODING_AGENT_DIR` | Pi's configuration directory; set to the isolated `pi-config` directory. |
+| `PI_SKIP_VERSION_CHECK` | `1` turns off Pi's own check for newer releases (the runtime pins Pi). |
+| `JITI_TRY_NATIVE` | `0` makes jiti compile extensions instead of using native TypeScript loading. |
+| `PI_TELEMETRY` | `0` keeps Pi's install telemetry off. |
 
 ## MCP
 

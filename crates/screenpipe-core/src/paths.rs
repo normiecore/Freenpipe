@@ -55,6 +55,9 @@ pub const AUDIO_EXCLUSIONS_FILE: &str = "audio-exclusions.json";
 pub const CONNECTIONS_FILE: &str = "connections.json";
 /// Prefix of the daily-rolled desktop app log (`screenpipe-app.<date>.log`).
 pub const APP_LOG_PREFIX: &str = "screenpipe-app";
+/// Managed Pi agent runtime: the install, its `pi-config` directory and the
+/// CLI launcher (`pi-agent/bin`).
+pub const PI_AGENT_DIR: &str = "pi-agent";
 
 // ---------------------------------------------------------------------------
 // Data-dir layout: names added by the parity target (shell-038)
@@ -134,6 +137,7 @@ pub const DATA_DIR_NAMES: &[&str] = &[
     AUDIO_EXCLUSIONS_FILE,
     CONNECTIONS_FILE,
     APP_LOG_PREFIX,
+    PI_AGENT_DIR,
     CRASH_DUMPS_DIR,
     RECORDING_RECOVERY_LOG,
     UPDATE_INSTALL_LOG,
