@@ -195,8 +195,14 @@ impl Drop for WinRtApartment {
 
 #[cfg(target_os = "windows")]
 enum CachedEngine {
-    Ready { engine: WindowsOcrEngine, tag: String },
-    Failed { message: String, at: Instant },
+    Ready {
+        engine: WindowsOcrEngine,
+        tag: String,
+    },
+    Failed {
+        message: String,
+        at: Instant,
+    },
 }
 
 /// State owned by the OCR thread. Field order matters: the engines are
@@ -216,7 +222,10 @@ impl WindowsOcrThread {
             Ok(v) if v > 0 => v,
             Ok(_) => FALLBACK_MAX_IMAGE_DIMENSION,
             Err(e) => {
-                debug!("could not read the OCR image size limit ({}); assuming the default", e);
+                debug!(
+                    "could not read the OCR image size limit ({}); assuming the default",
+                    e
+                );
                 FALLBACK_MAX_IMAGE_DIMENSION
             }
         };

@@ -219,7 +219,15 @@ mod tests {
 
     #[test]
     fn fault_values() {
-        for v in ["1", "true", "TRUE", " unavailable ", "no_languages", "on", "yes"] {
+        for v in [
+            "1",
+            "true",
+            "TRUE",
+            " unavailable ",
+            "no_languages",
+            "on",
+            "yes",
+        ] {
             assert!(fault_value_means_unavailable(v), "{v:?}");
         }
         for v in ["", "0", "false", "off", "inference"] {

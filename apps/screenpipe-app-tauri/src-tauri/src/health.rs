@@ -1658,7 +1658,12 @@ mod tests {
     #[test]
     fn ocr_notice_ignores_other_reasons() {
         let mut notice = OcrUnavailableNotice::default();
-        for reason in [None, Some("ok"), Some("capture_stalled"), Some("not_started")] {
+        for reason in [
+            None,
+            Some("ok"),
+            Some("capture_stalled"),
+            Some("not_started"),
+        ] {
             for _ in 0..10 {
                 assert!(!notice.observe(reason));
             }

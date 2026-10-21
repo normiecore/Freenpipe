@@ -71,7 +71,12 @@ async fn startup_probe_reports_ocr_unavailable_on_health() {
 
     let router = server.create_router().await;
     let response = router
-        .oneshot(Request::builder().uri("/health").body(Body::empty()).unwrap())
+        .oneshot(
+            Request::builder()
+                .uri("/health")
+                .body(Body::empty())
+                .unwrap(),
+        )
         .await
         .unwrap();
     assert_eq!(response.status(), StatusCode::OK);

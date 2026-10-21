@@ -59,7 +59,10 @@ fn ocr_semaphore() -> &'static Semaphore {
 fn log_live_ocr_failure(e: &anyhow::Error) {
     match screenpipe_screen::ocr_worker::worker_error_of(e) {
         Some(shed) if shed.is_skip() => {
-            debug!("windows OCR skipped; storing the frame without OCR text: {}", shed)
+            debug!(
+                "windows OCR skipped; storing the frame without OCR text: {}",
+                shed
+            )
         }
         _ => warn!("windows OCR failed: {}", e),
     }

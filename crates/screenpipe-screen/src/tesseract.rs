@@ -124,8 +124,20 @@ fn tessdata_candidates(
         out.push(dir.join("tessdata"));
         if let Some(prefix) = dir.parent() {
             out.push(prefix.join("share").join("tessdata"));
-            out.push(prefix.join("share").join("tesseract-ocr").join("5").join("tessdata"));
-            out.push(prefix.join("share").join("tesseract-ocr").join("4").join("tessdata"));
+            out.push(
+                prefix
+                    .join("share")
+                    .join("tesseract-ocr")
+                    .join("5")
+                    .join("tessdata"),
+            );
+            out.push(
+                prefix
+                    .join("share")
+                    .join("tesseract-ocr")
+                    .join("4")
+                    .join("tessdata"),
+            );
         }
     }
     if let Some(dir) = exe_dir {
@@ -200,7 +212,9 @@ fn discover_and_prepare() -> Option<TesseractInstall> {
             crate::metrics::set_ocr_engine_available(false);
         } else {
             // Optional here: live capture uses the platform's own OCR engine.
-            debug!("tesseract not found; the optional tesseract OCR engine is off for this session");
+            debug!(
+                "tesseract not found; the optional tesseract OCR engine is off for this session"
+            );
         }
         return None;
     };
@@ -470,7 +484,12 @@ mod tests {
     fn a_folder_without_english_data_is_skipped() {
         let tmp = tempfile::tempdir().unwrap();
         let binary = tmp.path().join("bin").join(TESSERACT_EXE);
-        touch(&tmp.path().join("bin").join("tessdata").join("deu.traineddata"));
+        touch(
+            &tmp.path()
+                .join("bin")
+                .join("tessdata")
+                .join("deu.traineddata"),
+        );
         let candidates = vec![tmp.path().join("bin").join("tessdata")];
         assert_eq!(first_tessdata_with_eng(&candidates), None);
         assert!(!tessdata_candidates(&binary, None, None).is_empty());

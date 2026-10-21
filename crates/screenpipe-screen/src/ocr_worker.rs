@@ -321,7 +321,13 @@ impl BgraImage {
             px.swap(0, 2);
         }
         let (w, h) = rgba.dimensions();
-        Self::from_parts(w, h, w as usize * 4, rgba.into_raw(), max_side.max(w).max(h))
+        Self::from_parts(
+            w,
+            h,
+            w as usize * 4,
+            rgba.into_raw(),
+            max_side.max(w).max(h),
+        )
     }
 
     /// Returns the image scaled down to fit `max_side` and `pixel_budget`, or
@@ -341,7 +347,13 @@ impl BgraImage {
             },
         )?;
         let scaled = image::imageops::resize(&buffer, w, h, image::imageops::FilterType::Triangle);
-        Self::from_parts(w, h, w as usize * 4, scaled.into_raw(), max_side.max(w).max(h))
+        Self::from_parts(
+            w,
+            h,
+            w as usize * 4,
+            scaled.into_raw(),
+            max_side.max(w).max(h),
+        )
     }
 
     pub fn width(&self) -> u32 {
@@ -992,12 +1004,10 @@ impl InflightGate {
             if seen >= self.limit {
                 return None;
             }
-            match self.current.compare_exchange(
-                seen,
-                seen + 1,
-                Ordering::SeqCst,
-                Ordering::SeqCst,
-            ) {
+            match self
+                .current
+                .compare_exchange(seen, seen + 1, Ordering::SeqCst, Ordering::SeqCst)
+            {
                 Ok(_) => {
                     return Some(InflightTicket {
                         gate: self,
@@ -1166,7 +1176,10 @@ mod tests {
             9, 10, 11, 12, 13, 14, 15, 16,
         ];
         let img = BgraImage::from_parts(2, 2, 12, data, 100).unwrap();
-        assert_eq!(img.bytes(), &[1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16]);
+        assert_eq!(
+            img.bytes(),
+            &[1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16]
+        );
         assert_eq!((img.width(), img.height()), (2, 2));
     }
 
@@ -1192,8 +1205,8 @@ mod tests {
         assert_eq!(img.bytes(), &[30, 20, 10, 255, 60, 50, 40, 128]);
 
         let rgb = RgbImage::from_pixel(3, 2, Rgb([1, 2, 3]));
-        let img = BgraImage::from_dynamic(&DynamicImage::ImageRgb8(rgb), 100, OCR_PIXEL_BUDGET)
-            .unwrap();
+        let img =
+            BgraImage::from_dynamic(&DynamicImage::ImageRgb8(rgb), 100, OCR_PIXEL_BUDGET).unwrap();
         assert_eq!(img.bytes().len(), 3 * 2 * 4);
         assert_eq!(&img.bytes()[..4], &[3, 2, 1, 255]);
     }
@@ -1380,7 +1393,10 @@ mod tests {
         assert!(err.is_retryable());
 
         wait_until("thread exit", || !w.is_running());
-        assert_eq!(w.run(Job::ThreadName, LONG).await.unwrap(), "ocr-test-panic");
+        assert_eq!(
+            w.run(Job::ThreadName, LONG).await.unwrap(),
+            "ocr-test-panic"
+        );
         let s = w.stats();
         assert_eq!(s.panics, 1);
         assert_eq!(s.threads_started, 2);
@@ -1512,8 +1528,7 @@ mod tests {
 
     #[test]
     fn worker_errors_are_found_in_anyhow_chains() {
-        let e = anyhow::Error::new(OcrWorkerError::QueueFull { capacity: 4 })
-            .context("live OCR");
+        let e = anyhow::Error::new(OcrWorkerError::QueueFull { capacity: 4 }).context("live OCR");
         assert_eq!(
             worker_error_of(&e),
             Some(&OcrWorkerError::QueueFull { capacity: 4 })
