@@ -1067,6 +1067,7 @@ mod event_batch_tests {
             element_description: None,
             element_automation_id: None,
             element_bounds: None,
+            element_ancestors: None,
             frame_id: None,
         }
     }
@@ -1202,6 +1203,7 @@ mod capture_trigger_kind_tests {
             element_description: None,
             element_automation_id: None,
             element_bounds: None,
+            element_ancestors: None,
             frame_id: None,
         }
     }

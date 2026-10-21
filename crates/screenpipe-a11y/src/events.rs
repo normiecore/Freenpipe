@@ -148,6 +148,104 @@ pub struct ElementContext {
     /// Bounding rectangle
     #[serde(skip_serializing_if = "Option::is_none")]
     pub bounds: Option<ElementBounds>,
+
+    /// Containers of the element, outermost first (the element itself is not
+    /// included). Stored as `ui_events.element_ancestors`. Build it with
+    /// [`ancestors_root_first`] so the size limits and the password rule hold.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub ancestors: Vec<ElementAncestor>,
+}
+
+// ============================================================================
+// Element ancestry (`ui_events.element_ancestors`)
+// ============================================================================
+
+/// Most container levels kept above an element. Walkers stop climbing here.
+pub const MAX_ELEMENT_ANCESTORS: usize = 16;
+
+/// Longest container name kept, in characters. Longer names are cut.
+pub const MAX_ANCESTOR_NAME_CHARS: usize = 100;
+
+/// Upper bound on the serialized `element_ancestors` JSON, in bytes. When the
+/// chain is larger, the outermost entries are dropped first: the nearest
+/// containers say the most about what was clicked, and the outer window is
+/// already in `window_title`.
+pub const MAX_ANCESTORS_JSON_BYTES: usize = 2048;
+
+/// One container of a UI element, as stored in `ui_events.element_ancestors`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ElementAncestor {
+    /// Accessibility role or control type (e.g. "Pane", "List", "AXGroup").
+    pub role: String,
+    /// Accessible name, when the container has one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+}
+
+/// A container as a platform walker sees it, before the storage rules apply.
+#[derive(Debug, Clone, Default)]
+pub struct RawAncestor {
+    pub role: String,
+    pub name: Option<String>,
+    /// The platform marks this element as holding secret text. Its name is
+    /// never kept.
+    pub is_password: bool,
+}
+
+fn truncate_chars(s: &str, max_chars: usize) -> String {
+    match s.char_indices().nth(max_chars) {
+        Some((cut, _)) => s[..cut].to_string(),
+        None => s.to_string(),
+    }
+}
+
+/// Turn a walk that went from the element upwards (nearest container first)
+/// into the stored form: outermost first, at most [`MAX_ELEMENT_ANCESTORS`]
+/// entries (the nearest ones), names trimmed, whitespace runs collapsed and
+/// cut to [`MAX_ANCESTOR_NAME_CHARS`], and no name for password elements.
+pub fn ancestors_root_first(nearest_first: Vec<RawAncestor>) -> Vec<ElementAncestor> {
+    let mut chain: Vec<ElementAncestor> = nearest_first
+        .into_iter()
+        .take(MAX_ELEMENT_ANCESTORS)
+        .map(|raw| {
+            let role = raw.role.trim();
+            let role = if role.is_empty() {
+                "Unknown".to_string()
+            } else {
+                truncate_chars(role, MAX_ANCESTOR_NAME_CHARS)
+            };
+            let name = if raw.is_password {
+                None
+            } else {
+                raw.name.and_then(|n| {
+                    let collapsed = n.split_whitespace().collect::<Vec<_>>().join(" ");
+                    if collapsed.is_empty() {
+                        None
+                    } else {
+                        Some(truncate_chars(&collapsed, MAX_ANCESTOR_NAME_CHARS))
+                    }
+                })
+            };
+            ElementAncestor { role, name }
+        })
+        .collect();
+    chain.reverse();
+    chain
+}
+
+/// Serialize a root-first chain for `ui_events.element_ancestors`: compact
+/// JSON no larger than [`MAX_ANCESTORS_JSON_BYTES`], or `None` when there is
+/// nothing to store.
+pub fn ancestors_json(root_first: &[ElementAncestor]) -> Option<String> {
+    let mut start = root_first.len().saturating_sub(MAX_ELEMENT_ANCESTORS);
+    while start < root_first.len() {
+        let json = serde_json::to_string(&root_first[start..]).ok()?;
+        if json.len() <= MAX_ANCESTORS_JSON_BYTES {
+            return Some(json);
+        }
+        start += 1;
+    }
+    None
 }
 
 /// Element bounding rectangle
@@ -820,6 +918,7 @@ impl UiEvent {
             element_description,
             element_automation_id,
             element_bounds,
+            element_ancestors,
         ) = if let Some(ref elem) = self.element {
             (
                 Some(elem.role.clone()),
@@ -836,9 +935,10 @@ impl UiEvent {
                     })
                     .to_string()
                 }),
+                ancestors_json(&elem.ancestors),
             )
         } else {
-            (None, None, None, None, None, None)
+            (None, None, None, None, None, None, None)
         };
 
         // Extract app_name and window_title from EventData for certain event types
@@ -872,6 +972,7 @@ impl UiEvent {
             element_description,
             element_automation_id,
             element_bounds,
+            element_ancestors,
             frame_id: self.frame_id,
         }
     }
@@ -923,5 +1024,149 @@ mod tests {
         assert!(json.contains("\"event_type\":\"text\""));
         assert!(json.contains("\"app_name\":\"Cursor\""));
         assert!(json.contains("main.rs"));
+    }
+
+    fn raw(role: &str, name: Option<&str>) -> RawAncestor {
+        RawAncestor {
+            role: role.to_string(),
+            name: name.map(str::to_string),
+            is_password: false,
+        }
+    }
+
+    fn element_with(ancestors: Vec<ElementAncestor>) -> ElementContext {
+        ElementContext {
+            role: "Button".to_string(),
+            name: Some("Send".to_string()),
+            value: None,
+            description: None,
+            automation_id: None,
+            bounds: None,
+            ancestors,
+        }
+    }
+
+    #[test]
+    fn ancestors_are_stored_outermost_first() {
+        // A walk goes upwards: nearest container first.
+        let walk = vec![
+            raw("Group", Some("Composer")),
+            raw("Pane", None),
+            raw("Window", Some("Inbox - Mail")),
+        ];
+        let chain = ancestors_root_first(walk);
+        assert_eq!(
+            chain,
+            vec![
+                ElementAncestor {
+                    role: "Window".into(),
+                    name: Some("Inbox - Mail".into())
+                },
+                ElementAncestor {
+                    role: "Pane".into(),
+                    name: None
+                },
+                ElementAncestor {
+                    role: "Group".into(),
+                    name: Some("Composer".into())
+                },
+            ]
+        );
+        assert_eq!(
+            ancestors_json(&chain).unwrap(),
+            r#"[{"role":"Window","name":"Inbox - Mail"},{"role":"Pane"},{"role":"Group","name":"Composer"}]"#
+        );
+    }
+
+    #[test]
+    fn password_ancestors_never_keep_their_name() {
+        let mut secret = raw("Edit", Some("hunter2"));
+        secret.is_password = true;
+        let chain = ancestors_root_first(vec![secret, raw("Pane", Some("Sign in"))]);
+        assert_eq!(chain[1].role, "Edit");
+        assert_eq!(chain[1].name, None);
+        let json = ancestors_json(&chain).unwrap();
+        assert!(!json.contains("hunter2"));
+    }
+
+    #[test]
+    fn names_are_normalised_and_cut() {
+        let long = "x".repeat(MAX_ANCESTOR_NAME_CHARS + 50);
+        let chain = ancestors_root_first(vec![
+            raw("Group", Some("  two\n  lines\there ")),
+            raw("Pane", Some("   ")),
+            raw("", Some(&long)),
+            raw("List", Some(&"é".repeat(MAX_ANCESTOR_NAME_CHARS + 1))),
+        ]);
+        assert_eq!(chain[3].name.as_deref(), Some("two lines here"));
+        assert_eq!(chain[2].name, None, "blank names are dropped");
+        assert_eq!(chain[1].role, "Unknown");
+        assert_eq!(
+            chain[1].name.as_deref().map(|n| n.chars().count()),
+            Some(MAX_ANCESTOR_NAME_CHARS)
+        );
+        // Cutting respects character boundaries.
+        assert_eq!(
+            chain[0].name.as_deref().map(|n| n.chars().count()),
+            Some(MAX_ANCESTOR_NAME_CHARS)
+        );
+    }
+
+    #[test]
+    fn deep_walks_keep_only_the_nearest_containers() {
+        let walk: Vec<RawAncestor> = (0..40)
+            .map(|i| raw("Group", Some(&format!("level {i}"))))
+            .collect();
+        let chain = ancestors_root_first(walk);
+        assert_eq!(chain.len(), MAX_ELEMENT_ANCESTORS);
+        // Nearest container (level 0) is last; the farthest kept is level 15.
+        assert_eq!(chain.last().unwrap().name.as_deref(), Some("level 0"));
+        assert_eq!(chain[0].name.as_deref(), Some("level 15"));
+    }
+
+    #[test]
+    fn json_stays_within_the_byte_cap() {
+        // 16 entries of 100 four-byte characters is far above the cap.
+        let walk: Vec<RawAncestor> = (0..MAX_ELEMENT_ANCESTORS)
+            .map(|i| raw("Group", Some(&format!("{i}{}", "\u{1F600}".repeat(120)))))
+            .collect();
+        let chain = ancestors_root_first(walk);
+        let json = ancestors_json(&chain).unwrap();
+        assert!(
+            json.len() <= MAX_ANCESTORS_JSON_BYTES,
+            "{} bytes",
+            json.len()
+        );
+        let kept: Vec<ElementAncestor> = serde_json::from_str(&json).unwrap();
+        assert!(!kept.is_empty());
+        // The outermost entries went first: the nearest container survives.
+        assert_eq!(kept.last(), chain.last());
+        assert_eq!(ancestors_json(&[]), None);
+    }
+
+    #[test]
+    fn element_context_without_ancestors_serializes_as_before() {
+        let json = serde_json::to_string(&element_with(Vec::new())).unwrap();
+        assert!(!json.contains("ancestors"));
+        // Older serialized contexts (no `ancestors` key) still parse.
+        let parsed: ElementContext = serde_json::from_str(r#"{"role":"Button"}"#).unwrap();
+        assert!(parsed.ancestors.is_empty());
+    }
+
+    #[cfg(feature = "db")]
+    #[test]
+    fn click_rows_carry_element_ancestors() {
+        let chain = ancestors_root_first(vec![raw("List", Some("Messages")), raw("Window", None)]);
+        let event =
+            UiEvent::click(Utc::now(), 0, 10, 20, 0, 1, 0).with_element(element_with(chain));
+        let row = event.to_db_insert(None);
+        assert_eq!(
+            row.element_ancestors.as_deref(),
+            Some(r#"[{"role":"Window"},{"role":"List","name":"Messages"}]"#)
+        );
+        let bare = UiEvent::click(Utc::now(), 0, 10, 20, 0, 1, 0)
+            .with_element(element_with(Vec::new()))
+            .to_db_insert(None);
+        assert_eq!(bare.element_ancestors, None);
     }
 }

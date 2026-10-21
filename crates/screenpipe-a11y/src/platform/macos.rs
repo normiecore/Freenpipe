@@ -8,7 +8,10 @@
 
 use crate::activity_feed::{ActivityFeed, ActivityKind};
 use crate::config::UiCaptureConfig;
-use crate::events::{ElementBounds, ElementContext, EventData, Modifiers, UiEvent};
+use crate::events::{
+    ancestors_root_first, ElementAncestor, ElementBounds, ElementContext, EventData, Modifiers,
+    RawAncestor, UiEvent, MAX_ELEMENT_ANCESTORS,
+};
 use anyhow::Result;
 use arc_swap::ArcSwap;
 use chrono::Utc;
@@ -1583,6 +1586,11 @@ fn get_element_at_position(x: f64, y: f64, config: &UiCaptureConfig) -> Option<E
             elem.role_desc().ok().map(|s| s.to_string())
         });
 
+    // Containers the click landed in (outermost first). Walked before the
+    // password check so a click into a password field still records where
+    // the field sits; only container roles and names are kept.
+    let ancestors = element_ancestors(&elem, config);
+
     if config.is_password_field(Some(&role), name.as_deref()) {
         // Don't capture value for password fields
         return Some(ElementContext {
@@ -1592,6 +1600,7 @@ fn get_element_at_position(x: f64, y: f64, config: &UiCaptureConfig) -> Option<E
             description: None,
             automation_id: None,
             bounds,
+            ancestors,
         });
     }
 
@@ -1617,7 +1626,61 @@ fn get_element_at_position(x: f64, y: f64, config: &UiCaptureConfig) -> Option<E
         description: description.map(|s| truncate(&s, 200)),
         automation_id: None,
         bounds,
+        ancestors,
     })
+}
+
+/// Longest time a click spends climbing the AX parent chain. Some apps answer
+/// AX queries slowly; the walk keeps what it has when the budget runs out.
+const ANCESTOR_WALK_BUDGET: std::time::Duration = std::time::Duration::from_millis(40);
+
+/// Role of an AX element as a plain string such as "AXGroup".
+fn ax_role_string(elem: &ax::UiElement) -> Option<String> {
+    elem.role().ok().map(|r| {
+        let s = format!("{:?}", r);
+        if let Some(start) = s.find("AX") {
+            let rest = &s[start..];
+            let end = rest.find([')', '"', '}']).unwrap_or(rest.len());
+            rest[..end].to_string()
+        } else {
+            "Unknown".to_string()
+        }
+    })
+}
+
+/// Walk up from `elem` and return its containers, outermost first, stopping
+/// below the application element. Bounded by depth and time; secure text
+/// fields never contribute a name.
+fn element_ancestors(elem: &ax::UiElement, config: &UiCaptureConfig) -> Vec<ElementAncestor> {
+    let started = Instant::now();
+    let mut nearest_first = Vec::new();
+    let mut current = match elem.parent() {
+        Ok(parent) => parent,
+        Err(_) => return Vec::new(),
+    };
+    while nearest_first.len() < MAX_ELEMENT_ANCESTORS && started.elapsed() < ANCESTOR_WALK_BUDGET {
+        let role = match ax_role_string(&current) {
+            Some(role) => role,
+            None => break,
+        };
+        if role == "AXApplication" {
+            break;
+        }
+        let name = get_string_attr(&current, ax::attr::title())
+            .or_else(|| get_string_attr(&current, ax::attr::desc()));
+        let is_password =
+            role == "AXSecureTextField" || config.is_password_field(Some(&role), None);
+        nearest_first.push(RawAncestor {
+            role,
+            name,
+            is_password,
+        });
+        current = match current.parent() {
+            Ok(parent) => parent,
+            Err(_) => break,
+        };
+    }
+    ancestors_root_first(nearest_first)
 }
 
 fn get_element_bounds(elem: &ax::UiElement) -> Option<ElementBounds> {
@@ -1709,6 +1772,7 @@ fn get_focused_element_context(config: &UiCaptureConfig) -> Option<ElementContex
             description: None,
             automation_id: None,
             bounds,
+            ancestors: Vec::new(),
         });
     }
 
@@ -1738,6 +1802,7 @@ fn get_focused_element_context(config: &UiCaptureConfig) -> Option<ElementContex
         description: None,
         automation_id: None,
         bounds,
+        ancestors: Vec::new(),
     })
 }
 

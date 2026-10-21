@@ -58,6 +58,7 @@ fn click_event() -> InsertUiEvent {
         element_description: None,
         element_automation_id: None,
         element_bounds: None,
+        element_ancestors: None,
         frame_id: None,
     }
 }
