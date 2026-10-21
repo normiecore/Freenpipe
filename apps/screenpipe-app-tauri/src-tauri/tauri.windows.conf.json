@@ -24,6 +24,7 @@
             "vcredist\\*.dll": "./",
             "assets/*": "./assets/",
             "bundled\\cli": "./",
+            "bundled\\native": "./",
             "bundled\\mcp": "./mcp/",
             "bundled\\models": "./models/",
             "bundled\\vad": "./vad/",

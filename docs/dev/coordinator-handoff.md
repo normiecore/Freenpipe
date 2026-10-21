@@ -7,9 +7,9 @@ Updated 2026-10-20 evening. Git, PR heads and CI are the source of truth; this f
 - Waves 0 and 1 are merged (18 WPs). Wave 1 integration (runbook 4.7) has not been recorded yet: it needs a
   full Linux build of main and was held for disk.
 - Wave 2 core merged: W2-05, W2-08, W2-10, W2-11, W2-12, W2-13, W2-16, W2-17, W2-18, W2-19, W2-22, W2-23,
-  W2-26 (31/155 overall).
-- Open: W3-30 (PR #29, fix round running: low-disk escape hatch and the two settings switches). Building:
-  W2-27 (round-0 fixes: bindings, AppImage handoff), W2-01. W2-09 + W2-04 wait for disk.
+  W2-26, W2-27 (32/155 overall).
+- Open: W2-01 (PR #32, approved, CI), W3-30 (PR #29, approved; main with W2-27 merged in by the coordinator,
+  bindings test passes, CI). Building: W2-09 + W2-04.
 - Core set still to start (decision 6): W3-25, W4-05, W3-14, then the wave 3/4 core WPs as their
   dependencies merge.
 
@@ -39,6 +39,11 @@ Updated 2026-10-20 evening. Git, PR heads and CI are the source of truth; this f
   export/adapter/`SCREENPIPE_DIRECTML` checks (W2-19 open question 16): route them through the same policy
   (W4-15) or ship the redactor on CPU.
 - Trademark: the CLI binary is still named `screenpipe`.
+- W2-27 follow-ups (PR #31): whisper/ggml must not run AVX2 code at static init or compatibility mode never
+  engages (only SMK-W2-27-12 covers it); off Windows a refused second launch only writes to stderr; the
+  CpuCompatMode notice names Parakeet even in builds without it.
+- W3-30 follow-up (PR #29): a capture-only settings save restarts recording during a low-disk pause (W5-20,
+  parked, should restart only if recording was on before the save).
 - W2-11 follow-ups (PR #30): a resume racing a stop can answer 500 although the pause is lifted; a stale
   detached pause can re-pause a display after a resume in a narrow sequence.
 - W2-10 follow-up: with tower_http debug logging on, `?token=` frame URLs put the local API key in the logs

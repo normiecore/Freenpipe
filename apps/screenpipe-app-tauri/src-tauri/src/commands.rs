@@ -3392,17 +3392,6 @@ fn dir_size(path: &std::path::Path) -> u64 {
 #[tauri::command]
 #[specta::specta]
 pub fn set_autostart(app_handle: tauri::AppHandle, enabled: bool) -> Result<(), String> {
-    use tauri_plugin_autostart::ManagerExt as AutostartManagerExt;
-    let manager = app_handle.autolaunch();
-    if enabled {
-        manager.enable().map_err(|e| e.to_string())?;
-    } else {
-        manager.disable().map_err(|e| e.to_string())?;
-    }
-    info!(
-        "autostart {}: is_enabled={}",
-        if enabled { "enabled" } else { "disabled" },
-        manager.is_enabled().unwrap_or(false)
-    );
-    Ok(())
+    // Login entry with `--autostart`; debug builds leave it alone.
+    crate::autostart::set_enabled(&app_handle, enabled)
 }

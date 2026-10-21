@@ -26,10 +26,56 @@ pub fn get_base_dir(
 
 /// Resolve the recording data directory from the store's `data_dir` setting.
 ///
+/// `SCREENPIPE_DATA_DIR`, when set, wins over the setting for this process
+/// (shell-021): end-to-end runs and development builds point it at a
+/// throwaway directory, and a copied settings store must not send their
+/// recordings to the real custom folder it names.
+///
 /// Returns `(resolved_path, fell_back)` where `fell_back` is true when the
 /// custom path was unusable and we silently fell back to default (~/.screenpipe or SCREENPIPE_DATA_DIR).
 pub fn resolve_data_dir(data_dir_setting: &str) -> (PathBuf, bool) {
-    let default_path = default_screenpipe_data_dir();
+    let env_override = std::env::var(screenpipe_core::env::SCREENPIPE_DATA_DIR)
+        .ok()
+        .filter(|v| !v.trim().is_empty())
+        .map(PathBuf::from);
+    resolve_data_dir_with(
+        data_dir_setting,
+        env_override,
+        default_screenpipe_data_dir(),
+    )
+}
+
+/// [`resolve_data_dir`] with its inputs spelled out (testable).
+pub fn resolve_data_dir_with(
+    data_dir_setting: &str,
+    env_override: Option<PathBuf>,
+    default_path: PathBuf,
+) -> (PathBuf, bool) {
+    if let Some(dir) = env_override {
+        match fs::create_dir_all(dir.join("data")) {
+            Ok(()) => {
+                // Resolved on many paths; say it once per run.
+                static TOLD: std::sync::atomic::AtomicBool =
+                    std::sync::atomic::AtomicBool::new(false);
+                if !(data_dir_setting.is_empty() || data_dir_setting == "default")
+                    && !TOLD.swap(true, std::sync::atomic::Ordering::Relaxed)
+                {
+                    warn!(
+                        "SCREENPIPE_DATA_DIR={} overrides the dataDir setting ({}) for this run",
+                        dir.display(),
+                        data_dir_setting
+                    );
+                }
+                ensure_spotlight_excluded(&dir);
+                return (dir, false);
+            }
+            Err(e) => warn!(
+                "SCREENPIPE_DATA_DIR={} is not usable ({}); using the dataDir setting",
+                dir.display(),
+                e
+            ),
+        }
+    }
 
     // "default" or empty → use ~/.screenpipe
     if data_dir_setting.is_empty() || data_dir_setting == "default" {
@@ -98,37 +144,76 @@ mod tests {
     use super::*;
     use std::fs;
 
+    fn fallback_root() -> (tempfile::TempDir, PathBuf) {
+        let tmp = tempfile::tempdir().unwrap();
+        let default = tmp.path().join(".screenpipe");
+        (tmp, default)
+    }
+
     #[test]
     fn test_resolve_default() {
-        let (path, fell_back) = resolve_data_dir("default");
+        let (_tmp, default) = fallback_root();
+        let (path, fell_back) = resolve_data_dir_with("default", None, default.clone());
         assert!(!fell_back);
+        assert_eq!(path, default);
         assert!(path.ends_with(".screenpipe"));
     }
 
     #[test]
     fn test_resolve_empty() {
-        let (path, fell_back) = resolve_data_dir("");
+        let (_tmp, default) = fallback_root();
+        let (path, fell_back) = resolve_data_dir_with("", None, default.clone());
         assert!(!fell_back);
-        assert!(path.ends_with(".screenpipe"));
+        assert_eq!(path, default);
     }
 
     #[test]
     fn test_resolve_relative_path_falls_back() {
-        let (path, fell_back) = resolve_data_dir("relative/path");
+        let (_tmp, default) = fallback_root();
+        let (path, fell_back) = resolve_data_dir_with("relative/path", None, default.clone());
         assert!(fell_back);
-        assert!(path.ends_with(".screenpipe"));
+        assert_eq!(path, default);
     }
 
     #[test]
     fn test_resolve_valid_absolute_path() {
-        let tmp = std::env::temp_dir().join("screenpipe_test_resolve");
-        let _ = fs::remove_dir_all(&tmp);
+        let (tmp, default) = fallback_root();
+        let custom = tmp.path().join("screenpipe_test_resolve");
 
-        let (path, fell_back) = resolve_data_dir(tmp.to_str().unwrap());
+        let (path, fell_back) = resolve_data_dir_with(custom.to_str().unwrap(), None, default);
         assert!(!fell_back);
-        assert_eq!(path, tmp);
-        assert!(tmp.join("data").exists());
+        assert_eq!(path, custom);
+        assert!(custom.join("data").exists());
+    }
 
-        let _ = fs::remove_dir_all(&tmp);
+    #[test]
+    fn env_data_dir_wins_over_the_setting() {
+        let (tmp, default) = fallback_root();
+        let custom = tmp.path().join("custom");
+        let env_dir = tmp.path().join("from-env");
+        let (path, fell_back) = resolve_data_dir_with(
+            custom.to_str().unwrap(),
+            Some(env_dir.clone()),
+            default.clone(),
+        );
+        assert!(!fell_back);
+        assert_eq!(path, env_dir);
+        assert!(env_dir.join("data").exists());
+        assert!(!custom.exists(), "the custom folder is not touched");
+
+        let (path, _) = resolve_data_dir_with("default", Some(env_dir.clone()), default);
+        assert_eq!(path, env_dir);
+    }
+
+    #[test]
+    fn unusable_env_data_dir_falls_back_to_the_setting() {
+        let (tmp, default) = fallback_root();
+        let blocker = tmp.path().join("a-file");
+        fs::write(&blocker, b"not a directory").unwrap();
+        let custom = tmp.path().join("custom");
+        let (path, fell_back) =
+            resolve_data_dir_with(custom.to_str().unwrap(), Some(blocker), default);
+        assert!(!fell_back);
+        assert_eq!(path, custom);
     }
 }
