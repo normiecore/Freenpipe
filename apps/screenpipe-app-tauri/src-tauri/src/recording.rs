@@ -1122,12 +1122,15 @@ pub(crate) fn stop_engine_runtime(runtime: tokio::runtime::Runtime) {
     info!("engine generation runtime stopped");
 }
 
-/// Engine generations in flight: started but not yet in state (from the
-/// moment `ServerCore::start` returns until the core is stored or stopped
-/// again), or being shut down by [`shutdown_server_core`]. The exit teardown
-/// waits for this to reach zero, so the app never leaves while another task
-/// (a watchdog respawn, a start that was under way when the quit began) still
-/// has an engine's capture or audio running.
+/// Engine generations in flight: being started and not yet in state (from
+/// before `ServerCore::start` until the core is stored or stopped again), or
+/// being shut down by [`shutdown_server_core`]. The exit teardown waits for
+/// this to reach zero, so the app never leaves (and never runs native
+/// destructors, nor lets a relaunched process open the database) while
+/// another task (a watchdog respawn, a start that was under way when the
+/// quit began) still has an engine coming up or its capture or audio
+/// running. A start that outlasts the teardown's engine step turns the quit
+/// into a forced exit, which skips those destructors.
 static ENGINE_TRANSITIONS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
 
 /// One engine generation in flight (see [`ENGINE_TRANSITIONS`]) for as long
@@ -1149,6 +1152,11 @@ impl Drop for EngineTransition {
 
 fn engine_transitions() -> usize {
     ENGINE_TRANSITIONS.load(Ordering::SeqCst)
+}
+
+/// Engine generations being started or stopped right now.
+pub(crate) fn engine_transitions_pending() -> usize {
+    engine_transitions()
 }
 
 /// Wait until no engine generation is being brought up or taken down. True
@@ -1310,6 +1318,9 @@ pub(crate) async fn start_generation(
     server_arc: &Arc<Mutex<Option<ServerCore>>>,
     capture_arc: &Arc<Mutex<Option<CaptureSession>>>,
 ) -> GenerationStart {
+    // Counted before the quit check: a teardown that begins now either sees
+    // this start and waits for it, or happened first and is seen here.
+    let _in_flight = EngineTransition::begin();
     if crate::relaunch::is_shutting_down() {
         info!("the app is quitting; not starting the engine");
         return GenerationStart::Retired;
@@ -1321,7 +1332,6 @@ pub(crate) async fn start_generation(
             return GenerationStart::Failed(e);
         }
     };
-    let _in_flight = EngineTransition::begin();
 
     let mut capture_error = None;
     let capture = if capture_wanted() {
