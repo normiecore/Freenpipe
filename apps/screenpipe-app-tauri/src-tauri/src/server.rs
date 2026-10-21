@@ -132,8 +132,9 @@ pub fn install_executable(
 ) -> Option<std::path::PathBuf> {
     let resolve = |p: &std::path::Path| canonicalize(p).unwrap_or_else(|| p.to_path_buf());
     let exe = current_exe.map(|exe| resolve(&exe));
-    let non_empty = |v: Option<&std::ffi::OsStr>| v.filter(|v| !v.is_empty());
-    if let (Some(exe), Some(image), Some(mount)) = (&exe, non_empty(appimage), non_empty(appdir)) {
+    let image = appimage.filter(|v| !v.is_empty());
+    let mount = appdir.filter(|v| !v.is_empty());
+    if let (Some(exe), Some(image), Some(mount)) = (&exe, image, mount) {
         if exe.starts_with(resolve(std::path::Path::new(mount))) {
             return Some(resolve(std::path::Path::new(image)));
         }
@@ -1302,9 +1303,9 @@ mod tests {
         }
         // Resolution applies to the executable as before.
         assert_eq!(
-            install_executable(Some(exe.clone()), None, None, |_| Some(
-                PathBuf::from("/real/freenpipe")
-            )),
+            install_executable(Some(exe.clone()), None, None, |_| Some(PathBuf::from(
+                "/real/freenpipe"
+            ))),
             Some(PathBuf::from("/real/freenpipe"))
         );
         assert_eq!(install_executable(None, None, None, resolve_as_is), None);
