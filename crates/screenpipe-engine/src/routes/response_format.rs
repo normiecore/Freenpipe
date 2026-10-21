@@ -248,26 +248,31 @@ impl ResponseShape {
         response
     }
 
-    /// JSON output: project every row of `data` (or of a bare array).
+    /// JSON output: project every row of `data` (or of a bare array). The
+    /// rows are the same ones [`Node::into_rows`] gives tabular output, so a
+    /// body without a `data` array is projected as one row.
     fn project_envelope(&self, envelope: Node) -> Node {
         let Some(fields) = self.fields.as_ref() else {
             return envelope;
         };
         match envelope {
             Node::Array(rows) => Node::Array(project_rows(&rows, fields)),
-            Node::Object(entries) => Node::Object(
-                entries
-                    .into_iter()
-                    .map(|(key, value)| match value {
-                        Node::Array(rows) if key == "data" => {
-                            let rows = project_rows(&rows, fields);
-                            (key, Node::Array(rows))
-                        }
-                        value => (key, value),
-                    })
-                    .collect(),
-            ),
-            scalar => project_row(&scalar, fields),
+            Node::Object(entries) if has_data_rows(&entries) => {
+                let mut projected = false;
+                Node::Object(
+                    entries
+                        .into_iter()
+                        .map(|(key, value)| match value {
+                            Node::Array(rows) if key == "data" && !projected => {
+                                projected = true;
+                                (key, Node::Array(project_rows(&rows, fields)))
+                            }
+                            value => (key, value),
+                        })
+                        .collect(),
+                )
+            }
+            single => project_row(&single, fields),
         }
     }
 }
@@ -459,6 +464,13 @@ impl<'de> Visitor<'de> for NodeVisitor {
         }
         Ok(Node::Object(entries))
     }
+}
+
+/// Whether an object envelope carries its rows in a `data` array.
+fn has_data_rows(entries: &[(String, Node)]) -> bool {
+    entries
+        .iter()
+        .any(|(key, value)| key == "data" && matches!(value, Node::Array(_)))
 }
 
 fn project_rows(rows: &[Node], fields: &FieldSelection) -> Vec<Node> {
@@ -942,6 +954,15 @@ mod tests {
         assert_eq!(rows, vec![node(json!({"id": 1}))]);
         let text = render_table(&[node(json!(5))], None, Dialect::Csv);
         assert_eq!(text, "value\r\n5\r\n");
+        // JSON projection uses the same rows.
+        let s = shape(None, Some("id"));
+        let single = s.project_envelope(doc(r#"{"id":1,"x":2}"#));
+        assert_eq!(serde_json::to_string(&single).unwrap(), r#"{"id":1}"#);
+        let enveloped = s.project_envelope(doc(r#"{"data":[{"id":1,"x":2}],"x":3}"#));
+        assert_eq!(
+            serde_json::to_string(&enveloped).unwrap(),
+            r#"{"data":[{"id":1}],"x":3}"#
+        );
     }
 
     #[test]
