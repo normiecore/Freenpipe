@@ -18,7 +18,7 @@ mod timeline_performance_tests {
             .unwrap();
 
         screenpipe_db::schema_migrations::migrator()
-            .run(&db.pool)
+            .run(db.write_pool())
             .await
             .expect("Failed to run migrations");
 
@@ -407,7 +407,7 @@ mod timeline_performance_tests {
             .unwrap();
 
         screenpipe_db::schema_migrations::migrator()
-            .run(&db.pool)
+            .run(db.write_pool())
             .await
             .expect("Failed to run migrations");
 
@@ -434,7 +434,7 @@ mod timeline_performance_tests {
 
         // Force flush to disk
         sqlx::query("PRAGMA wal_checkpoint(TRUNCATE)")
-            .execute(&db.pool)
+            .execute(db.write_pool())
             .await
             .ok();
 

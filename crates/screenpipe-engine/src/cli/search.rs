@@ -44,7 +44,7 @@ pub async fn handle_search_command(args: &SearchArgs) -> anyhow::Result<()> {
     let start = parse_time_opt(args.start.as_deref(), "--start")?;
     let end = parse_time_opt(args.end.as_deref(), "--end")?;
 
-    let db = DatabaseManager::new(&db_path.to_string_lossy(), Default::default())
+    let db = DatabaseManager::attach(&db_path.to_string_lossy(), Default::default())
         .await
         .with_context(|| format!("failed to open {}", db_path.display()))?;
 

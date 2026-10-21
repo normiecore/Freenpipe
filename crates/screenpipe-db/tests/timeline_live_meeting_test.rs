@@ -23,7 +23,7 @@ mod timeline_live_meeting_tests {
             .await
             .unwrap();
         screenpipe_db::schema_migrations::migrator()
-            .run(&db.pool)
+            .run(db.write_pool())
             .await
             .expect("Failed to run migrations");
         db

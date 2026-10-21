@@ -1414,6 +1414,15 @@ mod db_tests {
         (db, dir)
     }
 
+    /// Seed rows through the write pool: `execute_raw_sql` reads on the
+    /// `query_only` read pool.
+    async fn seed(db: &DatabaseManager, sql: &str) -> Result<(), sqlx::Error> {
+        sqlx::query(sqlx::AssertSqlSafe(sql.to_string()))
+            .execute(db.write_pool())
+            .await
+            .map(|_| ())
+    }
+
     fn sql_val(v: Option<&str>) -> String {
         match v {
             Some(s) => format!("'{}'", s.replace('\'', "''")),
@@ -1430,7 +1439,7 @@ mod db_tests {
             sql_val(app),
             sql_val(window)
         );
-        db.execute_raw_sql(&q).await.expect("insert frame");
+        seed(&db, &q).await.expect("insert frame");
     }
 
     /// Query over a range with an optional app filter. `start_time`/`end_time`
@@ -1639,10 +1648,13 @@ mod db_tests {
         let (db, _d) = fresh_db().await;
         let p = "/Users/me/proj/main.rs";
         for ts in ["10:00:00", "10:00:20"] {
-            db.execute_raw_sql(&format!(
-                "INSERT INTO frames (timestamp, app_name, window_name, document_path) \
+            seed(
+                &db,
+                &format!(
+                    "INSERT INTO frames (timestamp, app_name, window_name, document_path) \
                  VALUES ('{DAY} {ts}', 'Code', 'main.rs', '{p}')"
-            ))
+                ),
+            )
             .await
             .unwrap();
         }
@@ -1661,21 +1673,27 @@ mod db_tests {
         let (db, _d) = fresh_db().await;
         // audio_transcriptions.audio_chunk_id is a NOT NULL FK (sqlx enables
         // foreign_keys), so the parent chunk must exist first.
-        db.execute_raw_sql("INSERT INTO audio_chunks (id, file_path) VALUES (1, 'test.wav')")
-            .await
-            .unwrap();
-        db.execute_raw_sql("INSERT INTO speakers (id, name) VALUES (1, 'Alice')")
+        seed(
+            &db,
+            "INSERT INTO audio_chunks (id, file_path) VALUES (1, 'test.wav')",
+        )
+        .await
+        .unwrap();
+        seed(&db, "INSERT INTO speakers (id, name) VALUES (1, 'Alice')")
             .await
             .unwrap();
         for (m, text) in [
             (0, "hello team this is the weekly sync"),
             (1, "lets review the roadmap now"),
         ] {
-            db.execute_raw_sql(&format!(
-                "INSERT INTO audio_transcriptions \
+            seed(
+                &db,
+                &format!(
+                    "INSERT INTO audio_transcriptions \
                  (audio_chunk_id, offset_index, timestamp, transcription, device, speaker_id) \
                  VALUES (1, {m}, '{DAY} 10:0{m}:00', '{text}', 'mic', 1)"
-            ))
+                ),
+            )
             .await
             .unwrap();
         }
@@ -1702,10 +1720,13 @@ mod db_tests {
         .await;
         // The frame just inserted is the only row, so its id is 1.
         let txt = "Quarterly planning notes for the leadership offsite";
-        db.execute_raw_sql(&format!(
-            "INSERT INTO elements (frame_id, source, role, text, depth, sort_order) \
+        seed(
+            &db,
+            &format!(
+                "INSERT INTO elements (frame_id, source, role, text, depth, sort_order) \
              VALUES (1, 'accessibility', 'AXTextField', '{txt}', 0, 0)"
-        ))
+            ),
+        )
         .await
         .unwrap();
         let (s, e) = full_range();
@@ -1757,10 +1778,13 @@ mod db_tests {
                 ));
                 i += 1;
             }
-            db.execute_raw_sql(&format!(
-                "INSERT INTO frames (timestamp, app_name, window_name) VALUES {}",
-                vals.join(",")
-            ))
+            seed(
+                &db,
+                &format!(
+                    "INSERT INTO frames (timestamp, app_name, window_name) VALUES {}",
+                    vals.join(",")
+                ),
+            )
             .await
             .unwrap();
         }
@@ -1856,10 +1880,13 @@ mod db_tests {
                 ));
                 i += 1;
             }
-            db.execute_raw_sql(&format!(
-                "INSERT INTO frames (timestamp, app_name, window_name) VALUES {}",
-                vals.join(",")
-            ))
+            seed(
+                &db,
+                &format!(
+                    "INSERT INTO frames (timestamp, app_name, window_name) VALUES {}",
+                    vals.join(",")
+                ),
+            )
             .await
             .unwrap();
         }

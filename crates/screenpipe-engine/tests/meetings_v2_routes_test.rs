@@ -239,7 +239,7 @@ async fn summary_routes_save_validate_and_report_status() {
     )
     .bind(chrono::Utc::now().to_rfc3339())
     .bind(id.to_string())
-    .execute(&db.pool)
+    .execute(db.write_pool())
     .await
     .unwrap();
     let (_, body) = call(&app, "GET", &format!("/meetings/{id}/summary-status"), None).await;

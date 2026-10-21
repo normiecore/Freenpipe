@@ -12,7 +12,7 @@ mod tests {
             .await
             .unwrap();
         screenpipe_db::schema_migrations::migrator()
-            .run(&db.pool)
+            .run(db.write_pool())
             .await
             .unwrap();
         db

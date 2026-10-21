@@ -23,6 +23,8 @@ services used are left out.
 | `SCREENPIPE_WEB_URL` | Base URL of a user-configured web service. Unset by default. |
 | `SCREENPIPE_TRUSTED_HOSTS` | Extra hosts allowed to reach the API. |
 | `SCREENPIPE_IGNORE_DB_LOCK` | Skips the database lock check at startup (diagnostics only). |
+| `SCREENPIPE_WAL_MAINTENANCE_INTERVAL_SECS` | Seconds between the database's background WAL checkpoints (tests and diagnostics; default 30). |
+| `SCREENPIPE_PLANNER_MAINTENANCE_INTERVAL_SECS` | Seconds before the first and between later query-planner statistics runs, which write `sqlite-planner-maintenance.json` (tests and diagnostics; default 10 minutes, then every 6 hours). |
 | `SCREENPIPE_ENCRYPT_STORE` | Encrypts the settings store at rest. |
 | `SCREENPIPE_STARTUP_AUTHENTICATION_STATUS` | How the app's startup account check resolved: `authenticated`, `logged_out` or `not_required` (Freenpipe always sets `not_required`). |
 

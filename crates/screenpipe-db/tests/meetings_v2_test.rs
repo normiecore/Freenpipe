@@ -19,7 +19,7 @@ async fn setup_test_db() -> DatabaseManager {
         .await
         .unwrap();
     screenpipe_db::schema_migrations::migrator()
-        .run(&db.pool)
+        .run(db.write_pool())
         .await
         .expect("migrations");
     db
@@ -105,12 +105,12 @@ async fn unique_index_violation_is_recognised_as_a_binding_conflict() {
     let second = ended_meeting(&db, "Teams", None).await;
     sqlx::query("UPDATE meetings SET calendar_event_id = 'evt' WHERE id = ?1")
         .bind(first)
-        .execute(&db.pool)
+        .execute(db.write_pool())
         .await
         .unwrap();
     let err = sqlx::query("UPDATE meetings SET calendar_event_id = 'evt' WHERE id = ?1")
         .bind(second)
-        .execute(&db.pool)
+        .execute(db.write_pool())
         .await
         .unwrap_err();
     assert!(is_calendar_event_conflict(&err), "{err}");
@@ -119,7 +119,7 @@ async fn unique_index_violation_is_recognised_as_a_binding_conflict() {
     for id in [first, second] {
         sqlx::query("UPDATE meetings SET calendar_event_id = '' WHERE id = ?1")
             .bind(id)
-            .execute(&db.pool)
+            .execute(db.write_pool())
             .await
             .unwrap();
     }
@@ -311,7 +311,7 @@ async fn insert_execution(
     .bind(error_type)
     .bind(error_type.map(|_| "raw error"))
     .bind(trigger_key)
-    .execute(&db.pool)
+    .execute(db.write_pool())
     .await
     .unwrap()
     .last_insert_rowid()
@@ -325,7 +325,7 @@ async fn insert_claim(db: &DatabaseManager, pipe: &str, key: &str, claimed_at: &
     .bind(pipe)
     .bind(key)
     .bind(claimed_at)
-    .execute(&db.pool)
+    .execute(db.write_pool())
     .await
     .unwrap();
 }
@@ -361,7 +361,7 @@ async fn summary_snapshot_follows_the_newest_matching_execution() {
     .bind(pipe)
     .bind(ts(-30))
     .bind(id.to_string())
-    .execute(&db.pool)
+    .execute(db.write_pool())
     .await
     .unwrap();
     assert_eq!(
@@ -419,7 +419,7 @@ async fn summary_snapshot_follows_the_newest_matching_execution() {
 
     sqlx::query("UPDATE pipe_executions SET status = 'completed' WHERE id = ?1")
         .bind(recovery)
-        .execute(&db.pool)
+        .execute(db.write_pool())
         .await
         .unwrap();
     assert_eq!(

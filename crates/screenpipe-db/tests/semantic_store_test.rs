@@ -476,7 +476,7 @@ async fn buffer_flush_requeues_the_batch_when_the_database_fails() {
         "CREATE TRIGGER fp_test_block_attach BEFORE UPDATE OF semantic_run_id ON frames \
          BEGIN SELECT RAISE(ABORT, 'attach blocked'); END",
     )
-    .execute(&db.pool)
+    .execute(db.write_pool())
     .await
     .unwrap();
     let err = buffer.flush(&db).await.unwrap_err();
@@ -490,7 +490,7 @@ async fn buffer_flush_requeues_the_batch_when_the_database_fails() {
     buffer.push(f2, other.run_id).unwrap();
 
     sqlx::query("DROP TRIGGER fp_test_block_attach")
-        .execute(&db.pool)
+        .execute(db.write_pool())
         .await
         .unwrap();
     assert_eq!(buffer.flush(&db).await.unwrap().frames_updated, 2);
@@ -700,7 +700,7 @@ async fn gc_removes_unreferenced_runs_and_items_but_keeps_actors() {
     // Frame 1 ages out: run 1 and its private item go, the shared item stays.
     sqlx::query("DELETE FROM frames WHERE id = ?1")
         .bind(f1)
-        .execute(&db.pool)
+        .execute(db.write_pool())
         .await
         .unwrap();
     assert_eq!(fts_hits(&db, "pineapple").await, 1);
@@ -734,7 +734,7 @@ async fn gc_removes_unreferenced_runs_and_items_but_keeps_actors() {
     // Frame 2 goes too: the projection is empty, the actor identities remain.
     sqlx::query("DELETE FROM frames WHERE id = ?1")
         .bind(f2)
-        .execute(&db.pool)
+        .execute(db.write_pool())
         .await
         .unwrap();
     let stats = db.gc_semantic_projection(Duration::ZERO).await.unwrap();
@@ -831,12 +831,12 @@ async fn gc_of_a_reused_run_reports_the_frames_waiting_on_it() {
     // The run is older than the grace, and retention removes its only frame.
     sqlx::query("UPDATE semantic_runs SET created_at = '2026-01-01T00:00:00.000Z' WHERE id = ?1")
         .bind(first.run_id)
-        .execute(&db.pool)
+        .execute(db.write_pool())
         .await
         .unwrap();
     sqlx::query("DELETE FROM frames WHERE id = ?1")
         .bind(old_frame)
-        .execute(&db.pool)
+        .execute(db.write_pool())
         .await
         .unwrap();
 
@@ -888,7 +888,7 @@ async fn delete_frames(db: &DatabaseManager, ids: &[i64]) {
     for id in ids {
         sqlx::query("DELETE FROM frames WHERE id = ?1")
             .bind(id)
-            .execute(&db.pool)
+            .execute(db.write_pool())
             .await
             .unwrap();
     }
@@ -1504,7 +1504,7 @@ async fn alias_lookup_is_unique_per_source_and_normalized_label() {
          VALUES (?1, 'chat.test', 'ADA', 'ada lovelace', 'ADA')",
     )
     .bind(alias.actor_id)
-    .execute(&db.pool)
+    .execute(db.write_pool())
     .await
     .unwrap_err();
     assert!(dup
@@ -1945,7 +1945,7 @@ async fn reassign_item_is_preserved_over_heuristics_and_alias_moves() {
     // An actor still assigned to items cannot be deleted out from under them.
     assert!(sqlx::query("DELETE FROM semantic_actors WHERE id = ?1")
         .bind(sam_two.id)
-        .execute(&db.pool)
+        .execute(db.write_pool())
         .await
         .is_err());
 }

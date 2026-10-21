@@ -12,7 +12,7 @@ mod tests {
             .await
             .unwrap();
         screenpipe_db::schema_migrations::migrator()
-            .run(&db.pool)
+            .run(db.write_pool())
             .await
             .unwrap();
         db
@@ -50,7 +50,7 @@ mod tests {
         sqlx::query("UPDATE frames SET timestamp = ? WHERE id = ?")
             .bind(ts)
             .bind(frame_id)
-            .execute(&db.pool)
+            .execute(db.write_pool())
             .await
             .unwrap();
 

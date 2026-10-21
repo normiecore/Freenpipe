@@ -13,7 +13,7 @@ async fn setup_db() -> DatabaseManager {
         .await
         .expect("open in-memory db");
     screenpipe_db::schema_migrations::migrator()
-        .run(&db.pool)
+        .run(db.write_pool())
         .await
         .expect("run migrations");
     db
@@ -81,7 +81,7 @@ async fn add_row(
     .bind(speaker_id)
     .bind(span.0)
     .bind(span.1)
-    .execute(&db.pool)
+    .execute(db.write_pool())
     .await
     .unwrap()
     .last_insert_rowid()
@@ -105,7 +105,7 @@ async fn add_meeting_segment(
     .bind(text)
     .bind(captured_at.to_rfc3339())
     .bind(speaker_id)
-    .execute(&db.pool)
+    .execute(db.write_pool())
     .await
     .unwrap()
     .last_insert_rowid()
@@ -116,7 +116,7 @@ async fn add_diarization_refs(db: &DatabaseManager, chunk_id: i64, speaker_id: i
         "INSERT INTO diarization_runs (audio_chunk_id, mode, provider) VALUES (?1, 'background', 'test')",
     )
     .bind(chunk_id)
-    .execute(&db.pool)
+    .execute(db.write_pool())
     .await
     .unwrap()
     .last_insert_rowid();
@@ -128,7 +128,7 @@ async fn add_diarization_refs(db: &DatabaseManager, chunk_id: i64, speaker_id: i
     .bind(run_id)
     .bind(chunk_id)
     .bind(speaker_id)
-    .execute(&db.pool)
+    .execute(db.write_pool())
     .await
     .unwrap();
     sqlx::query(
@@ -136,7 +136,7 @@ async fn add_diarization_refs(db: &DatabaseManager, chunk_id: i64, speaker_id: i
     )
     .bind(speaker_id)
     .bind(chunk_id)
-    .execute(&db.pool)
+    .execute(db.write_pool())
     .await
     .unwrap();
 }
@@ -1039,15 +1039,15 @@ fn like_prefix_pattern_escapes_wildcards() {
 async fn self_heal_recreates_missing_speaker_tables() {
     let db = setup_db().await;
     sqlx::query("DROP TABLE speaker_embeddings")
-        .execute(&db.pool)
+        .execute(db.write_pool())
         .await
         .unwrap();
     sqlx::query("DROP TABLE speakers")
-        .execute(&db.pool)
+        .execute(db.write_pool())
         .await
         .unwrap();
 
-    DatabaseManager::ensure_speaker_tables(&db.pool)
+    DatabaseManager::ensure_speaker_tables(db.write_pool())
         .await
         .unwrap();
 
@@ -1084,7 +1084,7 @@ async fn self_heal_recreates_missing_speaker_tables() {
     // The healed tables work end to end, and a second pass is a no-op.
     let id = new_speaker(&db, 0, Some("Healed")).await;
     assert_eq!(refs(&db, "speaker_embeddings", id).await, 1);
-    DatabaseManager::ensure_speaker_tables(&db.pool)
+    DatabaseManager::ensure_speaker_tables(db.write_pool())
         .await
         .unwrap();
     assert_eq!(speaker_name(&db, id).await.as_deref(), Some("Healed"));
@@ -1248,7 +1248,7 @@ async fn self_naming_ignores_rows_inside_meetings() {
     )
     .bind(start)
     .bind(end)
-    .execute(&db.pool)
+    .execute(db.write_pool())
     .await
     .unwrap();
     assert_eq!(dominant(&db).await, None);

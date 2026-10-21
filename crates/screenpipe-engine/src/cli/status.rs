@@ -23,7 +23,7 @@ pub async fn handle_status_command(
 
     // Get DB stats
     let (frame_count, audio_count, last_timestamp) = if db_path.exists() {
-        match screenpipe_db::DatabaseManager::new(&db_path.to_string_lossy(), Default::default())
+        match screenpipe_db::DatabaseManager::attach(&db_path.to_string_lossy(), Default::default())
             .await
         {
             Ok(db) => {

@@ -13,7 +13,7 @@ async fn setup_db() -> DatabaseManager {
         .await
         .unwrap();
     screenpipe_db::schema_migrations::migrator()
-        .run(&db.pool)
+        .run(db.write_pool())
         .await
         .unwrap();
     db
@@ -90,7 +90,7 @@ async fn exact_lookup_reports_each_media_location() {
         "UPDATE video_chunks SET file_path = '', evicted_at = CURRENT_TIMESTAMP WHERE id = ?1",
     )
     .bind(chunk)
-    .execute(&db.pool)
+    .execute(db.write_pool())
     .await
     .unwrap();
     let row = db.get_frame_media(snap).await.unwrap().unwrap();
@@ -324,7 +324,7 @@ async fn preview_candidates_filter_by_domain_and_media() {
     .await;
     sqlx::query("UPDATE frames SET snapshot_path = NULL WHERE id = ?1")
         .bind(no_media)
-        .execute(&db.pool)
+        .execute(db.write_pool())
         .await
         .unwrap();
 
