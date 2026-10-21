@@ -65,12 +65,12 @@ pub enum OwnershipError {
     /// This process already holds a live owner for the database.
     HeldInThisProcess { database: PathBuf },
     /// Another running process owns the database.
-    HeldByOtherProcess {
-        database: PathBuf,
-        pid: Option<u32>,
-    },
+    HeldByOtherProcess { database: PathBuf, pid: Option<u32> },
     /// The sidecar could not be opened or written.
-    OwnerFile { path: PathBuf, error: std::io::Error },
+    OwnerFile {
+        path: PathBuf,
+        error: std::io::Error,
+    },
 }
 
 impl std::fmt::Display for OwnershipError {
@@ -83,7 +83,11 @@ impl std::fmt::Display for OwnershipError {
                 database.display()
             ),
             OwnershipError::HeldByOtherProcess { database, pid } => {
-                write!(f, "database {} is owned by another running process", database.display())?;
+                write!(
+                    f,
+                    "database {} is owned by another running process",
+                    database.display()
+                )?;
                 if let Some(pid) = pid {
                     write!(f, " (pid {pid})")?;
                 }
@@ -226,18 +230,53 @@ pub async fn acquire(database: &Path, wait: Duration) -> Result<OwnershipGuard, 
     }
 }
 
-/// Open and lock the sidecar. `Ok(None)` when locking is not supported.
+/// Whether an open failed because another process holds the file open
+/// without sharing it (Windows `ERROR_SHARING_VIOLATION`/`ERROR_LOCK_VIOLATION`).
+fn is_sharing_violation(error: &std::io::Error) -> bool {
+    cfg!(windows) && matches!(error.raw_os_error(), Some(32) | Some(33))
+}
+
+/// Attempts at opening a sidecar another handle holds without sharing
+/// (a scanner or backup tool usually lets go within a second).
+const SHARED_OPEN_ATTEMPTS: u32 = 5;
+
+/// Open and lock the sidecar. `Ok(None)` when the sidecar cannot be used
+/// for locking (no lock support, or it cannot be opened for writing).
 fn lock_owner_file(sidecar: &Path, database: &Path) -> Result<Option<File>, OwnershipError> {
-    let mut file = OpenOptions::new()
-        .read(true)
-        .write(true)
-        .create(true)
-        .truncate(false)
-        .open(sidecar)
-        .map_err(|error| OwnershipError::OwnerFile {
-            path: sidecar.to_path_buf(),
-            error,
-        })?;
+    let mut attempt = 0;
+    let mut file = loop {
+        attempt += 1;
+        match OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(false)
+            .open(sidecar)
+        {
+            Ok(file) => break file,
+            Err(e) if is_sharing_violation(&e) && attempt < SHARED_OPEN_ATTEMPTS => {
+                std::thread::sleep(Duration::from_millis(200));
+            }
+            Err(e) if is_sharing_violation(&e) => {
+                // Held open, unshared, by a process that is still running.
+                return Err(OwnershipError::HeldByOtherProcess {
+                    database: database.to_path_buf(),
+                    pid: None,
+                });
+            }
+            Err(e) => {
+                // A sidecar we cannot write (read-only attribute, odd
+                // permissions) must not lock the user out of the database.
+                warn!(
+                    owner_file = %sidecar.display(),
+                    "cannot open the database ownership file ({}); \
+                     only this process is guarded against opening the database twice",
+                    e
+                );
+                return Ok(None);
+            }
+        }
+    };
     match file.try_lock() {
         Ok(()) => {}
         Err(std::fs::TryLockError::WouldBlock) => {
@@ -316,7 +355,20 @@ pub fn ensure_not_owned_elsewhere(database: &Path) -> Result<(), sqlx::Error> {
         Ok(file) => file,
         // No sidecar: nobody has ever owned this database here.
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(()),
-        Err(error) => return Err(OwnershipError::OwnerFile { path: sidecar, error }.into_sqlx()),
+        Err(e) if is_sharing_violation(&e) => {
+            return Err(OwnershipError::HeldByOtherProcess {
+                database: key,
+                pid: None,
+            }
+            .into_sqlx())
+        }
+        Err(error) => {
+            return Err(OwnershipError::OwnerFile {
+                path: sidecar,
+                error,
+            }
+            .into_sqlx())
+        }
     };
     match file.try_lock() {
         Ok(()) => {
@@ -354,7 +406,10 @@ mod tests {
         assert!(first.holds_os_lock());
         let err = acquire(&db, Duration::from_millis(200)).await.unwrap_err();
         assert!(is_ownership_error(&err));
-        assert!(err.to_string().contains("already open in this process"), "{err}");
+        assert!(
+            err.to_string().contains("already open in this process"),
+            "{err}"
+        );
         assert!(ensure_not_owned_elsewhere(&db).is_err());
 
         drop(first);
@@ -390,11 +445,26 @@ mod tests {
         ] {
             std::fs::write(&sidecar, &body).unwrap();
             let guard = acquire(&db, Duration::ZERO).await.expect("take over");
+            assert!(guard.holds_os_lock());
+            // Windows keeps the file unreadable while it is locked.
+            drop(guard);
             let record: OwnerRecord =
                 serde_json::from_slice(&std::fs::read(&sidecar).unwrap()).unwrap();
             assert_eq!(record.pid, std::process::id());
-            drop(guard);
         }
+    }
+
+    #[tokio::test]
+    async fn unusable_sidecar_degrades_instead_of_locking_the_user_out() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = dir.path().join("db.sqlite");
+        std::fs::write(&db, b"").unwrap();
+        // A directory where the sidecar should be cannot be opened as a file.
+        std::fs::create_dir(owner_file_path(&std::fs::canonicalize(&db).unwrap())).unwrap();
+        let guard = acquire(&db, Duration::ZERO).await.expect("opens anyway");
+        assert!(!guard.holds_os_lock());
+        // The in-process guard still applies.
+        assert!(acquire(&db, Duration::ZERO).await.is_err());
     }
 
     #[tokio::test]
@@ -406,7 +476,11 @@ mod tests {
         std::fs::write(&db, b"").unwrap();
         let sidecar = owner_file_path(&std::fs::canonicalize(&db).unwrap());
         std::fs::write(&sidecar, br#"{"pid": 4242}"#).unwrap();
-        let foreign = OpenOptions::new().read(true).write(true).open(&sidecar).unwrap();
+        let foreign = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(&sidecar)
+            .unwrap();
         foreign.try_lock().unwrap();
 
         let err = acquire(&db, Duration::ZERO).await.unwrap_err();
@@ -418,7 +492,9 @@ mod tests {
         // The refused attempt gave its in-process slot back.
         foreign.unlock().unwrap();
         drop(foreign);
-        let guard = acquire(&db, Duration::ZERO).await.expect("free after unlock");
+        let guard = acquire(&db, Duration::ZERO)
+            .await
+            .expect("free after unlock");
         drop(guard);
     }
 }

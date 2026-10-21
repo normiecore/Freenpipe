@@ -212,7 +212,9 @@ impl Stop {
         };
         let detail = match err {
             sqlx::Error::PoolClosed => "database pool already closed".to_string(),
-            sqlx::Error::PoolTimedOut => "database pool unavailable (acquire timed out)".to_string(),
+            sqlx::Error::PoolTimedOut => {
+                "database pool unavailable (acquire timed out)".to_string()
+            }
             sqlx::Error::Io(e) => format!("I/O error during planner maintenance: {e}"),
             other => other.to_string(),
         };
@@ -518,7 +520,10 @@ async fn refresh_planner(conn: &mut PoolConnection<Sqlite>) -> Result<(), sqlx::
         }
         Err(e) => {
             if let Err(rb) = sqlx::query("ROLLBACK").execute(&mut **conn).await {
-                warn!("planner maintenance: rollback after a failed refresh: {}", rb);
+                warn!(
+                    "planner maintenance: rollback after a failed refresh: {}",
+                    rb
+                );
                 conn.close_on_drop();
             }
             Err(e)
@@ -573,7 +578,10 @@ mod tests {
         report.record(attempt(status::SUCCEEDED));
         report.record(attempt(status::BUSY));
         assert_eq!(report.latest.as_ref().unwrap().status, status::BUSY);
-        assert_eq!(report.last_success.as_ref().unwrap().status, status::SUCCEEDED);
+        assert_eq!(
+            report.last_success.as_ref().unwrap().status,
+            status::SUCCEEDED
+        );
         assert_eq!(report.last_failure.as_ref().unwrap().status, status::BUSY);
 
         let json = serde_json::to_value(&report).unwrap();
@@ -730,13 +738,19 @@ mod tests {
             .connect()
             .await
             .unwrap();
-        sqlx::query("BEGIN IMMEDIATE").execute(&mut other).await.unwrap();
+        sqlx::query("BEGIN IMMEDIATE")
+            .execute(&mut other)
+            .await
+            .unwrap();
 
         let (_tx, rx) = watch::channel(());
         let started = Instant::now();
         let attempt = job(&path, &pool).run_once(&rx).await;
         assert_eq!(attempt.status, status::BUSY, "{attempt:?}");
-        assert!(started.elapsed() < Duration::from_secs(3), "never waits for the lock");
+        assert!(
+            started.elapsed() < Duration::from_secs(3),
+            "never waits for the lock"
+        );
         let report = read_report(&report_path(&path));
         assert_eq!(report.last_failure.as_ref().unwrap().status, status::BUSY);
         assert!(report.last_success.is_none());

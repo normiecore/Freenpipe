@@ -196,12 +196,18 @@ pub(crate) async fn checkpoint_with_busy_timeout(
         .execute(&mut *conn)
         .await?;
     let result = checkpoint(&mut conn, mode).await;
-    let restore = format!("PRAGMA busy_timeout = {}", CONNECTION_BUSY_TIMEOUT.as_millis());
+    let restore = format!(
+        "PRAGMA busy_timeout = {}",
+        CONNECTION_BUSY_TIMEOUT.as_millis()
+    );
     if let Err(e) = sqlx::query(sqlx::AssertSqlSafe(restore))
         .execute(&mut *conn)
         .await
     {
-        warn!("wal checkpoint: restoring busy_timeout failed ({}); closing the connection", e);
+        warn!(
+            "wal checkpoint: restoring busy_timeout failed ({}); closing the connection",
+            e
+        );
         conn.close_on_drop();
     }
     result
@@ -364,9 +370,13 @@ impl WalMaintenanceState {
 pub enum BacklogEvent {
     None,
     /// Frames are pinned by reader snapshots (first time, or a repeat warning).
-    Deferred { first: bool },
+    Deferred {
+        first: bool,
+    },
     /// A backlog that existed is gone.
-    Drained { after: Duration },
+    Drained {
+        after: Duration,
+    },
 }
 
 /// Pick the mode of the next checkpoint.
@@ -501,7 +511,10 @@ pub(crate) async fn startup_checkpoint(write_pool: &SqlitePool) {
                 debug!("startup wal checkpoint (RESTART): wal empty");
             }
         }
-        Err(e) => warn!("startup wal checkpoint (RESTART) failed (continuing): {}", e),
+        Err(e) => warn!(
+            "startup wal checkpoint (RESTART) failed (continuing): {}",
+            e
+        ),
     }
 }
 
@@ -579,11 +592,13 @@ pub(crate) fn spawn_wal_maintenance(
                 )
             });
             let result = match mode {
-                CheckpointMode::Passive => async {
-                    let mut conn = write_pool.acquire().await?;
-                    checkpoint(&mut conn, mode).await
+                CheckpointMode::Passive => {
+                    async {
+                        let mut conn = write_pool.acquire().await?;
+                        checkpoint(&mut conn, mode).await
+                    }
+                    .await
                 }
-                .await,
                 _ => {
                     checkpoint_with_busy_timeout(&write_pool, mode, config.escalation_busy_timeout)
                         .await
@@ -725,7 +740,13 @@ mod tests {
         );
         // Cooling down after an escalation.
         assert_eq!(
-            next_mode(&status(big), 4096, None, Some(Duration::from_secs(5)), &config),
+            next_mode(
+                &status(big),
+                4096,
+                None,
+                Some(Duration::from_secs(5)),
+                &config
+            ),
             CheckpointMode::Passive
         );
         assert_eq!(
@@ -755,7 +776,13 @@ mod tests {
             BacklogEvent::Deferred { first: true }
         );
         assert_eq!(
-            t.record(CheckpointMode::Passive, pinned, 0, t0 + Duration::from_secs(30), &config),
+            t.record(
+                CheckpointMode::Passive,
+                pinned,
+                0,
+                t0 + Duration::from_secs(30),
+                &config
+            ),
             BacklogEvent::None
         );
         assert_eq!(t.status.backlog_seconds, 30);
@@ -849,7 +876,10 @@ mod tests {
             if done(&status) {
                 return status;
             }
-            assert!(Instant::now() < deadline, "timed out waiting for {what}: {status:?}");
+            assert!(
+                Instant::now() < deadline,
+                "timed out waiting for {what}: {status:?}"
+            );
             tokio::time::sleep(Duration::from_millis(20)).await;
         }
     }

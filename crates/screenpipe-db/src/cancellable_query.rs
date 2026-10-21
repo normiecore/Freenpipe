@@ -56,7 +56,8 @@ async fn in_transaction(conn: &mut SqliteConnection) -> Result<bool, sqlx::Error
     let mut handle = conn.lock_handle().await?;
     // SAFETY: the locked handle guarantees the worker thread is not using the
     // connection while we read its autocommit flag.
-    let autocommit = unsafe { libsqlite3_sys::sqlite3_get_autocommit(handle.as_raw_handle().as_ptr()) };
+    let autocommit =
+        unsafe { libsqlite3_sys::sqlite3_get_autocommit(handle.as_raw_handle().as_ptr()) };
     Ok(autocommit == 0)
 }
 
@@ -238,7 +239,10 @@ mod tests {
             .unwrap();
         guard.finish();
         assert_eq!(v, 42);
-        let v: i64 = sqlx::query_scalar("SELECT 7").fetch_one(&pool).await.unwrap();
+        let v: i64 = sqlx::query_scalar("SELECT 7")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
         assert_eq!(v, 7);
     }
 
@@ -246,7 +250,10 @@ mod tests {
     async fn abandoned_read_transaction_is_rolled_back_on_release() {
         let dir = tempfile::tempdir().unwrap();
         let pool = single_connection_pool(&dir).await;
-        sqlx::query("CREATE TABLE t(x)").execute(&pool).await.unwrap();
+        sqlx::query("CREATE TABLE t(x)")
+            .execute(&pool)
+            .await
+            .unwrap();
         {
             let mut conn = pool.acquire().await.unwrap();
             sqlx::query("BEGIN").execute(&mut *conn).await.unwrap();

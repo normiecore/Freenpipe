@@ -86,7 +86,8 @@ async fn preflight_rejects_a_file_that_is_not_sqlite() {
         .err()
         .expect("a text file must not open");
     assert!(
-        err.to_string().contains("(code: 26) file is not a database"),
+        err.to_string()
+            .contains("(code: 26) file is not a database"),
         "{err}"
     );
     // Nothing was rewritten.
@@ -272,11 +273,9 @@ async fn dropped_read_is_interrupted_and_the_connection_reused() {
         reader.finish();
         Ok::<_, sqlx::Error>(n)
     };
-    assert!(
-        tokio::time::timeout(Duration::from_millis(300), long_query)
-            .await
-            .is_err()
-    );
+    assert!(tokio::time::timeout(Duration::from_millis(300), long_query)
+        .await
+        .is_err());
 
     // The single read connection is back within a second, outside any
     // transaction, and serves the next query.

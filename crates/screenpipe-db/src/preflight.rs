@@ -368,9 +368,7 @@ fn read_header(path: &Path) -> Option<(Vec<u8>, u64)> {
         return None;
     }
     let mut header = Vec::with_capacity(HEADER_LEN);
-    file.take(HEADER_LEN as u64)
-        .read_to_end(&mut header)
-        .ok()?;
+    file.take(HEADER_LEN as u64).read_to_end(&mut header).ok()?;
     Some((header, meta.len()))
 }
 
@@ -447,7 +445,9 @@ mod tests {
 
     #[test]
     fn bad_magic_is_not_a_database() {
-        let junk = b"this is a text file, not sqlite at all, but it is long enough to hold a header......".to_vec();
+        let junk =
+            b"this is a text file, not sqlite at all, but it is long enough to hold a header......"
+                .to_vec();
         assert_eq!(
             check_header(&junk, junk.len() as u64),
             Err(HeaderProblem::NotADatabase)
@@ -460,7 +460,10 @@ mod tests {
     #[test]
     fn damaged_fields_are_malformed() {
         let short = header(4096)[..60].to_vec();
-        assert_eq!(check_header(&short, 60), Err(HeaderProblem::TruncatedHeader));
+        assert_eq!(
+            check_header(&short, 60),
+            Err(HeaderProblem::TruncatedHeader)
+        );
 
         assert_eq!(
             check_header(&header(1000), 4000),
@@ -507,7 +510,10 @@ mod tests {
         );
 
         let err = HeaderProblem::InvalidPageSize(1000).to_error();
-        assert_eq!(err.to_string(), "(code: 11) database disk image is malformed");
+        assert_eq!(
+            err.to_string(),
+            "(code: 11) database disk image is malformed"
+        );
     }
 
     #[test]
@@ -562,7 +568,8 @@ mod tests {
             .await
             .unwrap_err();
         assert!(
-            err.to_string().contains("(code: 26) file is not a database"),
+            err.to_string()
+                .contains("(code: 26) file is not a database"),
             "{err}"
         );
 

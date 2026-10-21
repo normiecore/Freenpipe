@@ -25,9 +25,11 @@ pub async fn handle_backup_command(
         BackupCommand::Checkpoint => {
             eprintln!("flushing WAL to main database file...");
 
-            let db =
-                screenpipe_db::DatabaseManager::attach(&db_path.to_string_lossy(), Default::default())
-                    .await?;
+            let db = screenpipe_db::DatabaseManager::attach(
+                &db_path.to_string_lossy(),
+                Default::default(),
+            )
+            .await?;
 
             let (busy, log_pages, checkpointed) = db.wal_checkpoint().await?;
 
@@ -59,9 +61,11 @@ pub async fn handle_backup_command(
             eprintln!("  source: {}", db_path.display());
             eprintln!("  dest:   {}", dest);
 
-            let db =
-                screenpipe_db::DatabaseManager::attach(&db_path.to_string_lossy(), Default::default())
-                    .await?;
+            let db = screenpipe_db::DatabaseManager::attach(
+                &db_path.to_string_lossy(),
+                Default::default(),
+            )
+            .await?;
 
             db.backup_to(&dest).await.inspect_err(|_e| {
                 let _ = std::fs::remove_file(&dest);

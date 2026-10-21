@@ -394,7 +394,11 @@ impl DatabaseManager {
         Self::open(database_path, config, OpenMode::Attached).await
     }
 
-    async fn open(database_path: &str, config: DbConfig, mode: OpenMode) -> Result<Self, sqlx::Error> {
+    async fn open(
+        database_path: &str,
+        config: DbConfig,
+        mode: OpenMode,
+    ) -> Result<Self, sqlx::Error> {
         debug!(
             "Initializing DatabaseManager with database path: {} (mmap={}MB, cache={}KB, read_pool={})",
             database_path,
@@ -422,11 +426,8 @@ impl DatabaseManager {
         // Fail fast on a file that is not a database or whose header is
         // damaged, before any pool touches it.
         if let Some(file) = &database_file {
-            crate::preflight::preflight_database_file(
-                file,
-                crate::preflight::HEADER_READ_TIMEOUT,
-            )
-            .await?;
+            crate::preflight::preflight_database_file(file, crate::preflight::HEADER_READ_TIMEOUT)
+                .await?;
         }
 
         // Create the database if it doesn't exist
