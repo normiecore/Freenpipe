@@ -38,6 +38,7 @@ pub fn dev_isolation() -> bool {
 }
 
 /// Command line the Windows Run value holds for `exe`.
+#[cfg_attr(not(windows), allow(dead_code))] // used by the Windows login entry
 pub fn run_command(exe: &str) -> String {
     format!("\"{exe}\" {AUTOSTART_ARG}")
 }
@@ -53,6 +54,7 @@ pub enum EntryState {
     Outdated,
 }
 
+#[cfg_attr(not(windows), allow(dead_code))]
 pub fn entry_state(existing: Option<&str>, expected: &str) -> EntryState {
     match existing.map(str::trim) {
         None | Some("") => EntryState::Missing,
@@ -89,6 +91,7 @@ pub fn startup_action(enabled: bool, dev_isolation: bool, state: EntryState) -> 
 
 /// `StartupApproved\Run` data: an odd first byte means the user turned the
 /// entry off in Task Manager (even means on).
+#[cfg_attr(not(windows), allow(dead_code))]
 pub fn approved_value_disabled(bytes: &[u8]) -> bool {
     bytes.first().is_some_and(|b| b & 1 == 1)
 }

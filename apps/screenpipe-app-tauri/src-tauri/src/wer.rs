@@ -28,6 +28,7 @@ use std::time::{Duration, SystemTime};
 use tracing::{info, warn};
 
 /// File name of the helper DLL beside the app executable.
+#[cfg_attr(not(windows), allow(dead_code))] // the Windows registration uses it
 pub const HELPER_DLL_NAME: &str = "screenpipe_wer_dump_helper.dll";
 /// Name of the thread that collects dumps at start-up.
 pub const HARVEST_THREAD_NAME: &str = "screenpipe-wer-dump-harvest";
@@ -44,13 +45,18 @@ const PARTIAL_SUFFIX: &str = ".partial";
 
 // Context block shared with the helper. Same values as
 // crates/screenpipe-wer-helper/src/layout.rs (a test keeps them in sync).
+// Only the Windows registration builds one.
+#[cfg_attr(not(windows), allow(dead_code))]
 const CONTEXT_MAGIC: u32 = u32::from_le_bytes(*b"FPWR");
+#[cfg_attr(not(windows), allow(dead_code))]
 const CONTEXT_VERSION: u32 = 1;
+#[cfg_attr(not(windows), allow(dead_code))]
 const CONTEXT_DIR_UNITS: usize = 1024;
 
 /// The block the helper reads out of this process after a crash. It must
 /// live as long as the process, so it is leaked once at registration.
 #[repr(C)]
+#[cfg_attr(not(windows), allow(dead_code))]
 pub struct ContextBlock {
     magic: u32,
     version: u32,
@@ -59,6 +65,7 @@ pub struct ContextBlock {
     dir: [u16; CONTEXT_DIR_UNITS],
 }
 
+#[cfg_attr(not(windows), allow(dead_code))]
 impl ContextBlock {
     /// Block naming `dir` (UTF-16 units, no terminator). `None` when the
     /// path is empty or too long for the block.
