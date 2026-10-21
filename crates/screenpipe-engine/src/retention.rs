@@ -461,7 +461,11 @@ async fn do_local_cleanup(
             warn!("retention: orphan chunk cleanup failed: {}", e);
         }
         info!("retention: running incremental vacuum to reclaim disk space");
-        if let Err(e) = db.execute_raw_sql("PRAGMA incremental_vacuum(1000)").await {
+        // A write: it goes to the write pool (the read pool is query_only).
+        if let Err(e) = sqlx::query("PRAGMA incremental_vacuum(1000)")
+            .execute(db.write_pool())
+            .await
+        {
             warn!("retention: incremental vacuum failed: {}", e);
         }
     }
