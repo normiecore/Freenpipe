@@ -9150,6 +9150,7 @@ LIMIT ? OFFSET ?
             element_description: event.element_description.clone(),
             element_automation_id: event.element_automation_id.clone(),
             element_bounds: event.element_bounds.clone(),
+            element_ancestors: event.element_ancestors.clone(),
             frame_id: event.frame_id,
         }
     }
