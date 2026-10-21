@@ -330,7 +330,7 @@ pub fn check_header(header: &[u8], file_len: u64) -> Result<(), HeaderProblem> {
     if !(512..=65_536).contains(&page_size) || !page_size.is_power_of_two() {
         return Err(HeaderProblem::InvalidPageSize(raw_page_size));
     }
-    if file_len % u64::from(page_size) != 0 {
+    if !file_len.is_multiple_of(u64::from(page_size)) {
         return Err(HeaderProblem::PartialPage {
             len: file_len,
             page_size,

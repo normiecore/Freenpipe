@@ -166,6 +166,9 @@ pub struct PlannerSchedule {
     pub initial_delay: Duration,
     /// Time between runs.
     pub interval: Duration,
+    /// Wait before trying again after a run that found the writer busy or
+    /// was interrupted.
+    pub retry_after: Duration,
 }
 
 impl Default for PlannerSchedule {
@@ -173,6 +176,7 @@ impl Default for PlannerSchedule {
         Self {
             initial_delay: Duration::from_secs(10 * 60),
             interval: Duration::from_secs(6 * 60 * 60),
+            retry_after: Duration::from_secs(10 * 60),
         }
     }
 }
@@ -188,8 +192,20 @@ impl PlannerSchedule {
             Some(secs) => Self {
                 initial_delay: Duration::from_secs(secs),
                 interval: Duration::from_secs(secs),
+                retry_after: Duration::from_secs(secs),
             },
             None => Self::default(),
+        }
+    }
+}
+
+impl PlannerSchedule {
+    /// Wait before the next run after an attempt that ended with `status`:
+    /// a busy writer or an interrupt is retried sooner than the interval.
+    pub fn next_wait(&self, status_text: &str) -> Duration {
+        match status_text {
+            status::BUSY | status::INTERRUPTED => self.retry_after.min(self.interval),
+            _ => self.interval,
         }
     }
 }
@@ -547,8 +563,8 @@ pub(crate) fn spawn_planner_maintenance(
             if job.write_pool.is_closed() {
                 break;
             }
-            job.run_once(&shutdown).await;
-            wait = schedule.interval;
+            let attempt = job.run_once(&shutdown).await;
+            wait = schedule.next_wait(&attempt.status);
         }
         debug!("planner maintenance stopped");
     });
@@ -759,6 +775,19 @@ mod tests {
         sqlx::query("ROLLBACK").execute(&mut other).await.unwrap();
         let attempt = job(&path, &pool).run_once(&rx).await;
         assert_eq!(attempt.status, status::SUCCEEDED, "{attempt:?}");
+    }
+
+    #[test]
+    fn busy_runs_are_retried_sooner() {
+        let schedule = PlannerSchedule::default();
+        assert_eq!(schedule.next_wait(status::SUCCEEDED), schedule.interval);
+        assert_eq!(schedule.next_wait(status::FAILED), schedule.interval);
+        assert_eq!(schedule.next_wait(status::BUSY), schedule.retry_after);
+        assert_eq!(
+            schedule.next_wait(status::INTERRUPTED),
+            schedule.retry_after
+        );
+        assert!(schedule.retry_after < schedule.interval);
     }
 
     #[test]
