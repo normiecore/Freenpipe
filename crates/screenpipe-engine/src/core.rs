@@ -70,10 +70,16 @@ impl std::fmt::Debug for BackgroundWorker {
 /// ```ignore
 /// BackgroundWorker { name: "activity_ledger", start: crate::activity_ledger::start_worker },
 /// ```
-pub static BACKGROUND_WORKERS: &[BackgroundWorker] = &[BackgroundWorker {
-    name: "ocr_availability_probe",
-    start: crate::ocr_probe::start_worker,
-}];
+pub static BACKGROUND_WORKERS: &[BackgroundWorker] = &[
+    BackgroundWorker {
+        name: crate::disk_pressure::WORKER_NAME,
+        start: crate::disk_pressure::start_worker,
+    },
+    BackgroundWorker {
+        name: "ocr_availability_probe",
+        start: crate::ocr_probe::start_worker,
+    },
+];
 
 /// Handle on the workers started by [`start_background_workers`]. Dropping it
 /// signals shutdown without waiting; call [`RunningWorkers::shutdown`] to wait.

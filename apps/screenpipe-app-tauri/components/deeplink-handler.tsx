@@ -12,6 +12,7 @@ import { commands } from "@/lib/utils/tauri";
 import { listen, emit } from "@tauri-apps/api/event";
 import { onOpenUrl } from "@tauri-apps/plugin-deep-link";
 import { openSettingsWindow } from "@/lib/utils/window";
+import { isSettingsSectionId } from "@/lib/settings-sections";
 import { useTimelineStore } from "@/lib/hooks/use-timeline-store";
 import { isAccountDeepLink } from "@/lib/account-deep-link";
 import {
@@ -78,7 +79,10 @@ export function DeeplinkHandler() {
       }
 
       if (url.includes("settings") || url.includes("home")) {
-        await openSettingsWindow();
+        // `?section=storage` (the low-disk notice's button) and the like land
+        // on that section; anything else opens the default one.
+        const section = parsedUrl.searchParams.get("section");
+        await openSettingsWindow(isSettingsSectionId(section) ? section : undefined);
       }
 
       if (url.includes("changelog")) {

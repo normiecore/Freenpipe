@@ -31,9 +31,12 @@ export const searchIndex: SettingsField[] = [
   // conditional: monitor picker only renders when "Use all monitors" is off.
   { label: "Monitors", conditional: true },
   { label: "HD recording for meetings", keywords: ["hd", "meeting"] },
+  { label: KEEP_AWAKE_LABEL, keywords: ["sleep", "awake", "power", "idle"] },
   { label: "Chinese mirror", keywords: ["china", "mirror"] },
 ];
 import { LockedSetting, ManagedSwitch } from "@/components/enterprise-locked-setting";
+import { KeepAwakeSetting } from "./keep-awake-setting";
+import { KEEP_AWAKE_LABEL } from "@/lib/low-disk-guard";
 import { Label } from "@/components/ui/label";
 import {
   Select,
@@ -3552,6 +3555,8 @@ Your screen is a pipe. Everything you see, hear, and type flows through it. Free
       {/* System */}
       <div className="space-y-2 pt-2">
         <h2 className="text-xs font-semibold text-muted-foreground uppercase tracking-wider px-1">System</h2>
+
+        <KeepAwakeSetting />
 
         <Card className="border-border bg-card">
           <CardContent className="px-3 py-2.5">

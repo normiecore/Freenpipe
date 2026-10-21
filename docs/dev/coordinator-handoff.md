@@ -6,12 +6,13 @@ Updated 2026-10-20 evening. Git, PR heads and CI are the source of truth; this f
 
 - Waves 0 and 1 are merged (18 WPs). Wave 1 integration (runbook 4.7) has not been recorded yet: it needs a
   full Linux build of main and was held for disk.
-- Wave 2 core merged: W2-05, W2-08, W2-10, W2-11, W2-12, W2-13, W2-16, W2-17, W2-18, W2-19, W2-22, W2-23,
-  W2-26, W2-27 (32/155 overall).
-- Open: W2-01 (PR #32, approved, CI), W3-30 (PR #29, approved; main with W2-27 merged in by the coordinator,
-  bindings test passes, CI). Building: W2-09 + W2-04.
-- Core set still to start (decision 6): W3-25, W4-05, W3-14, then the wave 3/4 core WPs as their
-  dependencies merge.
+- Wave 2 core merged: W2-01, W2-05, W2-08, W2-10, W2-11, W2-12, W2-13, W2-16, W2-17, W2-18, W2-19, W2-22,
+  W2-23, W2-26, W2-27. Wave 3 core merged: W3-30 (34/155 overall). Since W2-01 the read pool is
+  `query_only`: writes go through `write_pool()` or the write queue.
+- Open: W2-09 (PR #33) and W2-04 (PR #34), both approved; the coordinator merged main (with W2-01) into each
+  and moved their test writes to `write_pool()`; CI. Building: W3-11 + W3-12, W3-25 + W3-14.
+- Core set still to start (decision 6), all ready: W3-06, W3-08, W3-13, W4-05; then W3-02 (after W2-04 and
+  W2-09) and W4-02 (after W3-06).
 
 ## How work runs
 

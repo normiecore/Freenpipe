@@ -1594,6 +1594,8 @@ async fn app_main() {
             crate::monitor_events::start(app_handle.clone());
             crate::meeting_live_notes::start(app_handle.clone());
             crate::meeting_stall_notifications::start(app_handle.clone());
+            crate::disk_pressure::start(app_handle.clone());
+            crate::power_awake::apply_saved_setting(&app_handle);
 
             #[cfg(target_os = "macos")]
             crate::window::reset_to_regular_and_refresh_tray(&app_handle);

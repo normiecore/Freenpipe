@@ -9,7 +9,8 @@
 //! Two entry points share one renderer:
 //! - `--meeting-id <id>` resolves the meeting's start/end from the DB.
 //! - `--start <t> [--end <t>]` takes an explicit wall-clock range (`--end`
-//!   defaults to now). Times accept ISO 8601 or relative (`2h ago`, `now`).
+//!   defaults to now). Times accept ISO 8601, a local calendar day
+//!   (`today`, `yesterday`, `YYYY-MM-DD`) or relative (`2h ago`, `now`).
 
 use anyhow::Context;
 use chrono::{DateTime, Utc};

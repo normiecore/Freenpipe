@@ -299,8 +299,10 @@ pub struct ExportArgs {
     #[arg(long, alias = "id", conflicts_with_all = ["start", "end"])]
     pub meeting_id: Option<i64>,
 
-    /// Start of the time range. Accepts ISO 8601 (`2026-01-15T10:00:00Z`) or
-    /// relative (`30m ago`, `2h ago`, `7d ago`, `now`). Pair with `--end`.
+    /// Start of the time range. Accepts ISO 8601 (`2026-01-15T10:00:00Z`), a
+    /// local calendar day (`today`, `yesterday`, `2026-01-15`: that day's
+    /// local midnight) or relative (`30m ago`, `2h ago`, `7d ago`, `now`).
+    /// Pair with `--end`.
     #[arg(long)]
     pub start: Option<String>,
 
@@ -1771,8 +1773,9 @@ pub struct SearchArgs {
     #[arg(long, default_value_t = 0)]
     pub offset: u32,
 
-    /// Start of the time window. Accepts ISO 8601 (`2026-01-15T10:00:00Z`)
-    /// or relative (`30m ago`, `2h ago`, `7d ago`, `now`).
+    /// Start of the time window. Accepts ISO 8601 (`2026-01-15T10:00:00Z`),
+    /// a local calendar day (`today`, `yesterday`, `2026-01-15`: that day's
+    /// local midnight) or relative (`30m ago`, `2h ago`, `7d ago`, `now`).
     #[arg(long)]
     pub start: Option<String>,
 

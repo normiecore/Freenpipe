@@ -9,6 +9,7 @@ import type { SettingsField } from "./settings-search";
 /** Settings search index for this section. Co-located with the component so adding a field here means updating one file. See `SettingsField` in `./settings-search` for the schema. */
 export const searchIndex: SettingsField[] = [
   { label: "Disk usage", keywords: ["disk", "space", "gb"] },
+  { label: LOW_DISK_GUARD_LABEL, keywords: ["low disk", "disk full", "free space", "pause"] },
   { label: "Retention", keywords: ["cleanup", "delete old"] },
   ...(cloudStorageAvailability.archive ? [{ label: "Archive" }] : []),
   { label: "Clear Cache" },
@@ -21,6 +22,8 @@ import {
 } from "@/lib/cloud-storage";
 import { cn } from "@/lib/utils";
 import { DiskUsageSection } from "./disk-usage-section";
+import { LowDiskGuardSetting } from "./low-disk-guard-setting";
+import { LOW_DISK_GUARD_LABEL } from "@/lib/low-disk-guard";
 import { ArchiveSettings } from "./archive-settings";
 import { SyncSettings } from "./sync-settings";
 import { LockedSetting } from "@/components/enterprise-locked-setting";
@@ -157,6 +160,9 @@ export function StorageSection() {
           </CardContent>
         </Card>
       </LockedSetting>
+
+      {/* Low-disk recording guard (stopRecordingOnLowDisk) */}
+      <LowDiskGuardSetting />
 
       {/* Clear Cache */}
       <Card className="border-border bg-card">
