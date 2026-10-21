@@ -1171,9 +1171,12 @@ pub enum AudioEngineFallbackReason {
     /// The `screenpipe-cloud` engine needs an AI gateway URL and key.
     GatewayNotConfigured,
     MissingDeepgramKey,
-    /// The CPU has no AVX2, so Whisper and Qwen3-ASR cannot run here
-    /// (`cpu_compat`).
+    /// The CPU has no AVX2, so Whisper and Qwen3-ASR cannot run here and
+    /// Parakeet transcribes instead (`cpu_compat`).
     CpuCompatMode,
+    /// As `CpuCompatMode`, in a build without Parakeet: no local engine is
+    /// left, so local transcription is off.
+    CpuCompatModeNoLocalEngine,
 }
 
 impl AudioEngineFallbackReason {
@@ -1182,6 +1185,7 @@ impl AudioEngineFallbackReason {
             Self::GatewayNotConfigured => "AI gateway transcription unavailable",
             Self::MissingDeepgramKey => "Deepgram unavailable",
             Self::CpuCompatMode => "Transcribing with Parakeet",
+            Self::CpuCompatModeNoLocalEngine => "Local transcription unavailable",
         }
     }
 
@@ -1195,6 +1199,9 @@ impl AudioEngineFallbackReason {
             }
             Self::CpuCompatMode => {
                 "This processor lacks AVX2, which Whisper and Qwen3-ASR need. Audio is transcribed on this device with Parakeet instead; cloud engines are still available in Settings."
+            }
+            Self::CpuCompatModeNoLocalEngine => {
+                "This processor lacks AVX2, which Whisper and Qwen3-ASR need, and this build has no other local engine, so audio is not transcribed on this device. A cloud engine can still be picked in Settings."
             }
         }
     }

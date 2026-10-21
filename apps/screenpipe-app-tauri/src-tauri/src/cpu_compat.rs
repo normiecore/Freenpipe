@@ -12,7 +12,8 @@
 //! The app checks once, at the top of `app_main`, and keeps the answer. In
 //! compatibility mode it
 //! - transcribes with Parakeet (ONNX Runtime, no AVX2 requirement) when a
-//!   Whisper or Qwen3-ASR engine is selected ([`apply_to_resolution`]),
+//!   Whisper or Qwen3-ASR engine is selected, or turns local transcription
+//!   off in a build without Parakeet ([`apply_to_resolution`]),
 //! - skips the Whisper model pre-download ([`whisper_predownload_allowed`]),
 //! - reports `cpuCompatMode: true` in the boot phase snapshot, so onboarding
 //!   and settings can say why.
@@ -21,9 +22,10 @@
 //! plus the OS's XSAVE state), so nothing here repeats that logic. On other
 //! architectures the question does not arise and compatibility mode is off.
 
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::OnceLock;
 
-use tracing::{info, warn};
+use tracing::{debug, info, warn};
 
 use crate::store::{AudioEngineFallbackReason, AudioEngineResolution};
 
@@ -96,17 +98,40 @@ pub fn replacement_engine(engine: &str, compat: bool, parakeet: bool) -> Option<
     })
 }
 
+/// The fallback reason that explains switching to `engine`: Parakeet, or
+/// no local engine at all in a build without Parakeet.
+pub fn fallback_reason_for(engine: &str) -> AudioEngineFallbackReason {
+    if engine == COMPAT_ENGINE {
+        AudioEngineFallbackReason::CpuCompatMode
+    } else {
+        AudioEngineFallbackReason::CpuCompatModeNoLocalEngine
+    }
+}
+
+/// Whether the engine switch has been logged at warn level. The resolution
+/// is recomputed for every recording config (the frontend polls it), so
+/// only the first switch in a process is a warning.
+static SWITCH_LOGGED: AtomicBool = AtomicBool::new(false);
+
 /// Apply compatibility mode to an engine resolution: an engine that needs
 /// AVX2 (including a Whisper fallback chosen for a cloud engine without its
-/// key) becomes Parakeet, and the reason says so.
+/// key) becomes Parakeet, or `disabled` when the build has no Parakeet, and
+/// the reason says which.
 pub fn apply_to_resolution(resolution: &mut AudioEngineResolution, compat: bool, parakeet: bool) {
     if let Some(engine) = replacement_engine(&resolution.active, compat, parakeet) {
-        warn!(
-            "CPU compatibility mode: {} needs AVX2, transcribing with {engine} instead",
-            resolution.active
-        );
+        if !SWITCH_LOGGED.swap(true, Ordering::Relaxed) {
+            warn!(
+                "CPU compatibility mode: {} needs AVX2, transcribing with {engine} instead",
+                resolution.active
+            );
+        } else {
+            debug!(
+                "CPU compatibility mode: {} replaced by {engine}",
+                resolution.active
+            );
+        }
         resolution.active = engine.to_string();
-        resolution.fallback_reason = Some(AudioEngineFallbackReason::CpuCompatMode);
+        resolution.fallback_reason = Some(fallback_reason_for(engine));
     }
 }
 
@@ -229,5 +254,35 @@ mod tests {
             fallback.fallback_reason,
             Some(AudioEngineFallbackReason::CpuCompatMode)
         );
+
+        // Recomputed again (every recording config does): same answer.
+        let mut again = resolution("whisper-large-v3-turbo-quantized");
+        apply_to_resolution(&mut again, true, true);
+        assert_eq!(again.active, "parakeet");
+        assert!(SWITCH_LOGGED.load(Ordering::Relaxed));
+    }
+
+    #[test]
+    fn a_build_without_parakeet_says_local_transcription_is_off() {
+        let mut none = resolution("qwen3-asr");
+        apply_to_resolution(&mut none, true, false);
+        assert_eq!(none.active, "disabled");
+        assert_eq!(
+            none.fallback_reason,
+            Some(AudioEngineFallbackReason::CpuCompatModeNoLocalEngine)
+        );
+        assert!(!none
+            .fallback_reason
+            .as_ref()
+            .unwrap()
+            .notification_body()
+            .contains("Parakeet instead"));
+        assert_eq!(
+            fallback_reason_for("parakeet"),
+            AudioEngineFallbackReason::CpuCompatMode
+        );
+        assert!(AudioEngineFallbackReason::CpuCompatMode
+            .notification_body()
+            .contains("Parakeet"));
     }
 }

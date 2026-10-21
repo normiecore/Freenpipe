@@ -213,15 +213,84 @@ pub fn grant_data_dir_scopes(app: &tauri::AppHandle, dirs: &[PathBuf]) {
     }
 }
 
+/// Title and text telling the user why this launch will not start, worded
+/// for the kind of refusal the running copy reported.
+pub fn refused_handoff_text(refusal: &crate::server::Refusal) -> (String, String) {
+    use crate::server::RefusalKind;
+    let product = crate::brand::PRODUCT_NAME;
+    let (title, what, next) = match refusal.kind {
+        RefusalKind::OtherExecutable => (
+            format!("{product} is already running"),
+            format!("{product} is already running from a different install, so this copy will not start."),
+            "Quit the other copy first, or start the one that is already running.",
+        ),
+        RefusalKind::UnverifiableExecutable => (
+            format!("{product} is already running"),
+            format!("{product} is already running, and it could not confirm that this copy belongs to the same install, so this copy will not start."),
+            "Start the copy that is already running, or quit it first.",
+        ),
+        RefusalKind::ForeignDeepLink => (
+            format!("{product} cannot open this link"),
+            format!("The copy of {product} that is already running is a different build and does not open this kind of link, so this copy will not start."),
+            "Quit the running copy first to open the link with this one.",
+        ),
+        RefusalKind::Unspecified => (
+            format!("{product} is already running"),
+            format!("Another copy of {product} is already running and refused this launch, so this copy will not start."),
+            "Quit the other copy first, or start the one that is already running.",
+        ),
+    };
+    let text = format!("{what}\n\n{next}\n\n({})", refusal.message);
+    (title, text)
+}
+
+/// The desktop command that shows the refusal where there is no message box
+/// API to call before the app is up: an alert on macOS, a notification on
+/// Linux. `None` on other systems (stderr only).
+#[cfg_attr(windows, allow(dead_code))]
+pub fn desktop_alert_command(
+    os: &str,
+    title: &str,
+    text: &str,
+) -> Option<(&'static str, Vec<String>)> {
+    match os {
+        // The text travels as script arguments, never inside the script.
+        "macos" => Some((
+            "osascript",
+            vec![
+                "-e".into(),
+                "on run argv".into(),
+                "-e".into(),
+                "display alert (item 1 of argv) message (item 2 of argv) as warning giving up after 120"
+                    .into(),
+                "-e".into(),
+                "end run".into(),
+                title.into(),
+                text.into(),
+            ],
+        )),
+        "linux" => Some((
+            "notify-send",
+            vec![
+                "--app-name".into(),
+                crate::brand::PRODUCT_NAME.into(),
+                "--icon".into(),
+                "dialog-warning".into(),
+                title.into(),
+                text.into(),
+            ],
+        )),
+        _ => None,
+    }
+}
+
 /// Tell the user that another install refused this launch, then the caller
 /// exits. A login launch stays silent (it would pop up at every sign-in).
-pub fn report_refused_handoff(message: &str, autostart: bool) {
-    let text = format!(
-        "{product} is already running from a different install, so this copy will not start.\n\n\
-         Quit the other copy first, or start the one that is already running.\n\n({message})",
-        product = crate::brand::PRODUCT_NAME,
-    );
-    eprintln!("{text}");
+/// Windows shows a message box; macOS an alert and Linux a desktop
+/// notification, when the system has the command for it.
+pub fn report_refused_handoff(refusal: &crate::server::Refusal, autostart: bool) {
+    let (title, text) = refused_handoff_text(refusal);
+    eprintln!("{title}\n\n{text}");
     if autostart {
         return;
     }
@@ -238,15 +307,37 @@ pub fn report_refused_handoff(message: &str, autostart: bool) {
                 .collect::<Vec<u16>>()
         };
         let body = wide(&text);
-        let title = wide(crate::brand::PRODUCT_NAME);
+        let caption = wide(&title);
         // SAFETY: both strings are NUL-terminated and outlive the call.
         unsafe {
             MessageBoxW(
                 HWND::default(),
                 PCWSTR(body.as_ptr()),
-                PCWSTR(title.as_ptr()),
+                PCWSTR(caption.as_ptr()),
                 MESSAGEBOX_STYLE(MB_OK.0 | MB_ICONWARNING.0 | MB_SETFOREGROUND.0),
             );
+        }
+    }
+    #[cfg(not(windows))]
+    {
+        let Some((program, args)) = desktop_alert_command(std::env::consts::OS, &title, &text)
+        else {
+            return;
+        };
+        let mut command = std::process::Command::new(program);
+        command
+            .args(&args)
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null());
+        // Inside an AppImage the library path points at the image's own
+        // libraries, which a system tool may not load with.
+        if std::env::var_os("APPIMAGE").is_some() {
+            command.env_remove("LD_LIBRARY_PATH");
+        }
+        // Best effort: without the command the stderr text is all there is.
+        if let Err(e) = command.status() {
+            eprintln!("({program} unavailable: {e})");
         }
     }
 }
@@ -467,5 +558,62 @@ mod capability_tests {
         assert!(!allowed("codex://threads/42"));
         assert!(!allowed("file:///C:/Windows/System32/calc.exe"));
         assert!(!allowed("ms-settings:privacy"));
+    }
+}
+
+#[cfg(test)]
+mod refused_launch_tests {
+    use super::*;
+
+    fn refusal(kind: crate::server::RefusalKind) -> crate::server::Refusal {
+        crate::server::Refusal {
+            kind,
+            message: "detail from the running copy".to_string(),
+        }
+    }
+
+    #[test]
+    fn refused_launch_text_follows_the_refusal_kind() {
+        use crate::server::RefusalKind;
+        let (_, other) = refused_handoff_text(&refusal(RefusalKind::OtherExecutable));
+        assert!(other.contains("different install"), "{other}");
+        let (_, unverified) = refused_handoff_text(&refusal(RefusalKind::UnverifiableExecutable));
+        assert!(unverified.contains("could not confirm"), "{unverified}");
+        assert!(!unverified.contains("different install"), "{unverified}");
+        let (link_title, link) = refused_handoff_text(&refusal(RefusalKind::ForeignDeepLink));
+        assert!(link_title.contains("link"), "{link_title}");
+        assert!(link.contains("different build"), "{link}");
+        assert!(!link.contains("different install"), "{link}");
+        let (_, unknown) = refused_handoff_text(&refusal(RefusalKind::Unspecified));
+        assert!(unknown.contains("refused this launch"), "{unknown}");
+        for text in [other, unverified, link, unknown] {
+            assert!(text.contains("detail from the running copy"), "{text}");
+            assert!(text.contains(crate::brand::PRODUCT_NAME), "{text}");
+        }
+    }
+
+    #[test]
+    fn refused_launch_alert_commands_pass_the_text_as_arguments() {
+        let title = "T \"quoted\"";
+        let text = "line one\n\nline two; $(not run)";
+        let (program, args) = desktop_alert_command("macos", title, text).unwrap();
+        assert_eq!(program, "osascript");
+        // The script itself never contains the text.
+        let script: Vec<&String> = args.iter().skip(1).step_by(2).take(3).collect();
+        assert!(script.iter().all(|line| !line.contains("line one")));
+        assert_eq!(
+            &args[args.len() - 2..],
+            &[title.to_string(), text.to_string()]
+        );
+
+        let (program, args) = desktop_alert_command("linux", title, text).unwrap();
+        assert_eq!(program, "notify-send");
+        assert_eq!(
+            &args[args.len() - 2..],
+            &[title.to_string(), text.to_string()]
+        );
+
+        assert!(desktop_alert_command("windows", title, text).is_none());
+        assert!(desktop_alert_command("freebsd", title, text).is_none());
     }
 }

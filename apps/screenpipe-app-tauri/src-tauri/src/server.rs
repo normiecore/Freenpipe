@@ -220,6 +220,14 @@ pub enum FocusRejection {
 }
 
 impl FocusRejection {
+    pub fn kind(&self) -> RefusalKind {
+        match self {
+            FocusRejection::OtherExecutable { .. } => RefusalKind::OtherExecutable,
+            FocusRejection::UnverifiableExecutable { .. } => RefusalKind::UnverifiableExecutable,
+            FocusRejection::ForeignDeepLink { .. } => RefusalKind::ForeignDeepLink,
+        }
+    }
+
     pub fn message(&self) -> String {
         match self {
             FocusRejection::OtherExecutable { .. } => {
@@ -233,6 +241,61 @@ impl FocusRejection {
                 format!("deep links with the {scheme:?} scheme belong to a different build")
             }
         }
+    }
+}
+
+/// The kind of a refusal, as the `reason` field of a `/focus` 403 names it,
+/// so the refused launch can word its message (Freenpipe's own field; a
+/// caller that ignores it still gets `{success, message}`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RefusalKind {
+    OtherExecutable,
+    UnverifiableExecutable,
+    ForeignDeepLink,
+    /// No `reason`, or one this build does not know (an older or newer
+    /// running copy).
+    Unspecified,
+}
+
+impl RefusalKind {
+    pub fn code(self) -> Option<&'static str> {
+        match self {
+            RefusalKind::OtherExecutable => Some("otherExecutable"),
+            RefusalKind::UnverifiableExecutable => Some("unverifiableExecutable"),
+            RefusalKind::ForeignDeepLink => Some("foreignDeepLink"),
+            RefusalKind::Unspecified => None,
+        }
+    }
+
+    pub fn from_code(code: Option<&str>) -> RefusalKind {
+        [
+            RefusalKind::OtherExecutable,
+            RefusalKind::UnverifiableExecutable,
+            RefusalKind::ForeignDeepLink,
+        ]
+        .into_iter()
+        .find(|kind| kind.code() == code)
+        .unwrap_or(RefusalKind::Unspecified)
+    }
+}
+
+/// Body of a `/focus` answer: the control server's `{success, message}`,
+/// plus `reason` on a refusal.
+#[derive(Serialize)]
+struct FocusResponse {
+    success: bool,
+    message: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    reason: Option<&'static str>,
+}
+
+impl FocusResponse {
+    fn ok(message: &str) -> Json<FocusResponse> {
+        Json(FocusResponse {
+            success: true,
+            message: message.to_string(),
+            reason: None,
+        })
     }
 }
 
@@ -357,7 +420,7 @@ struct FocusState<S: FocusSink> {
 async fn handle_focus<S: FocusSink>(
     State(state): State<FocusState<S>>,
     Json(payload): Json<FocusPayload>,
-) -> (StatusCode, Json<ApiResponse>) {
+) -> (StatusCode, Json<FocusResponse>) {
     info!(
         "focus request: args_count={}, deep_link_present={}, target={:?}",
         payload.args.len(),
@@ -371,20 +434,14 @@ async fn handle_focus<S: FocusSink>(
             state.sink.forward(payload.deep_link_url, payload.args);
             (
                 StatusCode::OK,
-                Json(ApiResponse {
-                    success: true,
-                    message: "Window focused successfully".to_string(),
-                }),
+                FocusResponse::ok("Window focused successfully"),
             )
         }
         FocusDecision::IgnoreDuplicateAutostart => {
             info!("focus request ignored: duplicate --autostart launch while the app is running");
             (
                 StatusCode::OK,
-                Json(ApiResponse {
-                    success: true,
-                    message: "already running; duplicate autostart launch ignored".to_string(),
-                }),
+                FocusResponse::ok("already running; duplicate autostart launch ignored"),
             )
         }
         FocusDecision::Reject(rejection) => {
@@ -401,9 +458,10 @@ async fn handle_focus<S: FocusSink>(
             }
             (
                 StatusCode::FORBIDDEN,
-                Json(ApiResponse {
+                Json(FocusResponse {
                     success: false,
                     message: rejection.message(),
+                    reason: rejection.kind().code(),
                 }),
             )
         }
@@ -607,9 +665,16 @@ pub enum Handoff {
     /// The running instance took it; this process should exit.
     Delivered,
     /// The running instance (another install) refused it.
-    Refused(String),
+    Refused(Refusal),
     /// Nothing usable answered; this process starts normally.
     NoInstance,
+}
+
+/// A refusal as the refused launch reads it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Refusal {
+    pub kind: RefusalKind,
+    pub message: String,
 }
 
 /// Payload a second launch sends to the running instance.
@@ -650,8 +715,8 @@ pub async fn hand_off(payload: &FocusPayload, port: u16) -> Handoff {
             // Only the control server's own refusal counts. Any other
             // program on this port that answers 403 is not an instance of
             // the app: start normally and let `port_conflict` report it.
-            match resp.bytes().await.ok().and_then(|b| refusal_message(&b)) {
-                Some(message) => Handoff::Refused(message),
+            match resp.bytes().await.ok().and_then(|b| parse_refusal(&b)) {
+                Some(refusal) => Handoff::Refused(refusal),
                 None => Handoff::NoInstance,
             }
         }
@@ -659,17 +724,19 @@ pub async fn hand_off(payload: &FocusPayload, port: u16) -> Handoff {
     }
 }
 
-/// The message of a control-server refusal: a JSON body
-/// `{"success": false, "message": "..."}` (an [`ApiResponse`]). `None` for
-/// any other body.
-pub fn refusal_message(body: &[u8]) -> Option<String> {
+/// A control-server refusal: a JSON body `{"success": false, "message":
+/// "..."}`, with an optional `reason` string. `None` for any other body.
+pub fn parse_refusal(body: &[u8]) -> Option<Refusal> {
     let value: serde_json::Value = serde_json::from_slice(body).ok()?;
     let object = value.as_object()?;
     if object.get("success")?.as_bool()? {
         return None;
     }
     let message = object.get("message")?.as_str()?;
-    Some(message.to_string())
+    Some(Refusal {
+        kind: RefusalKind::from_code(object.get("reason").and_then(|r| r.as_str())),
+        message: message.to_string(),
+    })
 }
 
 pub async fn run_server(app_handle: tauri::AppHandle, port: u16) {
@@ -1312,16 +1379,56 @@ mod tests {
     }
 
     #[test]
+    fn refusal_kinds_round_trip_through_their_codes() {
+        for rejection in [
+            FocusRejection::OtherExecutable {
+                launch_exe: "a".into(),
+                current_exe: "b".into(),
+            },
+            FocusRejection::UnverifiableExecutable {
+                launch_exe: "a".into(),
+            },
+            FocusRejection::ForeignDeepLink {
+                scheme: "other".into(),
+            },
+        ] {
+            let kind = rejection.kind();
+            assert!(kind.code().is_some(), "{kind:?}");
+            assert_eq!(RefusalKind::from_code(kind.code()), kind);
+        }
+        assert_eq!(RefusalKind::Unspecified.code(), None);
+        assert_eq!(RefusalKind::from_code(None), RefusalKind::Unspecified);
+    }
+
+    #[test]
     fn only_the_control_server_refusal_counts_as_refused() {
-        let ours = serde_json::to_vec(&ApiResponse {
+        let ours = serde_json::to_vec(&FocusResponse {
             success: false,
             message: "another install is already running".to_string(),
+            reason: RefusalKind::OtherExecutable.code(),
         })
         .unwrap();
         assert_eq!(
-            refusal_message(&ours).as_deref(),
-            Some("another install is already running")
+            parse_refusal(&ours),
+            Some(Refusal {
+                kind: RefusalKind::OtherExecutable,
+                message: "another install is already running".to_string(),
+            })
         );
+        // An older copy sends no reason; a newer one may send one this build
+        // does not know. Both are still refusals.
+        for body in [
+            &br#"{"success":false,"message":"no"}"#[..],
+            br#"{"success":false,"message":"no","reason":"somethingNew"}"#,
+            br#"{"success":false,"message":"no","reason":7}"#,
+        ] {
+            assert_eq!(
+                parse_refusal(body).map(|r| r.kind),
+                Some(RefusalKind::Unspecified),
+                "{}",
+                String::from_utf8_lossy(body)
+            );
+        }
         for body in [
             &b"Forbidden"[..],
             b"",
@@ -1334,7 +1441,7 @@ mod tests {
             br#"[false,"message"]"#,
         ] {
             assert_eq!(
-                refusal_message(body),
+                parse_refusal(body),
                 None,
                 "{}",
                 String::from_utf8_lossy(body)
@@ -1530,6 +1637,8 @@ mod tests {
         assert_eq!(resp.status(), reqwest::StatusCode::FORBIDDEN);
         let body: serde_json::Value = resp.json().await.unwrap();
         assert_eq!(body["success"], false);
+        assert_eq!(body["reason"], "otherExecutable");
+        assert!(body["message"].is_string());
         assert!(server.sink.calls().is_empty());
     }
 
@@ -1666,7 +1775,16 @@ mod tests {
             server.addr.port(),
         )
         .await;
-        assert!(matches!(refused, Handoff::Refused(_)), "{refused:?}");
+        assert!(
+            matches!(
+                &refused,
+                Handoff::Refused(Refusal {
+                    kind: RefusalKind::OtherExecutable,
+                    ..
+                })
+            ),
+            "{refused:?}"
+        );
         let delivered = hand_off(
             &FocusPayload {
                 launch_exe: Some(server.exe.display().to_string()),

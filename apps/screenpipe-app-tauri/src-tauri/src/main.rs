@@ -545,8 +545,8 @@ async fn app_main() {
                 eprintln!("{}: another instance is already running — focused existing window, exiting.", crate::brand::PRODUCT_NAME);
                 std::process::exit(0);
             }
-            server::Handoff::Refused(message) => {
-                startup::report_refused_handoff(&message, autostart::is_autostart_launch(&args));
+            server::Handoff::Refused(refusal) => {
+                startup::report_refused_handoff(&refusal, autostart::is_autostart_launch(&args));
                 std::process::exit(1);
             }
             server::Handoff::NoInstance => {}
