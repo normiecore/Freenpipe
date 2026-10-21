@@ -51,6 +51,20 @@ fn ocr_semaphore() -> &'static Semaphore {
     OCR_SEMAPHORE.get_or_init(|| Semaphore::new(1))
 }
 
+/// Logs a live OCR that produced no text. Requests shed by the Windows OCR
+/// worker (queue full, no engine installed, image refused, slow answer) are
+/// expected under load or on machines without an OCR language: the frame is
+/// still stored, so they are not capture failures and stay at debug level.
+#[cfg(target_os = "windows")]
+fn log_live_ocr_failure(e: &anyhow::Error) {
+    match screenpipe_screen::ocr_worker::worker_error_of(e) {
+        Some(shed) if shed.is_skip() => {
+            debug!("windows OCR skipped; storing the frame without OCR text: {}", shed)
+        }
+        _ => warn!("windows OCR failed: {}", e),
+    }
+}
+
 /// Context for a paired capture operation — replaces positional arguments.
 pub struct CaptureContext<'a> {
     pub db: &'a DatabaseManager,
@@ -176,13 +190,17 @@ pub async fn paired_capture(
 
     // Run OCR when: no a11y text, app prefers OCR, OR a11y text is thin (hybrid)
     let (ocr_text, ocr_text_json) = if !has_accessibility_text || a11y_is_thin {
-        // Windows native OCR is async, so call it directly (not inside spawn_blocking)
+        // Windows OCR runs on the dedicated screenpipe-windows-ocr thread.
+        // The request is queued without blocking: a full queue, a missing
+        // OCR language or a refused image comes back at once as an error and
+        // the frame is stored without OCR text (accessibility text, when
+        // present, is kept either way).
         #[cfg(target_os = "windows")]
         let raw = {
             match screenpipe_screen::perform_ocr_windows(&ctx.image, &ctx.languages).await {
                 Ok((text, json, _confidence)) => (text, json),
                 Err(e) => {
-                    warn!("windows OCR failed: {}", e);
+                    log_live_ocr_failure(&e);
                     (String::new(), "[]".to_string())
                 }
             }
@@ -190,26 +208,35 @@ pub async fn paired_capture(
         // Apple and Tesseract OCR are sync, use spawn_blocking with semaphore
         // to limit concurrent OCR and avoid CPU spikes on multi-monitor setups.
         #[cfg(not(target_os = "windows"))]
-        let raw = {
-            let _permit = ocr_semaphore().acquire().await.unwrap();
-            let image_for_ocr = ctx.image.clone();
-            let languages = ctx.languages.clone();
-            tokio::task::spawn_blocking(move || {
-                #[cfg(target_os = "macos")]
-                {
-                    let (text, json, _confidence) =
-                        screenpipe_screen::perform_ocr_apple(&image_for_ocr, &languages);
-                    (text, json)
-                }
-                #[cfg(not(target_os = "macos"))]
-                {
-                    let (text, json, _confidence) =
-                        screenpipe_screen::perform_ocr_tesseract(&image_for_ocr, languages);
-                    (text, json)
-                }
-            })
-            .await
-            .unwrap_or_else(|_| (String::new(), "[]".to_string()))
+        let raw = match ocr_semaphore().acquire().await {
+            Ok(_permit) => {
+                let image_for_ocr = ctx.image.clone();
+                let languages = ctx.languages.clone();
+                tokio::task::spawn_blocking(move || {
+                    #[cfg(target_os = "macos")]
+                    {
+                        let (text, json, _confidence) =
+                            screenpipe_screen::perform_ocr_apple(&image_for_ocr, &languages);
+                        (text, json)
+                    }
+                    #[cfg(not(target_os = "macos"))]
+                    {
+                        let (text, json, _confidence) =
+                            screenpipe_screen::perform_ocr_tesseract(&image_for_ocr, languages);
+                        (text, json)
+                    }
+                })
+                .await
+                .unwrap_or_else(|e| {
+                    warn!("OCR task failed; storing the frame without OCR text: {}", e);
+                    (String::new(), "[]".to_string())
+                })
+            }
+            Err(_closed) => {
+                // Only happens while shutting down; keep the frame.
+                debug!("OCR semaphore closed; storing the frame without OCR text");
+                (String::new(), "[]".to_string())
+            }
         };
 
         // Strip editor gutter noise (see strip_gutter_noise doc). Applied to
@@ -702,6 +729,80 @@ mod tests {
             Some("Hello World - Example Page")
         );
         assert_eq!(result.capture_trigger, "app_switch");
+    }
+
+    /// With OCR reported missing (the FREENPIPE_OCR_FAULT hook), a frame
+    /// whose accessibility text is thin still runs the OCR step, gets nothing
+    /// back, and is stored with its accessibility text; a frame with no
+    /// accessibility text at all is still stored.
+    #[tokio::test]
+    async fn test_paired_capture_keeps_accessibility_when_ocr_unavailable() {
+        screenpipe_screen::ocr_availability::simulate_ocr_unavailable(true);
+        let tmp = TempDir::new().unwrap();
+        let snapshot_writer = SnapshotWriter::new(tmp.path(), 80, 1920);
+        let db = DatabaseManager::new("sqlite::memory:", Default::default())
+            .await
+            .unwrap();
+        let now = Utc::now();
+
+        let ctx = CaptureContext {
+            db: &db,
+            snapshot_writer: &snapshot_writer,
+            image: test_image(),
+            captured_at: now,
+            monitor_id: 0,
+            device_name: "test_monitor",
+            app_name: Some("Google Chrome"),
+            window_name: Some("Quarterly plan - Google Docs"),
+            browser_url: Some("https://docs.google.com/document/d/abc/edit"),
+            document_path: None,
+            focused: true,
+            capture_trigger: "click",
+            use_pii_removal: false,
+            languages: vec![],
+            elements_ref_frame_id: None,
+            screenshot_disabled: false,
+        };
+        let snap = TreeSnapshot {
+            app_name: "Google Chrome".to_string(),
+            window_name: "Quarterly plan - Google Docs".to_string(),
+            text_content: "File Edit View Insert Format".to_string(),
+            nodes: vec![AccessibilityTreeNode {
+                role: "AXStaticText".to_string(),
+                text: "File Edit View Insert Format".to_string(),
+                depth: 0,
+                bounds: None,
+                ..Default::default()
+            }],
+            browser_url: Some("https://docs.google.com/document/d/abc/edit".to_string()),
+            document_path: None,
+            timestamp: now,
+            node_count: 1,
+            walk_duration: std::time::Duration::from_millis(5),
+            content_hash: 111,
+            simhash: 222,
+            truncated: false,
+            truncation_reason: screenpipe_a11y::tree::TruncationReason::None,
+            max_depth_reached: 0,
+        };
+        let result = paired_capture(&ctx, Some(&snap)).await.unwrap();
+        assert!(result.frame_id > 0);
+        assert_eq!(result.text_source.as_deref(), Some("accessibility"));
+        assert_eq!(
+            result.accessibility_text.as_deref(),
+            Some("File Edit View Insert Format")
+        );
+
+        let bare = CaptureContext {
+            app_name: Some("SomeGame"),
+            window_name: Some("Level 1"),
+            browser_url: None,
+            ..ctx
+        };
+        let result = paired_capture(&bare, None).await.unwrap();
+        assert!(result.frame_id > 0);
+        assert!(result.text_source.is_none());
+        screenpipe_screen::ocr_availability::simulate_ocr_unavailable(false);
     }
 
     #[tokio::test]

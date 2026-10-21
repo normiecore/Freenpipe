@@ -1051,10 +1051,39 @@ pub async fn get_frame_text_data(
     }))
 }
 
+/// On-demand OCR requests allowed in flight at once. On Windows they share
+/// the OCR thread's queue with live capture, so this keeps a burst of
+/// timeline requests from taking every slot.
+static ON_DEMAND_OCR_GATE: screenpipe_screen::ocr_worker::InflightGate =
+    screenpipe_screen::ocr_worker::InflightGate::new(
+        screenpipe_screen::ocr_worker::ON_DEMAND_OCR_MAX_INFLIGHT,
+    );
+
+/// HTTP answer for an on-demand OCR that produced no result. Load, a missing
+/// OCR engine and a slow answer are 503 (nothing is cached, so the client
+/// may try again later); anything else is 500.
+fn on_demand_ocr_error(frame_id: i64, e: &anyhow::Error) -> (StatusCode, JsonResponse<Value>) {
+    let shed = screenpipe_screen::ocr_worker::worker_error_of(e);
+    let status = match shed {
+        Some(err) if err.is_skip() || err.is_retryable() => StatusCode::SERVICE_UNAVAILABLE,
+        _ => StatusCode::INTERNAL_SERVER_ERROR,
+    };
+    (
+        status,
+        JsonResponse(json!({
+            "error": format!("on-demand OCR failed: {}", e),
+            "frame_id": frame_id,
+        })),
+    )
+}
+
 /// Run on-demand OCR on a frame that has no stored bounding boxes.
-/// Loads the snapshot JPEG, runs Apple Vision OCR, stores the result,
-/// and returns the text positions. Subsequent GET requests will hit the
-/// cached DB row. If OCR data already exists, returns it without re-running.
+/// Loads the snapshot JPEG, runs the platform OCR engine (on Windows the
+/// shared `screenpipe-windows-ocr` thread), stores the result, and returns
+/// the text positions. Subsequent GET requests will hit the cached DB row.
+/// If OCR data already exists, returns it without re-running. Answers 503
+/// when too many on-demand requests are running, the OCR queue is full or no
+/// OCR engine is installed.
 #[oasgen]
 pub async fn run_frame_ocr(
     State(state): State<Arc<AppState>>,
@@ -1070,6 +1099,17 @@ pub async fn run_frame_ocr(
         }
         _ => {}
     }
+
+    // Bound concurrent on-demand work (image load + OCR). The ticket is held
+    // until OCR finishes; a client that disconnects drops it, and on Windows
+    // also withdraws its queued request.
+    let Some(ticket) = ON_DEMAND_OCR_GATE.try_enter() else {
+        let busy = screenpipe_screen::OcrWorkerError::Busy {
+            limit: ON_DEMAND_OCR_GATE.limit(),
+        };
+        debug!("on-demand OCR for frame {} refused: {}", frame_id, busy);
+        return Err(on_demand_ocr_error(frame_id, &anyhow::Error::new(busy)));
+    };
 
     // Resolve image path from DB
     let (file_path, offset_index, is_snapshot) = match state.db.get_frame(frame_id).await {
@@ -1143,32 +1183,64 @@ pub async fn run_frame_ocr(
     };
 
     // Run OCR on the image
+    tracing::info!(
+        frame = frame_id,
+        inflight = ticket.inflight(),
+        "on-demand OCR started"
+    );
+
     #[cfg(target_os = "macos")]
-    let ocr_result = tokio::task::spawn_blocking(move || {
+    let ocr_result: anyhow::Result<(String, String)> = tokio::task::spawn_blocking(move || {
         let (text, json, _confidence) = screenpipe_screen::perform_ocr_apple(&image, &[]);
         (text, json)
     })
     .await
-    .unwrap_or_else(|_| (String::new(), "[]".to_string()));
+    .map_err(|e| anyhow::anyhow!("OCR task failed: {}", e));
 
     #[cfg(target_os = "windows")]
-    let ocr_result = match screenpipe_screen::perform_ocr_windows(&image, &[]).await {
-        Ok((text, json, _confidence)) => (text, json),
-        Err(e) => {
-            error!("Windows on-demand OCR failed: {}", e);
-            (String::new(), "[]".to_string())
-        }
-    };
+    let ocr_result: anyhow::Result<(String, String)> =
+        screenpipe_screen::perform_ocr_windows_with_timeout(
+            &image,
+            &[],
+            screenpipe_screen::ocr_worker::ON_DEMAND_OCR_TIMEOUT,
+        )
+        .await
+        .map(|(text, json, _confidence)| (text, json));
 
     #[cfg(not(any(target_os = "macos", target_os = "windows")))]
-    let ocr_result = tokio::task::spawn_blocking(move || {
-        let (text, json, _confidence) = screenpipe_screen::perform_ocr_tesseract(&image, vec![]);
-        (text, json)
-    })
-    .await
-    .unwrap_or_else(|_| (String::new(), "[]".to_string()));
+    let ocr_result: anyhow::Result<(String, String)> = {
+        let unavailable = if screenpipe_screen::ocr_availability::ocr_fault_injected() {
+            Some(screenpipe_screen::ocr_availability::SIMULATED_REASON.to_string())
+        } else if !tokio::task::spawn_blocking(screenpipe_screen::tesseract::tesseract_available)
+            .await
+            .unwrap_or(false)
+        {
+            Some("tesseract was not found; install tesseract-ocr".to_string())
+        } else {
+            None
+        };
+        match unavailable {
+            Some(reason) => Err(anyhow::Error::new(
+                screenpipe_screen::OcrWorkerError::Unavailable(reason),
+            )),
+            None => tokio::task::spawn_blocking(move || {
+                let (text, json, _confidence) =
+                    screenpipe_screen::perform_ocr_tesseract(&image, vec![]);
+                (text, json)
+            })
+            .await
+            .map_err(|e| anyhow::anyhow!("OCR task failed: {}", e)),
+        }
+    };
+    drop(ticket);
 
-    let (ocr_text, ocr_text_json) = ocr_result;
+    let (ocr_text, ocr_text_json) = match ocr_result {
+        Ok(result) => result,
+        Err(e) => {
+            error!("on-demand OCR failed for frame {}: {}", frame_id, e);
+            return Err(on_demand_ocr_error(frame_id, &e));
+        }
+    };
 
     // Store on the frame row for future reads (frames.full_text when the
     // frame has no text yet, frames.text_json for the word boxes). Errors are

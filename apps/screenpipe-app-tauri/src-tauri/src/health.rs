@@ -379,6 +379,42 @@ struct HealthCheckResponse {
     /// DRM streaming content detected — capture should be fully stopped
     #[serde(default)]
     drm_content_paused: bool,
+    /// Why screen recording is in its current state (`ok`, `ocr_unavailable`, ...).
+    #[serde(default)]
+    vision_reason: Option<String>,
+}
+
+/// Consecutive health checks reporting `vision_reason = ocr_unavailable`
+/// before the OCR notice is shown (rides out a transient engine failure).
+const OCR_NOTICE_CONFIRM_CHECKS: u32 = 5;
+
+/// Decides when to tell the user that screen text recognition is missing:
+/// once per app session, after the engine has reported it for a few checks
+/// in a row.
+#[derive(Debug, Default)]
+struct OcrUnavailableNotice {
+    streak: u32,
+    shown: bool,
+}
+
+impl OcrUnavailableNotice {
+    /// Feeds one health check's `vision_reason`; true exactly once, when the
+    /// notice should be shown.
+    fn observe(&mut self, vision_reason: Option<&str>) -> bool {
+        if self.shown {
+            return false;
+        }
+        if vision_reason == Some("ocr_unavailable") {
+            self.streak = self.streak.saturating_add(1);
+        } else {
+            self.streak = 0;
+        }
+        if self.streak >= OCR_NOTICE_CONFIRM_CHECKS {
+            self.shown = true;
+            return true;
+        }
+        false
+    }
 }
 
 /// Decide recording status based on health check result and time since startup.
@@ -1012,6 +1048,8 @@ pub async fn start_health_check(app: tauri::AppHandle) -> Result<()> {
     // When the start flag was first seen set (for the stale-flag rule).
     let mut start_flag_since: Option<Instant> = None;
     let mut stale_flag_logged = false;
+    // One notice per session when the engine has no OCR engine/language.
+    let mut ocr_notice = OcrUnavailableNotice::default();
 
     tokio::spawn(async move {
         loop {
@@ -1354,6 +1392,18 @@ pub async fn start_health_check(app: tauri::AppHandle) -> Result<()> {
             // it stops/restarts VisionManager + AudioManager without killing the server.
             // The health endpoint still reports drm_content_paused for UI purposes.
 
+            // ── OCR availability ──
+            // Without an OCR engine (no Windows OCR language, no tesseract)
+            // screenshots are still recorded but carry no searchable text.
+            if let Ok(ref health) = health_result {
+                if ocr_notice.observe(health.vision_reason.as_deref()) {
+                    info!("screen text recognition (OCR) is unavailable; showing the OCR notice");
+                    if let Err(e) = show_ocr_unavailable_notification(&app).await {
+                        warn!("could not show the OCR notice: {}", e);
+                    }
+                }
+            }
+
             // ── Capture stall detection ──
             // Only check when the server is responding (status == Recording),
             // we're past the startup grace period, and not in a post-restart
@@ -1517,6 +1567,32 @@ async fn show_capture_stall_notification(app: &tauri::AppHandle, system: &str) -
         .map_err(|e| anyhow::anyhow!(e))
 }
 
+/// Tells the user once per session that screen text recognition is missing
+/// and how to add it.
+async fn show_ocr_unavailable_notification(app: &tauri::AppHandle) -> Result<()> {
+    let hint = if cfg!(target_os = "windows") {
+        "To fix it, add a language that includes optical character recognition in Windows Settings > Time & language > Language & region, then restart recording."
+    } else if cfg!(target_os = "macos") {
+        "Restart recording; if this keeps happening, check the engine log."
+    } else {
+        "To fix it, install the tesseract-ocr package (with its English data) and restart recording."
+    };
+    let payload = serde_json::json!({
+        "id": "ocr_unavailable",
+        "type": "ocr_unavailable",
+        "title": "screen text recognition is unavailable",
+        "body": format!(
+            "Freenpipe keeps recording your screen and app text, but text that only appears in screenshots will not be searchable. {}",
+            hint
+        ),
+        "actions": [],
+        "autoDismissMs": 45000
+    });
+    crate::commands::show_notification_panel(app.clone(), payload.to_string())
+        .await
+        .map_err(|e| anyhow::anyhow!(e))
+}
+
 /// Checks the health of the sidecar by making a request to its health endpoint.
 /// Returns an error if the sidecar is not running or not responding.
 async fn check_health(
@@ -1562,6 +1638,43 @@ async fn check_health(
 mod tests {
     use super::*;
 
+    #[test]
+    fn ocr_notice_waits_for_a_streak_and_fires_once() {
+        let mut notice = OcrUnavailableNotice::default();
+        for _ in 0..OCR_NOTICE_CONFIRM_CHECKS - 1 {
+            assert!(!notice.observe(Some("ocr_unavailable")));
+        }
+        // A healthy check in between restarts the count.
+        assert!(!notice.observe(Some("ok")));
+        for _ in 0..OCR_NOTICE_CONFIRM_CHECKS - 1 {
+            assert!(!notice.observe(Some("ocr_unavailable")));
+        }
+        assert!(notice.observe(Some("ocr_unavailable")));
+        for _ in 0..20 {
+            assert!(!notice.observe(Some("ocr_unavailable")));
+        }
+    }
+
+    #[test]
+    fn ocr_notice_ignores_other_reasons() {
+        let mut notice = OcrUnavailableNotice::default();
+        for reason in [None, Some("ok"), Some("capture_stalled"), Some("not_started")] {
+            for _ in 0..10 {
+                assert!(!notice.observe(reason));
+            }
+        }
+    }
+
+    #[test]
+    fn health_response_reads_vision_reason() {
+        let parsed: HealthCheckResponse =
+            serde_json::from_str(r#"{"status":"degraded","vision_reason":"ocr_unavailable"}"#)
+                .unwrap();
+        assert_eq!(parsed.vision_reason.as_deref(), Some("ocr_unavailable"));
+        let legacy: HealthCheckResponse = serde_json::from_str(r#"{"status":"healthy"}"#).unwrap();
+        assert_eq!(legacy.vision_reason, None);
+    }
+
     fn make_healthy_response() -> Result<HealthCheckResponse> {
         Ok(HealthCheckResponse {
             status: "healthy".to_string(),
@@ -1580,6 +1693,7 @@ mod tests {
             vision_db_write_stalled: false,
             audio_db_write_stalled: false,
             drm_content_paused: false,
+            vision_reason: None,
         })
     }
 
@@ -1601,6 +1715,7 @@ mod tests {
             vision_db_write_stalled: false,
             audio_db_write_stalled: false,
             drm_content_paused: false,
+            vision_reason: None,
         })
     }
 
