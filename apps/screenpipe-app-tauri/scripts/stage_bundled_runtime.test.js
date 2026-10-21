@@ -28,6 +28,8 @@ import {
 	stageDirectMl,
 	stageVulkanLoader,
 	VULKAN_LOADER,
+	WER_HELPER_DLL,
+	werHelperPlan,
 	windowsArch,
 } from './stage_bundled_runtime.js'
 
@@ -156,6 +158,78 @@ describe('bundled MCP server', () => {
 		},
 		{ timeout: 180_000 },
 	)
+})
+
+describe('WER helper DLL', () => {
+	const root = path.join(os.tmpdir(), 'fp-repo')
+
+	it('is only staged for Windows builds that ask for it', () => {
+		expect(werHelperPlan({ repoRoot: root, platform: 'linux', env: { FREENPIPE_BUILD_WER_HELPER: '1' } })).toBeNull()
+		expect(werHelperPlan({ repoRoot: root, platform: 'windows', env: {} })).toBeNull()
+		expect(werHelperPlan({ repoRoot: root, platform: 'windows', env: { FREENPIPE_WER_HELPER_DLL: 'C:/x.dll' } })).toEqual({
+			source: 'C:/x.dll',
+		})
+	})
+
+	it('builds with a static C runtime in its own target directory', () => {
+		const plan = werHelperPlan({
+			repoRoot: root,
+			platform: 'windows',
+			env: { FREENPIPE_BUILD_WER_HELPER: '1', RUSTFLAGS: '-C debuginfo=0' },
+		})
+		const targetDir = path.join(root, 'target', 'wer-helper')
+		expect(plan.build.args).toEqual(['build', '--release', '-p', 'screenpipe-wer-helper', '--target-dir', targetDir])
+		expect(plan.build.env.RUSTFLAGS).toBe('-C debuginfo=0 -C target-feature=+crt-static')
+		expect(plan.source).toBe(path.join(targetDir, 'release', WER_HELPER_DLL))
+		// Release builds that require every bundled piece build it too.
+		const required = werHelperPlan({
+			repoRoot: root,
+			platform: 'windows',
+			env: { FREENPIPE_REQUIRE_BUNDLED_RUNTIME: '1', CARGO_TARGET_DIR: '/cache/target' },
+		})
+		expect(required.source).toBe(path.join('/cache/target', 'wer-helper', 'release', WER_HELPER_DLL))
+	})
+
+	it('builds for the release matrix triple when one is named', () => {
+		const targetDir = path.join(root, 'target', 'wer-helper')
+		const triple = 'x86_64-pc-windows-msvc'
+		const plan = werHelperPlan({
+			repoRoot: root,
+			platform: 'windows',
+			env: { FREENPIPE_REQUIRE_BUNDLED_RUNTIME: '1', SCREENPIPE_RELEASE_TARGET: triple },
+		})
+		expect(plan.build.args).toEqual([
+			'build',
+			'--release',
+			'-p',
+			'screenpipe-wer-helper',
+			'--target-dir',
+			targetDir,
+			'--target',
+			triple,
+		])
+		expect(plan.source).toBe(path.join(targetDir, triple, 'release', WER_HELPER_DLL))
+		// An empty value behaves like an unset one.
+		const unset = werHelperPlan({
+			repoRoot: root,
+			platform: 'windows',
+			env: { FREENPIPE_BUILD_WER_HELPER: '1', SCREENPIPE_RELEASE_TARGET: '' },
+		})
+		expect(unset.build.args).not.toContain('--target')
+		expect(unset.source).toBe(path.join(targetDir, 'release', WER_HELPER_DLL))
+	})
+
+	it('matches the crate, the app and the Windows bundle mapping', async () => {
+		const cargo = await readFile(path.join(repoRoot, 'crates/screenpipe-wer-helper/Cargo.toml'), 'utf8')
+		expect(cargo).toContain(`name = "${WER_HELPER_DLL.replace(/\.dll$/, '')}"`)
+		expect(cargo).toContain('name = "screenpipe-wer-helper"')
+		const wer = await readFile(path.join(repoRoot, 'apps/screenpipe-app-tauri/src-tauri/src/wer.rs'), 'utf8')
+		expect(wer).toContain(`pub const HELPER_DLL_NAME: &str = "${WER_HELPER_DLL}";`)
+		const conf = JSON.parse(
+			await readFile(path.join(repoRoot, 'apps/screenpipe-app-tauri/src-tauri/tauri.windows.conf.json'), 'utf8'),
+		)
+		expect(conf.bundle.resources['bundled\\native']).toBe('./')
+	})
 })
 
 describe('silero VAD model', () => {

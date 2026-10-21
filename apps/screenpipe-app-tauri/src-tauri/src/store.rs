@@ -1171,6 +1171,12 @@ pub enum AudioEngineFallbackReason {
     /// The `screenpipe-cloud` engine needs an AI gateway URL and key.
     GatewayNotConfigured,
     MissingDeepgramKey,
+    /// The CPU has no AVX2, so Whisper and Qwen3-ASR cannot run here and
+    /// Parakeet transcribes instead (`cpu_compat`).
+    CpuCompatMode,
+    /// As `CpuCompatMode`, in a build without Parakeet: no local engine is
+    /// left, so local transcription is off.
+    CpuCompatModeNoLocalEngine,
 }
 
 impl AudioEngineFallbackReason {
@@ -1178,6 +1184,8 @@ impl AudioEngineFallbackReason {
         match self {
             Self::GatewayNotConfigured => "AI gateway transcription unavailable",
             Self::MissingDeepgramKey => "Deepgram unavailable",
+            Self::CpuCompatMode => "Transcribing with Parakeet",
+            Self::CpuCompatModeNoLocalEngine => "Local transcription unavailable",
         }
     }
 
@@ -1188,6 +1196,12 @@ impl AudioEngineFallbackReason {
             }
             Self::MissingDeepgramKey => {
                 "Deepgram has no API key configured, so audio is being transcribed locally with Whisper Turbo (fast)."
+            }
+            Self::CpuCompatMode => {
+                "This processor lacks AVX2, which Whisper and Qwen3-ASR need. Audio is transcribed on this device with Parakeet instead; cloud engines are still available in Settings."
+            }
+            Self::CpuCompatModeNoLocalEngine => {
+                "This processor lacks AVX2, which Whisper and Qwen3-ASR need, and this build has no other local engine, so audio is not transcribed on this device. A cloud engine can still be picked in Settings."
             }
         }
     }
@@ -1674,7 +1688,14 @@ impl SettingsStore {
     }
 
     pub fn audio_engine_resolution(&self) -> AudioEngineResolution {
-        self.audio_engine_resolution_with(self.gateway_transcription_ready())
+        let mut resolution =
+            self.audio_engine_resolution_with(self.gateway_transcription_ready());
+        crate::cpu_compat::apply_to_resolution(
+            &mut resolution,
+            crate::cpu_compat::compat_mode(),
+            crate::cpu_compat::parakeet_built(),
+        );
+        resolution
     }
 
     fn audio_engine_resolution_with(&self, gateway_ready: bool) -> AudioEngineResolution {
