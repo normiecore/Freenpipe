@@ -318,6 +318,7 @@ pub(crate) struct UiEventWrite {
     pub element_description: Option<String>,
     pub element_automation_id: Option<String>,
     pub element_bounds: Option<String>,
+    pub element_ancestors: Option<String>,
     pub frame_id: Option<i64>,
 }
 
@@ -1325,7 +1326,11 @@ async fn execute_single_write(
             if batch.is_empty() {
                 return Ok(WriteResult::Unit);
             }
-            let placeholders: Vec<String> = batch.iter().map(|_| "?".to_string()).collect();
+            // Numbered placeholders: sqlx counts bare `?` from the first
+            // argument even after `?1`, so `IN (?, ?)` would bind chunk_id and
+            // drop the batch's last frame id.
+            let placeholders: Vec<String> =
+                (0..batch.len()).map(|i| format!("?{}", i + 2)).collect();
             let case_clauses: Vec<String> = batch
                 .iter()
                 .map(|(id, pos)| format!("WHEN {} THEN {}", id, pos))
@@ -1437,7 +1442,7 @@ async fn insert_ui_event_row(
     event: &UiEventWrite,
 ) -> Result<i64, sqlx::Error> {
     let result = sqlx::query(
-        "INSERT INTO ui_events (timestamp, session_id, relative_ms, event_type, x, y, delta_x, delta_y, button, click_count, key_code, modifiers, text_content, text_length, app_name, app_pid, window_title, browser_url, element_role, element_name, element_value, element_description, element_automation_id, element_bounds, frame_id) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,?20,?21,?22,?23,?24,?25)",
+        "INSERT INTO ui_events (timestamp, session_id, relative_ms, event_type, x, y, delta_x, delta_y, button, click_count, key_code, modifiers, text_content, text_length, app_name, app_pid, window_title, browser_url, element_role, element_name, element_value, element_description, element_automation_id, element_bounds, frame_id, element_ancestors) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,?20,?21,?22,?23,?24,?25,?26)",
     )
     .bind(event.timestamp.as_str())
     .bind(event.session_id.as_deref())
@@ -1464,6 +1469,7 @@ async fn insert_ui_event_row(
     .bind(event.element_automation_id.as_deref())
     .bind(event.element_bounds.as_deref())
     .bind(event.frame_id)
+    .bind(event.element_ancestors.as_deref())
     .execute(&mut **conn)
     .await?;
 

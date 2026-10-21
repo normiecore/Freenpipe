@@ -47,6 +47,7 @@ mod tests {
             element_description: None,
             element_automation_id: None,
             element_bounds: None,
+            element_ancestors: None,
             frame_id: None,
         }
     }
@@ -82,6 +83,35 @@ mod tests {
         .await
         .unwrap();
         assert_eq!(fts_count, 1);
+    }
+
+    #[tokio::test]
+    async fn element_ancestors_are_written_for_single_and_batch_inserts() {
+        let db = setup_test_db().await;
+        let ancestors = r#"[{"role":"Window","name":"Mail"},{"role":"List"}]"#;
+        let mut click = text_event(0, "click target");
+        click.event_type = UiEventType::Click;
+        click.element_ancestors = Some(ancestors.to_string());
+
+        let single = db.insert_ui_event(&click).await.unwrap();
+        let batch = db
+            .insert_ui_events_batch(&[click.clone(), text_event(1, "no element")])
+            .await
+            .unwrap();
+
+        for (id, expected) in [
+            (single, Some(ancestors)),
+            (batch[0], Some(ancestors)),
+            (batch[1], None),
+        ] {
+            let stored: Option<String> =
+                sqlx::query_scalar("SELECT element_ancestors FROM ui_events WHERE id = ?1")
+                    .bind(id)
+                    .fetch_one(&db.pool)
+                    .await
+                    .unwrap();
+            assert_eq!(stored.as_deref(), expected, "row {id}");
+        }
     }
 
     #[tokio::test]

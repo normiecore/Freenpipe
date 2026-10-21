@@ -1015,6 +1015,9 @@ impl SCServer {
                             //   reinstall. Install/list/detail/update proxy the public
                             //   registry; publish/unpublish/review enforce their own
                             //   Bearer check inside the handler (see pipe_store.rs).
+                            // /frames/* is not exempt: frame images, thumbnails and
+                            // preview media are recordings like any other read. The
+                            // cookie or ?token= below covers <img>/<video> sources.
                             let path = req.uri().path();
                             if path == "/health"
                                 || path == "/ws/health"
@@ -1024,7 +1027,6 @@ impl SCServer {
                                     && path.ends_with("/oauth/callback"))
                                 || path == "/connections/browser/pair/start"
                                 || path == "/connections/browser/pair/status"
-                                || path.starts_with("/frames/")
                                 || path == "/notify"
                                 || path.starts_with("/pipes/store")
                             {

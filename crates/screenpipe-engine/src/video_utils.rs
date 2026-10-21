@@ -725,13 +725,11 @@ impl VideoMetadataOverride {
     }
 }
 
-pub async fn extract_frame_from_video(
-    file_path: &str,
-    offset_index: i64,
-    jpeg_quality: &str,
-) -> Result<String> {
-    let ffmpeg_path = find_ffmpeg_path().expect("failed to find ffmpeg path");
-
+/// Validates a video chunk and turns a frame index into a seek position in
+/// seconds, clamped to the last frame the file holds. Errors carry the
+/// `VIDEO_NOT_FOUND`, `VIDEO_CORRUPTED` and `FFPROBE_NOT_FOUND` markers the
+/// frame routes map to typed errors.
+async fn frame_seek_seconds(ffmpeg_path: &Path, file_path: &str, offset_index: i64) -> Result<f64> {
     // Check if file exists first
     if !std::path::Path::new(file_path).exists() {
         return Err(anyhow::anyhow!("VIDEO_NOT_FOUND: {}", file_path));
@@ -805,6 +803,16 @@ pub async fn extract_frame_from_video(
         offset_seconds = last_frame_time.max(0.0);
     }
 
+    Ok(offset_seconds)
+}
+
+pub async fn extract_frame_from_video(
+    file_path: &str,
+    offset_index: i64,
+    jpeg_quality: &str,
+) -> Result<String> {
+    let ffmpeg_path = find_ffmpeg_path().expect("failed to find ffmpeg path");
+    let offset_seconds = frame_seek_seconds(&ffmpeg_path, file_path, offset_index).await?;
     let offset_str = format!("{:.3}", offset_seconds);
 
     // Create a temporary directory for frames if it doesn't exist
@@ -816,10 +824,9 @@ pub async fn extract_frame_from_video(
     let output_path = frames_dir.join(&frame_filename);
 
     debug!(
-        "extracting frame from {} at offset {} and fps {} to {}",
+        "extracting frame from {} at offset {} to {}",
         file_path,
         offset_str,
-        source_fps,
         output_path.display()
     );
 
@@ -876,6 +883,80 @@ pub async fn extract_frame_from_video(
     });
 
     Ok(output_path.to_string_lossy().into_owned())
+}
+
+/// The `-vf` filter chain for [`extract_frame_jpeg_bytes`]: an optional
+/// downscale to at most `max_width` pixels wide (height follows the aspect
+/// ratio, rounded to an even number), then the full-range 4:2:0 pixel format
+/// the MJPEG encoder wants.
+fn frame_bytes_filter(max_width: Option<u32>) -> String {
+    match max_width {
+        // Quoting the expression keeps its comma from splitting the chain.
+        Some(width) => format!("scale='min(iw,{})':-2,format=yuvj420p", width.max(2)),
+        None => "format=yuvj420p".to_string(),
+    }
+}
+
+/// Decodes one frame of a video chunk to JPEG bytes in memory.
+///
+/// Unlike [`extract_frame_from_video`], nothing is written to disk: ffmpeg
+/// streams the picture through a pipe. With `max_width`, a wider video is
+/// scaled down by ffmpeg first, which makes thumbnails much cheaper than full
+/// frames. The ffmpeg child is killed when the returned future is dropped, so
+/// a caller's timeout never leaves a process behind. Errors carry the same
+/// `VIDEO_NOT_FOUND` / `VIDEO_CORRUPTED` / `FFPROBE_NOT_FOUND` markers, plus
+/// `FFMPEG_NOT_FOUND` when no ffmpeg binary is available.
+pub async fn extract_frame_jpeg_bytes(
+    file_path: &str,
+    offset_index: i64,
+    max_width: Option<u32>,
+) -> Result<Vec<u8>> {
+    let ffmpeg_path = find_ffmpeg_path()
+        .ok_or_else(|| anyhow::anyhow!("FFMPEG_NOT_FOUND: no ffmpeg binary is available"))?;
+    let offset_seconds = frame_seek_seconds(&ffmpeg_path, file_path, offset_index).await?;
+    let offset_str = format!("{:.3}", offset_seconds);
+    let filters = frame_bytes_filter(max_width);
+
+    let mut command = ffmpeg_cmd_async(&ffmpeg_path);
+    command
+        .args([
+            "-nostdin",
+            "-hide_banner",
+            "-loglevel",
+            "error",
+            "-ss",
+            &offset_str,
+            "-i",
+            file_path,
+            "-frames:v",
+            "1",
+            "-vf",
+            &filters,
+            "-f",
+            "image2pipe",
+            "-c:v",
+            "mjpeg",
+            "-strict",
+            "unofficial",
+            "-q:v",
+            "2",
+            "pipe:1",
+        ])
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .kill_on_drop(true);
+
+    let output = command.output().await?;
+    if !output.status.success() {
+        let error_message = String::from_utf8_lossy(&output.stderr);
+        debug!("ffmpeg frame extraction failed: {}", error_message);
+        return Err(anyhow::anyhow!("ffmpeg process failed: {}", error_message));
+    }
+    if output.stdout.is_empty() {
+        return Err(anyhow::anyhow!("failed to extract frame: no data received"));
+    }
+    Ok(output.stdout)
 }
 
 async fn cleanup_old_frames(frames_dir: &PathBuf) -> Result<()> {

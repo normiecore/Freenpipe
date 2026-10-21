@@ -124,7 +124,7 @@ import {
   type WebTargetPresentation,
 } from "@/lib/chat/tool-presentation";
 import { usePipes } from "@/lib/hooks/use-pipes";
-import { localFetch, getApiBaseUrl } from "@/lib/api";
+import { localFetch, getApiBaseUrl, appendAuthToken } from "@/lib/api";
 import { CONNECTIONS_UPDATED_EVENT } from "@/lib/connections-events";
 import {
   computeChatCitationPlan,
@@ -8872,7 +8872,7 @@ export function StandaloneChat({
                   <div className="relative group">
                     {/* eslint-disable-next-line @next/next/no-img-element */}
                     <img
-                      src={`${getApiBaseUrl()}/frames/${prefillFrameId}`}
+                      src={appendAuthToken(`${getApiBaseUrl()}/frames/${prefillFrameId}`)}
                       alt="Attached frame"
                       className="w-16 h-12 object-cover rounded border border-border/50"
                     />
