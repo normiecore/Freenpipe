@@ -9,7 +9,10 @@
 //! guard calls `sqlite3_interrupt` on *its own* connection, so SQLite stops
 //! the statement at its next opcode instead of finishing a query whose result
 //! would be thrown away, and hands the connection to a cleanup task. The task
-//! waits for the interrupted statement to end, finalizes cached statements,
+//! keeps interrupting until the connection's worker has moved past the
+//! statement (an interrupt that lands before the statement starts is lost,
+//! because SQLite clears the flag when a statement starts while no other is
+//! active), waits for it to end, finalizes cached statements,
 //! rolls back any read transaction left open, and only then lets the
 //! connection go back to the pool. A connection that cannot be cleaned up is
 //! closed instead of returned.
@@ -32,6 +35,10 @@ use tracing::{debug, info, warn};
 
 /// Longest a cleanup task waits for an interrupted connection to settle.
 pub const CLEANUP_TIMEOUT: Duration = Duration::from_secs(30);
+
+/// How often a cleanup task repeats the interrupt while the abandoned
+/// statement may still be queued or starting.
+const INTERRUPT_REPEAT: Duration = Duration::from_millis(50);
 
 /// Raw handle of one connection, used only for `sqlite3_interrupt`.
 #[derive(Clone, Copy)]
@@ -126,7 +133,7 @@ impl Drop for CancellableConnection {
         self.handle.interrupt();
         match tokio::runtime::Handle::try_current() {
             Ok(runtime) => {
-                runtime.spawn(cleanup(conn));
+                runtime.spawn(cleanup(conn, self.handle));
             }
             Err(_) => {
                 // No runtime to clean up on: never return a connection that
@@ -137,13 +144,33 @@ impl Drop for CancellableConnection {
     }
 }
 
-/// Make an interrupted connection reusable, or close it.
-async fn cleanup(mut conn: PoolConnection<Sqlite>) {
+/// Make an interrupted connection reusable, or close it. `handle` belongs to
+/// `conn`, which this task owns, so it stays valid throughout.
+async fn cleanup(mut conn: PoolConnection<Sqlite>, handle: InterruptHandle) {
     let settled = tokio::time::timeout(CLEANUP_TIMEOUT, async {
-        // Queued behind the interrupted statement on the connection's worker,
-        // so this runs once it has ended. Finalizing cached statements leaves
-        // none mid-step, which also clears the interrupt flag.
-        conn.clear_cached_statements().await?;
+        // Queued behind the abandoned statement on the connection's worker,
+        // so this returns once that statement has ended. The statement may
+        // not have started when the guard's interrupt landed (still queued,
+        // or being prepared), and starting clears the flag, so interrupt
+        // again until then. Finalizing cached statements leaves none
+        // mid-step; a flag set after that is cleared when the next statement
+        // starts.
+        {
+            let mut clear = std::pin::pin!(conn.clear_cached_statements());
+            let mut repeat = tokio::time::interval(INTERRUPT_REPEAT);
+            repeat.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+            // The first tick fires at once; the guard has just interrupted.
+            repeat.tick().await;
+            loop {
+                tokio::select! {
+                    cleared = &mut clear => {
+                        cleared?;
+                        break;
+                    }
+                    _ = repeat.tick() => handle.interrupt(),
+                }
+            }
+        }
         let in_txn = in_transaction(&mut conn).await?;
         if in_txn {
             sqlx::query("ROLLBACK").execute(&mut *conn).await?;
@@ -226,6 +253,42 @@ mod tests {
             .unwrap();
         assert_eq!(one, 1);
         assert!(!in_transaction(&mut conn).await.unwrap());
+    }
+
+    #[tokio::test]
+    async fn query_still_queued_when_dropped_is_interrupted_once_it_starts() {
+        // An earlier statement whose future was dropped (as try_join does to
+        // its siblings) still runs on the worker, so the endless one is only
+        // queued when the guard is dropped. The guard's single interrupt
+        // reaches the earlier statement or nothing, and SQLite clears the
+        // flag when the queued one starts; the cleanup task's repeated
+        // interrupt must stop it anyway.
+        const EARLIER: &str = "WITH RECURSIVE n(i) AS \
+                               (SELECT 1 UNION ALL SELECT i + 1 FROM n WHERE i < 3000000) \
+                               SELECT count(*) FROM n";
+        let dir = tempfile::tempdir().unwrap();
+        let pool = single_connection_pool(&dir).await;
+        for _ in 0..3 {
+            let mut guard = CancellableConnection::acquire(&pool).await.unwrap();
+            {
+                let earlier = sqlx::query_scalar::<_, i64>(EARLIER).fetch_one(guard.conn());
+                let _ = tokio::time::timeout(Duration::ZERO, earlier).await;
+            }
+            {
+                let queued = sqlx::query_scalar::<_, i64>(ENDLESS).fetch_one(guard.conn());
+                let _ = tokio::time::timeout(Duration::ZERO, queued).await;
+            }
+            drop(guard);
+            let mut conn = tokio::time::timeout(Duration::from_secs(2), pool.acquire())
+                .await
+                .expect("connection returned once the queued statement was stopped")
+                .expect("acquire");
+            let one: i64 = sqlx::query_scalar("SELECT 1")
+                .fetch_one(&mut *conn)
+                .await
+                .unwrap();
+            assert_eq!(one, 1);
+        }
     }
 
     #[tokio::test]

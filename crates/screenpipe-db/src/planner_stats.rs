@@ -530,10 +530,22 @@ async fn refresh_planner(conn: &mut PoolConnection<Sqlite>) -> Result<(), sqlx::
     }
     .await;
     match bump {
-        Ok(()) => {
-            sqlx::query("COMMIT").execute(&mut **conn).await?;
-            Ok(())
-        }
+        Ok(()) => match sqlx::query("COMMIT").execute(&mut **conn).await {
+            Ok(_) => Ok(()),
+            Err(e) => {
+                // A failed COMMIT (disk full, I/O error) can leave the
+                // transaction open, and with it the write lock, on a writer
+                // that goes back to the pool: roll back, and never reuse it.
+                if let Err(rb) = sqlx::query("ROLLBACK").execute(&mut **conn).await {
+                    debug!(
+                        "planner maintenance: rollback after a failed commit: {}",
+                        rb
+                    );
+                }
+                conn.close_on_drop();
+                Err(e)
+            }
+        },
         Err(e) => {
             if let Err(rb) = sqlx::query("ROLLBACK").execute(&mut **conn).await {
                 warn!(

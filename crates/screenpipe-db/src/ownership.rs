@@ -7,8 +7,11 @@
 //!
 //! - **In this process**, a registry of database paths with a live owner. A
 //!   second owning open of the same file waits briefly for the first to be
-//!   dropped (an engine restart retires the old generation first) and is then
-//!   refused.
+//!   dropped (an engine restart retires the old generation first). If the
+//!   first is still alive after the wait (a task that was never stopped keeps
+//!   it), the second opens anyway with a warning and shares the first one's
+//!   OS lock: refusing would leave recording off until the app is relaunched.
+//!   The lock is released when the last owner in the process is dropped.
 //! - **Across processes**, the sidecar `<db>.owner` (for `db.sqlite` that is
 //!   `db.sqlite.owner`). The owner holds an exclusive OS lock on it for its
 //!   whole lifetime and writes its pid into it for diagnostics. The OS drops
@@ -24,7 +27,7 @@
 //! another process may be opening it would let two owners lock two different
 //! files of the same name.
 
-use std::collections::HashSet;
+use std::collections::HashMap;
 use std::fs::{File, OpenOptions};
 use std::io::{Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
@@ -37,7 +40,8 @@ use tracing::{debug, info, warn};
 /// Suffix appended to the database file name to name its ownership sidecar.
 pub const OWNER_FILE_SUFFIX: &str = ".owner";
 
-/// How long an owning open waits for an earlier owner in this process.
+/// How long an owning open waits for an earlier owner in this process to be
+/// dropped before it opens the database next to it.
 pub const IN_PROCESS_RELEASE_WAIT: Duration = Duration::from_secs(10);
 
 /// Path of the ownership sidecar for `database`.
@@ -62,7 +66,8 @@ pub struct OwnerRecord {
 /// Why an owning open was refused.
 #[derive(Debug)]
 pub enum OwnershipError {
-    /// This process already holds a live owner for the database.
+    /// This process holds a live owner for the database (only reported by
+    /// [`ensure_not_owned_elsewhere`]; a second owning open shares instead).
     HeldInThisProcess { database: PathBuf },
     /// Another running process owns the database.
     HeldByOtherProcess { database: PathBuf, pid: Option<u32> },
@@ -78,8 +83,8 @@ impl std::fmt::Display for OwnershipError {
         match self {
             OwnershipError::HeldInThisProcess { database } => write!(
                 f,
-                "database {} is already open in this process by an earlier DatabaseManager \
-                 that is still alive; it must be dropped before the database is opened again",
+                "database {} is open in this process by a DatabaseManager that is still alive; \
+                 close it before changing the database's storage",
                 database.display()
             ),
             OwnershipError::HeldByOtherProcess { database, pid } => {
@@ -122,9 +127,29 @@ pub fn is_ownership_error(err: &sqlx::Error) -> bool {
     }
 }
 
-fn live_owners() -> &'static Mutex<HashSet<PathBuf>> {
-    static OWNERS: OnceLock<Mutex<HashSet<PathBuf>>> = OnceLock::new();
-    OWNERS.get_or_init(|| Mutex::new(HashSet::new()))
+/// The owners of one database path in this process.
+#[derive(Debug)]
+struct LiveOwner {
+    /// Live guards for the path. More than one only when an owner was opened
+    /// while an earlier one outlived [`IN_PROCESS_RELEASE_WAIT`].
+    guards: usize,
+    /// The first owner is still opening and locking the sidecar.
+    locking: bool,
+    /// The locked sidecar, shared by every guard and closed (unlocking it)
+    /// with the last one. `None` when the file system cannot lock it.
+    file: Option<File>,
+}
+
+type Registry = HashMap<PathBuf, LiveOwner>;
+
+fn live_owners() -> std::sync::MutexGuard<'static, Registry> {
+    static OWNERS: OnceLock<Mutex<Registry>> = OnceLock::new();
+    // No code panics while holding the lock, but a poisoned registry must
+    // never stop the database from opening.
+    OWNERS
+        .get_or_init(|| Mutex::new(HashMap::new()))
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
 }
 
 /// Normalised registry key for a database path: canonical when the file
@@ -142,12 +167,13 @@ fn registry_key(database: &Path) -> PathBuf {
     }
 }
 
-/// Held by an owning `DatabaseManager`; releases both guards when dropped.
+/// Held by an owning `DatabaseManager`; releases its share of both guards
+/// when dropped.
 #[derive(Debug)]
 pub struct OwnershipGuard {
     key: PathBuf,
-    /// The locked sidecar. `None` when the file system cannot lock files.
-    file: Option<File>,
+    /// Whether the cross-process lock was held when this guard was created.
+    os_lock: bool,
 }
 
 impl OwnershipGuard {
@@ -159,42 +185,130 @@ impl OwnershipGuard {
     /// Whether the cross-process lock is held (false on file systems without
     /// lock support).
     pub fn holds_os_lock(&self) -> bool {
-        self.file.is_some()
+        self.os_lock
     }
 }
 
 impl Drop for OwnershipGuard {
     fn drop(&mut self) {
-        if let Some(file) = self.file.take() {
-            if let Err(e) = file.unlock() {
-                debug!("releasing the database ownership lock: {}", e);
+        let released = {
+            let mut owners = live_owners();
+            match owners.get_mut(&self.key) {
+                Some(entry) if entry.guards > 1 => {
+                    entry.guards -= 1;
+                    None
+                }
+                Some(_) => owners.remove(&self.key),
+                None => None,
             }
+        };
+        match released {
+            Some(entry) => {
+                // Unlock outside the registry lock; closing the file would
+                // release it as well.
+                if let Some(file) = entry.file {
+                    if let Err(e) = file.unlock() {
+                        debug!("releasing the database ownership lock: {}", e);
+                    }
+                }
+                debug!(db = %self.key.display(), "database ownership released");
+            }
+            None => debug!(
+                db = %self.key.display(),
+                "one of several owners in this process closed; ownership kept"
+            ),
         }
-        if let Ok(mut owners) = live_owners().lock() {
-            owners.remove(&self.key);
-        }
-        debug!(db = %self.key.display(), "database ownership released");
     }
 }
 
+/// The registry slot of an owner that is still locking the sidecar. Gives
+/// the slot back if the open fails or its future is dropped mid-way.
+struct PendingClaim {
+    key: Option<PathBuf>,
+}
+
+impl PendingClaim {
+    /// The sidecar is locked (or cannot be): this becomes a live owner.
+    fn complete(mut self, file: Option<File>) -> OwnershipGuard {
+        let key = self.key.take().expect("pending claim completed twice");
+        let os_lock = file.is_some();
+        if let Some(entry) = live_owners().get_mut(&key) {
+            entry.locking = false;
+            entry.file = file;
+        }
+        OwnershipGuard { key, os_lock }
+    }
+}
+
+impl Drop for PendingClaim {
+    fn drop(&mut self) {
+        if let Some(key) = self.key.take() {
+            live_owners().remove(&key);
+        }
+    }
+}
+
+/// What an owning open does with the registry on one attempt.
+enum Claim {
+    /// The path was free: lock the sidecar.
+    Lock(PendingClaim),
+    /// Joined an owner that outlived the wait.
+    Shared { os_lock: bool, guards: usize },
+    /// An earlier owner is alive and the wait is not over.
+    Wait,
+}
+
 /// Claim ownership of `database`, waiting up to `wait` for an earlier owner in
-/// this process to go away.
+/// this process to go away. An earlier owner that is still alive after the
+/// wait is joined with a warning instead of refused: the new owner shares its
+/// OS lock, which stays held until both are dropped.
 pub async fn acquire(database: &Path, wait: Duration) -> Result<OwnershipGuard, sqlx::Error> {
     let key = registry_key(database);
     let deadline = Instant::now() + wait;
     let mut logged_wait = false;
-    loop {
-        let inserted = live_owners()
-            .lock()
-            .map(|mut owners| owners.insert(key.clone()))
-            .unwrap_or(false);
-        if inserted {
-            break;
-        }
-        if Instant::now() >= deadline {
-            let err = OwnershipError::HeldInThisProcess { database: key };
-            warn!("{}", err);
-            return Err(err.into_sqlx());
+    let pending = loop {
+        let claim = {
+            let mut owners = live_owners();
+            match owners.get_mut(&key) {
+                None => {
+                    owners.insert(
+                        key.clone(),
+                        LiveOwner {
+                            guards: 1,
+                            locking: true,
+                            file: None,
+                        },
+                    );
+                    Claim::Lock(PendingClaim {
+                        key: Some(key.clone()),
+                    })
+                }
+                // An owner still locking finishes within about a second
+                // (the open is retried for that long at most), and the
+                // outcome decides whether there is anything to share.
+                Some(entry) if !entry.locking && Instant::now() >= deadline => {
+                    entry.guards += 1;
+                    Claim::Shared {
+                        os_lock: entry.file.is_some(),
+                        guards: entry.guards,
+                    }
+                }
+                Some(_) => Claim::Wait,
+            }
+        };
+        match claim {
+            Claim::Lock(pending) => break pending,
+            Claim::Shared { os_lock, guards } => {
+                warn!(
+                    db = %key.display(),
+                    owners = guards,
+                    "the previous database owner in this process is still alive after {}s \
+                     (something still holds it); opening the database next to it",
+                    wait.as_secs()
+                );
+                return Ok(OwnershipGuard { key, os_lock });
+            }
+            Claim::Wait => {}
         }
         if !logged_wait {
             info!(
@@ -204,9 +318,10 @@ pub async fn acquire(database: &Path, wait: Duration) -> Result<OwnershipGuard, 
             logged_wait = true;
         }
         tokio::time::sleep(Duration::from_millis(100)).await;
-    }
+    };
 
-    // The registry slot is ours; any error below must give it back.
+    // The registry slot is ours; dropping `pending` on any path below gives
+    // it back.
     let sidecar = owner_file_path(&key);
     let lock_path = sidecar.clone();
     let lock_key = key.clone();
@@ -219,11 +334,9 @@ pub async fn acquire(database: &Path, wait: Duration) -> Result<OwnershipGuard, 
             })
         });
     match locked {
-        Ok(file) => Ok(OwnershipGuard { key, file }),
+        Ok(file) => Ok(pending.complete(file)),
         Err(err) => {
-            if let Ok(mut owners) = live_owners().lock() {
-                owners.remove(&key);
-            }
+            drop(pending);
             warn!("{}", err);
             Err(err.into_sqlx())
         }
@@ -343,11 +456,7 @@ fn read_owner_record(file: &mut File) -> Option<OwnerRecord> {
 /// storage change on a database this process does not own. Takes no lock.
 pub fn ensure_not_owned_elsewhere(database: &Path) -> Result<(), sqlx::Error> {
     let key = registry_key(database);
-    if live_owners()
-        .lock()
-        .map(|owners| owners.contains(&key))
-        .unwrap_or(false)
-    {
+    if live_owners().contains_key(&key) {
         return Err(OwnershipError::HeldInThisProcess { database: key }.into_sqlx());
     }
     let sidecar = owner_file_path(&key);
@@ -396,26 +505,57 @@ mod tests {
         );
     }
 
+    /// Whether a handle other than the owners' could lock the sidecar now
+    /// (what another process would see).
+    fn foreign_handle_can_lock(sidecar: &Path) -> bool {
+        let foreign = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(sidecar)
+            .unwrap();
+        match foreign.try_lock() {
+            Ok(()) => {
+                foreign.unlock().unwrap();
+                true
+            }
+            Err(std::fs::TryLockError::WouldBlock) => false,
+            Err(std::fs::TryLockError::Error(e)) => panic!("try_lock: {e}"),
+        }
+    }
+
     #[tokio::test]
-    async fn second_owner_in_process_is_refused_until_the_first_drops() {
+    async fn second_owner_in_process_waits_then_shares_the_lock() {
         let dir = tempfile::tempdir().unwrap();
         let db = dir.path().join("db.sqlite");
         std::fs::write(&db, b"").unwrap();
+        let sidecar = owner_file_path(&std::fs::canonicalize(&db).unwrap());
 
         let first = acquire(&db, Duration::ZERO).await.expect("first owner");
         assert!(first.holds_os_lock());
-        let err = acquire(&db, Duration::from_millis(200)).await.unwrap_err();
-        assert!(is_ownership_error(&err));
-        assert!(
-            err.to_string().contains("already open in this process"),
-            "{err}"
-        );
-        assert!(ensure_not_owned_elsewhere(&db).is_err());
 
+        // An earlier owner that outlives the wait (a leaked task holds it)
+        // must not keep a restarted engine from opening the database.
+        let started = Instant::now();
+        let second = acquire(&db, Duration::from_millis(300))
+            .await
+            .expect("opens next to a lingering owner");
+        assert!(started.elapsed() >= Duration::from_millis(300));
+        assert!(second.holds_os_lock());
+        assert!(ensure_not_owned_elsewhere(&db).is_err());
+        assert!(!foreign_handle_can_lock(&sidecar));
+
+        // The shared lock stays held until the last owner goes.
         drop(first);
-        let again = acquire(&db, Duration::ZERO).await.expect("reacquire");
-        drop(again);
+        assert!(!foreign_handle_can_lock(&sidecar));
+        let err = ensure_not_owned_elsewhere(&db).unwrap_err();
+        assert!(is_ownership_error(&err));
+        assert!(err.to_string().contains("open in this process"), "{err}");
+        drop(second);
+        assert!(foreign_handle_can_lock(&sidecar));
         assert!(ensure_not_owned_elsewhere(&db).is_ok());
+
+        let again = acquire(&db, Duration::ZERO).await.expect("reacquire");
+        assert!(again.holds_os_lock());
     }
 
     #[tokio::test]
@@ -463,8 +603,14 @@ mod tests {
         std::fs::create_dir(owner_file_path(&std::fs::canonicalize(&db).unwrap())).unwrap();
         let guard = acquire(&db, Duration::ZERO).await.expect("opens anyway");
         assert!(!guard.holds_os_lock());
-        // The in-process guard still applies.
-        assert!(acquire(&db, Duration::ZERO).await.is_err());
+        // The in-process guard still applies, and a second owner shares it.
+        assert!(ensure_not_owned_elsewhere(&db).is_err());
+        let second = acquire(&db, Duration::ZERO).await.expect("shares");
+        assert!(!second.holds_os_lock());
+        drop(guard);
+        drop(second);
+        let again = acquire(&db, Duration::ZERO).await.expect("free again");
+        assert!(!again.holds_os_lock());
     }
 
     #[tokio::test]

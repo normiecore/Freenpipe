@@ -33,7 +33,8 @@
 //!
 //!  * sqlite3 cli present and ≥ 3.38 (when `.recover` shipped)
 //!  * free disk ≥ 2× source DB size (the recovered sidecar takes that much)
-//!  * `PRAGMA wal_checkpoint(TRUNCATE)` first so pending WAL writes are folded
+//!  * no running engine owns the database (its `db.sqlite.owner` lock)
+//!  * `PRAGMA wal_checkpoint(RESTART)` first so pending WAL writes are folded
 //!    into the main file before `.recover` reads it
 //!  * post-check: schema parity between source and recovered (excluding FTS
 //!    shadow tables, which `.recover` rebuilds). If material tables are
@@ -405,16 +406,23 @@ async fn recover(data_dir: &Path, force: bool) -> Result<()> {
     if !live.exists() {
         bail!("no database at {}", live.display());
     }
+    // Even with --force, never swap the file under an engine that owns it
+    // (another app instance, `screenpipe record` on another port). A
+    // sidecar left by a crashed engine is not locked and does not block.
+    screenpipe_db::ownership::ensure_not_owned_elsewhere(&live)
+        .map_err(|e| anyhow::anyhow!("{e}"))?;
     let source_size = fs::metadata(&live)?.len();
     ensure_disk_space(data_dir, source_size)?;
 
     let _lock = DbLock::acquire(data_dir, "recover")?;
 
-    // Flush WAL into the main file so .recover sees the latest committed state.
+    // Flush WAL into the main file so .recover sees the latest committed
+    // state. RESTART copies every frame back like TRUNCATE did; the WAL file
+    // left behind is set aside with the old database at the swap below.
     println!("🧹  checkpointing WAL into main db …");
     let _ = Command::new("sqlite3")
         .arg(&live)
-        .arg("PRAGMA wal_checkpoint(TRUNCATE);")
+        .arg("PRAGMA wal_checkpoint(RESTART);")
         .output();
 
     let ts = chrono::Local::now().format("%Y%m%d-%H%M%S").to_string();

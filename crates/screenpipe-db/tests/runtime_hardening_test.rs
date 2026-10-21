@@ -228,6 +228,55 @@ async fn ownership_sidecar_guards_against_another_process() {
     drop(open(&path).await);
 }
 
+/// Whether a handle other than the owners' could lock the sidecar now
+/// (what another process would see).
+fn foreign_handle_can_lock(sidecar: &Path) -> bool {
+    let foreign = std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open(sidecar)
+        .unwrap();
+    match foreign.try_lock() {
+        Ok(()) => {
+            foreign.unlock().unwrap();
+            true
+        }
+        Err(std::fs::TryLockError::WouldBlock) => false,
+        Err(std::fs::TryLockError::Error(e)) => panic!("try_lock: {e}"),
+    }
+}
+
+#[tokio::test]
+async fn restarted_engine_opens_next_to_a_lingering_manager() {
+    // The app restarts its engine in-process; a task that was never stopped
+    // can keep the previous generation's manager alive. The new generation
+    // must still open the database (after the wait), and the database stays
+    // guarded against other processes until both managers are gone.
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("db.sqlite");
+    let lingering = open(&path).await;
+    let sidecar = owner_file_path(&std::fs::canonicalize(&path).unwrap());
+
+    let started = Instant::now();
+    let restarted = open(&path).await;
+    assert!(started.elapsed() >= screenpipe_db::ownership::IN_PROCESS_RELEASE_WAIT);
+    let frames: i64 = sqlx::query_scalar("SELECT count(*) FROM frames")
+        .fetch_one(&restarted.pool)
+        .await
+        .unwrap();
+    assert_eq!(frames, 0);
+    assert!(!foreign_handle_can_lock(&sidecar));
+
+    drop(lingering);
+    assert!(!foreign_handle_can_lock(&sidecar));
+    let _: i64 = sqlx::query_scalar("SELECT count(*) FROM frames")
+        .fetch_one(&restarted.pool)
+        .await
+        .unwrap();
+    drop(restarted);
+    assert!(foreign_handle_can_lock(&sidecar));
+}
+
 #[tokio::test]
 async fn on_demand_checkpoint_uses_restart_and_restarts_the_log() {
     let dir = tempfile::tempdir().unwrap();

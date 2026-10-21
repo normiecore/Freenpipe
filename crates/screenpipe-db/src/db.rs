@@ -5553,29 +5553,22 @@ impl DatabaseManager {
         "#;
 
         // Execute queries in parallel, each on a connection that is
-        // interrupted if the timeline request goes away mid-query.
-        let (mut frames_reader, mut audio_reader, mut live_reader) = tokio::try_join!(
-            self.cancellable_read(),
-            self.cancellable_read(),
-            self.cancellable_read()
-        )?;
-        let (frame_rows, audio_rows, live_rows) = tokio::try_join!(
-            sqlx::query(frames_query)
+        // interrupted if the timeline request goes away mid-query. Each
+        // branch acquires its own connection only when it runs, so no branch
+        // holds one while waiting for another (a small read pool would
+        // otherwise stall concurrent timeline requests).
+        let fetch = |sql: &'static str| async move {
+            let mut reader = self.cancellable_read().await?;
+            let rows = sqlx::query(sql)
                 .bind(start)
                 .bind(end)
-                .fetch_all(frames_reader.conn()),
-            sqlx::query(audio_query)
-                .bind(start)
-                .bind(end)
-                .fetch_all(audio_reader.conn()),
-            sqlx::query(live_query)
-                .bind(start)
-                .bind(end)
-                .fetch_all(live_reader.conn())
-        )?;
-        frames_reader.finish();
-        audio_reader.finish();
-        live_reader.finish();
+                .fetch_all(reader.conn())
+                .await?;
+            reader.finish();
+            Ok::<_, SqlxError>(rows)
+        };
+        let (frame_rows, audio_rows, live_rows) =
+            tokio::try_join!(fetch(frames_query), fetch(audio_query), fetch(live_query))?;
 
         // Process into structured data with device-aware grouping
         let mut frames_map: BTreeMap<(DateTime<Utc>, i64), FrameData> = BTreeMap::new();

@@ -558,18 +558,23 @@ pub fn start_speaker_identification(
         });
     }
 
-    // Auto-name the dominant input speaker as the user (runs independently of meetings)
-    if let Some(name) = user_name.clone() {
-        if !name.trim().is_empty() {
-            let db2 = db.clone();
-            tokio::spawn(async move {
-                auto_name_input_speaker(db2, &name).await;
-            });
-        }
-    }
+    // Auto-name the dominant input speaker as the user (runs independently of meetings).
+    // It runs inside the returned task, so aborting the handle stops it too;
+    // spawned on its own it outlived every capture session and kept the
+    // database manager alive across engine restarts.
+    let auto_name = user_name.clone().filter(|name| !name.trim().is_empty());
 
     tokio::spawn(async move {
-        run_speaker_identification_loop(db, user_name).await;
+        match auto_name {
+            Some(name) => {
+                let db2 = db.clone();
+                tokio::join!(
+                    run_speaker_identification_loop(db, user_name),
+                    auto_name_input_speaker(db2, &name),
+                );
+            }
+            None => run_speaker_identification_loop(db, user_name).await,
+        }
     })
 }
 
