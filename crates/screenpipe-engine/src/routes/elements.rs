@@ -55,7 +55,9 @@ pub(crate) struct ElementsQuery {
     limit: u32,
     #[serde(default)]
     offset: u32,
-    /// Response format: `json` (default), `csv` or `tsv`.
+    /// Response format: `json` (default), `csv` or `tsv`. `outline`,
+    /// `automation` and `preferred` are accepted and answered as `json`
+    /// until they are implemented.
     #[serde(default)]
     format: Option<String>,
     /// Comma-separated dotted paths to keep from each element, e.g.
@@ -137,7 +139,8 @@ pub(crate) async fn search_elements(
     Query(query): Query<ElementsQuery>,
     State(state): State<Arc<AppState>>,
 ) -> Result<Shaped<ElementsListResponse>, (StatusCode, JsonResponse<Value>)> {
-    let shape = ResponseShape::from_query(query.format.as_deref(), query.fields.as_deref())?;
+    let shape =
+        ResponseShape::from_elements_query(query.format.as_deref(), query.fields.as_deref())?;
     let q = query.q.as_deref().unwrap_or("");
     let source = query
         .source
@@ -184,7 +187,8 @@ pub(crate) async fn get_frame_elements(
     Path(frame_id): Path<i64>,
     Query(query): Query<FrameElementsQuery>,
 ) -> Result<Shaped<ElementsListResponse>, (StatusCode, JsonResponse<Value>)> {
-    let shape = ResponseShape::from_query(query.format.as_deref(), query.fields.as_deref())?;
+    let shape =
+        ResponseShape::from_elements_query(query.format.as_deref(), query.fields.as_deref())?;
     let source = query
         .source
         .as_deref()
@@ -217,7 +221,9 @@ pub(crate) async fn get_frame_elements(
 pub(crate) struct FrameElementsQuery {
     #[serde(default)]
     source: Option<String>,
-    /// Response format: `json` (default), `csv` or `tsv`.
+    /// Response format: `json` (default), `csv` or `tsv`. `outline`,
+    /// `automation` and `preferred` are accepted and answered as `json`
+    /// until they are implemented.
     #[serde(default)]
     format: Option<String>,
     /// Comma-separated dotted paths to keep from each element.

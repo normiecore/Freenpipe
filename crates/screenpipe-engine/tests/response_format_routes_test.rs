@@ -297,6 +297,99 @@ async fn unknown_formats_are_rejected_on_every_list_route() {
 }
 
 #[tokio::test]
+async fn element_text_formats_are_answered_as_json_until_implemented() {
+    let fx = fixture().await;
+    let frame = format!("/frames/{}/elements", fx.frame_id);
+    let list = format!("/elements?frame_id={}&source=accessibility", fx.frame_id);
+    for base in [frame.as_str(), list.as_str()] {
+        let join = if base.contains('?') { '&' } else { '?' };
+        let (status, headers, plain) = fx.api(base).await;
+        assert_eq!(status, StatusCode::OK, "{base}");
+        assert_eq!(header(&headers, "content-type"), "application/json");
+        // What the screenpipe-era MCP element tool sends: outline for
+        // reading, automation for computer use, preferred otherwise.
+        for format in ["outline", "automation", "preferred", " Outline "] {
+            let uri = format!("{base}{join}format={}", format.replace(' ', "%20"));
+            let (status, headers, body) = fx.api(&uri).await;
+            assert_eq!(status, StatusCode::OK, "{uri}");
+            assert_eq!(
+                header(&headers, "content-type"),
+                "application/json",
+                "{uri}"
+            );
+            assert_eq!(body, plain, "{uri}");
+        }
+        // `fields` applies exactly as it does with format=json.
+        let (_, _, json_fields) = fx
+            .api(&format!("{base}{join}format=json&fields=id,role"))
+            .await;
+        let (status, _, outline_fields) = fx
+            .api(&format!("{base}{join}format=outline&fields=id,role"))
+            .await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(outline_fields, json_fields);
+        assert_eq!(
+            json_of(&outline_fields)["data"][0]
+                .as_object()
+                .unwrap()
+                .len(),
+            2
+        );
+    }
+    // They are element formats only: /search still rejects them.
+    let (status, _, body) = fx.api(&format!("{SEARCH}&format=outline")).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert_eq!(
+        json_of(&body),
+        json!({"error": "unknown format `outline` (expected json|csv|tsv)"})
+    );
+}
+
+#[tokio::test]
+async fn tabular_timestamps_follow_the_json_timezone() {
+    let fx = fixture().await;
+    let cell = |body: &Bytes| -> String {
+        let text = text_of(body);
+        let mut lines = text.split("\r\n");
+        assert_eq!(lines.next(), Some("content.timestamp"), "{text:?}");
+        lines.next().unwrap().to_string()
+    };
+    let json_timestamp = |body: &Bytes| -> String {
+        json_of(body)["data"][0]["content"]["timestamp"]
+            .as_str()
+            .unwrap()
+            .to_string()
+    };
+
+    // Default: the middleware gives JSON local time with an offset, and the
+    // CSV cell carries the same text.
+    let (_, _, json_local) = fx.api(SEARCH).await;
+    let (status, _, csv_local) = fx
+        .api(&format!("{SEARCH}&format=csv&fields=content.timestamp"))
+        .await;
+    assert_eq!(status, StatusCode::OK);
+    let local = json_timestamp(&json_local);
+    assert!(!local.ends_with('Z'), "{local}");
+    assert_eq!(cell(&csv_local), local);
+
+    // timezone=utc keeps UTC in both.
+    let (_, _, json_utc) = fx.api(&format!("{SEARCH}&timezone=utc")).await;
+    let (_, _, tsv_utc) = fx
+        .api(&format!(
+            "{SEARCH}&timezone=utc&format=tsv&fields=content.timestamp"
+        ))
+        .await;
+    let utc = json_timestamp(&json_utc);
+    assert!(utc.ends_with('Z'), "{utc}");
+    assert_eq!(text_of(&tsv_utc), format!("content.timestamp\n{utc}\n"));
+    assert_eq!(
+        chrono::DateTime::parse_from_rfc3339(&local).unwrap(),
+        chrono::DateTime::parse_from_rfc3339(&utc).unwrap(),
+        "same instant"
+    );
+}
+
+#[tokio::test]
 async fn calendar_literals_bound_search_at_local_midnight() {
     let fx = fixture().await;
     let local_today = Local::now().date_naive().format("%Y-%m-%d").to_string();

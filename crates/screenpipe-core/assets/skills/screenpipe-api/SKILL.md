@@ -66,7 +66,7 @@ curl -H "Authorization: Bearer $SCREENPIPE_LOCAL_API_KEY" "http://localhost:3030
 
 ### Compact output — `fields` and `format`
 
-To save context, ask only for the columns you need. `fields=type,content.timestamp,content.text` turns each JSON result into a flat object keyed by those paths (`{"type": "OCR", "content.timestamp": "...", "content.text": "..."}`); `pagination` stays. `format=csv` or `format=tsv` returns a header row plus one line per result instead of JSON (`text/csv` / `text/tab-separated-values`), with the total in the `x-total-count` header. CSV quotes cells that need it; TSV turns tabs and line breaks inside a cell into spaces. The same two parameters work on `/elements` and `/frames/{id}/elements`.
+To save context, ask only for the columns you need. `fields=type,content.timestamp,content.text` turns each JSON result into a flat object keyed by those paths (`{"type": "OCR", "content.timestamp": "...", "content.text": "..."}`); `pagination` stays. `format=csv` or `format=tsv` returns a header row plus one line per result instead of JSON (`text/csv` / `text/tab-separated-values`), with the total in the `x-total-count` header. CSV quotes cells that need it; TSV turns tabs and line breaks inside a cell into spaces. Timestamps in CSV/TSV cells are local time, the same text the JSON carries; add `timezone=utc` to get UTC in either. The same two parameters work on `/elements` and `/frames/{id}/elements`.
 
 ### Tags — linking people, projects, topics
 

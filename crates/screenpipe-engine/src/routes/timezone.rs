@@ -63,6 +63,27 @@ fn try_convert_timestamp(s: &str) -> Option<String> {
     None
 }
 
+/// One UTC timestamp string converted to local time with an offset, by the
+/// rules the middleware applies to JSON bodies; `None` when `s` is not a
+/// UTC timestamp.
+pub fn localize_timestamp(s: &str) -> Option<String> {
+    try_convert_timestamp(s)
+}
+
+tokio::task_local! {
+    /// Whether the request [`timestamp_middleware`] is serving wants local
+    /// timestamps (it did not pass `timezone=utc`).
+    static LOCALIZE_TIMESTAMPS: bool;
+}
+
+/// True while a handler runs under [`timestamp_middleware`] for a request
+/// that did not ask for `timezone=utc`. The middleware rewrites JSON bodies
+/// itself; handlers that send other text (CSV, TSV) use this to convert
+/// their timestamps the same way. False outside the middleware.
+pub fn localize_requested() -> bool {
+    LOCALIZE_TIMESTAMPS.try_with(|on| *on).unwrap_or(false)
+}
+
 /// Axum middleware that converts UTC timestamps in JSON responses to local time.
 /// Pass `?timezone=utc` to opt out and keep UTC timestamps.
 pub async fn timestamp_middleware(req: Request, next: Next) -> Response {
@@ -76,7 +97,7 @@ pub async fn timestamp_middleware(req: Request, next: Next) -> Response {
         })
         .unwrap_or(false);
 
-    let response = next.run(req).await;
+    let response = LOCALIZE_TIMESTAMPS.scope(!wants_utc, next.run(req)).await;
 
     if wants_utc {
         return response;
@@ -295,6 +316,41 @@ mod tests {
         // Escapes and non-ASCII text survive untouched.
         let input = r#"{"t":"caf\u00e9 \\ \"q\"","n":"naïve"}"#;
         assert_eq!(localize_json_text(input).as_deref(), Some(input));
+    }
+
+    #[tokio::test]
+    async fn handlers_see_whether_the_request_wants_local_time() {
+        use axum::{body::to_bytes, routing::get, Router};
+        use tower::ServiceExt;
+
+        assert!(!localize_requested(), "false outside the middleware");
+        let router = Router::new()
+            .route("/probe", get(|| async { localize_requested().to_string() }))
+            .layer(axum::middleware::from_fn(timestamp_middleware));
+        for (uri, expected) in [
+            ("/probe", "true"),
+            ("/probe?timezone=utc", "false"),
+            ("/probe?a=1&timezone=UTC", "false"),
+            ("/probe?timezone=local", "true"),
+        ] {
+            let response = router
+                .clone()
+                .oneshot(
+                    axum::http::Request::builder()
+                        .uri(uri)
+                        .body(axum::body::Body::empty())
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+            assert_eq!(body, expected, "{uri}");
+        }
+        assert_eq!(
+            localize_timestamp("2026-03-04T14:30:00Z"),
+            try_convert_timestamp("2026-03-04T14:30:00Z")
+        );
+        assert_eq!(localize_timestamp("not a time"), None);
     }
 
     #[test]

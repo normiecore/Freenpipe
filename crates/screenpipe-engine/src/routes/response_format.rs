@@ -7,7 +7,9 @@
 //! parameters:
 //!
 //! - `format`: `json` (the default), `csv` or `tsv`. Anything else is a 400
-//!   with `unknown format `<value>` (expected json|csv|tsv)`.
+//!   with `unknown format `<value>` (expected json|csv|tsv)`, except that the
+//!   two element routes answer the element text formats `outline`,
+//!   `automation` and `preferred` (not rendered yet) as `json`.
 //! - `fields`: a comma-separated list of dotted paths into each row, such as
 //!   `type,content.app_name,content.text` for `/search` or
 //!   `id,role,bounds.left` for `/elements`. A numeric segment indexes an
@@ -32,6 +34,15 @@
 //!   lossless. TSV has no quoting, so tabs and line breaks inside a cell
 //!   become single spaces. Tabular output has no envelope; when the JSON
 //!   carried `pagination.total` it is sent as the `x-total-count` header.
+//!   Cells are written exactly as captured, so a cell may start with `=`,
+//!   `+`, `-` or `@`: the output is meant for programs, not for opening in a
+//!   spreadsheet that evaluates formulas.
+//!
+//! Timestamps follow the JSON response: the timestamp middleware
+//! ([`super::timezone`]) rewrites UTC timestamps in JSON bodies to local
+//! time unless the request has `timezone=utc`, and it cannot rewrite CSV or
+//! TSV text, so tabular rendering converts the same string values itself
+//! when the middleware asks for it.
 //!
 //! Tabular output is built from the same rows the JSON would carry, so it is
 //! bounded by the same `limit` and paging as the JSON response.
@@ -111,6 +122,21 @@ impl ResponseFormat {
             Self::Tsv => TSV_CONTENT_TYPE,
         }
     }
+}
+
+/// Element text formats (`/elements`, `/frames/:id/elements`) that W3-03
+/// will render. Screenpipe-era MCP clients and pipes always send one of
+/// them, so until then the element routes answer them with JSON instead of
+/// the unknown-format 400; `/search` still rejects them.
+pub const PENDING_ELEMENT_FORMATS: [&str; 3] = ["outline", "automation", "preferred"];
+
+/// Whether a `format=` value names one of [`PENDING_ELEMENT_FORMATS`],
+/// matched the way [`ResponseFormat::parse`] matches names.
+pub fn is_pending_element_format(raw: &str) -> bool {
+    let name = raw.trim();
+    PENDING_ELEMENT_FORMATS
+        .iter()
+        .any(|pending| name.eq_ignore_ascii_case(pending))
 }
 
 /// A `format=` value that is not one of the supported formats.
@@ -202,6 +228,19 @@ impl ResponseShape {
         Self::parse(format, fields).map_err(UnknownFormat::into_rejection)
     }
 
+    /// [`Self::from_query`] for the two element routes, which also take the
+    /// names in [`PENDING_ELEMENT_FORMATS`]. Those are not rendered yet, so
+    /// they are answered exactly like `format=json` (the JSON body, with
+    /// `fields` applied when given), which is what the routes sent for them
+    /// before `format=` existed.
+    pub fn from_elements_query(
+        format: Option<&str>,
+        fields: Option<&str>,
+    ) -> Result<Self, (StatusCode, Json<Value>)> {
+        let format = format.filter(|name| !is_pending_element_format(name));
+        Self::from_query(format, fields)
+    }
+
     pub fn format(&self) -> ResponseFormat {
         self.format
     }
@@ -232,7 +271,10 @@ impl ResponseShape {
         let total = envelope
             .get_path(&["pagination", "total"])
             .and_then(Node::as_integer);
-        let rows = envelope.into_rows();
+        let mut rows = envelope.into_rows();
+        if super::timezone::localize_requested() {
+            rows.iter_mut().for_each(Node::localize_timestamps);
+        }
         let mut response = render_table(&rows, self.fields.as_ref(), dialect).into_response();
         let headers = response.headers_mut();
         headers.insert(
@@ -362,6 +404,24 @@ impl Node {
                 data.unwrap_or_else(|| vec![Node::Object(rest)])
             }
             scalar => vec![scalar],
+        }
+    }
+
+    /// Rewrite every UTC timestamp string value to local time, by the rules
+    /// the timestamp middleware applies to JSON bodies. Keys stay as they
+    /// are; values inside arrays are converted too, as they are in JSON.
+    fn localize_timestamps(&mut self) {
+        match self {
+            Node::Scalar(Value::String(s)) => {
+                if let Some(local) = super::timezone::localize_timestamp(s) {
+                    *s = local;
+                }
+            }
+            Node::Scalar(_) => {}
+            Node::Array(items) => items.iter_mut().for_each(Node::localize_timestamps),
+            Node::Object(entries) => entries
+                .iter_mut()
+                .for_each(|(_, value)| value.localize_timestamps()),
         }
     }
 
@@ -731,6 +791,61 @@ mod tests {
             ResponseFormat::Tsv.content_type(),
             "text/tab-separated-values; charset=utf-8"
         );
+    }
+
+    #[test]
+    fn element_routes_answer_pending_text_formats_as_json() {
+        for name in [
+            "outline",
+            "automation",
+            "preferred",
+            " Outline ",
+            "PREFERRED",
+        ] {
+            assert!(is_pending_element_format(name), "{name}");
+            let s = ResponseShape::from_elements_query(Some(name), None).unwrap();
+            assert!(s.is_default(), "{name}");
+            let s = ResponseShape::from_elements_query(Some(name), Some("id,role")).unwrap();
+            assert_eq!(s, shape(Some("json"), Some("id,role")), "{name}");
+            // Everywhere else they are unknown formats.
+            let (status, Json(body)) = ResponseShape::from_query(Some(name), None).unwrap_err();
+            assert_eq!(status, StatusCode::BAD_REQUEST);
+            assert_eq!(
+                body,
+                json!({"error": format!("unknown format `{name}` (expected json|csv|tsv)")})
+            );
+        }
+        for name in ["outlines", "table", "xml"] {
+            assert!(!is_pending_element_format(name), "{name}");
+            let (status, _) = ResponseShape::from_elements_query(Some(name), None).unwrap_err();
+            assert_eq!(status, StatusCode::BAD_REQUEST, "{name}");
+        }
+        assert_eq!(
+            ResponseShape::from_elements_query(Some("csv"), Some("id")).unwrap(),
+            shape(Some("csv"), Some("id"))
+        );
+        assert!(ResponseShape::from_elements_query(None, None)
+            .unwrap()
+            .is_default());
+    }
+
+    #[tokio::test]
+    async fn timestamps_are_localised_only_when_the_middleware_asks() {
+        let body = doc(
+            r#"{"data":[{"ts":"2026-03-04T14:30:00Z","list":["2026-03-04T14:30:00Z"],"2026-03-04T14:30:00Z":"k"}]}"#,
+        );
+        let local = super::super::timezone::localize_timestamp("2026-03-04T14:30:00Z").unwrap();
+
+        let mut row = body.clone().into_rows().remove(0);
+        row.localize_timestamps();
+        assert_eq!(row.get("ts"), Some(&node(json!(local))));
+        assert_eq!(row.get("list"), Some(&node(json!([local]))));
+        // Keys are never rewritten.
+        assert_eq!(row.get("2026-03-04T14:30:00Z"), Some(&node(json!("k"))));
+
+        // Outside the timestamp middleware the cell keeps the UTC text.
+        let r = rendered(shape(Some("csv"), Some("ts")).respond(body).into_response()).await;
+        assert_eq!(r.body, "ts\r\n2026-03-04T14:30:00Z\r\n");
     }
 
     #[test]
