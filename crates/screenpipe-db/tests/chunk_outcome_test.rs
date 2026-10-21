@@ -22,7 +22,7 @@ mod tests {
             .await
             .unwrap();
         screenpipe_db::schema_migrations::migrator()
-            .run(&db.pool)
+            .run(db.write_pool())
             .await
             .unwrap();
         db
@@ -420,13 +420,13 @@ mod tests {
         )
         .bind(chunk)
         .bind(ts)
-        .execute(&db.pool)
+        .execute(db.write_pool())
         .await
         .unwrap();
         // Reset status to what an unmigrated chunk would have looked like.
         sqlx::query("UPDATE audio_chunks SET transcription_status = 'pending' WHERE id = ?1")
             .bind(chunk)
-            .execute(&db.pool)
+            .execute(db.write_pool())
             .await
             .unwrap();
 
@@ -439,7 +439,7 @@ mod tests {
                  SELECT 1 FROM audio_transcriptions a WHERE a.audio_chunk_id = audio_chunks.id
              )",
         )
-        .execute(&db.pool)
+        .execute(db.write_pool())
         .await
         .unwrap();
 

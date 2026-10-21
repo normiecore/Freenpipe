@@ -107,6 +107,9 @@ pub const PIPE_PERMISSIONS_FILE: &str = ".screenpipe-permissions.json";
 pub const WORKFLOWS_ENTRY_FILE: &str = "workflows-entry.bin";
 /// State of the SQLite planner maintenance job.
 pub const SQLITE_PLANNER_MAINTENANCE_FILE: &str = "sqlite-planner-maintenance.json";
+/// Ownership sidecar of [`DB_FILE`]: locked by the process that has the
+/// database open, so a second recorder is refused.
+pub const DB_OWNER_FILE: &str = "db.sqlite.owner";
 /// Record of a quarantined database.
 pub const DATABASE_QUARANTINE_FILE: &str = "database.quarantine.json";
 /// Disk space reserved for quarantine handling.
@@ -160,6 +163,7 @@ pub const DATA_DIR_NAMES: &[&str] = &[
     PIPE_PERMISSIONS_FILE,
     WORKFLOWS_ENTRY_FILE,
     SQLITE_PLANNER_MAINTENANCE_FILE,
+    DB_OWNER_FILE,
     DATABASE_QUARANTINE_FILE,
     QUARANTINE_RESERVE_FILE,
     RECOVERY_MANIFEST_FILE,

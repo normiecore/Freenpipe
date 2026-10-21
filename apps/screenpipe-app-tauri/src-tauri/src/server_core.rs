@@ -384,7 +384,7 @@ impl ServerCore {
                     None
                 }
             };
-            match screenpipe_secrets::SecretStore::new(db.pool.clone(), secret_key).await {
+            match screenpipe_secrets::SecretStore::new(db.write_pool().clone(), secret_key).await {
                 Ok(store) => {
                     let fixed = screenpipe_secrets::fix_secret_file_permissions(&config.data_dir);
                     if fixed > 0 {
@@ -741,14 +741,14 @@ impl ServerCore {
                     tables: ALL_TARGET_TABLES.to_vec(),
                     ..Default::default()
                 };
-                let _ = Worker::new(db.pool.clone(), pipeline_arc, cfg)
+                let _ = Worker::new(db.write_pool().clone(), pipeline_arc, cfg)
                     .spawn_with_shutdown(redact_shutdown.clone());
             } else {
                 // Local mode: spawn the download+load off the boot path
                 // so a slow first-run HF pull doesn't block the app
                 // launch. The worker is created inside the spawned
                 // task once the model is ready.
-                let pool = db.pool.clone();
+                let pool = db.write_pool().clone(); // the worker rewrites rows in place
                 let shutdown = redact_shutdown.clone();
                 let labels = pii_labels.clone();
                 tokio::spawn(async move {
@@ -854,7 +854,7 @@ impl ServerCore {
             use screenpipe_redact::ImageRedactionPolicy;
             use screenpipe_redact::ImageRedactor;
 
-            let pool = db.pool.clone();
+            let pool = db.write_pool().clone(); // the worker rewrites files and rows
             if use_tinfoil {
                 let detector = Arc::new(TinfoilImageRedactor::new(TinfoilImageConfig {
                     enclave: enclave_host.clone(),

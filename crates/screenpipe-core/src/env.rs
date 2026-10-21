@@ -43,6 +43,14 @@ pub const SCREENPIPE_WEB_URL: &str = "SCREENPIPE_WEB_URL";
 pub const SCREENPIPE_TRUSTED_HOSTS: &str = "SCREENPIPE_TRUSTED_HOSTS";
 /// Skips the database lock check at startup (diagnostics only).
 pub const SCREENPIPE_IGNORE_DB_LOCK: &str = "SCREENPIPE_IGNORE_DB_LOCK";
+/// Seconds between WAL checkpoints of the database maintenance loop (tests
+/// and diagnostics; default 30).
+pub const SCREENPIPE_WAL_MAINTENANCE_INTERVAL_SECS: &str =
+    "SCREENPIPE_WAL_MAINTENANCE_INTERVAL_SECS";
+/// Seconds before the first and between later query-planner statistics runs
+/// (tests and diagnostics; default 10 minutes, then 6 hours).
+pub const SCREENPIPE_PLANNER_MAINTENANCE_INTERVAL_SECS: &str =
+    "SCREENPIPE_PLANNER_MAINTENANCE_INTERVAL_SECS";
 /// Encrypts the settings store at rest.
 pub const SCREENPIPE_ENCRYPT_STORE: &str = "SCREENPIPE_ENCRYPT_STORE";
 /// How the app's startup account check resolved: `authenticated`,
@@ -341,6 +349,8 @@ pub const ALL: &[&str] = &[
     SCREENPIPE_WEB_URL,
     SCREENPIPE_TRUSTED_HOSTS,
     SCREENPIPE_IGNORE_DB_LOCK,
+    SCREENPIPE_WAL_MAINTENANCE_INTERVAL_SECS,
+    SCREENPIPE_PLANNER_MAINTENANCE_INTERVAL_SECS,
     SCREENPIPE_ENCRYPT_STORE,
     SCREENPIPE_STARTUP_AUTHENTICATION_STATUS,
     SCREENPIPE_SKIP_ONBOARDING,

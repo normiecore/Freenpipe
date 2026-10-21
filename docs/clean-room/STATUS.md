@@ -2,40 +2,39 @@
 
 > Generated file: the merger routine regenerates it with `python3 tools/plan/status.py --write`. Do not edit it by hand. The plan is [PLAN.md](PLAN.md); the process is [docs/dev/cloud-runbook.md](../dev/cloud-runbook.md).
 
-Generated 2026-10-21T02:07:43Z from `origin/main` (latest code commit `a7dda43`). GitHub data: available (via gh).
+Generated 2026-10-21T02:41:41Z from `origin/main` (latest code commit `700811d`). GitHub data: available (via gh).
 
 ## Progress
 
-**32 of 155 work packages merged (20.6%)**: 2 in review, 2 claimed, 33 ready, 86 blocked.
+**33 of 155 work packages merged (21.3%)**: 1 in review, 2 claimed, 35 ready, 84 blocked.
 
 | Wave | Theme | Merged | In review | Claimed | Ready | Blocked | Progress |
 |---|---|---|---|---|---|---|---|
 | 0 | Foundation: build, ee/ stubs, de-cloud, rebrand | 13/13 | 0 | 0 | 0 | 0 | `##########` 100% |
 | 1 | Cross-cutting foundations: schema v2.7, settings schema, integration seams | 5/5 | 0 | 0 | 0 | 0 | `##########` 100% |
-| 2 | Engine data layer and core backends | 14/27 | 1 | 2 | 10 | 0 | `#####-----` 52% |
-| 3 | Feature backends (search, pipes, connections, capture, audio) | 0/31 | 1 | 0 | 19 | 11 | `----------` 0% |
+| 2 | Engine data layer and core backends | 15/27 | 0 | 2 | 10 | 0 | `######----` 56% |
+| 3 | Feature backends (search, pipes, connections, capture, audio) | 0/31 | 1 | 0 | 20 | 10 | `----------` 0% |
 | 4 | Advanced backends, agents runtime, app shell | 0/22 | 0 | 0 | 3 | 19 | `----------` 0% |
-| 5 | Feature UIs and second-tier backends | 0/24 | 0 | 0 | 1 | 23 | `----------` 0% |
+| 5 | Feature UIs and second-tier backends | 0/24 | 0 | 0 | 2 | 22 | `----------` 0% |
 | 6 | Agent/workflow UIs, piggyback, hybrid bulk | 0/21 | 0 | 0 | 0 | 21 | `----------` 0% |
 | 7 | Hybrid lifecycle, overlays, chat follow-ups | 0/9 | 0 | 0 | 0 | 9 | `----------` 0% |
 | 8 | Final UI pieces and surface audit | 0/3 | 0 | 0 | 0 | 3 | `----------` 0% |
-| all | | 32/155 | 2 | 2 | 33 | 86 | `##--------` 20.6% |
+| all | | 33/155 | 1 | 2 | 35 | 84 | `##--------` 21.3% |
 
-CI on main (merge gate on the latest non-status commit `a7dda43`): **pending** (test-windows: queued; trufflehog: queued; waiting for windows, linux, gates)
+CI on main (merge gate on the latest non-status commit `700811d`): **pending** (test-windows: queued; trufflehog: queued; waiting for windows, linux, gates)
 
 ## In review
 
 | WP | PR | Head | CI | Review | Mergeable | Worker |
 |---|---|---|---|---|---|---|
-| W2-01 | [#32](https://github.com/normiecore/Freenpipe/pull/32) | `45a7377` | pending (linux: in_progress; windows: in_progress) | pending | unknown | - |
-| W3-30 | [#29](https://github.com/normiecore/Freenpipe/pull/29) | `9f16ae0` | pending (test-windows: in_progress; trufflehog: in_progress; waiting for windows, linux, gates) | blocked | unknown | - |
+| W3-30 | [#29](https://github.com/normiecore/Freenpipe/pull/29) | `9f16ae0` | pending (windows: in_progress) | blocked | unknown | - |
 
 ## Claimed
 
 | WP | Worker | Last commit (UTC) | Work commits | State |
 |---|---|---|---|---|
-| W2-04 | unknown | 2026-10-21T02:00:13Z | 2 | active |
-| W2-09 | unknown | 2026-10-21T01:56:49Z | 2 | active |
+| W2-04 | unknown | 2026-10-21T02:19:52Z | 4 | active |
+| W2-09 | unknown | 2026-10-21T02:28:04Z | 5 | active |
 
 ## Ready, in plan order
 
@@ -67,12 +66,14 @@ CI on main (merge gate on the latest non-status commit `a7dda43`): **pending** (
 | W3-23 | 3 | L | Pi extension set expansion and extension packages |
 | W3-24 | 3 | L | Agent self-improvement: skills store, user profile, learning |
 | W3-25 | 3 | L | Local OpenAI-compatible proxy and BYO web search |
+| W3-27 | 3 | L | SQLite hard-fault quarantine coordinator |
 | W3-28 | 3 | L | Headless mode and search-only mode |
 | W3-29 | 3 | M | Recording health incident state |
 | W3-31 | 3 | L | SOP narration providers: OpenAI-compatible, local OS TTS, captions-only |
 | W4-03 | 4 | XL | ACP agent runtime and screenpipe-tools MCP |
 | W4-04 | 4 | L | Cloud coding agents (BYO Cursor/Codex/Claude) |
 | W4-05 | 4 | M | Chat runtime commands and per-turn connections context |
+| W5-07 | 5 | XL | Hybrid storage format hybrid-parquet-v1 |
 | W5-11 | 5 | L | Captured-moment replay server and open command |
 
 ## Wave integration log
@@ -153,19 +154,19 @@ Complete waves awaiting the integration checklist: 1.
 | W1-04 | S | merged | Enterprise and plan-gate no-op surface | merge `1bdc390` |
 | W1-05 | M | merged | Licence gating for commercial builds | merge `40c94a6` |
 
-### Wave 2: Engine data layer and core backends (14/27 merged)
+### Wave 2: Engine data layer and core backends (15/27 merged)
 
 | WP | Size | Status | Title | Detail |
 |---|---|---|---|---|
-| W2-01 | L | in_review | DB runtime hardening: pragmas, WAL maintenance, preflight, planner stats, cancellable reads | PR #32: CI pending, review pending |
+| W2-01 | L | merged | DB runtime hardening: pragmas, WAL maintenance, preflight, planner stats, cancellable reads | merge `789156e` |
 | W2-02 | L | ready | Outputs and artifacts registry |  |
 | W2-03 | M | ready | Unified AI feedback table and /feedback |  |
-| W2-04 | M | claimed | Starred work sessions backend and HD binding | unknown, last commit 2026-10-21T02:00:13Z |
+| W2-04 | M | claimed | Starred work sessions backend and HD binding | unknown, last commit 2026-10-21T02:19:52Z |
 | W2-05 | M | merged | Semantic store: runs, items, FTS, actors | merge `94ea731` |
 | W2-06 | XL | ready | screenpipe-semantic parser crate |  |
 | W2-07 | L | ready | Activity ledger store and deterministic reconciler |  |
 | W2-08 | L | merged | Meetings API v2: calendar binding, summary endpoints, room-change route | merge `3b53e0d` |
-| W2-09 | M | claimed | Response formats, calendar time literals, tag autocomplete | unknown, last commit 2026-10-21T01:56:49Z |
+| W2-09 | M | claimed | Response formats, calendar time literals, tag autocomplete | unknown, last commit 2026-10-21T02:28:04Z |
 | W2-10 | L | merged | Frame media routes: thumbnail, preview samples, preview media, typed errors, auth | merge `7cea019` |
 | W2-11 | L | merged | Per-monitor vision control and display layout persistence | merge `257bea6` |
 | W2-12 | L | merged | Native WinRT/D3D11 Windows Graphics Capture and frame-diff hardening | merge `ca237c2` |
@@ -215,7 +216,7 @@ Complete waves awaiting the integration checklist: 1.
 | W3-24 | L | ready | Agent self-improvement: skills store, user profile, learning |  |
 | W3-25 | L | ready | Local OpenAI-compatible proxy and BYO web search |  |
 | W3-26 | M | blocked | Connect broker and connection-gate tools | waits for W2-20 |
-| W3-27 | L | blocked | SQLite hard-fault quarantine coordinator | waits for W2-01 |
+| W3-27 | L | ready | SQLite hard-fault quarantine coordinator |  |
 | W3-28 | L | ready | Headless mode and search-only mode |  |
 | W3-29 | M | ready | Recording health incident state |  |
 | W3-30 | M | in_review | Low-disk recording guard and keep-awake | PR #29: CI pending, review blocked |
@@ -258,7 +259,7 @@ Complete waves awaiting the integration checklist: 1.
 | W5-04 | L | blocked | Audio device lifecycle hardening and shared engine reuse | waits for W4-16 |
 | W5-05 | L | blocked | Capture loop C: screenshot policy, scroll cadence, width cap, frozen streams | waits for W4-14 |
 | W5-06 | L | blocked | OCR text-region gate and crop OCR | waits for W3-12, W4-14 |
-| W5-07 | XL | blocked | Hybrid storage format hybrid-parquet-v1 | waits for W2-01 |
+| W5-07 | XL | ready | Hybrid storage format hybrid-parquet-v1 |  |
 | W5-08 | L | blocked | Database self-heal user flow | waits for W4-09 |
 | W5-09 | M | blocked | Tray menu v2 | waits for W4-20 |
 | W5-10 | L | blocked | Workflow video jobs in the app | waits for W4-21 |

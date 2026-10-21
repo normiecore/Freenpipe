@@ -13,7 +13,7 @@ async fn setup_db() -> DatabaseManager {
         .await
         .unwrap();
     screenpipe_db::schema_migrations::migrator()
-        .run(&db.pool)
+        .run(db.write_pool())
         .await
         .expect("migrations");
     db
@@ -96,7 +96,7 @@ async fn transcription_row(
     .bind(device_type == "input")
     .bind(speaker_id)
     .bind(text.len() as i64)
-    .execute(&db.pool)
+    .execute(db.write_pool())
     .await
     .unwrap()
     .last_insert_rowid()
@@ -125,7 +125,7 @@ async fn diarization(db: &DatabaseManager, chunk_id: i64, segments: &[(&str, Opt
         "INSERT INTO diarization_runs (audio_chunk_id, mode, provider) VALUES (?1, 'background', 'test')",
     )
     .bind(chunk_id)
-    .execute(&db.pool)
+    .execute(db.write_pool())
     .await
     .unwrap()
     .last_insert_rowid();
@@ -142,7 +142,7 @@ async fn diarization(db: &DatabaseManager, chunk_id: i64, segments: &[(&str, Opt
         .bind(i as f64)
         .bind(i as f64 + 1.0)
         .bind(*overlap)
-        .execute(&db.pool)
+        .execute(db.write_pool())
         .await
         .unwrap();
     }
@@ -248,7 +248,7 @@ async fn unscoped_inserts_read_as_legacy() {
     )
     .bind(meeting_id)
     .bind(base().to_rfc3339())
-    .execute(&db.pool)
+    .execute(db.write_pool())
     .await
     .unwrap()
     .last_insert_rowid();
@@ -582,7 +582,7 @@ async fn guarded_backfill_checks_live_evidence() {
         "UPDATE meeting_transcript_segments SET speaker_id = ?1 WHERE transcript = 'conf a'",
     )
     .bind(bob)
-    .execute(&db.pool)
+    .execute(db.write_pool())
     .await
     .unwrap();
 
@@ -854,7 +854,7 @@ async fn timeline_live_rows_are_flagged_with_distinct_negative_ids() {
     sqlx::query("UPDATE meeting_transcript_segments SET speaker_id = ?1 WHERE id = ?2")
         .bind(alice)
         .bind(segment_ids[0])
-        .execute(&db.pool)
+        .execute(db.write_pool())
         .await
         .unwrap();
     let chunks = db

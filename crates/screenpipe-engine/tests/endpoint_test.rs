@@ -520,7 +520,7 @@ mod tests {
         sqlx::query("UPDATE frames SET timestamp = ? WHERE id = ?")
             .bind(two_hours_ago)
             .bind(frame_id1)
-            .execute(&db.pool)
+            .execute(db.write_pool())
             .await
             .unwrap();
 
@@ -550,7 +550,7 @@ mod tests {
         sqlx::query("UPDATE audio_transcriptions SET timestamp = ? WHERE id = ?")
             .bind(two_hours_ago)
             .bind(audio_transcription_id1)
-            .execute(&db.pool)
+            .execute(db.write_pool())
             .await
             .unwrap();
         // test search with start_time constraint
@@ -743,14 +743,14 @@ mod tests {
         sqlx::query("UPDATE frames SET timestamp = ? WHERE id = ?")
             .bind(old_timestamp)
             .bind(old_frame_id)
-            .execute(&db.pool)
+            .execute(db.write_pool())
             .await
             .unwrap();
 
         sqlx::query("UPDATE frames SET timestamp = ? WHERE id = ?")
             .bind(recent_timestamp)
             .bind(recent_frame_id)
-            .execute(&db.pool)
+            .execute(db.write_pool())
             .await
             .unwrap();
 
