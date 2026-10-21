@@ -56,7 +56,7 @@ Don't jump to heavy `/search` calls. Escalate:
 | 1 | `GET /activity-summary?start_time=...&end_time=...` | Broad questions ("what was I doing?", "which apps?") |
 | 2 | `GET /search?...` | Need specific content |
 | 3 | `GET /elements?...` or `GET /frames/{id}/context` | UI structure, buttons, links |
-| 4 | `GET /frames/{frame_id}` (PNG) | Visual context needed |
+| 4 | `GET /frames/{frame_id}` (JPEG) | Visual context needed |
 
 Decision tree:
 - "What was I doing?" → Step 1 only
@@ -165,10 +165,10 @@ OCR-only roles (fallback when accessibility unavailable): `line`, `word`, `block
 ## 4. Frames (Screenshots) — `GET /frames/{frame_id}`
 
 ```bash
-curl -o /tmp/frame.png "http://localhost:3030/frames/12345"
+curl -f -H "Authorization: Bearer $SCREENPIPE_LOCAL_API_KEY" -o /tmp/frame.jpg "http://localhost:3030/frames/12345"
 ```
 
-Returns raw PNG. **Never fetch more than 2-3 frames per query** (~1000-2000 tokens each).
+Returns a raw JPEG. **Never fetch more than 2-3 frames per query** (~1000-2000 tokens each).
 
 ---
 

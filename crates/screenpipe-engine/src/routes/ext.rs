@@ -34,9 +34,9 @@ use crate::server::AppState;
 
 use super::{
     activity_ledger, agent, ai_feedback, artifacts, cloud_agents, connect_broker, data_sync_proxy,
-    internal_telemetry, live_views, local_chat, meeting_overlay, pipe_stream, request_origin,
-    response_format, search_only, semantic, starred, structured_outputs, vision, web_search,
-    workflows,
+    frames, internal_telemetry, live_views, local_chat, meeting_overlay, pipe_stream,
+    request_origin, response_format, search_only, semantic, starred, structured_outputs, vision,
+    web_search, workflows,
 };
 
 /// Router type every feature module returns. State is the shared [`AppState`].
@@ -109,6 +109,7 @@ pub const FEATURE_MODULES: &[&str] = &[
     "cloud_agents",
     "connect_broker",
     "data_sync_proxy",
+    "frames",
     "internal_telemetry",
     "live_views",
     "local_chat",
@@ -144,6 +145,7 @@ pub fn feature_routes() -> Vec<FeatureRoutes> {
         feature!(cloud_agents),
         feature!(connect_broker),
         feature!(data_sync_proxy),
+        feature!(frames),
         feature!(internal_telemetry),
         feature!(live_views),
         feature!(local_chat),

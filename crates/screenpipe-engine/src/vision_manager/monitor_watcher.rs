@@ -12,8 +12,12 @@ use tokio::sync::Mutex;
 use tokio::task::JoinHandle;
 use tracing::{debug, info, warn};
 
+use screenpipe_db::ext::display_layout::{
+    canonical_display_layout_json, DisplayLayoutEntry, DisplayLayoutReason,
+};
+use screenpipe_db::DatabaseManager;
 use screenpipe_events::PermissionKind;
-use screenpipe_screen::monitor::{list_monitors_detailed, MonitorListError};
+use screenpipe_screen::monitor::{list_monitors_detailed, MonitorListError, SafeMonitor};
 
 use super::manager::{VisionManager, VisionManagerStatus};
 use crate::drm_detector;
@@ -30,6 +34,10 @@ pub async fn start_monitor_watcher(
 ) -> anyhow::Result<()> {
     // Stop existing watcher if any
     stop_monitor_watcher().await?;
+
+    // Pause and resume requests from `/vision/device/*` act on this manager
+    // from now on.
+    vision_manager.device_control().attach(&vision_manager);
 
     #[cfg(target_os = "macos")]
     info!(
@@ -56,6 +64,11 @@ pub async fn start_monitor_watcher(
         let mut suppress_next_topology_event = false;
         // Warn once per recovery episode, then keep repeated retries quiet.
         let mut recovery_retry_warned = false;
+        // User-paused monitors already reported as skipped, so the 5 s poll
+        // logs each pause once instead of on every pass.
+        let mut paused_skip_logged: HashSet<u32> = HashSet::new();
+        // Persists the display arrangement (startup row, then one per change).
+        let mut layout_recorder = DisplayLayoutRecorder::new();
 
         // Initialize with current monitors
         match list_monitors_detailed().await {
@@ -64,6 +77,10 @@ pub async fn start_monitor_watcher(
                     known_monitors.insert(monitor.id(), monitor.name().to_string());
                 }
                 permission_denied_logged = false;
+                vision_manager.publish_monitors(&monitors);
+                layout_recorder
+                    .observe(vision_manager.db(), &monitors)
+                    .await;
             }
             Err(MonitorListError::PermissionDenied) => {
                 warn!("Screen recording permission denied. Vision capture is disabled. Grant access in System Settings > Privacy & Security > Screen Recording");
@@ -127,6 +144,7 @@ pub async fn start_monitor_watcher(
                 suppress_next_topology_event = true;
                 // Re-populate known_monitors after restart
                 if let Ok(monitors) = list_monitors_detailed().await {
+                    vision_manager.publish_monitors(&monitors);
                     known_monitors = monitors
                         .iter()
                         .map(|m| (m.id(), m.name().to_string()))
@@ -173,6 +191,7 @@ pub async fn start_monitor_watcher(
                 schedule_stopped = false;
                 suppress_next_topology_event = true;
                 if let Ok(monitors) = list_monitors_detailed().await {
+                    vision_manager.publish_monitors(&monitors);
                     known_monitors = monitors
                         .iter()
                         .map(|m| (m.id(), m.name().to_string()))
@@ -263,6 +282,15 @@ pub async fn start_monitor_watcher(
                     continue;
                 }
             };
+            // Refresh the status snapshot first: it moves pauses onto
+            // monitors that came back under a new id, so the checks below
+            // see them as paused.
+            vision_manager.publish_monitors(&current_monitors);
+            layout_recorder
+                .observe(vision_manager.db(), &current_monitors)
+                .await;
+            paused_skip_logged.retain(|id| vision_manager.is_user_paused(*id));
+
             let current_ids: HashSet<u32> = current_monitors.iter().map(|m| m.id()).collect();
 
             // Get currently recording monitors
@@ -286,6 +314,19 @@ pub async fn start_monitor_watcher(
                             monitor_id,
                             monitor.stable_id()
                         );
+                        continue;
+                    }
+
+                    if vision_manager.is_user_paused(monitor_id) {
+                        if paused_skip_logged.insert(monitor_id) {
+                            info!(
+                                monitor_id,
+                                "monitor watcher: monitor {} stays idle, the user paused it \
+                                 from the recording controls",
+                                monitor_id
+                            );
+                        }
+                        known_monitors.insert(monitor_id, monitor.name().to_string());
                         continue;
                     }
 
@@ -392,6 +433,165 @@ pub async fn start_monitor_watcher(
     Ok(())
 }
 
+/// Longest a display layout write may take before the watcher gives up on
+/// it for this pass.
+const DISPLAY_LAYOUT_WRITE_TIMEOUT: Duration = Duration::from_secs(5);
+
+/// What the recorder should do with the arrangement it just observed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum LayoutAction {
+    /// Nothing to write.
+    Skip,
+    /// Compare with the newest stored row before deciding.
+    ReadLatest,
+    /// Insert a row.
+    Write(DisplayLayoutReason),
+}
+
+/// Writes `display_layout` rows for the monitor watcher.
+///
+/// The first arrangement seen after the watcher starts is compared with the
+/// newest stored row and written as `startup` unless it matches. After that,
+/// a row with reason `change` is written whenever the canonical JSON differs
+/// from the last one stored. A failed or timed-out step stores nothing in
+/// memory, so the next watcher pass (5 s later) tries again with whatever the
+/// arrangement is by then; that retry re-reads the newest row first, so a
+/// write that did land before its timeout fired is not duplicated.
+#[derive(Debug, Default)]
+struct DisplayLayoutRecorder {
+    /// Canonical JSON known to be the newest stored row.
+    persisted: Option<String>,
+    /// The startup comparison has been made (a row written or found equal).
+    started: bool,
+    /// The last step failed, so the stored state is uncertain.
+    verify_latest: bool,
+    /// A failure was already logged at `warn` in the current failure run.
+    failure_warned: bool,
+}
+
+impl DisplayLayoutRecorder {
+    fn new() -> Self {
+        Self::default()
+    }
+
+    /// Decision for the canonical JSON of the current layout, before any
+    /// database read.
+    fn plan(&self, canonical: &str) -> LayoutAction {
+        if !self.started || self.verify_latest {
+            LayoutAction::ReadLatest
+        } else if self.persisted.as_deref() == Some(canonical) {
+            LayoutAction::Skip
+        } else {
+            LayoutAction::Write(DisplayLayoutReason::Change)
+        }
+    }
+
+    /// Decision once the newest stored row is known.
+    fn plan_after_read(&self, latest: Option<&str>, canonical: &str) -> LayoutAction {
+        if latest == Some(canonical) {
+            LayoutAction::Skip
+        } else if self.started {
+            LayoutAction::Write(DisplayLayoutReason::Change)
+        } else {
+            LayoutAction::Write(DisplayLayoutReason::Startup)
+        }
+    }
+
+    fn record_stored(&mut self, canonical: String) {
+        self.persisted = Some(canonical);
+        self.started = true;
+        self.verify_latest = false;
+        self.failure_warned = false;
+    }
+
+    fn record_failure(&mut self, what: &str) {
+        self.verify_latest = true;
+        if self.failure_warned {
+            debug!(
+                "display layout snapshot not stored ({}); trying again on the next watcher pass",
+                what
+            );
+        } else {
+            warn!(
+                "display layout snapshot not stored ({}); trying again on the next watcher pass",
+                what
+            );
+            self.failure_warned = true;
+        }
+    }
+
+    /// Persist the arrangement of `monitors` if it needs a row.
+    async fn observe(&mut self, db: &DatabaseManager, monitors: &[SafeMonitor]) {
+        self.observe_layout(db, &layout_entries(monitors)).await;
+    }
+
+    /// Persist `displays` if the arrangement needs a row. The whole step
+    /// (read and write) is bounded by [`DISPLAY_LAYOUT_WRITE_TIMEOUT`].
+    async fn observe_layout(&mut self, db: &DatabaseManager, displays: &[DisplayLayoutEntry]) {
+        if displays.is_empty() {
+            return;
+        }
+        let canonical = canonical_display_layout_json(displays);
+        let deadline = tokio::time::Instant::now() + DISPLAY_LAYOUT_WRITE_TIMEOUT;
+        let mut action = self.plan(&canonical);
+        if action == LayoutAction::ReadLatest {
+            match tokio::time::timeout_at(deadline, db.latest_display_layout()).await {
+                Ok(Ok(latest)) => action = self.plan_after_read(latest.as_deref(), &canonical),
+                Ok(Err(e)) => {
+                    self.record_failure(&format!("reading the newest row failed: {}", e));
+                    return;
+                }
+                Err(_) => {
+                    self.record_failure("reading the newest row timed out");
+                    return;
+                }
+            }
+        }
+        let reason = match action {
+            LayoutAction::Write(reason) => reason,
+            LayoutAction::Skip => {
+                if self.persisted.as_deref() != Some(canonical.as_str()) {
+                    debug!("display layout matches the newest stored snapshot");
+                    self.record_stored(canonical);
+                }
+                return;
+            }
+            LayoutAction::ReadLatest => return,
+        };
+        match tokio::time::timeout_at(deadline, db.insert_display_layout(reason, &canonical)).await
+        {
+            Ok(Ok(row_id)) => {
+                info!(
+                    row_id,
+                    reason = reason.as_str(),
+                    displays = displays.len(),
+                    "display layout snapshot stored"
+                );
+                self.record_stored(canonical);
+            }
+            Ok(Err(e)) => self.record_failure(&format!("insert failed: {}", e)),
+            Err(_) => self.record_failure("insert timed out"),
+        }
+    }
+}
+
+/// Layout entries for the monitors one enumeration returned.
+fn layout_entries(monitors: &[SafeMonitor]) -> Vec<DisplayLayoutEntry> {
+    monitors
+        .iter()
+        .map(|m| DisplayLayoutEntry {
+            id: m.id(),
+            stable_id: m.stable_id(),
+            name: m.name().to_string(),
+            x: m.x(),
+            y: m.y(),
+            width: m.width(),
+            height: m.height(),
+            is_primary: m.is_primary(),
+        })
+        .collect()
+}
+
 /// Stop the monitor watcher
 pub async fn stop_monitor_watcher() -> anyhow::Result<()> {
     if let Some(handle) = MONITOR_WATCHER.lock().await.take() {
@@ -399,4 +599,118 @@ pub async fn stop_monitor_watcher() -> anyhow::Result<()> {
         handle.abort();
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn display(id: u32, x: i32) -> DisplayLayoutEntry {
+        DisplayLayoutEntry {
+            id,
+            stable_id: format!("Display {id}_1920x1080_{x},0"),
+            name: format!("Display {id}"),
+            x,
+            y: 0,
+            width: 1920,
+            height: 1080,
+            is_primary: x == 0,
+        }
+    }
+
+    async fn rows(db: &DatabaseManager) -> Vec<(String, String)> {
+        sqlx::query_as("SELECT reason, layout_json FROM display_layout ORDER BY id")
+            .fetch_all(&db.pool)
+            .await
+            .unwrap()
+    }
+
+    async fn memory_db() -> DatabaseManager {
+        DatabaseManager::new("sqlite::memory:", Default::default())
+            .await
+            .unwrap()
+    }
+
+    #[tokio::test]
+    async fn startup_row_then_one_row_per_change() {
+        let db = memory_db().await;
+        let mut recorder = DisplayLayoutRecorder::new();
+        let one = vec![display(1, 0)];
+        let two = vec![display(2, 1920), display(1, 0)];
+
+        recorder.observe_layout(&db, &one).await;
+        recorder.observe_layout(&db, &one).await;
+        recorder.observe_layout(&db, &two).await;
+        recorder.observe_layout(&db, &two).await;
+        recorder.observe_layout(&db, &one).await;
+        // No displays (all unplugged or asleep) writes nothing.
+        recorder.observe_layout(&db, &[]).await;
+
+        let stored = rows(&db).await;
+        let reasons: Vec<&str> = stored.iter().map(|(r, _)| r.as_str()).collect();
+        assert_eq!(reasons, vec!["startup", "change", "change"]);
+        assert_eq!(stored[0].1, canonical_display_layout_json(&one));
+        // Stored sorted by id whatever the enumeration order.
+        assert!(stored[1].1.starts_with("[{\"id\":1,"), "{}", stored[1].1);
+        assert_eq!(stored[1].1, canonical_display_layout_json(&two));
+    }
+
+    #[tokio::test]
+    async fn a_restart_with_the_same_layout_adds_no_row() {
+        let db = memory_db().await;
+        let layout = vec![display(1, 0), display(2, 1920)];
+        DisplayLayoutRecorder::new()
+            .observe_layout(&db, &layout)
+            .await;
+
+        // A new watcher (engine restart) seeing the same arrangement.
+        let mut restarted = DisplayLayoutRecorder::new();
+        restarted.observe_layout(&db, &layout).await;
+        assert_eq!(rows(&db).await.len(), 1);
+
+        // Its first different arrangement is still a plain change.
+        restarted.observe_layout(&db, &[display(1, 0)]).await;
+        let reasons: Vec<String> = rows(&db).await.into_iter().map(|(r, _)| r).collect();
+        assert_eq!(reasons, vec!["startup", "change"]);
+
+        // A restart with a different arrangement writes a startup row.
+        let mut again = DisplayLayoutRecorder::new();
+        again.observe_layout(&db, &layout).await;
+        let reasons: Vec<String> = rows(&db).await.into_iter().map(|(r, _)| r).collect();
+        assert_eq!(reasons, vec!["startup", "change", "startup"]);
+    }
+
+    #[test]
+    fn failures_retry_and_reverify_on_the_next_pass() {
+        let a = canonical_display_layout_json(&[display(1, 0)]);
+        let b = canonical_display_layout_json(&[display(1, 0), display(2, 1920)]);
+        let mut recorder = DisplayLayoutRecorder::new();
+        assert_eq!(recorder.plan(&a), LayoutAction::ReadLatest);
+        assert_eq!(
+            recorder.plan_after_read(None, &a),
+            LayoutAction::Write(DisplayLayoutReason::Startup)
+        );
+
+        // The startup write timed out: retry, after checking what landed.
+        recorder.record_failure("insert timed out");
+        assert_eq!(recorder.plan(&a), LayoutAction::ReadLatest);
+        assert_eq!(recorder.plan_after_read(Some(&a), &a), LayoutAction::Skip);
+        recorder.record_stored(a.clone());
+
+        assert_eq!(recorder.plan(&a), LayoutAction::Skip);
+        assert_eq!(
+            recorder.plan(&b),
+            LayoutAction::Write(DisplayLayoutReason::Change)
+        );
+        // A failed change write re-reads, then writes a change (not startup).
+        recorder.record_failure("insert failed");
+        assert_eq!(recorder.plan(&b), LayoutAction::ReadLatest);
+        assert_eq!(
+            recorder.plan_after_read(Some(&a), &b),
+            LayoutAction::Write(DisplayLayoutReason::Change)
+        );
+        recorder.record_stored(b.clone());
+        assert_eq!(recorder.plan(&b), LayoutAction::Skip);
+        assert!(!recorder.failure_warned);
+    }
 }

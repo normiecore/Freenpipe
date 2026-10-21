@@ -24,6 +24,7 @@ pub mod focus_aware_controller;
 pub mod focus_tracker;
 pub mod frame_linker;
 pub mod frame_linker_actor;
+pub mod frame_thumbnail_cache;
 pub mod hd_recorder;
 pub mod high_fps_controller;
 pub mod history_access;
