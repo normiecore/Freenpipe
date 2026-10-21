@@ -33,6 +33,7 @@ default-members = [
     "crates/screenpipe-secrets",
     "crates/screenpipe-sync",
     "crates/screenpipe-vault",
+    "crates/screenpipe-wer-helper",
 ]
 resolver = "2"
 

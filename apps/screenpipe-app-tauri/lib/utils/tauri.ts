@@ -286,6 +286,19 @@ async copyTextToClipboard(text: string) : Promise<Result<null, string>> {
 }
 },
 /**
+ * Debug builds and developer mode only: end the process with a fail-fast
+ * abort, the kind of crash the WER helper exists for, to check that a dump
+ * appears in `crash-dumps` at the next start.
+ */
+async debugForceNativeCrash() : Promise<Result<null, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("debug_force_native_crash") };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
  * Developer command: make the engine look crashed. Its runtime is stopped
  * (taking the HTTP server and every engine task with it) while the dead
  * `ServerCore` is put back in state, which is what a crashed engine thread
@@ -2451,7 +2464,12 @@ error: string | null;
  * Unix epoch seconds when the current phase was entered. Lets the UI
  * show "X minutes" on slow migrations.
  */
-sinceEpochSecs: number }
+sinceEpochSecs: number;
+/**
+ * The CPU has no AVX2, so Whisper and Qwen3-ASR are off and Parakeet
+ * transcribes instead (`cpu_compat`).
+ */
+cpuCompatMode?: boolean }
 /**
  * Per-browser automation status: "granted", "denied", or "not_asked".
  * Also includes whether the browser is currently running.

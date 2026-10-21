@@ -61,6 +61,10 @@ pub struct BootPhaseSnapshot {
     /// Unix epoch seconds when the current phase was entered. Lets the UI
     /// show "X minutes" on slow migrations.
     pub since_epoch_secs: u64,
+    /// The CPU has no AVX2, so Whisper and Qwen3-ASR are off and Parakeet
+    /// transcribes instead (`cpu_compat`).
+    #[serde(default)]
+    pub cpu_compat_mode: bool,
 }
 
 impl BootPhaseSnapshot {
@@ -70,6 +74,7 @@ impl BootPhaseSnapshot {
             message: None,
             error: None,
             since_epoch_secs: 0,
+            cpu_compat_mode: false,
         }
     }
 }
@@ -134,7 +139,9 @@ pub fn fail_boot_if_pending(err: &str) -> bool {
 }
 
 pub fn get_boot_phase_snapshot() -> BootPhaseSnapshot {
-    BOOT_PHASE.read().unwrap_or_else(|e| e.into_inner()).clone()
+    let mut snapshot = BOOT_PHASE.read().unwrap_or_else(|e| e.into_inner()).clone();
+    snapshot.cpu_compat_mode = crate::cpu_compat::compat_mode();
+    snapshot
 }
 
 /// Snapshot of where the boot lifecycle currently is.

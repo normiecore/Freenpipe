@@ -59,11 +59,15 @@
     {
       "identifier": "opener:allow-open-url",
       "allow": [
-        { "url": "^https?://.*" },
-        { "url": "^mailto:.*" },
-        { "url": "^tel:.*" },
-        { "url": "^x-apple-reminderkit://.*" },
-        { "url": "^obsidian://.*" }
+        { "url": "http://*" },
+        { "url": "https://*" },
+        { "url": "mailto:*" },
+        { "url": "tel:*" },
+        { "url": "x-apple-reminderkit://*" },
+        { "url": "obsidian://*" },
+        { "url": "claude://claude.ai/new[?]q=*" },
+        { "url": "cursor://anysphere.cursor-deeplink/prompt[?]text=*" },
+        { "url": "codex://threads/new[?]prompt=*" }
       ]
     },
     "core:window:default",

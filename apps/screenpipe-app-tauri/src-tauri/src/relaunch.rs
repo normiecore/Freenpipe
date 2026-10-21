@@ -899,18 +899,34 @@ pub fn on_run_exit(app: &tauri::AppHandle) {
 // Safe relaunch
 // ---------------------------------------------------------------------------
 
-/// Environment for the replacement process.
-pub fn relaunch_env(home_visible: bool, base_dir: &Path) -> Vec<(&'static str, String)> {
-    vec![
-        (
-            screenpipe_core::env::SCREENPIPE_RELAUNCH_HOME_VISIBLE,
-            if home_visible { "true" } else { "false" }.to_string(),
-        ),
-        (
+/// Environment for the replacement process. `SCREENPIPE_DATA_DIR` is passed
+/// on only when this process was itself started with it: the variable wins
+/// over the `dataDir` setting (`config::resolve_data_dir`), so setting it to
+/// the default directory would move a user's custom recording folder back
+/// to `~/.screenpipe` in the replacement.
+pub fn relaunch_env(
+    home_visible: bool,
+    inherited_data_dir: Option<&Path>,
+) -> Vec<(&'static str, String)> {
+    let mut env = vec![(
+        screenpipe_core::env::SCREENPIPE_RELAUNCH_HOME_VISIBLE,
+        if home_visible { "true" } else { "false" }.to_string(),
+    )];
+    if let Some(dir) = inherited_data_dir {
+        env.push((
             screenpipe_core::env::SCREENPIPE_DATA_DIR,
-            base_dir.to_string_lossy().into_owned(),
-        ),
-    ]
+            dir.to_string_lossy().into_owned(),
+        ));
+    }
+    env
+}
+
+/// `SCREENPIPE_DATA_DIR` as this process received it (nothing in the app
+/// sets it).
+fn inherited_data_dir() -> Option<PathBuf> {
+    std::env::var_os(screenpipe_core::env::SCREENPIPE_DATA_DIR)
+        .filter(|v| !v.is_empty())
+        .map(PathBuf::from)
 }
 
 /// `SCREENPIPE_RELAUNCH_HOME_VISIBLE` as set by [`relaunch_env`]. Anything
@@ -985,6 +1001,10 @@ pub fn on_ready(app: &tauri::AppHandle) {
         }
     }
 }
+
+/// Extra time a safe relaunch gives an engine that is still starting or
+/// stopping after the teardown, before the replacement opens the database.
+const RELAUNCH_ENGINE_WAIT: Duration = Duration::from_secs(30);
 
 /// Managed sender of a control server started again after a failed
 /// relaunch. Dropping it would stop that server.
@@ -1199,10 +1219,28 @@ pub async fn safe_relaunch(
             report.overrun_names()
         ),
     }
+    // The replacement opens the same database: an engine this process is
+    // still starting (a watchdog respawn caught inside `ServerCore::start`)
+    // must be retired first. The teardown already waited within its engine
+    // step; a slow migration can outlast that, so wait a little longer here.
+    if crate::recording::engine_transitions_pending() > 0 {
+        warn!(
+            "safe relaunch: an engine is still starting or stopping; waiting up to {}s before starting the replacement",
+            RELAUNCH_ENGINE_WAIT.as_secs()
+        );
+        if tokio::time::timeout(
+            RELAUNCH_ENGINE_WAIT,
+            crate::recording::wait_for_engine_transitions(),
+        )
+        .await
+        .is_err()
+        {
+            warn!("safe relaunch: the engine is still busy; relaunching anyway (this process exits right after)");
+        }
+    }
     stop_control_server(&app).await;
 
-    let base_dir = screenpipe_core::paths::default_screenpipe_data_dir();
-    let env = relaunch_env(home_visible, &base_dir);
+    let env = relaunch_env(home_visible, inherited_data_dir().as_deref());
     // The single-instance lock and the tray icon are released only once the
     // replacement exists: if it cannot be started, this instance keeps
     // running and still needs both.
@@ -1515,7 +1553,7 @@ mod tests {
     #[test]
     fn relaunch_env_carries_home_visibility_and_data_dir() {
         let dir = Path::new("/tmp/fp-data");
-        let env = relaunch_env(false, dir);
+        let env = relaunch_env(false, Some(dir));
         assert_eq!(
             env,
             vec![
@@ -1523,7 +1561,13 @@ mod tests {
                 ("SCREENPIPE_DATA_DIR", "/tmp/fp-data".to_string()),
             ]
         );
-        assert_eq!(relaunch_env(true, dir)[0].1, "true");
+        assert_eq!(relaunch_env(true, Some(dir))[0].1, "true");
+        // Without an inherited data dir the replacement reads the dataDir
+        // setting, so a custom recording folder is kept.
+        assert_eq!(
+            relaunch_env(true, None),
+            vec![("SCREENPIPE_RELAUNCH_HOME_VISIBLE", "true".to_string())]
+        );
         // The replacement reads back exactly what we wrote.
         assert_eq!(parse_home_visible(Some(&env[0].1)), Some(false));
         assert_eq!(parse_home_visible(Some("true")), Some(true));
