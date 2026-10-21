@@ -2,34 +2,278 @@ use image::{DynamicImage, GenericImageView};
 use rusty_tesseract::{Args, DataOutput, Image};
 use screenpipe_core::{Language, TESSERACT_LANGUAGES};
 use std::collections::HashMap;
-use tracing::warn;
+use std::ffi::OsString;
+use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::OnceLock;
+use tracing::{debug, info, warn};
 
-/// Ensure TESSDATA_PREFIX is set so tesseract can find language data files.
-fn ensure_tessdata_prefix() {
-    if std::env::var("TESSDATA_PREFIX").is_ok() {
-        return;
+// Tesseract discovery (Freenpipe): the binary is looked up once per session,
+// installed system-wide or bundled beside the engine (including an AppImage's
+// `$APPDIR`). When none is found, OCR through tesseract stays off for the rest
+// of the session instead of failing on every frame.
+
+#[cfg(windows)]
+const TESSERACT_EXE: &str = "tesseract.exe";
+#[cfg(not(windows))]
+const TESSERACT_EXE: &str = "tesseract";
+
+/// Language data file whose presence marks a usable tessdata folder.
+const ENG_TRAINEDDATA: &str = "eng.traineddata";
+
+/// Tesseract is the engine live capture uses on this platform (Linux and
+/// other non-Apple, non-Windows systems), so its state feeds `/health`.
+const TESSERACT_IS_PRIMARY: bool = cfg!(not(any(target_os = "windows", target_os = "macos")));
+
+/// Consecutive failed runs after which tesseract is reported unavailable.
+const FAILURES_BEFORE_UNAVAILABLE: u32 = 3;
+
+/// Where tesseract was found for this session.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TesseractInstall {
+    /// The tesseract executable.
+    pub binary: PathBuf,
+    /// The tessdata folder in use (`TESSDATA_PREFIX`), when one was found
+    /// or set by the user.
+    pub tessdata: Option<PathBuf>,
+}
+
+static TESSERACT: OnceLock<Option<TesseractInstall>> = OnceLock::new();
+static CONSECUTIVE_FAILURES: AtomicU32 = AtomicU32::new(0);
+
+/// The tesseract found for this session, discovering it on first use.
+/// `None` means OCR through tesseract is off until the engine restarts.
+pub fn tesseract_install() -> Option<&'static TesseractInstall> {
+    TESSERACT.get_or_init(discover_and_prepare).as_ref()
+}
+
+/// Whether a tesseract binary was found for this session.
+pub fn tesseract_available() -> bool {
+    tesseract_install().is_some()
+}
+
+fn exe_dir() -> Option<PathBuf> {
+    std::env::current_exe()
+        .ok()
+        .and_then(|p| p.parent().map(Path::to_path_buf))
+}
+
+/// Folders where an installer usually puts tesseract but which are often
+/// missing from the engine's `PATH` (GUI launches inherit a short one).
+fn well_known_install_dirs() -> Vec<PathBuf> {
+    let mut dirs = Vec::new();
+    #[cfg(windows)]
+    {
+        for var in ["ProgramFiles", "ProgramFiles(x86)", "ProgramW6432"] {
+            if let Some(base) = std::env::var_os(var) {
+                dirs.push(PathBuf::from(base).join("Tesseract-OCR"));
+            }
+        }
+        if let Some(local) = std::env::var_os("LOCALAPPDATA") {
+            let local = PathBuf::from(local);
+            dirs.push(local.join("Programs").join("Tesseract-OCR"));
+            dirs.push(local.join("Tesseract-OCR"));
+        }
+    }
+    #[cfg(target_os = "macos")]
+    {
+        for d in ["/opt/homebrew/bin", "/usr/local/bin", "/opt/local/bin"] {
+            dirs.push(PathBuf::from(d));
+        }
+    }
+    #[cfg(not(any(windows, target_os = "macos")))]
+    {
+        for d in ["/usr/bin", "/usr/local/bin", "/snap/bin"] {
+            dirs.push(PathBuf::from(d));
+        }
+    }
+    dirs
+}
+
+/// Binary locations tried after rusty-tesseract's own search (`PATH`, the
+/// working directory, the engine's folder and its `lib`, `~/.local/bin`):
+/// bundle folders beside the engine, the AppImage tree, then installer
+/// defaults.
+fn extra_binary_candidates(
+    exe_dir: Option<&Path>,
+    appdir: Option<&Path>,
+    install_dirs: &[PathBuf],
+) -> Vec<PathBuf> {
+    let mut out = Vec::new();
+    if let Some(dir) = exe_dir {
+        out.push(dir.join("tesseract").join(TESSERACT_EXE));
+        out.push(dir.join("resources").join("tesseract").join(TESSERACT_EXE));
+        out.push(dir.join("Tesseract-OCR").join(TESSERACT_EXE));
+    }
+    if let Some(dir) = appdir {
+        out.push(dir.join("usr").join("bin").join(TESSERACT_EXE));
+        out.push(dir.join("bin").join(TESSERACT_EXE));
+    }
+    out.extend(install_dirs.iter().map(|d| d.join(TESSERACT_EXE)));
+    out
+}
+
+/// Folders that may hold the language data, best first.
+fn tessdata_candidates(
+    binary: &Path,
+    exe_dir: Option<&Path>,
+    appdir: Option<&Path>,
+) -> Vec<PathBuf> {
+    let mut out = Vec::new();
+    if let Some(dir) = binary.parent() {
+        out.push(dir.join("tessdata"));
+        if let Some(prefix) = dir.parent() {
+            out.push(prefix.join("share").join("tessdata"));
+            out.push(prefix.join("share").join("tesseract-ocr").join("5").join("tessdata"));
+            out.push(prefix.join("share").join("tesseract-ocr").join("4").join("tessdata"));
+        }
+    }
+    if let Some(dir) = exe_dir {
+        out.push(dir.join("tessdata"));
+        out.push(dir.join("tesseract").join("tessdata"));
+        out.push(dir.join("resources").join("tesseract").join("tessdata"));
+    }
+    if let Some(dir) = appdir {
+        let share = dir.join("usr").join("share");
+        out.push(share.join("tesseract-ocr").join("5").join("tessdata"));
+        out.push(share.join("tesseract-ocr").join("4").join("tessdata"));
+        out.push(share.join("tessdata"));
     }
     // Common distro paths for tessdata
-    let candidates = [
+    for path in [
         "/usr/share/tesseract-ocr/5/tessdata",
         "/usr/share/tesseract-ocr/4/tessdata",
         "/usr/share/tesseract/tessdata",
         "/usr/share/tessdata",
         "/usr/local/share/tessdata",
-    ];
-    for path in &candidates {
-        if std::path::Path::new(path).join("eng.traineddata").exists() {
-            std::env::set_var("TESSDATA_PREFIX", path);
-            return;
+    ] {
+        out.push(PathBuf::from(path));
+    }
+    out
+}
+
+fn first_file(candidates: &[PathBuf]) -> Option<PathBuf> {
+    candidates.iter().find(|p| p.is_file()).cloned()
+}
+
+fn first_tessdata_with_eng(candidates: &[PathBuf]) -> Option<PathBuf> {
+    candidates
+        .iter()
+        .find(|dir| dir.join(ENG_TRAINEDDATA).is_file())
+        .cloned()
+}
+
+/// `PATH` with `dir` appended (so a binary found outside `PATH` is what
+/// rusty-tesseract's lookup finds, without shadowing anything already there).
+fn path_with(current: Option<OsString>, dir: &Path) -> Option<OsString> {
+    let mut parts: Vec<PathBuf> = current
+        .as_deref()
+        .map(|p| std::env::split_paths(p).collect())
+        .unwrap_or_default();
+    if parts.iter().any(|p| p == dir) {
+        return None;
+    }
+    parts.push(dir.to_path_buf());
+    std::env::join_paths(parts).ok()
+}
+
+fn discover_and_prepare() -> Option<TesseractInstall> {
+    let exe_dir = exe_dir();
+    let appdir = std::env::var_os("APPDIR").map(PathBuf::from);
+
+    let found = match rusty_tesseract::find_tesseract_path() {
+        Some(path) => Some((path, true)),
+        None => first_file(&extra_binary_candidates(
+            exe_dir.as_deref(),
+            appdir.as_deref(),
+            &well_known_install_dirs(),
+        ))
+        .map(|path| (path, false)),
+    };
+    let Some((binary, on_search_path)) = found else {
+        warn!(
+            "tesseract was not found (it is neither installed system-wide nor bundled beside \
+             the engine), so OCR through tesseract is off for the rest of this session; \
+             install tesseract-ocr and restart to get searchable screen text"
+        );
+        if TESSERACT_IS_PRIMARY {
+            crate::metrics::set_ocr_engine_available(false);
+        }
+        return None;
+    };
+
+    if !on_search_path {
+        if let Some(dir) = binary.parent() {
+            if let Some(path) = path_with(std::env::var_os("PATH"), dir) {
+                std::env::set_var("PATH", path);
+            }
         }
     }
+
+    // Ensure TESSDATA_PREFIX is set so tesseract can find language data files.
+    let tessdata = match std::env::var_os("TESSDATA_PREFIX") {
+        Some(user_set) => Some(PathBuf::from(user_set)),
+        None => {
+            let dir = first_tessdata_with_eng(&tessdata_candidates(
+                &binary,
+                exe_dir.as_deref(),
+                appdir.as_deref(),
+            ));
+            if let Some(dir) = &dir {
+                std::env::set_var("TESSDATA_PREFIX", dir);
+            }
+            dir
+        }
+    };
+    info!(
+        binary = %binary.display(),
+        tessdata = %tessdata.as_deref().map(|p| p.display().to_string()).unwrap_or_else(|| "default".into()),
+        "tesseract found"
+    );
+    Some(TesseractInstall { binary, tessdata })
+}
+
+fn note_tesseract_success() {
+    CONSECUTIVE_FAILURES.store(0, Ordering::Relaxed);
+    if TESSERACT_IS_PRIMARY {
+        crate::metrics::set_ocr_engine_available(true);
+    }
+}
+
+fn note_tesseract_failure() {
+    let failures = CONSECUTIVE_FAILURES.fetch_add(1, Ordering::Relaxed) + 1;
+    if TESSERACT_IS_PRIMARY && failures == FAILURES_BEFORE_UNAVAILABLE {
+        warn!(
+            "tesseract failed {} times in a row; reporting OCR as unavailable until a run succeeds",
+            failures
+        );
+        crate::metrics::set_ocr_engine_available(false);
+    }
+}
+
+fn empty_ocr() -> (String, String, Option<f64>) {
+    (String::new(), "[]".to_string(), None)
 }
 
 pub fn perform_ocr_tesseract(
     image: &DynamicImage,
     languages: Vec<Language>,
 ) -> (String, String, Option<f64>) {
-    ensure_tessdata_prefix();
+    let (img_w, img_h) = image.dimensions();
+    if img_w == 0 || img_h == 0 {
+        debug!("tesseract: skipping an image with a zero dimension");
+        return empty_ocr();
+    }
+    if crate::ocr_availability::ocr_fault_injected() {
+        if TESSERACT_IS_PRIMARY {
+            crate::metrics::set_ocr_engine_available(false);
+        }
+        return empty_ocr();
+    }
+    if tesseract_install().is_none() {
+        // Logged once at discovery; OCR stays off for this session.
+        return empty_ocr();
+    }
 
     let language_string = match languages.is_empty() {
         true => "eng".to_string(),
@@ -57,22 +301,34 @@ pub fn perform_ocr_tesseract(
         Ok(img) => img,
         Err(e) => {
             warn!("tesseract: failed to convert image: {}", e);
-            return (String::new(), "[]".to_string(), None);
+            return empty_ocr();
         }
     };
 
-    // Extract data output
-    let data_output = match rusty_tesseract::image_to_data(&ocr_image, &args) {
-        Ok(data) => data,
-        Err(e) => {
+    // Extract data output. rusty-tesseract panics when its binary vanishes
+    // after discovery; contain that instead of losing the capture task.
+    let run = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        rusty_tesseract::image_to_data(&ocr_image, &args)
+    }));
+    let data_output = match run {
+        Ok(Ok(data)) => {
+            note_tesseract_success();
+            data
+        }
+        Ok(Err(e)) => {
             warn!("tesseract: OCR failed: {}", e);
-            return (String::new(), "[]".to_string(), None);
+            note_tesseract_failure();
+            return empty_ocr();
+        }
+        Err(_) => {
+            warn!("tesseract: OCR run panicked");
+            note_tesseract_failure();
+            return empty_ocr();
         }
     };
 
     // Extract text from data output
     let text = data_output_to_text(&data_output);
-    let (img_w, img_h) = image.dimensions();
     let json_output = data_output_to_json(&data_output, img_w, img_h);
 
     let overall_confidence = calculate_overall_confidence(&data_output);
@@ -130,5 +386,112 @@ fn calculate_overall_confidence(data_output: &DataOutput) -> f64 {
         (total_conf / count as f32) as f64
     } else {
         0.0
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::fs;
+
+    fn touch(path: &Path) {
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        fs::write(path, b"x").unwrap();
+    }
+
+    #[test]
+    fn bundled_binary_beside_the_engine_is_found() {
+        let tmp = tempfile::tempdir().unwrap();
+        let exe_dir = tmp.path().join("app");
+        let bundled = exe_dir.join("tesseract").join(TESSERACT_EXE);
+        touch(&bundled);
+        let candidates = extra_binary_candidates(Some(&exe_dir), None, &[]);
+        assert_eq!(first_file(&candidates), Some(bundled));
+    }
+
+    #[test]
+    fn appimage_binary_is_found_under_appdir() {
+        let tmp = tempfile::tempdir().unwrap();
+        let appdir = tmp.path().join("squashfs-root");
+        let bin = appdir.join("usr").join("bin").join(TESSERACT_EXE);
+        touch(&bin);
+        let candidates = extra_binary_candidates(None, Some(&appdir), &[]);
+        assert_eq!(first_file(&candidates), Some(bin));
+    }
+
+    #[test]
+    fn installer_folders_come_after_the_bundle() {
+        let tmp = tempfile::tempdir().unwrap();
+        let exe_dir = tmp.path().join("app");
+        let install = tmp.path().join("Tesseract-OCR-install");
+        let bundled = exe_dir.join("tesseract").join(TESSERACT_EXE);
+        let installed = install.join(TESSERACT_EXE);
+        touch(&installed);
+        let candidates = extra_binary_candidates(Some(&exe_dir), None, &[install.clone()]);
+        assert_eq!(first_file(&candidates), Some(installed));
+        touch(&bundled);
+        assert_eq!(first_file(&candidates), Some(bundled));
+    }
+
+    #[test]
+    fn nothing_found_when_no_candidate_exists() {
+        let tmp = tempfile::tempdir().unwrap();
+        let candidates = extra_binary_candidates(
+            Some(tmp.path()),
+            Some(tmp.path()),
+            &[tmp.path().join("nowhere")],
+        );
+        assert_eq!(first_file(&candidates), None);
+    }
+
+    #[test]
+    fn tessdata_next_to_the_binary_wins() {
+        let tmp = tempfile::tempdir().unwrap();
+        let binary = tmp.path().join("bundle").join(TESSERACT_EXE);
+        let near = tmp.path().join("bundle").join("tessdata");
+        let appdir = tmp.path().join("appdir");
+        let in_appdir = appdir
+            .join("usr")
+            .join("share")
+            .join("tesseract-ocr")
+            .join("5")
+            .join("tessdata");
+        touch(&in_appdir.join(ENG_TRAINEDDATA));
+        let candidates = tessdata_candidates(&binary, None, Some(&appdir));
+        assert_eq!(first_tessdata_with_eng(&candidates), Some(in_appdir));
+        touch(&near.join(ENG_TRAINEDDATA));
+        assert_eq!(first_tessdata_with_eng(&candidates), Some(near));
+    }
+
+    #[test]
+    fn a_folder_without_english_data_is_skipped() {
+        let tmp = tempfile::tempdir().unwrap();
+        let binary = tmp.path().join("bin").join(TESSERACT_EXE);
+        touch(&tmp.path().join("bin").join("tessdata").join("deu.traineddata"));
+        let candidates = vec![tmp.path().join("bin").join("tessdata")];
+        assert_eq!(first_tessdata_with_eng(&candidates), None);
+        assert!(!tessdata_candidates(&binary, None, None).is_empty());
+    }
+
+    #[test]
+    fn path_gets_the_folder_appended_once() {
+        let a = PathBuf::from("/opt/a");
+        let b = PathBuf::from("/opt/b");
+        let current = std::env::join_paths([&a]).unwrap();
+        let joined = path_with(Some(current.clone()), &b).unwrap();
+        let parts: Vec<PathBuf> = std::env::split_paths(&joined).collect();
+        assert_eq!(parts, vec![a.clone(), b]);
+        assert_eq!(path_with(Some(current), &a), None);
+        let only: Vec<PathBuf> = std::env::split_paths(&path_with(None, &a).unwrap()).collect();
+        assert_eq!(only, vec![a]);
+    }
+
+    #[test]
+    fn zero_sized_images_return_empty_without_running() {
+        let empty = DynamicImage::ImageRgb8(image::RgbImage::new(0, 0));
+        let (text, json, conf) = perform_ocr_tesseract(&empty, vec![]);
+        assert!(text.is_empty());
+        assert_eq!(json, "[]");
+        assert_eq!(conf, None);
     }
 }
