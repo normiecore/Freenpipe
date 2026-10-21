@@ -327,3 +327,24 @@ async fn backup_and_wal_status_work_on_a_live_database() {
     let status = db.wal_maintenance_status();
     assert!(status.stopped_reason.is_none(), "{status:?}");
 }
+
+#[test]
+fn shared_constants_match_screenpipe_core() {
+    use screenpipe_core::{env, paths};
+    assert_eq!(
+        screenpipe_db::maintenance::WAL_MAINTENANCE_INTERVAL_ENV,
+        env::SCREENPIPE_WAL_MAINTENANCE_INTERVAL_SECS
+    );
+    assert_eq!(
+        screenpipe_db::planner_stats::PLANNER_MAINTENANCE_INTERVAL_ENV,
+        env::SCREENPIPE_PLANNER_MAINTENANCE_INTERVAL_SECS
+    );
+    assert_eq!(
+        screenpipe_db::planner_stats::PLANNER_REPORT_FILE,
+        paths::SQLITE_PLANNER_MAINTENANCE_FILE
+    );
+    assert_eq!(
+        owner_file_path(Path::new(paths::DB_FILE)),
+        Path::new(paths::DB_OWNER_FILE)
+    );
+}

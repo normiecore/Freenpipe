@@ -76,6 +76,8 @@ fn should_skip(name: &str) -> bool {
     name.ends_with(".sqlite")
         || name.ends_with(".sqlite-wal")
         || name.ends_with(".sqlite-shm")
+        // Ownership sidecar: process-local state, locked while an engine runs.
+        || name.ends_with(".sqlite.owner")
         || name.ends_with(".lock")
         // Our own snapshot tempfiles (in case a previous run was killed
         // before cleanup).
@@ -960,6 +962,7 @@ mod tests {
     fn test_should_skip() {
         assert!(should_skip("db.sqlite-wal"));
         assert!(should_skip("db.sqlite-shm"));
+        assert!(should_skip("db.sqlite.owner"));
         // Live .sqlite is skipped: the DB ships via VACUUM INTO snapshot
         // (page-level torn writes mid-SFTP would corrupt a direct copy).
         assert!(should_skip("db.sqlite"));

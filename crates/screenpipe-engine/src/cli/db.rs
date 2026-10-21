@@ -602,6 +602,8 @@ const NEVER_DELETE: &[&str] = &[
     "db.sqlite",
     "db.sqlite-wal",
     "db.sqlite-shm",
+    // Ownership sidecar, locked by a running engine (see screenpipe-db ownership.rs).
+    "db.sqlite.owner",
     "store.bin",
     "auth.json",
     "connections.json",
