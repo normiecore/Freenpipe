@@ -5,7 +5,7 @@
 import { useState, useRef, useEffect, useCallback, useMemo } from "react";
 import { StreamTimeSeriesResponse } from "@/components/rewind/timeline";
 import posthog from "posthog-js";
-import { getApiBaseUrl } from "@/lib/api";
+import { getApiBaseUrl, appendAuthToken } from "@/lib/api";
 
 // Debounce delay for frame loading (ms) — reduced for arrow keys
 const FRAME_LOAD_DEBOUNCE_MS = 80;
@@ -420,15 +420,15 @@ export function useFrameLoading(opts: {
 		if (!debouncedFrame) return null;
 		// Force HTTP JPEG for search navigation (skip slow video seek)
 		if (searchNavFrame) {
-			return `${getApiBaseUrl()}/frames/${debouncedFrame.frameId}`;
+			return appendAuthToken(`${getApiBaseUrl()}/frames/${debouncedFrame.frameId}`);
 		}
 		// Snapshot failed to load from disk — need HTTP fallback regardless of video mode
 		if (isSnapshotFrame && snapshotFailed) {
-			return `${getApiBaseUrl()}/frames/${debouncedFrame.frameId}`;
+			return appendAuthToken(`${getApiBaseUrl()}/frames/${debouncedFrame.frameId}`);
 		}
 		if (useVideoMode) return null;
 		if (isSnapshotFrame) return null;
-		return `${getApiBaseUrl()}/frames/${debouncedFrame.frameId}`;
+		return appendAuthToken(`${getApiBaseUrl()}/frames/${debouncedFrame.frameId}`);
 	}, [useVideoMode, debouncedFrame, isSnapshotFrame, snapshotFailed, searchNavFrame]);
 
 	// Preload fallback image — only swap displayed URL when the new image loads successfully
