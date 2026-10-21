@@ -1081,9 +1081,9 @@ fn on_demand_ocr_error(frame_id: i64, e: &anyhow::Error) -> (StatusCode, JsonRes
 /// Loads the snapshot JPEG, runs the platform OCR engine (on Windows the
 /// shared `screenpipe-windows-ocr` thread), stores the result, and returns
 /// the text positions. Subsequent GET requests will hit the cached DB row.
-/// If OCR data already exists, returns it without re-running. Answers 503
-/// when too many on-demand requests are running, the OCR queue is full or no
-/// OCR engine is installed.
+/// A frame that already has stored positions is answered from the DB with
+/// no new OCR run. Answers 503 when too many on-demand requests are
+/// running, the OCR queue is full or no OCR engine is installed.
 #[oasgen]
 pub async fn run_frame_ocr(
     State(state): State<Arc<AppState>>,
