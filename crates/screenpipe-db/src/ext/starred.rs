@@ -24,7 +24,8 @@
 //!   sessions overlapping a window into disjoint islands clipped to it.
 //! - **HD bindings** ([`DatabaseManager::list_hd_starred_sessions`]) lists the
 //!   sessions that asked for HD and have not ended yet, for the engine's
-//!   high-FPS controller.
+//!   high-FPS controller, and [`DatabaseManager::clear_starred_hd_request`]
+//!   writes back an explicit HD stop for one revision.
 //!
 //! Sessions cover the half-open range `[start, end)`. Timestamps are written
 //! as RFC 3339 UTC with millisecond precision and a `Z` suffix, so text order
@@ -549,6 +550,32 @@ impl DatabaseManager {
                 })
             })
             .collect())
+    }
+
+    /// Switch HD off for session `id`, bumping its revision, but only while
+    /// it is still at `revision` and still asks for HD. The engine calls this
+    /// when the user stops HD while the session runs, so the stop outlives a
+    /// restart. Returns the new revision, or `None` when nothing changed (the
+    /// row is gone, was edited since, or has HD off already). The compare and
+    /// the write are one statement on the serialised write path.
+    pub async fn clear_starred_hd_request(
+        &self,
+        id: &str,
+        revision: i64,
+    ) -> Result<Option<i64>, SqlxError> {
+        let mut tx = self.begin_immediate_with_retry().await?;
+        let new_revision: Option<i64> = sqlx::query_scalar(
+            "UPDATE starred_sessions \
+             SET hd_requested = 0, revision = revision + 1 \
+             WHERE id = ?1 AND revision = ?2 AND hd_requested != 0 \
+             RETURNING revision",
+        )
+        .bind(id)
+        .bind(revision)
+        .fetch_optional(&mut **tx.conn())
+        .await?;
+        tx.commit().await?;
+        Ok(new_revision)
     }
 }
 

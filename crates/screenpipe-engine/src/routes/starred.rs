@@ -20,7 +20,10 @@
 //! runs ([`crate::high_fps_controller`]). Every successful save re-reads the
 //! unfinished HD sessions and installs them in the controller, and
 //! [`spawn_hd_sync`] repeats that on a short tick so changes made outside a
-//! save (a deleted row, a second engine instance) apply too.
+//! save (a deleted row, a second engine instance) apply too. When the user
+//! stops HD (`POST /capture/hd/stop`) while a starred session raises it, the
+//! sync also switches `hd_requested` off in that session's row (bumping its
+//! revision), so the stop still holds after a restart.
 
 use std::sync::{Arc, Weak};
 use std::time::Duration;
@@ -253,11 +256,34 @@ fn db_error(context: &str, e: &sqlx::Error) -> ApiError {
     )
 }
 
-/// An optional RFC 3339 query bound; blank means absent.
+/// `raw` with a space just before a trailing `HH:MM` offset read as `+`. A
+/// `+` sent unencoded in a query string decodes to a space, so
+/// `…T10:00:00+02:00` arrives as `…T10:00:00 02:00`.
+fn restore_offset_plus(raw: &str) -> Option<String> {
+    let b = raw.as_bytes();
+    let n = b.len();
+    // Shortest RFC 3339 date-time with an offset is 25 bytes.
+    if n < 25 {
+        return None;
+    }
+    let tail = &b[n - 6..];
+    let offset_shaped = tail[0] == b' '
+        && tail[1].is_ascii_digit()
+        && tail[2].is_ascii_digit()
+        && tail[3] == b':'
+        && tail[4].is_ascii_digit()
+        && tail[5].is_ascii_digit();
+    // The last six bytes are ASCII, so both slice points are char boundaries.
+    offset_shaped.then(|| format!("{}+{}", &raw[..n - 6], &raw[n - 5..]))
+}
+
+/// An optional RFC 3339 query bound; blank means absent. A positive offset
+/// whose `+` arrived as a space is accepted too.
 fn query_bound(raw: Option<&str>) -> Result<Option<DateTime<Utc>>, ApiError> {
     match raw.map(str::trim).filter(|s| !s.is_empty()) {
         None => Ok(None),
         Some(s) => parse_rfc3339(s)
+            .or_else(|| restore_offset_plus(s).as_deref().and_then(parse_rfc3339))
             .map(Some)
             .ok_or_else(|| api_error(StatusCode::BAD_REQUEST, ERR_QUERY_TIMESTAMPS)),
     }
@@ -369,13 +395,49 @@ pub async fn save_starred_session(
     }
 }
 
-/// Install the unfinished HD sessions from the store into `controller`.
-/// Returns how many were read. The ticket is taken before the read, so an
-/// older read finishing late never replaces a newer one.
+/// Write the starred HD stops the user made (tray or settings, through
+/// `POST /capture/hd/stop`) back to the store: each stopped session that is
+/// still at the stopped revision gets `hd_requested` off and a new revision,
+/// so the stop holds after a restart. Stops the store cannot write yet are
+/// handed back to the controller for the next sync.
+async fn persist_starred_stops(
+    db: &DatabaseManager,
+    controller: &HighFpsController,
+) -> Result<(), sqlx::Error> {
+    let stops = controller.take_stopped_starred_windows();
+    for (i, stop) in stops.iter().enumerate() {
+        match db.clear_starred_hd_request(&stop.id, stop.revision).await {
+            Ok(Some(revision)) => info!(
+                session_id = %stop.id,
+                stopped_revision = stop.revision,
+                revision,
+                "starred session: HD request switched off after an explicit HD stop"
+            ),
+            // Edited, deleted or switched off since: the newer state stands.
+            Ok(None) => debug!(
+                session_id = %stop.id,
+                stopped_revision = stop.revision,
+                "starred session changed since the HD stop; nothing to write"
+            ),
+            Err(e) => {
+                controller.requeue_stopped_starred_windows(stops[i..].to_vec());
+                return Err(e);
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Write back pending HD stops, then install the unfinished HD sessions
+/// from the store into `controller`. Returns how many were read. The ticket
+/// is taken before the read, so an older read finishing late never replaces
+/// a newer one. A failed stop write is reported after the install, which
+/// happens either way (stopped windows stay off in the controller).
 pub async fn sync_hd_bindings(
     db: &DatabaseManager,
     controller: &HighFpsController,
 ) -> Result<usize, sqlx::Error> {
+    let stops_written = persist_starred_stops(db, controller).await;
     let ticket = controller.starred_sync_ticket();
     let now = controller.now_utc();
     let rows = db.list_hd_starred_sessions(now, HD_SYNC_LIMIT).await?;
@@ -390,12 +452,14 @@ pub async fn sync_hd_bindings(
         .collect();
     let count = windows.len();
     controller.install_starred_windows(ticket, windows);
+    stops_written?;
     Ok(count)
 }
 
 /// Keep `controller`'s starred HD windows in step with the store: sync now,
-/// then every [`HD_SYNC_INTERVAL`]. The task holds only weak references and
-/// ends once the database or the controller is dropped.
+/// then every [`HD_SYNC_INTERVAL`] and right after an explicit HD stop (so
+/// the stop reaches the store at once). The task holds only weak references
+/// to the database and the controller and ends once either is dropped.
 pub fn spawn_hd_sync(
     db: &Arc<DatabaseManager>,
     controller: &Arc<HighFpsController>,
@@ -412,11 +476,17 @@ async fn run_hd_sync(
     controller: Weak<HighFpsController>,
     every: Duration,
 ) {
+    let Some(stopped) = controller.upgrade().map(|c| c.starred_stop_signal()) else {
+        return;
+    };
     let mut ticker = tokio::time::interval(every);
     ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
     let mut failing = false;
     loop {
-        ticker.tick().await;
+        tokio::select! {
+            _ = ticker.tick() => {}
+            _ = stopped.notified() => {}
+        }
         let (Some(db), Some(controller)) = (db.upgrade(), controller.upgrade()) else {
             debug!("starred sessions: HD sync stopped (engine gone)");
             return;
@@ -936,6 +1006,39 @@ mod tests {
         .await;
         assert_eq!(status, StatusCode::BAD_REQUEST);
         assert_eq!(v["error"], ERR_QUERY_TIMESTAMPS);
+
+        // `+00:00` sent unencoded (as `isoformat()` prints it in a shell
+        // script) decodes to a space; the bound still reads.
+        let plus = format!(
+            "/starred-sessions?start_time={}&end_time={}",
+            (t - mins(40)).to_rfc3339(),
+            t.to_rfc3339()
+        );
+        assert!(plus.contains("+00:00"), "{plus}");
+        let (status, v) = call(&h.app, "GET", &plus, None, None).await;
+        assert_eq!(status, StatusCode::OK, "{v}");
+        assert_eq!(v["pagination"]["total"], 1);
+        assert_eq!(v["data"][0]["id"], OTHER);
+    }
+
+    #[test]
+    fn a_plus_offset_decoded_to_a_space_still_reads() {
+        let bound = |s: &str| query_bound(Some(s)).map_err(|(status, _)| status);
+        let expect = DateTime::parse_from_rfc3339("2026-10-21T08:00:00.5Z")
+            .unwrap()
+            .with_timezone(&Utc);
+        assert_eq!(bound("2026-10-21T10:00:00.5 02:00"), Ok(Some(expect)));
+        assert_eq!(bound("2026-10-21T08:00:00.5 00:00"), Ok(Some(expect)));
+        assert_eq!(bound("2026-10-21T10:00:00.5+02:00"), Ok(Some(expect)));
+        assert_eq!(bound("2026-10-21T06:00:00.5-02:00"), Ok(Some(expect)));
+        assert_eq!(bound(" "), Ok(None));
+        for bad in [
+            "2026-10-21 02:00",
+            "noon 02:00",
+            "2026-10-21T10:00:00.5 2:00",
+        ] {
+            assert_eq!(bound(bad), Err(StatusCode::BAD_REQUEST), "{bad}");
+        }
     }
 
     #[tokio::test]
@@ -1140,6 +1243,145 @@ mod tests {
             .await
             .expect("sync task ends once the controller is gone")
             .unwrap();
+    }
+
+    #[tokio::test]
+    async fn an_hd_stop_is_written_back_and_holds_after_a_restart() {
+        let h = harness(false, true).await;
+        let controller = h.controller.clone().unwrap();
+        let t = Utc::now();
+        let (status, v) = call(
+            &h.app,
+            "POST",
+            "/starred-sessions",
+            Some(save_json(ID, t - mins(1), t + mins(30), true, 0)),
+            None,
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{v}");
+        assert_eq!(controller.snapshot().kind, Some(SessionKind::Starred));
+
+        // The tray's "Stop HD recording".
+        let (status, v) = call(&h.app, "POST", "/capture/hd/stop", None, None).await;
+        assert_eq!(status, StatusCode::OK, "{v}");
+        assert_eq!(v["active"], false, "{v}");
+
+        // The next sync switches the request off in the row.
+        sync_hd_bindings(&h.db, &controller).await.unwrap();
+        let row = h.db.get_starred_session(ID).await.unwrap().unwrap();
+        assert!(!row.hd_requested);
+        assert_eq!(row.revision, 2);
+        assert!(controller.take_stopped_starred_windows().is_empty());
+
+        // A restart: a fresh controller reading the same store stays off.
+        let fresh = HighFpsController::new(None, DefaultMode::Ask, 100);
+        assert_eq!(sync_hd_bindings(&h.db, &fresh).await.unwrap(), 0);
+        assert!(!fresh.snapshot().active);
+
+        // A client still holding revision 1 reloads first; turning HD on
+        // again from the new revision is a fresh request.
+        let (status, v) = call(
+            &h.app,
+            "POST",
+            "/starred-sessions",
+            Some(save_json(ID, t - mins(1), t + mins(30), true, 1)),
+            None,
+        )
+        .await;
+        assert_eq!(status, StatusCode::CONFLICT, "{v}");
+        assert_eq!(v["current_revision"], 2);
+        let (status, v) = call(
+            &h.app,
+            "POST",
+            "/starred-sessions",
+            Some(save_json(ID, t - mins(1), t + mins(30), true, 2)),
+            None,
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{v}");
+        assert_eq!(v["revision"], 3);
+        assert_eq!(controller.snapshot().kind, Some(SessionKind::Starred));
+    }
+
+    #[tokio::test]
+    async fn an_hd_stop_does_not_touch_a_session_edited_since() {
+        let h = harness(false, true).await;
+        let controller = h.controller.clone().unwrap();
+        let t = Utc::now();
+        let (status, v) = call(
+            &h.app,
+            "POST",
+            "/starred-sessions",
+            Some(save_json(ID, t - mins(1), t + mins(30), true, 0)),
+            None,
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{v}");
+        controller.stop_session();
+        // An edit lands (another client) before the stop is written back.
+        sqlx::query("UPDATE starred_sessions SET revision = 5 WHERE id = ?1")
+            .bind(ID)
+            .execute(&h.db.pool)
+            .await
+            .unwrap();
+        sync_hd_bindings(&h.db, &controller).await.unwrap();
+        let row = h.db.get_starred_session(ID).await.unwrap().unwrap();
+        assert!(row.hd_requested, "the newer revision stands");
+        assert_eq!(row.revision, 5);
+        assert!(controller.take_stopped_starred_windows().is_empty());
+        // ...and, being a new revision, it raises HD again.
+        assert_eq!(controller.snapshot().kind, Some(SessionKind::Starred));
+    }
+
+    #[tokio::test]
+    async fn the_sync_task_writes_an_hd_stop_without_waiting_for_its_tick() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = Arc::new(
+            DatabaseManager::new(
+                dir.path().join("db.sqlite").to_str().unwrap(),
+                Default::default(),
+            )
+            .await
+            .unwrap(),
+        );
+        let t = Utc::now();
+        db.save_starred_session(&StarredSessionWrite {
+            id: ID,
+            start: t - mins(1),
+            end: t + mins(30),
+            hd_requested: true,
+            expected_revision: 0,
+        })
+        .await
+        .unwrap();
+        let controller = Arc::new(HighFpsController::new(None, DefaultMode::Ask, 100));
+        // An hour between ticks: only the stop signal can wake it in time.
+        let task = tokio::spawn(run_hd_sync(
+            Arc::downgrade(&db),
+            Arc::downgrade(&controller),
+            Duration::from_secs(3600),
+        ));
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+        while !controller.snapshot().active {
+            assert!(
+                tokio::time::Instant::now() < deadline,
+                "first sync installs"
+            );
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+
+        controller.stop_session();
+        loop {
+            let row = db.get_starred_session(ID).await.unwrap().unwrap();
+            if !row.hd_requested {
+                assert_eq!(row.revision, 2);
+                break;
+            }
+            assert!(tokio::time::Instant::now() < deadline, "stop written back");
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        assert!(!controller.snapshot().active);
+        task.abort();
     }
 
     #[test]

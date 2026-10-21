@@ -633,3 +633,48 @@ async fn hd_listing_holds_only_unfinished_sessions_that_asked_for_hd() {
     assert_eq!(rows[0].revision, 1);
     assert_eq!((rows[0].start, rows[0].end), (mins(0), mins(10)));
 }
+
+#[tokio::test]
+async fn clearing_an_hd_request_needs_the_current_revision() {
+    let db = memory_db().await;
+    let mut a = write(A, mins(0), mins(10), 0);
+    a.hd_requested = true;
+    saved(&db, &a).await;
+
+    // A stale revision or a missing row changes nothing.
+    assert_eq!(db.clear_starred_hd_request(A, 2).await.unwrap(), None);
+    assert_eq!(db.clear_starred_hd_request(B, 1).await.unwrap(), None);
+    assert!(
+        db.get_starred_session(A)
+            .await
+            .unwrap()
+            .unwrap()
+            .hd_requested
+    );
+
+    // The current revision switches HD off and bumps the revision, so a
+    // client holding revision 1 must reload before it saves again.
+    assert_eq!(db.clear_starred_hd_request(A, 1).await.unwrap(), Some(2));
+    let row = db.get_starred_session(A).await.unwrap().unwrap();
+    assert!(!row.hd_requested);
+    assert_eq!(row.revision, 2);
+    assert_eq!((row.start, row.end), (mins(0), mins(10)));
+    assert!(db
+        .list_hd_starred_sessions(mins(5), 10)
+        .await
+        .unwrap()
+        .is_empty());
+    let mut stale = write(A, mins(0), mins(10), 1);
+    stale.hd_requested = true;
+    assert_eq!(
+        db.save_starred_session(&stale).await.unwrap(),
+        StarredSaveOutcome::RevisionConflict { current: 2 }
+    );
+
+    // HD already off: nothing to clear, no bump.
+    assert_eq!(db.clear_starred_hd_request(A, 2).await.unwrap(), None);
+    assert_eq!(
+        db.get_starred_session(A).await.unwrap().unwrap().revision,
+        2
+    );
+}

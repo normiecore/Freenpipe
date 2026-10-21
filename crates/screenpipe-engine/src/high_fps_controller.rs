@@ -35,9 +35,12 @@
 //! deleted row takes effect on the next install. Each window ends exactly at
 //! its `end` (evaluated on every [`HighFpsController::snapshot`]), a window
 //! that ended or that the user stopped with [`HighFpsController::stop_session`]
-//! never raises HD again for that revision (an edit makes a new revision),
-//! and nothing is persisted, so a restart starts idle until the store
-//! installs what is still running.
+//! never raises HD again for that revision (an edit makes a new revision).
+//! The controller itself persists nothing, so a restart starts idle until
+//! the store installs what is still running; a stop outlives the restart
+//! because the store's sync takes the stopped windows
+//! ([`HighFpsController::take_stopped_starred_windows`]) and switches
+//! `hd_requested` off in their rows.
 //!
 //! The controller only sets the capture *rate*. Every capture gate (screen
 //! lock, schedule, DRM, power pause, per-monitor pause, window and app
@@ -70,6 +73,7 @@ use std::time::{Duration, Instant};
 use chrono::{DateTime, Utc};
 use screenpipe_audio::meeting_detector::MeetingDetector;
 use serde::{Deserialize, Serialize};
+use tokio::sync::Notify;
 
 /// 30 fps ceiling — anything tighter buries the snapshot compactor in JPEGs
 /// without meaningfully helping human-eye replay.
@@ -165,6 +169,9 @@ struct StarredState {
     retired: VecDeque<(String, i64)>,
     /// The window raising HD at the last evaluation, for transition logs.
     raising: Option<(String, i64)>,
+    /// Windows the user stopped that the store has not been told about yet.
+    /// Oldest first, bounded like `retired`.
+    unsaved_stops: VecDeque<StarredHdWindow>,
 }
 
 impl StarredState {
@@ -344,6 +351,9 @@ pub struct HighFpsController {
     starred: Mutex<StarredState>,
     /// Source of install tickets for [`Self::install_starred_windows`].
     starred_tickets: AtomicU64,
+    /// Woken when [`Self::stop_session`] stopped a starred window, so the
+    /// store's sync writes the stop back without waiting for its next tick.
+    starred_stopped: Arc<Notify>,
     clock: Arc<dyn HdClock>,
 }
 
@@ -360,6 +370,7 @@ impl HighFpsController {
             detector,
             starred: Mutex::new(StarredState::default()),
             starred_tickets: AtomicU64::new(0),
+            starred_stopped: Arc::new(Notify::new()),
             clock: Arc::new(SystemHdClock),
         }
     }
@@ -419,6 +430,32 @@ impl HighFpsController {
     pub fn active_starred_window(&self) -> Option<StarredHdWindow> {
         let now = self.clock.now_utc();
         self.lock_starred().evaluate(now)
+    }
+
+    /// Take the starred windows [`Self::stop_session`] stopped since the last
+    /// call, oldest first, for the store to switch `hd_requested` off in
+    /// their rows. They stay retired here whatever the store does.
+    pub fn take_stopped_starred_windows(&self) -> Vec<StarredHdWindow> {
+        self.lock_starred().unsaved_stops.drain(..).collect()
+    }
+
+    /// Hand back stopped windows the store could not write, to be taken
+    /// again on the next sync. They go ahead of stops recorded since.
+    pub fn requeue_stopped_starred_windows(&self, windows: Vec<StarredHdWindow>) {
+        let mut state = self.lock_starred();
+        for window in windows.into_iter().rev() {
+            if !state.unsaved_stops.contains(&window) {
+                state.unsaved_stops.push_front(window);
+            }
+        }
+        state.unsaved_stops.truncate(MAX_RETIRED_STARRED);
+    }
+
+    /// Notified whenever [`Self::stop_session`] stops a starred window. A
+    /// stop made while nobody waits leaves a permit, so the next wait
+    /// returns at once.
+    pub fn starred_stop_signal(&self) -> Arc<Notify> {
+        self.starred_stopped.clone()
     }
 
     /// Take one consistent snapshot. Side-effect: expires the session if
@@ -649,8 +686,10 @@ impl HighFpsController {
     /// Stop the current session. No-op if no session is active.
     ///
     /// Starred windows raising HD right now are stopped too and stay stopped
-    /// for their current revision; the starred sessions themselves are kept.
-    /// Saving such a session again (a new revision) lets it raise HD again.
+    /// for their current revision. They are queued for the store
+    /// ([`Self::take_stopped_starred_windows`]), which switches
+    /// `hd_requested` off in their rows so the stop outlives a restart.
+    /// Saving such a session again with HD on lets it raise HD again.
     pub fn stop_session(&self) -> HighFpsSnapshot {
         let mut guard = self.inner.lock().expect("HighFpsController mutex poisoned");
         if let Some(s) = guard.take() {
@@ -663,7 +702,7 @@ impl HighFpsController {
         }
         drop(guard);
         let now_utc = self.clock.now_utc();
-        {
+        let stopped_starred = {
             let mut state = self.lock_starred();
             let running: Vec<StarredHdWindow> = state
                 .windows
@@ -673,6 +712,10 @@ impl HighFpsController {
                 .collect();
             for window in &running {
                 state.retire(window);
+                if state.unsaved_stops.len() >= MAX_RETIRED_STARRED {
+                    state.unsaved_stops.pop_front();
+                }
+                state.unsaved_stops.push_back(window.clone());
                 tracing::info!(
                     target: "capture::high_fps",
                     session_id = %window.id,
@@ -681,6 +724,10 @@ impl HighFpsController {
                 );
             }
             state.windows.retain(|w| !running.contains(w));
+            !running.is_empty()
+        };
+        if stopped_starred {
+            self.starred_stopped.notify_one();
         }
         self.snapshot()
     }
@@ -1318,6 +1365,39 @@ mod tests {
         // A new save (revision 2) is a fresh request.
         install(&c, vec![window("a", at_min(-1), at_min(12), 2)]);
         assert!(c.snapshot().active);
+    }
+
+    #[tokio::test]
+    async fn stopped_starred_windows_are_queued_for_the_store() {
+        let (c, _clock) = starred_ctl();
+        let signal = c.starred_stop_signal();
+        // A stop with no starred window running queues nothing.
+        c.start_timer_session(Duration::from_secs(120));
+        c.stop_session();
+        assert!(c.take_stopped_starred_windows().is_empty());
+
+        let a = window("a", at_min(-1), at_min(10), 1);
+        let later = window("later", at_min(5), at_min(15), 1);
+        install(&c, vec![a.clone(), later]);
+        c.stop_session();
+        // The stop left a permit: a sync waiting now wakes at once.
+        tokio::time::timeout(Duration::from_secs(1), signal.notified())
+            .await
+            .expect("the stop wakes the store's sync");
+        assert_eq!(c.take_stopped_starred_windows(), vec![a.clone()]);
+        assert!(c.take_stopped_starred_windows().is_empty());
+
+        // A failed write hands it back, ahead of newer stops.
+        let b = window("b", at_min(-1), at_min(20), 3);
+        install(&c, vec![b.clone()]);
+        c.stop_session();
+        c.requeue_stopped_starred_windows(vec![a.clone()]);
+        c.requeue_stopped_starred_windows(vec![a.clone()]);
+        assert_eq!(c.take_stopped_starred_windows(), vec![a.clone(), b.clone()]);
+        // Taking them does not let them raise HD again before the store has
+        // switched them off.
+        install(&c, vec![a, b]);
+        assert!(!c.snapshot().active);
     }
 
     #[test]
