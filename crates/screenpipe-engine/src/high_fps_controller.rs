@@ -23,6 +23,27 @@
 //! impossible: every session has a deterministic expiry condition the
 //! engine enforces.
 //!
+//! ## Starred sessions
+//!
+//! A starred work session (`starred_sessions`, see
+//! [`crate::routes::starred`]) with `hd_requested` raises HD while the
+//! wall clock is inside its `[start, end)` range, reported as
+//! [`SessionKind::Starred`]. The windows live beside the manual session slot
+//! above: the store pushes the full set of unfinished HD windows with
+//! [`HighFpsController::install_starred_windows`] after every save and on a
+//! short refresh tick, so an edit, an `hd_requested` switched off or a
+//! deleted row takes effect on the next install. Each window ends exactly at
+//! its `end` (evaluated on every [`HighFpsController::snapshot`]), a window
+//! that ended or that the user stopped with [`HighFpsController::stop_session`]
+//! never raises HD again for that revision (an edit makes a new revision),
+//! and nothing is persisted, so a restart starts idle until the store
+//! installs what is still running.
+//!
+//! The controller only sets the capture *rate*. Every capture gate (screen
+//! lock, schedule, DRM, power pause, per-monitor pause, window and app
+//! exclusions, stopped recording) sits downstream in the capture loops and
+//! applies to HD frames exactly as to normal ones.
+//!
 //! ## Default mode
 //!
 //! [`DefaultMode`] controls what happens when a meeting starts:
@@ -41,10 +62,12 @@
 //! Active sessions are NOT persisted — they're explicitly ephemeral, the
 //! whole point of the redesign.
 
+use std::collections::VecDeque;
 use std::sync::atomic::{AtomicI8, AtomicU64, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::{Duration, Instant};
 
+use chrono::{DateTime, Utc};
 use screenpipe_audio::meeting_detector::MeetingDetector;
 use serde::{Deserialize, Serialize};
 
@@ -79,6 +102,137 @@ pub const PREWARM_WAIT: Duration = Duration::from_secs(30 * 60);
 /// 4-hour ghost session running.
 pub const STALE_MEETING_FALLBACK: Duration = Duration::from_secs(30 * 60);
 
+/// Most starred HD windows the controller holds at once. The store installs
+/// only sessions that have not ended, and a session ends at most two hours
+/// after it was saved, so real sets are a handful.
+pub const MAX_STARRED_WINDOWS: usize = 64;
+
+/// Starred windows (id and revision) remembered as finished or stopped, so a
+/// backward wall-clock jump or a late install cannot raise HD for them again.
+const MAX_RETIRED_STARRED: usize = 256;
+
+/// Where the controller reads time. Manual sessions run on the monotonic
+/// clock; starred sessions are wall-clock ranges. Tests inject a clock they
+/// can step.
+pub trait HdClock: Send + Sync {
+    fn now_instant(&self) -> Instant;
+    fn now_utc(&self) -> DateTime<Utc>;
+}
+
+/// The real clocks.
+#[derive(Debug, Default, Clone, Copy)]
+pub struct SystemHdClock;
+
+impl HdClock for SystemHdClock {
+    fn now_instant(&self) -> Instant {
+        Instant::now()
+    }
+
+    fn now_utc(&self) -> DateTime<Utc> {
+        Utc::now()
+    }
+}
+
+/// A starred session that asked for HD, as the store hands it over.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StarredHdWindow {
+    pub id: String,
+    pub start: DateTime<Utc>,
+    pub end: DateTime<Utc>,
+    pub revision: i64,
+}
+
+impl StarredHdWindow {
+    /// True while `now` is inside `[start, end)`.
+    pub fn covers(&self, now: DateTime<Utc>) -> bool {
+        self.start <= now && now < self.end
+    }
+
+    fn same_revision(&self, id: &str, revision: i64) -> bool {
+        self.id == id && self.revision == revision
+    }
+}
+
+/// Starred windows known to the controller.
+#[derive(Debug, Default)]
+struct StarredState {
+    /// Unfinished windows from the latest install.
+    windows: Vec<StarredHdWindow>,
+    /// Ticket of the install `windows` came from. Older installs are dropped.
+    installed_ticket: u64,
+    /// `(id, revision)` pairs that may not raise HD again: they ended, or the
+    /// user stopped HD while they ran. Oldest first, bounded.
+    retired: VecDeque<(String, i64)>,
+    /// The window raising HD at the last evaluation, for transition logs.
+    raising: Option<(String, i64)>,
+}
+
+impl StarredState {
+    fn is_retired(&self, window: &StarredHdWindow) -> bool {
+        self.retired
+            .iter()
+            .any(|(id, revision)| window.same_revision(id, *revision))
+    }
+
+    fn retire(&mut self, window: &StarredHdWindow) {
+        if self.is_retired(window) {
+            return;
+        }
+        if self.retired.len() >= MAX_RETIRED_STARRED {
+            self.retired.pop_front();
+        }
+        self.retired
+            .push_back((window.id.clone(), window.revision));
+    }
+
+    /// Retire windows that have ended and return the one raising HD at
+    /// `now`: of the windows covering `now`, the one ending last.
+    fn evaluate(&mut self, now: DateTime<Utc>) -> Option<StarredHdWindow> {
+        let mut ended = Vec::new();
+        self.windows.retain(|w| {
+            if w.end <= now {
+                ended.push(w.clone());
+                false
+            } else {
+                true
+            }
+        });
+        for window in &ended {
+            self.retire(window);
+        }
+        let current = self
+            .windows
+            .iter()
+            .filter(|w| w.covers(now))
+            .max_by(|a, b| a.end.cmp(&b.end).then_with(|| b.id.cmp(&a.id)))
+            .cloned();
+        let key = current.as_ref().map(|w| (w.id.clone(), w.revision));
+        if key != self.raising {
+            match (&self.raising, &current) {
+                (_, Some(w)) => tracing::info!(
+                    target: "capture::high_fps",
+                    session_id = %w.id,
+                    revision = w.revision,
+                    end = %w.end,
+                    "HD raised for starred session",
+                ),
+                (Some((id, _)), None) => tracing::info!(
+                    target: "capture::high_fps",
+                    session_id = %id,
+                    "HD for starred session ended",
+                ),
+                (None, None) => {}
+            }
+            self.raising = key;
+        }
+        current
+    }
+}
+
+fn whole_secs_between(from: DateTime<Utc>, to: DateTime<Utc>) -> u64 {
+    (to - from).num_seconds().max(0) as u64
+}
+
 /// What kind of session is currently active.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
@@ -96,6 +250,9 @@ pub enum SessionKind {
     /// arrives — the user probably forgot they clicked, or the call was
     /// cancelled.
     PrewarmPending,
+    /// A starred work session with `hd_requested` is running. Ends at the
+    /// session's `end`; reported only while no manual session is active.
+    Starred,
 }
 
 /// User preference for what happens when a meeting is detected.
@@ -179,6 +336,11 @@ pub struct HighFpsController {
     /// Detector is its own atomic — the `meeting` field of snapshot reads
     /// it directly without crossing the inner lock.
     detector: Option<Arc<MeetingDetector>>,
+    /// Starred-session HD windows. Never locked while `inner` is held.
+    starred: Mutex<StarredState>,
+    /// Source of install tickets for [`Self::install_starred_windows`].
+    starred_tickets: AtomicU64,
+    clock: Arc<dyn HdClock>,
 }
 
 impl HighFpsController {
@@ -192,15 +354,81 @@ impl HighFpsController {
             default_mode: AtomicI8::new(default_mode.as_i8()),
             interval_ms: AtomicU64::new(interval_ms.max(MIN_INTERVAL_MS)),
             detector,
+            starred: Mutex::new(StarredState::default()),
+            starred_tickets: AtomicU64::new(0),
+            clock: Arc::new(SystemHdClock),
         }
+    }
+
+    /// Read time from `clock` instead of the system clocks.
+    pub fn with_clock(mut self, clock: Arc<dyn HdClock>) -> Self {
+        self.clock = clock;
+        self
+    }
+
+    /// The wall-clock time the controller evaluates starred windows at.
+    pub fn now_utc(&self) -> DateTime<Utc> {
+        self.clock.now_utc()
+    }
+
+    fn lock_starred(&self) -> MutexGuard<'_, StarredState> {
+        // The state is plain data with no invariant a panic could break
+        // halfway, so a poisoned lock is still usable.
+        self.starred.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    /// A ticket to pass to [`Self::install_starred_windows`]. Take it
+    /// *before* reading the store: an install whose ticket is older than the
+    /// last one installed is dropped, so a slow read that started before a
+    /// save can never overwrite the state that save installed.
+    pub fn starred_sync_ticket(&self) -> u64 {
+        self.starred_tickets.fetch_add(1, Ordering::SeqCst) + 1
+    }
+
+    /// Replace the known starred HD windows with `windows` (every unfinished
+    /// session that asked for HD). Returns false, changing nothing, when a
+    /// newer ticket was installed already. Windows that are empty, already
+    /// retired (ended or stopped) or beyond [`MAX_STARRED_WINDOWS`] are
+    /// ignored.
+    pub fn install_starred_windows(&self, ticket: u64, windows: Vec<StarredHdWindow>) -> bool {
+        let mut state = self.lock_starred();
+        if ticket <= state.installed_ticket {
+            tracing::debug!(
+                target: "capture::high_fps",
+                ticket,
+                installed = state.installed_ticket,
+                "stale starred HD install dropped",
+            );
+            return false;
+        }
+        state.installed_ticket = ticket;
+        let mut kept: Vec<StarredHdWindow> = windows
+            .into_iter()
+            .filter(|w| w.end > w.start && !state.is_retired(w))
+            .collect();
+        kept.truncate(MAX_STARRED_WINDOWS);
+        state.windows = kept;
+        true
+    }
+
+    /// The starred window raising HD right now, if any.
+    pub fn active_starred_window(&self) -> Option<StarredHdWindow> {
+        let now = self.clock.now_utc();
+        self.lock_starred().evaluate(now)
     }
 
     /// Take one consistent snapshot. Side-effect: expires the session if
     /// its deadline has passed — putting this in the read path means the
     /// loop's per-tick `snapshot()` call is also the expiry mechanism, no
     /// background task required.
+    ///
+    /// A manual session (meeting, timer, prewarm) is reported when one is
+    /// active; otherwise a running starred HD window is reported as
+    /// [`SessionKind::Starred`], with elapsed and remaining time measured
+    /// from its start and to its end.
     pub fn snapshot(&self) -> HighFpsSnapshot {
-        let now = Instant::now();
+        let now = self.clock.now_instant();
+        let now_utc = self.clock.now_utc();
         let interval_ms = self.interval_ms.load(Ordering::Relaxed);
         let default_mode = DefaultMode::from_i8(self.default_mode.load(Ordering::Relaxed));
         let meeting = self.detector.as_ref().map(|d| d.is_in_meeting());
@@ -224,6 +452,7 @@ impl HighFpsController {
             other => other,
         };
         drop(guard);
+        let starred = self.lock_starred().evaluate(now_utc);
 
         if let Some(s) = session {
             HighFpsSnapshot {
@@ -232,6 +461,16 @@ impl HighFpsController {
                 kind: Some(s.kind),
                 elapsed_secs: Some((now - s.started_at).as_secs()),
                 remaining_secs: Some(s.expires_at.saturating_duration_since(now).as_secs()),
+                default_mode,
+                meeting,
+            }
+        } else if let Some(w) = starred {
+            HighFpsSnapshot {
+                active: true,
+                interval_ms,
+                kind: Some(SessionKind::Starred),
+                elapsed_secs: Some(whole_secs_between(w.start, now_utc)),
+                remaining_secs: Some(whole_secs_between(now_utc, w.end)),
                 default_mode,
                 meeting,
             }
@@ -258,7 +497,7 @@ impl HighFpsController {
     /// leave a 4-hour ghost session waiting for a `meeting_ended` event
     /// that will never come.
     pub fn start_meeting_session(&self, meeting_id: i64) -> HighFpsSnapshot {
-        let now = Instant::now();
+        let now = self.clock.now_instant();
         let in_meeting = self
             .detector
             .as_ref()
@@ -300,7 +539,7 @@ impl HighFpsController {
     /// whole call without an awkward 1-hour-timer clip mid-meeting.
     /// Self-expires after `PREWARM_WAIT` if no meeting arrives.
     pub fn start_prewarm_pending_session(&self) -> HighFpsSnapshot {
-        let now = Instant::now();
+        let now = self.clock.now_instant();
         let mut guard = self.inner.lock().expect("HighFpsController mutex poisoned");
         *guard = Some(Session {
             kind: SessionKind::PrewarmPending,
@@ -321,7 +560,7 @@ impl HighFpsController {
     /// isn't `PrewarmPending` (we don't want to clobber an explicit
     /// timer or an existing meeting binding).
     pub fn try_upgrade_pending_to_meeting(&self, meeting_id: i64) {
-        let now = Instant::now();
+        let now = self.clock.now_instant();
         let mut guard = self.inner.lock().expect("HighFpsController mutex poisoned");
         if let Some(s) = *guard {
             if matches!(s.kind, SessionKind::PrewarmPending) {
@@ -344,10 +583,18 @@ impl HighFpsController {
     /// No-op if no session is active. Useful for "keep going +30 min"
     /// when the user realizes mid-call they want to keep recording.
     /// Returns the post-update snapshot.
+    ///
+    /// When only a starred window raises HD, the starred session itself is
+    /// left alone (its range belongs to the store) and a timer session is
+    /// started that runs `additional` past the window's end.
     pub fn extend_session(&self, additional: Duration) -> HighFpsSnapshot {
         // Cap extensions at MAX_TIMER_DURATION per call so a runaway
         // caller can't push expires_at decades into the future.
         let bumped = additional.min(MAX_TIMER_DURATION);
+        // Read before taking `inner`: the two locks are never nested.
+        let starred = self.active_starred_window();
+        let now = self.clock.now_instant();
+        let now_utc = self.clock.now_utc();
         let mut guard = self.inner.lock().expect("HighFpsController mutex poisoned");
         if let Some(s) = guard.as_mut() {
             s.expires_at += bumped;
@@ -355,6 +602,19 @@ impl HighFpsController {
                 target: "capture::high_fps",
                 additional_secs = bumped.as_secs(),
                 "HD session extended",
+            );
+        } else if let Some(w) = starred {
+            let until_end = (w.end - now_utc).to_std().unwrap_or_default();
+            *guard = Some(Session {
+                kind: SessionKind::Timer,
+                started_at: now,
+                expires_at: now + until_end + bumped,
+            });
+            tracing::info!(
+                target: "capture::high_fps",
+                session_id = %w.id,
+                additional_secs = bumped.as_secs(),
+                "HD extended past the end of a starred session (timer-bound)",
             );
         }
         drop(guard);
@@ -366,7 +626,7 @@ impl HighFpsController {
     /// session.
     pub fn start_timer_session(&self, duration: Duration) -> HighFpsSnapshot {
         let clamped = duration.clamp(MIN_TIMER_DURATION, MAX_TIMER_DURATION);
-        let now = Instant::now();
+        let now = self.clock.now_instant();
         let mut guard = self.inner.lock().expect("HighFpsController mutex poisoned");
         *guard = Some(Session {
             kind: SessionKind::Timer,
@@ -383,17 +643,41 @@ impl HighFpsController {
     }
 
     /// Stop the current session. No-op if no session is active.
+    ///
+    /// Starred windows raising HD right now are stopped too and stay stopped
+    /// for their current revision; the starred sessions themselves are kept.
+    /// Saving such a session again (a new revision) lets it raise HD again.
     pub fn stop_session(&self) -> HighFpsSnapshot {
         let mut guard = self.inner.lock().expect("HighFpsController mutex poisoned");
         if let Some(s) = guard.take() {
             tracing::info!(
                 target: "capture::high_fps",
                 kind = ?s.kind,
-                elapsed_secs = (Instant::now() - s.started_at).as_secs(),
+                elapsed_secs = (self.clock.now_instant() - s.started_at).as_secs(),
                 "HD session stopped (explicit)",
             );
         }
         drop(guard);
+        let now_utc = self.clock.now_utc();
+        {
+            let mut state = self.lock_starred();
+            let running: Vec<StarredHdWindow> = state
+                .windows
+                .iter()
+                .filter(|w| w.covers(now_utc))
+                .cloned()
+                .collect();
+            for window in &running {
+                state.retire(window);
+                tracing::info!(
+                    target: "capture::high_fps",
+                    session_id = %window.id,
+                    revision = window.revision,
+                    "HD for starred session stopped (explicit)",
+                );
+            }
+            state.windows.retain(|w| !running.contains(w));
+        }
         self.snapshot()
     }
 
@@ -414,7 +698,7 @@ impl HighFpsController {
                     tracing::info!(
                         target: "capture::high_fps",
                         meeting_id,
-                        elapsed_secs = (Instant::now() - s.started_at).as_secs(),
+                        elapsed_secs = (self.clock.now_instant() - s.started_at).as_secs(),
                         "HD session stopped (meeting ended)",
                     );
                 }
@@ -432,6 +716,52 @@ impl HighFpsController {
         let clamped = interval_ms.max(MIN_INTERVAL_MS);
         self.interval_ms.store(clamped, Ordering::Relaxed);
         clamped
+    }
+}
+
+/// A clock tests step by hand.
+#[cfg(test)]
+pub(crate) mod test_clock {
+    use super::HdClock;
+    use chrono::{DateTime, Utc};
+    use std::sync::Mutex;
+    use std::time::{Duration, Instant};
+
+    pub(crate) struct ManualClock {
+        origin: Instant,
+        state: Mutex<(Duration, DateTime<Utc>)>,
+    }
+
+    impl ManualClock {
+        pub(crate) fn at(utc: DateTime<Utc>) -> std::sync::Arc<Self> {
+            std::sync::Arc::new(Self {
+                origin: Instant::now(),
+                state: Mutex::new((Duration::ZERO, utc)),
+            })
+        }
+
+        /// Move both clocks forward.
+        pub(crate) fn advance(&self, by: Duration) {
+            let mut state = self.state.lock().unwrap();
+            state.0 += by;
+            state.1 += chrono::Duration::from_std(by).unwrap();
+        }
+
+        /// Set the wall clock alone, as an NTP correction or a user change
+        /// would. The monotonic clock does not move.
+        pub(crate) fn set_utc(&self, utc: DateTime<Utc>) {
+            self.state.lock().unwrap().1 = utc;
+        }
+    }
+
+    impl HdClock for ManualClock {
+        fn now_instant(&self) -> Instant {
+            self.origin + self.state.lock().unwrap().0
+        }
+
+        fn now_utc(&self) -> DateTime<Utc> {
+            self.state.lock().unwrap().1
+        }
     }
 }
 
@@ -832,5 +1162,330 @@ mod tests {
             h.join().unwrap();
         }
         reader.join().unwrap();
+    }
+
+    // ── starred sessions ────────────────────────────────────────────────
+
+    use super::test_clock::ManualClock;
+
+    fn t0() -> DateTime<Utc> {
+        DateTime::parse_from_rfc3339("2026-10-21T09:00:00Z")
+            .unwrap()
+            .with_timezone(&Utc)
+    }
+
+    fn at_min(m: i64) -> DateTime<Utc> {
+        t0() + chrono::Duration::minutes(m)
+    }
+
+    fn window(id: &str, start: DateTime<Utc>, end: DateTime<Utc>, revision: i64) -> StarredHdWindow {
+        StarredHdWindow {
+            id: id.to_string(),
+            start,
+            end,
+            revision,
+        }
+    }
+
+    /// Controller whose clocks read 09:00 UTC until the test moves them.
+    fn starred_ctl() -> (Arc<HighFpsController>, Arc<ManualClock>) {
+        let clock = ManualClock::at(t0());
+        let c = HighFpsController::new(None, DefaultMode::Ask, DEFAULT_INTERVAL_MS)
+            .with_clock(clock.clone());
+        (Arc::new(c), clock)
+    }
+
+    fn install(c: &HighFpsController, windows: Vec<StarredHdWindow>) -> bool {
+        let ticket = c.starred_sync_ticket();
+        c.install_starred_windows(ticket, windows)
+    }
+
+    #[test]
+    fn starred_hd_session_reports_hd_active_until_its_end() {
+        let (c, clock) = starred_ctl();
+        // Started a minute ago, ends in 10 minutes.
+        install(&c, vec![window("a", at_min(-1), at_min(10), 1)]);
+
+        let s = c.snapshot();
+        assert!(s.active);
+        assert_eq!(s.kind, Some(SessionKind::Starred));
+        assert_eq!(s.effective_interval_ms(), Some(DEFAULT_INTERVAL_MS));
+        assert_eq!(s.elapsed_secs, Some(60));
+        assert_eq!(s.remaining_secs, Some(600));
+
+        clock.advance(Duration::from_secs(600) - Duration::from_millis(1));
+        let s = c.snapshot();
+        assert!(s.active, "still inside [start, end)");
+        assert_eq!(s.remaining_secs, Some(0));
+
+        clock.advance(Duration::from_millis(1));
+        let s = c.snapshot();
+        assert!(!s.active, "HD ends exactly at the session end");
+        assert_eq!(s.kind, None);
+        assert_eq!(s.effective_interval_ms(), None);
+
+        clock.advance(Duration::from_secs(3600));
+        assert!(!c.snapshot().active);
+        assert!(c.active_starred_window().is_none());
+    }
+
+    #[test]
+    fn starred_window_raises_hd_only_inside_its_range() {
+        let (c, clock) = starred_ctl();
+        install(&c, vec![window("later", at_min(5), at_min(15), 1)]);
+        assert!(!c.snapshot().active);
+        clock.advance(Duration::from_secs(5 * 60));
+        assert_eq!(c.snapshot().kind, Some(SessionKind::Starred));
+        assert_eq!(c.active_starred_window().unwrap().id, "later");
+    }
+
+    #[test]
+    fn editing_a_starred_session_takes_effect_on_the_next_install() {
+        let (c, clock) = starred_ctl();
+        install(&c, vec![window("a", at_min(-1), at_min(10), 1)]);
+        assert!(c.snapshot().active);
+
+        // The user ends it now (revision 2, end = now).
+        clock.advance(Duration::from_secs(30));
+        let now = c.now_utc();
+        install(&c, vec![window("a", at_min(-1), now, 2)]);
+        assert!(!c.snapshot().active);
+
+        // Then extends it again (revision 3): HD comes back.
+        install(&c, vec![window("a", at_min(-1), at_min(25), 3)]);
+        let s = c.snapshot();
+        assert!(s.active);
+        assert_eq!(s.remaining_secs, Some(24 * 60 + 30));
+
+        // HD switched off (the store no longer lists it): HD stops.
+        install(&c, vec![]);
+        assert!(!c.snapshot().active);
+    }
+
+    #[test]
+    fn deleting_a_starred_session_drops_hd() {
+        let (c, _clock) = starred_ctl();
+        install(
+            &c,
+            vec![
+                window("a", at_min(-5), at_min(10), 1),
+                window("b", at_min(-1), at_min(20), 4),
+            ],
+        );
+        // Two cover now: the one ending last is reported.
+        assert_eq!(c.active_starred_window().unwrap().id, "b");
+        assert_eq!(c.snapshot().remaining_secs, Some(20 * 60));
+        install(&c, vec![window("a", at_min(-5), at_min(10), 1)]);
+        assert_eq!(c.active_starred_window().unwrap().id, "a");
+        install(&c, vec![]);
+        assert!(!c.snapshot().active);
+    }
+
+    #[test]
+    fn an_install_older_than_the_last_one_is_dropped() {
+        let (c, _clock) = starred_ctl();
+        // A slow refresh took its ticket before a save did.
+        let slow = c.starred_sync_ticket();
+        let save = c.starred_sync_ticket();
+        assert!(c.install_starred_windows(save, vec![]));
+        assert!(!c.install_starred_windows(
+            slow,
+            vec![window("a", at_min(-1), at_min(10), 1)]
+        ));
+        assert!(!c.snapshot().active);
+        // Replaying the same ticket does nothing either.
+        assert!(!c.install_starred_windows(
+            save,
+            vec![window("a", at_min(-1), at_min(10), 1)]
+        ));
+        assert!(!c.snapshot().active);
+    }
+
+    #[test]
+    fn stop_session_stops_starred_hd_until_the_session_is_saved_again() {
+        let (c, _clock) = starred_ctl();
+        install(&c, vec![window("a", at_min(-1), at_min(10), 1)]);
+        assert!(c.snapshot().active);
+
+        let s = c.stop_session();
+        assert!(!s.active);
+        // The periodic refresh brings the same revision back: still off.
+        install(&c, vec![window("a", at_min(-1), at_min(10), 1)]);
+        assert!(!c.snapshot().active);
+        // A new save (revision 2) is a fresh request.
+        install(&c, vec![window("a", at_min(-1), at_min(12), 2)]);
+        assert!(c.snapshot().active);
+    }
+
+    #[test]
+    fn stop_session_leaves_starred_windows_that_have_not_started() {
+        let (c, clock) = starred_ctl();
+        install(
+            &c,
+            vec![
+                window("now", at_min(-1), at_min(5), 1),
+                window("next", at_min(10), at_min(20), 1),
+            ],
+        );
+        c.stop_session();
+        assert!(!c.snapshot().active);
+        clock.advance(Duration::from_secs(10 * 60));
+        assert_eq!(c.active_starred_window().unwrap().id, "next");
+    }
+
+    #[test]
+    fn a_backward_clock_jump_does_not_revive_an_ended_session() {
+        let (c, clock) = starred_ctl();
+        install(&c, vec![window("a", at_min(-1), at_min(10), 1)]);
+        clock.advance(Duration::from_secs(11 * 60));
+        assert!(!c.snapshot().active);
+
+        // The wall clock is set back into the session and the store, read
+        // at the new time, lists it again.
+        clock.set_utc(at_min(5));
+        install(&c, vec![window("a", at_min(-1), at_min(10), 1)]);
+        assert!(!c.snapshot().active);
+    }
+
+    #[test]
+    fn manual_sessions_and_starred_windows_combine() {
+        let (c, clock) = starred_ctl();
+        install(&c, vec![window("a", at_min(-1), at_min(10), 1)]);
+        c.start_timer_session(Duration::from_secs(120));
+        // The manual session is reported while it runs.
+        let s = c.snapshot();
+        assert_eq!(s.kind, Some(SessionKind::Timer));
+        assert_eq!(s.remaining_secs, Some(120));
+
+        // Timer over, starred session still running.
+        clock.advance(Duration::from_secs(121));
+        let s = c.snapshot();
+        assert!(s.active);
+        assert_eq!(s.kind, Some(SessionKind::Starred));
+
+        // A meeting ending does not touch the starred binding.
+        c.handle_meeting_ended(7);
+        assert!(c.snapshot().active);
+
+        clock.advance(Duration::from_secs(10 * 60));
+        assert!(!c.snapshot().active);
+    }
+
+    #[test]
+    fn a_timer_outlasting_the_starred_window_keeps_hd_on() {
+        let (c, clock) = starred_ctl();
+        install(&c, vec![window("a", at_min(-1), at_min(1), 1)]);
+        c.start_timer_session(Duration::from_secs(600));
+        clock.advance(Duration::from_secs(120));
+        assert_eq!(c.snapshot().kind, Some(SessionKind::Timer));
+        clock.advance(Duration::from_secs(481));
+        assert!(!c.snapshot().active);
+    }
+
+    #[test]
+    fn extending_a_starred_only_session_adds_a_timer_past_its_end() {
+        let (c, clock) = starred_ctl();
+        install(&c, vec![window("a", at_min(-1), at_min(10), 1)]);
+        let s = c.extend_session(Duration::from_secs(30 * 60));
+        assert_eq!(s.kind, Some(SessionKind::Timer));
+        assert_eq!(s.remaining_secs, Some(40 * 60));
+
+        clock.advance(Duration::from_secs(10 * 60));
+        assert!(c.active_starred_window().is_none());
+        assert_eq!(c.snapshot().kind, Some(SessionKind::Timer));
+        clock.advance(Duration::from_secs(30 * 60));
+        assert!(!c.snapshot().active);
+    }
+
+    #[test]
+    fn extend_with_nothing_active_still_does_nothing() {
+        let (c, _clock) = starred_ctl();
+        install(&c, vec![window("later", at_min(5), at_min(15), 1)]);
+        assert!(!c.extend_session(Duration::from_secs(600)).active);
+    }
+
+    #[test]
+    fn a_fresh_controller_holds_no_starred_state() {
+        // App quit and relaunch: nothing survives in memory, so HD stays off
+        // until the store installs a session that is still running.
+        let (c, _clock) = starred_ctl();
+        install(&c, vec![window("a", at_min(-1), at_min(10), 1)]);
+        assert!(c.snapshot().active);
+        drop(c);
+        let (fresh, _clock) = starred_ctl();
+        assert!(!fresh.snapshot().active);
+        assert!(fresh.active_starred_window().is_none());
+    }
+
+    #[test]
+    fn empty_and_excess_windows_are_ignored() {
+        let (c, _clock) = starred_ctl();
+        install(&c, vec![window("empty", at_min(-1), at_min(-1), 1)]);
+        assert!(!c.snapshot().active);
+        let many: Vec<StarredHdWindow> = (0..(MAX_STARRED_WINDOWS as i64 + 10))
+            .map(|i| window(&format!("w{i}"), at_min(i + 1), at_min(i + 2), 1))
+            .collect();
+        install(&c, many);
+        assert_eq!(c.lock_starred().windows.len(), MAX_STARRED_WINDOWS);
+    }
+
+    #[test]
+    fn starred_kind_serializes_as_snake_case_tag() {
+        assert_eq!(
+            serde_json::to_value(SessionKind::Starred).unwrap(),
+            serde_json::json!({ "kind": "starred" })
+        );
+    }
+
+    #[test]
+    fn starred_snapshot_follows_interval_changes() {
+        let (c, _clock) = starred_ctl();
+        install(&c, vec![window("a", at_min(-1), at_min(10), 1)]);
+        c.set_interval_ms(50);
+        assert_eq!(c.snapshot().effective_interval_ms(), Some(50));
+    }
+
+    #[test]
+    fn concurrent_installs_and_snapshots_stay_consistent() {
+        let (c, _clock) = starred_ctl();
+        let barrier = Arc::new(std::sync::Barrier::new(3));
+        let writer = {
+            let c = c.clone();
+            let b = barrier.clone();
+            thread::spawn(move || {
+                b.wait();
+                for i in 0..2_000i64 {
+                    let windows = if i % 2 == 0 {
+                        vec![window("a", at_min(-1), at_min(10), i + 1)]
+                    } else {
+                        vec![]
+                    };
+                    install(&c, windows);
+                    if i % 97 == 0 {
+                        c.stop_session();
+                    }
+                }
+            })
+        };
+        let reader = {
+            let c = c.clone();
+            let b = barrier.clone();
+            thread::spawn(move || {
+                b.wait();
+                for _ in 0..4_000 {
+                    let s = c.snapshot();
+                    assert_eq!(s.active, s.kind.is_some());
+                    assert_eq!(s.active, s.remaining_secs.is_some());
+                    if s.active {
+                        assert_eq!(s.kind, Some(SessionKind::Starred));
+                    }
+                }
+            })
+        };
+        barrier.wait();
+        writer.join().unwrap();
+        reader.join().unwrap();
+        // The last install (i = 1999) was empty.
+        assert!(!c.snapshot().active);
     }
 }

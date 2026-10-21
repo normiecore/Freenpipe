@@ -938,6 +938,11 @@ async fn main() -> anyhow::Result<()> {
         config.hd_recording_interval_ms,
     ));
 
+    // Starred sessions that asked for HD raise the controller while they
+    // run; this keeps its windows in step with the starred_sessions table.
+    let _starred_hd_sync =
+        screenpipe_engine::routes::starred::spawn_hd_sync(&db, &high_fps_controller);
+
     // Wire `meeting_ended` → controller.handle_meeting_ended so a
     // meeting-bound session auto-stops when the call ends. Without this,
     // the only safety net is the 4-hour hard cap.
