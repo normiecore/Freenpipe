@@ -77,6 +77,11 @@ pub struct CaptureContext<'a> {
     /// The accessibility tree walk still runs — metadata row is still written.
     /// Set by AudioPaused and FullPause power profiles.
     pub screenshot_disabled: bool,
+    /// When true the frame's pixels must not be used at all: no snapshot is
+    /// written and no OCR reads `image` (which may be a placeholder). Set
+    /// while the window-exclusion list is unknown, so an excluded window can
+    /// never reach storage; the accessibility text is still stored.
+    pub pixels_withheld: bool,
 }
 
 /// Result of a paired capture operation.
@@ -119,10 +124,10 @@ pub async fn paired_capture(
     // Write JPEG snapshot to disk — skipped when screenshot_disabled (AudioPaused / FullPause).
     // The accessibility tree walk still runs so metadata rows keep timestamp,
     // app_name, window_name, and full_text for search/timeline queries.
-    let snapshot_path_str = if ctx.screenshot_disabled {
+    let snapshot_path_str = if ctx.screenshot_disabled || ctx.pixels_withheld {
         debug!(
-            "paired_capture: screenshot skipped (screenshot_disabled, trigger={})",
-            ctx.capture_trigger
+            "paired_capture: screenshot skipped (screenshot_disabled={}, pixels_withheld={}, trigger={})",
+            ctx.screenshot_disabled, ctx.pixels_withheld, ctx.capture_trigger
         );
         String::new()
     } else {
@@ -175,7 +180,7 @@ pub async fn paired_capture(
             .unwrap_or(false);
 
     // Run OCR when: no a11y text, app prefers OCR, OR a11y text is thin (hybrid)
-    let (ocr_text, ocr_text_json) = if !has_accessibility_text || a11y_is_thin {
+    let (ocr_text, ocr_text_json) = if !ctx.pixels_withheld && (!has_accessibility_text || a11y_is_thin) {
         // Windows native OCR is async, so call it directly (not inside spawn_blocking)
         #[cfg(target_os = "windows")]
         let raw = {
@@ -630,6 +635,7 @@ mod tests {
             languages: vec![],
             elements_ref_frame_id: None,
             screenshot_disabled: false,
+            pixels_withheld: false,
         };
 
         let result = paired_capture(&ctx, None).await.unwrap();
@@ -669,6 +675,7 @@ mod tests {
             languages: vec![],
             elements_ref_frame_id: None,
             screenshot_disabled: false,
+            pixels_withheld: false,
         };
 
         let snap = TreeSnapshot {
@@ -732,6 +739,7 @@ mod tests {
             languages: vec![],
             elements_ref_frame_id: None,
             screenshot_disabled: false,
+            pixels_withheld: false,
         };
 
         // Empty accessibility text should be treated as no text

@@ -194,6 +194,12 @@ impl VisionManager {
         &self.db
     }
 
+    /// Pipeline metrics the capture loops report into, including their loop
+    /// stages and liveness (read by the wedge watchdog).
+    pub(crate) fn vision_metrics(&self) -> &Arc<PipelineMetrics> {
+        &self.config.vision_metrics
+    }
+
     /// True when the user paused this monitor from the recording popover.
     pub fn is_user_paused(&self, monitor_id: u32) -> bool {
         self.device_control.is_paused(monitor_id)
@@ -840,6 +846,20 @@ impl VisionManager {
         self.linker_stop
             .store(true, std::sync::atomic::Ordering::Relaxed);
         self.stop().await
+    }
+}
+
+#[cfg(test)]
+impl VisionManager {
+    /// Force the manager status (tests stand in for a running manager
+    /// without real displays).
+    pub(crate) async fn set_status_for_test(&self, status: VisionManagerStatus) {
+        *self.status.write().await = status;
+    }
+
+    /// Register `task` as `monitor_id`'s capture task.
+    pub(crate) fn insert_capture_task_for_test(&self, monitor_id: u32, task: JoinHandle<()>) {
+        self.recording_tasks.insert(monitor_id, task);
     }
 }
 

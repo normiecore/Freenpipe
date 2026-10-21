@@ -915,26 +915,35 @@ fn get_all_windows() -> Result<Vec<WindowData>, Box<dyn Error>> {
 /// These IDs can be passed to `capture_image_excluding()` so ScreenCaptureKit
 /// never renders those windows into the capture buffer.
 ///
-/// Returns an empty vec if no windows match the filters or on error.
-#[cfg(target_os = "macos")]
+/// Returns an empty vec if no windows match the filters or on error. Callers
+/// that must not capture pixels while the exclusion list is unknown use
+/// [`try_get_excluded_sck_window_ids`] instead.
 pub fn get_excluded_sck_window_ids(window_filters: &WindowFilters) -> Vec<u32> {
-    if window_filters.ignore_patterns.is_empty()
+    try_get_excluded_sck_window_ids(window_filters).unwrap_or_else(|e| {
+        debug!("get_excluded_sck_window_ids: {}", e);
+        Vec::new()
+    })
+}
+
+/// True when the window filters name nothing to exclude, so no enumeration
+/// is needed to know the (empty) exclusion list.
+pub fn window_filters_are_empty(window_filters: &WindowFilters) -> bool {
+    window_filters.ignore_patterns.is_empty()
         && window_filters.include_patterns.is_empty()
         && window_filters.ignored_urls.is_empty()
-    {
-        return Vec::new();
+}
+
+/// Like [`get_excluded_sck_window_ids`], but a failed window enumeration is an
+/// error instead of an empty list, so the caller can tell "nothing to
+/// exclude" from "the exclusion list is unknown".
+#[cfg(target_os = "macos")]
+pub fn try_get_excluded_sck_window_ids(window_filters: &WindowFilters) -> Result<Vec<u32>, String> {
+    if window_filters_are_empty(window_filters) {
+        return Ok(Vec::new());
     }
 
-    let windows = match SckWindow::all() {
-        Ok(w) => w,
-        Err(e) => {
-            debug!(
-                "get_excluded_sck_window_ids: failed to enumerate windows: {}",
-                e
-            );
-            return Vec::new();
-        }
-    };
+    let windows =
+        SckWindow::all().map_err(|e| format!("failed to enumerate windows: {}", e))?;
 
     let mut excluded = Vec::new();
     for w in &windows {
@@ -960,14 +969,21 @@ pub fn get_excluded_sck_window_ids(window_filters: &WindowFilters) -> Vec<u32> {
         );
     }
 
-    excluded
+    Ok(excluded)
 }
 
-/// Non-macOS stub — SCK exclusion is not available.
+/// Non-macOS: the capture backends cannot leave single windows out of a
+/// monitor capture, so there is never a window id to exclude. Ignored and
+/// private windows are kept out by the accessibility-based window gate
+/// instead.
 #[cfg(not(target_os = "macos"))]
-pub fn get_excluded_sck_window_ids(_window_filters: &WindowFilters) -> Vec<u32> {
-    Vec::new()
+pub fn try_get_excluded_sck_window_ids(_window_filters: &WindowFilters) -> Result<Vec<u32>, String> {
+    Ok(Vec::new())
 }
+
+/// True on platforms where capture can exclude individual windows by id
+/// (ScreenCaptureKit on macOS).
+pub const WINDOW_ID_EXCLUSION_SUPPORTED: bool = cfg!(target_os = "macos");
 
 pub async fn capture_all_visible_windows(
     monitor: &SafeMonitor,

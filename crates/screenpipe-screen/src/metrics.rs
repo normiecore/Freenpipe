@@ -935,13 +935,97 @@ pub struct LoopStageReport {
     pub age_secs: u64,
 }
 
-/// Per-monitor "current stage + entered at" cells. Each capture loop calls
-/// [`LoopStageTracker::enter`] as it moves between stages and
-/// [`LoopStageTracker::remove`] when it stops; `/health` reports the loop
-/// that has been in its current stage the longest.
+/// How a capture attempt ended, as far as loop liveness is concerned.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AttemptEnd {
+    /// The attempt reached an answer: a frame was written, deduplicated,
+    /// filtered or rejected as corrupt, or the backend returned an error.
+    Answered,
+    /// The attempt was abandoned at its deadline without an answer.
+    DeadlineOverrun,
+}
+
+/// Liveness of one monitor's capture loop at report time, for the wedge
+/// watchdog. Ages are measured from the same instant.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct LoopLiveness {
+    pub monitor_id: u32,
+    /// Stage the loop is in now.
+    pub stage: CaptureLoopStage,
+    /// Time spent in `stage` so far.
+    pub stage_age: Duration,
+    /// Time since this loop registered (its task started).
+    pub loop_age: Duration,
+    /// Time since the loop last passed the top of its iteration.
+    pub heartbeat_age: Duration,
+    /// Time since the loop last started a capture attempt.
+    pub last_attempt_age: Option<Duration>,
+    /// Age of the attempt in flight, if one is open.
+    pub open_attempt_age: Option<Duration>,
+    /// Time since an attempt last ended with an answer
+    /// ([`AttemptEnd::Answered`]).
+    pub last_answer_age: Option<Duration>,
+}
+
+impl LoopLiveness {
+    /// Time without an answered attempt: since the last answer, or since the
+    /// loop started when it never had one.
+    pub fn unanswered_for(&self) -> Duration {
+        self.last_answer_age.unwrap_or(self.loop_age)
+    }
+}
+
+/// One monitor's loop as the tracker holds it.
+#[derive(Debug, Clone, Copy)]
+struct LoopCell {
+    /// Identifies the loop that owns the cell. A loop left behind by a
+    /// restart (still unwinding) has an older token, so it can neither move
+    /// nor remove the cell of the loop that replaced it.
+    token: u64,
+    stage: CaptureLoopStage,
+    stage_since: Instant,
+    registered_at: Instant,
+    last_heartbeat: Instant,
+    last_attempt: Option<Instant>,
+    open_attempt: Option<Instant>,
+    last_answer: Option<Instant>,
+}
+
+impl LoopCell {
+    fn new(token: u64, stage: CaptureLoopStage, at: Instant) -> Self {
+        Self {
+            token,
+            stage,
+            stage_since: at,
+            registered_at: at,
+            last_heartbeat: at,
+            last_attempt: None,
+            open_attempt: None,
+            last_answer: None,
+        }
+    }
+
+    fn enter(&mut self, stage: CaptureLoopStage, at: Instant) {
+        self.stage = stage;
+        self.stage_since = at;
+        if stage == CaptureLoopStage::Heartbeat {
+            self.last_heartbeat = at;
+        }
+    }
+}
+
+/// Token of cells created by [`LoopStageTracker::enter`] without a guard.
+const UNOWNED_TOKEN: u64 = 0;
+
+/// Per-monitor "current stage + entered at" cells, plus the liveness facts
+/// the wedge watchdog needs (last heartbeat, attempts in flight, last
+/// answered attempt). Each capture loop holds a [`LoopStageGuard`] that moves
+/// it between stages and unregisters it when the loop ends; `/health` reports
+/// the loop that has been in its current stage the longest.
 #[derive(Debug, Default)]
 pub struct LoopStageTracker {
-    cells: Mutex<HashMap<u32, (CaptureLoopStage, Instant)>>,
+    cells: Mutex<HashMap<u32, LoopCell>>,
+    next_token: AtomicU64,
 }
 
 impl LoopStageTracker {
@@ -958,7 +1042,34 @@ impl LoopStageTracker {
 
     fn enter_at(&self, monitor_id: u32, stage: CaptureLoopStage, at: Instant) {
         if let Ok(mut cells) = self.cells.lock() {
-            cells.insert(monitor_id, (stage, at));
+            cells
+                .entry(monitor_id)
+                .and_modify(|cell| cell.enter(stage, at))
+                .or_insert_with(|| LoopCell::new(UNOWNED_TOKEN, stage, at));
+        }
+    }
+
+    /// Register a new loop for `monitor_id` (replacing any cell an older loop
+    /// left) and return the token that owns the cell.
+    fn register_at(&self, monitor_id: u32, at: Instant) -> u64 {
+        let token = self.next_token.fetch_add(1, Ordering::Relaxed) + 1;
+        if let Ok(mut cells) = self.cells.lock() {
+            cells.insert(
+                monitor_id,
+                LoopCell::new(token, CaptureLoopStage::Heartbeat, at),
+            );
+        }
+        token
+    }
+
+    /// Apply `f` to the cell when `token` still owns it.
+    fn update_owned(&self, monitor_id: u32, token: u64, f: impl FnOnce(&mut LoopCell)) {
+        if let Ok(mut cells) = self.cells.lock() {
+            if let Some(cell) = cells.get_mut(&monitor_id) {
+                if cell.token == token {
+                    f(cell);
+                }
+            }
         }
     }
 
@@ -966,6 +1077,14 @@ impl LoopStageTracker {
     pub fn remove(&self, monitor_id: u32) {
         if let Ok(mut cells) = self.cells.lock() {
             cells.remove(&monitor_id);
+        }
+    }
+
+    fn remove_owned(&self, monitor_id: u32, token: u64) {
+        if let Ok(mut cells) = self.cells.lock() {
+            if cells.get(&monitor_id).is_some_and(|c| c.token == token) {
+                cells.remove(&monitor_id);
+            }
         }
     }
 
@@ -978,10 +1097,10 @@ impl LoopStageTracker {
         let mut reports: Vec<LoopStageReport> = match self.cells.lock() {
             Ok(cells) => cells
                 .iter()
-                .map(|(id, (stage, since))| LoopStageReport {
+                .map(|(id, cell)| LoopStageReport {
                     monitor_id: *id,
-                    stage: *stage,
-                    age_secs: now.saturating_duration_since(*since).as_secs(),
+                    stage: cell.stage,
+                    age_secs: now.saturating_duration_since(cell.stage_since).as_secs(),
                 })
                 .collect(),
             Err(_) => Vec::new(),
@@ -995,18 +1114,67 @@ impl LoopStageTracker {
     pub fn most_stuck(&self) -> Option<LoopStageReport> {
         most_stuck_of(&self.snapshot())
     }
+
+    /// Liveness of every registered loop, sorted by monitor id.
+    pub fn liveness(&self) -> Vec<LoopLiveness> {
+        self.liveness_at(Instant::now())
+    }
+
+    /// [`Self::liveness`] measured at `now`.
+    pub fn liveness_at(&self, now: Instant) -> Vec<LoopLiveness> {
+        let age = |t: Instant| now.saturating_duration_since(t);
+        let mut out: Vec<LoopLiveness> = match self.cells.lock() {
+            Ok(cells) => cells
+                .iter()
+                .map(|(id, c)| LoopLiveness {
+                    monitor_id: *id,
+                    stage: c.stage,
+                    stage_age: age(c.stage_since),
+                    loop_age: age(c.registered_at),
+                    heartbeat_age: age(c.last_heartbeat),
+                    last_attempt_age: c.last_attempt.map(age),
+                    open_attempt_age: c.open_attempt.map(age),
+                    last_answer_age: c.last_answer.map(age),
+                })
+                .collect(),
+            Err(_) => Vec::new(),
+        };
+        out.sort_by_key(|l| l.monitor_id);
+        out
+    }
+
+    /// True when a loop for `monitor_id` is registered.
+    pub fn is_tracked(&self, monitor_id: u32) -> bool {
+        self.cells
+            .lock()
+            .map(|cells| cells.contains_key(&monitor_id))
+            .unwrap_or(false)
+    }
 }
 
 impl PipelineMetrics {
     /// Register `monitor_id`'s capture loop with the stage tracker. The loop
     /// starts in `heartbeat`; dropping the guard (when the loop returns, by
-    /// any path) removes the monitor from the tracker.
+    /// any path) removes the monitor from the tracker. Registering replaces
+    /// whatever an older loop for the same monitor left behind, and that
+    /// older loop's guard can no longer change or remove the new cell.
     pub fn track_capture_loop(self: &std::sync::Arc<Self>, monitor_id: u32) -> LoopStageGuard {
-        self.loop_stages
-            .enter(monitor_id, CaptureLoopStage::Heartbeat);
+        self.track_capture_loop_at(monitor_id, Instant::now())
+    }
+
+    /// [`Self::track_capture_loop`] with the registration time given, so a
+    /// test can stand in for a loop that started a while ago.
+    #[doc(hidden)]
+    pub fn track_capture_loop_at(
+        self: &std::sync::Arc<Self>,
+        monitor_id: u32,
+        at: Instant,
+    ) -> LoopStageGuard {
+        let token = self.loop_stages.register_at(monitor_id, at);
         LoopStageGuard {
             metrics: self.clone(),
             monitor_id,
+            token,
         }
     }
 }
@@ -1016,18 +1184,68 @@ impl PipelineMetrics {
 pub struct LoopStageGuard {
     metrics: std::sync::Arc<PipelineMetrics>,
     monitor_id: u32,
+    token: u64,
 }
 
 impl LoopStageGuard {
-    /// Move the loop to `stage`.
+    /// Move the loop to `stage`. Entering `heartbeat` also counts as the
+    /// loop's heartbeat for the wedge watchdog.
     pub fn enter(&self, stage: CaptureLoopStage) {
-        self.metrics.loop_stages.enter(self.monitor_id, stage);
+        self.enter_at(stage, Instant::now());
+    }
+
+    /// [`Self::enter`] at a given instant (tests stand in for a loop that
+    /// froze a while ago).
+    #[doc(hidden)]
+    pub fn enter_at(&self, stage: CaptureLoopStage, at: Instant) {
+        self.metrics
+            .loop_stages
+            .update_owned(self.monitor_id, self.token, |cell| cell.enter(stage, at));
+    }
+
+    /// A capture attempt starts now.
+    pub fn attempt_started(&self) {
+        self.attempt_started_at(Instant::now());
+    }
+
+    #[doc(hidden)]
+    pub fn attempt_started_at(&self, at: Instant) {
+        self.metrics
+            .loop_stages
+            .update_owned(self.monitor_id, self.token, |cell| {
+                cell.last_attempt = Some(at);
+                cell.open_attempt = Some(at);
+            });
+    }
+
+    /// The attempt in flight ended.
+    pub fn attempt_finished(&self, end: AttemptEnd) {
+        self.attempt_finished_at(end, Instant::now());
+    }
+
+    #[doc(hidden)]
+    pub fn attempt_finished_at(&self, end: AttemptEnd, at: Instant) {
+        self.metrics
+            .loop_stages
+            .update_owned(self.monitor_id, self.token, |cell| {
+                cell.open_attempt = None;
+                if end == AttemptEnd::Answered {
+                    cell.last_answer = Some(at);
+                }
+            });
+    }
+
+    /// Monitor this guard registered.
+    pub fn monitor_id(&self) -> u32 {
+        self.monitor_id
     }
 }
 
 impl Drop for LoopStageGuard {
     fn drop(&mut self) {
-        self.metrics.loop_stages.remove(self.monitor_id);
+        self.metrics
+            .loop_stages
+            .remove_owned(self.monitor_id, self.token);
     }
 }
 
@@ -1276,6 +1494,59 @@ mod tests {
             assert_eq!(report.stage, CaptureLoopStage::Capture);
         }
         assert!(metrics.loop_stages.most_stuck().is_none());
+    }
+
+    #[test]
+    fn liveness_tracks_heartbeats_attempts_and_answers() {
+        let metrics = std::sync::Arc::new(PipelineMetrics::new());
+        let now = Instant::now();
+        let ago = |s: u64| now.checked_sub(Duration::from_secs(s)).unwrap_or(now);
+        let guard = metrics.track_capture_loop_at(2, ago(300));
+
+        let l = metrics.loop_stages.liveness_at(now)[0];
+        assert_eq!(l.monitor_id, 2);
+        assert_eq!(l.stage, CaptureLoopStage::Heartbeat);
+        assert!(l.loop_age >= Duration::from_secs(300));
+        assert_eq!(l.last_attempt_age, None);
+        assert_eq!(l.unanswered_for(), l.loop_age);
+
+        guard.enter_at(CaptureLoopStage::Heartbeat, ago(200));
+        guard.attempt_started_at(ago(190));
+        guard.enter_at(CaptureLoopStage::Capture, ago(190));
+        guard.attempt_finished_at(AttemptEnd::Answered, ago(180));
+        guard.attempt_started_at(ago(100));
+        guard.attempt_finished_at(AttemptEnd::DeadlineOverrun, ago(85));
+        guard.attempt_started_at(ago(10));
+
+        let l = metrics.loop_stages.liveness_at(now)[0];
+        assert_eq!(l.stage, CaptureLoopStage::Capture);
+        assert_eq!(l.heartbeat_age.as_secs(), 200);
+        assert_eq!(l.last_attempt_age.unwrap().as_secs(), 10);
+        assert_eq!(l.open_attempt_age.unwrap().as_secs(), 10);
+        // A deadline overrun is not an answer.
+        assert_eq!(l.last_answer_age.unwrap().as_secs(), 180);
+        assert_eq!(l.unanswered_for().as_secs(), 180);
+    }
+
+    #[test]
+    fn a_replaced_loop_cannot_touch_its_successors_cell() {
+        let metrics = std::sync::Arc::new(PipelineMetrics::new());
+        let old = metrics.track_capture_loop(5);
+        old.enter(CaptureLoopStage::Capture);
+        // A restart registers a new loop while the old one is still unwinding.
+        let new = metrics.track_capture_loop(5);
+        new.enter(CaptureLoopStage::TriggerWait);
+
+        old.enter(CaptureLoopStage::HotCachePush);
+        old.attempt_started();
+        let l = metrics.loop_stages.liveness()[0];
+        assert_eq!(l.stage, CaptureLoopStage::TriggerWait);
+        assert_eq!(l.open_attempt_age, None);
+
+        drop(old);
+        assert!(metrics.loop_stages.is_tracked(5), "new loop stays tracked");
+        drop(new);
+        assert!(!metrics.loop_stages.is_tracked(5));
     }
 
     #[test]
