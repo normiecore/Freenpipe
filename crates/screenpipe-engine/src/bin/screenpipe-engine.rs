@@ -1172,7 +1172,7 @@ async fn main() -> anyhow::Result<()> {
             None
         };
         let secret_store_result =
-            screenpipe_secrets::SecretStore::new(db.pool.clone(), secret_key).await;
+            screenpipe_secrets::SecretStore::new(db.write_pool().clone(), secret_key).await;
         match secret_store_result {
             Ok(store) => {
                 // Run startup permission sweep
@@ -1748,7 +1748,8 @@ async fn main() -> anyhow::Result<()> {
         //      regex-redacted text into the source columns).
         // Default and release builds have neither 2 nor 3, so they go from
         // v45 ONNX straight to regex-only (see `fallback_text_pii_model`).
-        let pool = db.pool.clone();
+        // The worker rewrites rows in place, so it needs a writable pool.
+        let pool = db.write_pool().clone();
         let labels = config.pii_redaction_labels.clone();
         tokio::spawn(async move {
             // Per-label allow-list from the `piiRedactionLabels` setting
@@ -1905,7 +1906,7 @@ async fn main() -> anyhow::Result<()> {
                 policy: ImageRedactionPolicy::from_labels(&config.pii_redaction_labels),
                 ..Default::default()
             };
-            let _img_handle = ImageWorker::new(db.pool.clone(), detector, cfg).spawn();
+            let _img_handle = ImageWorker::new(db.write_pool().clone(), detector, cfg).spawn();
         }
     }
 

@@ -21,7 +21,7 @@ mod tests {
 
         // Run all migrations with better error handling
         match screenpipe_db::schema_migrations::migrator()
-            .run(&db.pool)
+            .run(db.write_pool())
             .await
         {
             Ok(_) => {

@@ -69,7 +69,7 @@ pub async fn handle_export_command(args: &ExportArgs) -> anyhow::Result<()> {
         ))
     };
 
-    let db = DatabaseManager::new(&db_path.to_string_lossy(), Default::default())
+    let db = DatabaseManager::attach(&db_path.to_string_lossy(), Default::default())
         .await
         .with_context(|| format!("failed to open {}", db_path.display()))?;
 

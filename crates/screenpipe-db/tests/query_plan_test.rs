@@ -24,7 +24,7 @@ mod query_plan_tests {
             .unwrap();
 
         screenpipe_db::schema_migrations::migrator()
-            .run(&db.pool)
+            .run(db.write_pool())
             .await
             .expect("Failed to run migrations");
 
