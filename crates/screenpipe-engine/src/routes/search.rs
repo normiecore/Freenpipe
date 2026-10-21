@@ -63,6 +63,7 @@ use crate::video_utils::extract_frame;
 use super::content::{
     AudioContent, ContentItem, InputContent, MemoryContent, OCRContent, PaginationInfo, UiContent,
 };
+use super::response_format::{ResponseShape, Shaped};
 
 // Update the SearchQuery struct
 #[derive(OaSchema, Deserialize)]
@@ -141,6 +142,16 @@ pub(crate) struct SearchQuery {
     /// nothing when this is set. Omit for no tag filtering.
     #[serde(default, deserialize_with = "from_comma_separated_string_array")]
     tags: Option<Vec<String>>,
+    /// Response format: `json` (default), `csv` or `tsv`. CSV and TSV carry
+    /// one header row and one line per result, without the pagination
+    /// envelope. See `routes/response_format.rs`.
+    #[serde(default)]
+    format: Option<String>,
+    /// Comma-separated dotted paths to keep from each result, e.g.
+    /// `type,content.app_name,content.text`. JSON results then become flat
+    /// objects keyed by those paths; CSV/TSV use them as the columns.
+    #[serde(default)]
+    fields: Option<String>,
 }
 
 #[derive(OaSchema, Deserialize)]
@@ -372,10 +383,24 @@ pub(crate) fn compute_search_cache_key(query: &SearchQuery) -> u64 {
 // Update the search function
 #[oasgen]
 pub(crate) async fn search(
-    Query(mut query): Query<SearchQuery>,
+    Query(query): Query<SearchQuery>,
     State(state): State<Arc<AppState>>,
     OptionalPipePerms(pipe_perms): OptionalPipePerms,
-) -> Result<JsonResponse<SearchResponse>, (StatusCode, JsonResponse<serde_json::Value>)> {
+) -> Result<Shaped<SearchResponse>, (StatusCode, JsonResponse<serde_json::Value>)> {
+    // `format` / `fields` only change how the finished response is written,
+    // so a bad format fails before any query runs, and the cache below keeps
+    // holding the plain JSON response.
+    let shape = ResponseShape::from_query(query.format.as_deref(), query.fields.as_deref())?;
+    let response = run_search(query, state, pipe_perms).await?;
+    Ok(shape.respond(response))
+}
+
+/// The `/search` query itself, producing the JSON response.
+async fn run_search(
+    mut query: SearchQuery,
+    state: Arc<AppState>,
+    pipe_perms: Option<Arc<PipePermissions>>,
+) -> Result<SearchResponse, (StatusCode, JsonResponse<serde_json::Value>)> {
     // Server-authoritative privacy filter: if the request comes from a
     // pipe whose manifest declares `privacy_filter: true`, force PII
     // redaction regardless of what the request payload says. The pipe's
@@ -409,7 +434,7 @@ pub(crate) async fn search(
     if !query.include_frames {
         if let Some(cached) = state.search_cache.get(&cache_key).await {
             debug!("search cache hit for key {}", cache_key);
-            return Ok(JsonResponse((*cached).clone()));
+            return Ok((*cached).clone());
         }
     }
 
@@ -695,7 +720,7 @@ pub(crate) async fn search(
             .await;
     }
 
-    Ok(JsonResponse(response))
+    Ok(response)
 }
 
 #[oasgen]
@@ -914,6 +939,8 @@ mod tests {
             machine_id: None,
             filter_pii: false,
             tags: None,
+            format: None,
+            fields: None,
         };
 
         let query2 = SearchQuery {
@@ -942,6 +969,8 @@ mod tests {
             machine_id: None,
             filter_pii: false,
             tags: None,
+            format: None,
+            fields: None,
         };
 
         let key1 = compute_search_cache_key(&query1);
@@ -978,6 +1007,8 @@ mod tests {
             machine_id: None,
             filter_pii: false,
             tags: None,
+            format: None,
+            fields: None,
         };
 
         let query2 = SearchQuery {
@@ -1006,6 +1037,8 @@ mod tests {
             machine_id: None,
             filter_pii: false,
             tags: None,
+            format: None,
+            fields: None,
         };
 
         let key1 = compute_search_cache_key(&query1);
@@ -1049,6 +1082,8 @@ mod tests {
             machine_id: None,
             filter_pii: false,
             tags: None,
+            format: None,
+            fields: None,
         };
         let none = compute_search_cache_key(&mk(None));
         let yes = compute_search_cache_key(&mk(Some(true)));
@@ -1056,6 +1091,47 @@ mod tests {
         assert_ne!(none, yes, "None vs Some(true) must hash differently");
         assert_ne!(none, no, "None vs Some(false) must hash differently");
         assert_ne!(yes, no, "Some(true) vs Some(false) must hash differently");
+    }
+
+    /// The cache holds the JSON response before `format` / `fields` are
+    /// applied, so those two must not split the cache.
+    #[test]
+    fn test_search_cache_key_ignores_output_shape() {
+        let mk = |format: Option<&str>, fields: Option<&str>| SearchQuery {
+            q: Some("test".to_string()),
+            pagination: PaginationQuery {
+                limit: 10,
+                offset: 0,
+            },
+            content_type: ContentType::All,
+            start_time: None,
+            end_time: None,
+            app_name: None,
+            window_name: None,
+            frame_name: None,
+            include_frames: false,
+            min_length: None,
+            max_length: None,
+            speaker_ids: None,
+            focused: None,
+            on_screen: None,
+            browser_url: None,
+            speaker_name: None,
+            include_cloud: false,
+            max_content_length: None,
+            device_name: None,
+            machine_id: None,
+            filter_pii: false,
+            tags: None,
+            format: format.map(str::to_string),
+            fields: fields.map(str::to_string),
+        };
+        let plain = compute_search_cache_key(&mk(None, None));
+        assert_eq!(plain, compute_search_cache_key(&mk(Some("csv"), None)));
+        assert_eq!(
+            plain,
+            compute_search_cache_key(&mk(Some("json"), Some("type,content.text")))
+        );
     }
 
     #[test]

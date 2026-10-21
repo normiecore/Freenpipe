@@ -38,6 +38,8 @@ use super::{
     request_origin, response_format, search_only, semantic, starred, structured_outputs, vision,
     web_search, workflows,
 };
+// Base module that also mounts newer routes here (tag autocomplete).
+use super::content;
 
 /// Router type every feature module returns. State is the shared [`AppState`].
 pub type ExtRouter = Router<Arc<AppState>>;
@@ -108,6 +110,7 @@ pub const FEATURE_MODULES: &[&str] = &[
     "artifacts",
     "cloud_agents",
     "connect_broker",
+    "content",
     "data_sync_proxy",
     "frames",
     "internal_telemetry",
@@ -144,6 +147,7 @@ pub fn feature_routes() -> Vec<FeatureRoutes> {
         feature!(artifacts),
         feature!(cloud_agents),
         feature!(connect_broker),
+        feature!(content),
         feature!(data_sync_proxy),
         feature!(frames),
         feature!(internal_telemetry),

@@ -53,14 +53,20 @@ curl -H "Authorization: Bearer $SCREENPIPE_LOCAL_API_KEY" "http://localhost:3030
 | `content_type` | string | No | `all` (default), `accessibility`, `audio`, `input`, `ocr`, `memory`. Screen text is primarily captured via the OS accessibility tree (`accessibility`); OCR is a fallback for apps without accessibility support (videos, games, remote desktops). Use `all` unless you need a specific modality. |
 | `limit` | integer | No | Default: 20. Keep small (≤20) to protect context. |
 | `offset` | integer | No | Pagination. Default: 0 |
-| `start_time` | ISO 8601 or relative | **Yes** | Accepts `2024-01-15T10:00:00Z` or `16h ago`, `2d ago`, `30m ago` |
-| `end_time` | ISO 8601 or relative | No | Defaults to now. Accepts `now`, `1h ago` |
+| `start_time` | ISO 8601, calendar day or relative | **Yes** | Accepts `2024-01-15T10:00:00Z`, `today`, `yesterday`, `2024-01-15` (calendar days mean local midnight) or `16h ago`, `2d ago`, `30m ago` |
+| `end_time` | ISO 8601, calendar day or relative | No | Defaults to now. Accepts `now`, `1h ago`, `today` (= start of today) |
 | `app_name` | string | No | e.g. "Google Chrome", "Slack", "zoom.us" |
 | `window_name` | string | No | Window title substring |
 | `speaker_name` | string | No | Filter audio by speaker (case-insensitive partial) |
 | `focused` | boolean | No | Only focused windows |
 | `tags` | string | No | Comma-separated; return only items carrying ALL of them (e.g. `person:ada,project:atlas`). Works for screen/audio and, with `content_type=memory`, memories. See Tags below. |
 | `max_content_length` | integer | No | Truncate each result's text (middle-truncation) |
+| `format` | string | No | `json` (default), `csv` or `tsv`. Any other value is a 400. |
+| `fields` | string | No | Comma-separated dotted paths to keep per result, e.g. `type,content.app_name,content.text` |
+
+### Compact output — `fields` and `format`
+
+To save context, ask only for the columns you need. `fields=type,content.timestamp,content.text` turns each JSON result into a flat object keyed by those paths (`{"type": "OCR", "content.timestamp": "...", "content.text": "..."}`); `pagination` stays. `format=csv` or `format=tsv` returns a header row plus one line per result instead of JSON (`text/csv` / `text/tab-separated-values`), with the total in the `x-total-count` header. CSV quotes cells that need it; TSV turns tabs and line breaks inside a cell into spaces. Timestamps in CSV/TSV cells are local time, the same text the JSON carries; add `timezone=utc` to get UTC in either. The same two parameters work on `/elements` and `/frames/{id}/elements`.
 
 ### Tags — linking people, projects, topics
 
@@ -69,6 +75,7 @@ Tags are a shared label layer across screen, audio, and memories under one strin
 - Add to a frame/audio: `POST /tags/vision/{frame_id}` or `POST /tags/audio/{chunk_id}` body `{"tags":["person:ada"]}`.
 - Add to a memory: include `tags` in `POST /memories` (or `PUT /memories/{id}`).
 - Retrieve by tag: `GET /search?tags=person:ada&start_time=30d%20ago` (screen+audio), or add `content_type=memory` for memories. Multiple tags AND together; matching is exact, not substring.
+- Find existing tag names: `GET /tags/autocomplete?q=ada&limit=20` returns `[{"name": "person:ada", "frame_count": 3, "audio_count": 1, "memory_count": 2}]`. `q` matches anywhere in the name, ignoring case; names starting with it (or with it after `namespace:`) come first, then the most used. Omit `q` for the most used tags.
 
 Frames are pruned by retention, so for a durable link tag a memory (memories also carry `created_at` and a `frame_id` back to the moment). Tag frames/audio for short-term recall. To pull everything about a person across time: one call for captures (`content_type=all&tags=person:ada`) plus one for facts (`content_type=memory&tags=person:ada`).
 
@@ -103,7 +110,7 @@ Lightweight FTS search across UI elements (~100-500 bytes each vs 5-20KB from `/
 curl -H "Authorization: Bearer $SCREENPIPE_LOCAL_API_KEY" "http://localhost:3030/elements?q=Submit&start_time=1h%20ago&limit=10"
 ```
 
-Parameters: `q`, `frame_id`, `source` (`accessibility`|`ocr`), `role`, `start_time`, `end_time`, `app_name`, `limit`, `offset`.
+Parameters: `q`, `frame_id`, `source` (`accessibility`|`ocr`), `role`, `start_time`, `end_time`, `app_name`, `limit`, `offset`, `format` (`json`|`csv`|`tsv`), `fields` (e.g. `id,role,text,bounds.left`).
 
 ### Frame Context — `GET /frames/{id}/context`
 

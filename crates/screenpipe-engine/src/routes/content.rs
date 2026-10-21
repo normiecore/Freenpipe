@@ -28,6 +28,8 @@ use crate::{
 };
 use axum::extract::Path;
 
+use super::ext::{documented_routes, DocumentedRoutes, ExtRouter};
+
 #[derive(OaSchema, Serialize, Deserialize, Debug, Clone)]
 #[serde(tag = "type", content = "content")]
 pub enum ContentItem {
@@ -272,6 +274,78 @@ pub(crate) async fn get_tags_batch(
             ))
         }
     }
+}
+
+// Freenpipe: tag autocomplete, mounted through `routes/ext.rs`.
+
+/// Query of `GET /tags/autocomplete`.
+#[derive(OaSchema, Deserialize)]
+pub struct TagAutocompleteRequest {
+    /// Text to look for in tag names, ignoring case; a leading `#` is
+    /// ignored. Names that start with it, or whose part after a
+    /// `namespace:` does, come first. Empty or absent lists the most used
+    /// tags.
+    #[serde(default)]
+    pub q: Option<String>,
+    /// How many tags to return: default 50, at most 500.
+    #[serde(default)]
+    pub limit: Option<u32>,
+}
+
+/// One tag name with the number of frames, audio chunks and memories that
+/// carry it.
+#[derive(OaSchema, Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
+pub struct TagAutocompleteItem {
+    pub name: String,
+    pub frame_count: i64,
+    pub audio_count: i64,
+    pub memory_count: i64,
+}
+
+impl From<screenpipe_db::ext::tags::TagUsage> for TagAutocompleteItem {
+    fn from(t: screenpipe_db::ext::tags::TagUsage) -> Self {
+        Self {
+            name: t.name,
+            frame_count: t.frame_count,
+            audio_count: t.audio_count,
+            memory_count: t.memory_count,
+        }
+    }
+}
+
+/// Tag names matching `q` across frame, audio and memory tags, most relevant
+/// first, as a bare JSON array.
+/// GET /tags/autocomplete?q=wo&limit=50
+#[oasgen]
+pub(crate) async fn autocomplete_tags(
+    State(state): State<Arc<AppState>>,
+    Query(request): Query<TagAutocompleteRequest>,
+) -> Result<Json<Vec<TagAutocompleteItem>>, (StatusCode, JsonResponse<Value>)> {
+    let limit = request
+        .limit
+        .unwrap_or(screenpipe_db::ext::tags::DEFAULT_TAG_AUTOCOMPLETE_LIMIT);
+    let query = request.q.as_deref().unwrap_or("");
+    match state.db.autocomplete_tags(query, limit).await {
+        Ok(tags) => Ok(JsonResponse(tags.into_iter().map(Into::into).collect())),
+        Err(e) => {
+            error!("tag autocomplete failed: {}", e);
+            Err((
+                StatusCode::INTERNAL_SERVER_ERROR,
+                JsonResponse(json!({"error": format!("tag autocomplete failed: {}", e)})),
+            ))
+        }
+    }
+}
+
+/// Routes this module adds through the feature seam: `GET /tags/autocomplete`.
+/// The older content routes are registered in `server.rs`.
+pub fn documented() -> DocumentedRoutes {
+    documented_routes!(oasgen::Server::axum().get("/tags/autocomplete", autocomplete_tags))
+}
+
+/// Undocumented routes: none.
+pub fn router() -> ExtRouter {
+    ExtRouter::new()
 }
 
 #[derive(OaSchema, Deserialize)]

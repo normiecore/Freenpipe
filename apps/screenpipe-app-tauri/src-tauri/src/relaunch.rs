@@ -8,9 +8,10 @@
 //! pipe scheduler and audio manager, 15 s for audio, and any engine another
 //! task is starting or stopping at that moment), wait for the engine's HTTP
 //! runtime to drain, close the engine's read pool (its write pool goes with the
-//! database manager once that drains), and stop the Pi agent sessions. Every
-//! step has its own time limit, clipped to an overall budget. A late HTTP drain, pool
-//! close or Pi stop is only logged: capture and audio are already stopped, so
+//! database manager once that drains), stop the Pi agent sessions, and release
+//! the keep-awake hold. Every step has its own time limit, clipped to an
+//! overall budget. A late HTTP drain, pool close, Pi stop or keep-awake
+//! release is only logged: capture and audio are already stopped, so
 //! the app leaves normally (status 0, through Tauri where it can). Only a
 //! capture or engine step that did not stop in time ends the process with
 //! [`hard_exit`], because returning then would run native destructors under
@@ -211,6 +212,10 @@ pub struct TeardownBudget {
     /// Closing the engine's read pool.
     pub pools: Duration,
     pub pi: Duration,
+    /// Giving back the keep-awake hold (`keepComputerAwake`). The last step
+    /// and not a critical one: the OS releases the hold when the process
+    /// ends anyway.
+    pub keep_awake: Duration,
 }
 
 /// Room the engine step leaves for the pipe scheduler's stop on top of the
@@ -229,6 +234,7 @@ impl Default for TeardownBudget {
             http_drain: Duration::from_secs(3),
             pools: Duration::from_secs(3),
             pi: Duration::from_secs(3),
+            keep_awake: crate::power_awake::RELEASE_LIMIT + Duration::from_secs(1),
         }
     }
 }
@@ -503,6 +509,19 @@ async fn teardown(app: &tauri::AppHandle, reason: &str, budget: TeardownBudget) 
     })
     .await;
 
+    // Last: the OS releases the hold when the process ends anyway, so this
+    // only keeps a slow quit or a relaunch from holding the machine awake
+    // meanwhile. After the critical steps, a wedged keep-awake thread can
+    // never cut them short.
+    run_step(
+        &mut report,
+        "keep_awake",
+        budget.keep_awake,
+        deadline,
+        crate::power_awake::release_for_teardown(),
+    )
+    .await;
+
     report.elapsed = started.elapsed();
     if report.elapsed > budget.overall {
         report.overran = true;
@@ -711,9 +730,10 @@ pub enum TeardownSeverity {
     /// Every step finished (or had nothing to do) in time.
     Clean,
     /// Capture and the engine stopped; only a later step (`http_drain`,
-    /// `sqlite_pools`, `pi`) ran late, or the whole run went a little over
-    /// the budget. A database handle or Pi session still open is released
-    /// by the OS when the process ends, so this is logged, not acted on.
+    /// `sqlite_pools`, `pi`, `keep_awake`) ran late, or the whole run went
+    /// a little over the budget. A database handle, Pi session or keep-awake
+    /// hold still open is released by the OS when the process ends, so this
+    /// is logged, not acted on.
     SlowCleanup,
     /// Capture or the engine did not stop in time, or the teardown thread
     /// panicked: native capture or audio work may still be running.
@@ -1257,6 +1277,8 @@ pub async fn safe_relaunch(
                 .lock()
                 .unwrap_or_else(|e| e.into_inner()) = Some(tx);
             crate::health::set_recording_intended(true);
+            // The teardown gave back the keep-awake hold; take it again.
+            crate::power_awake::apply_saved_setting(&app);
             let state = app.state::<RecordingState>();
             if let Err(err) = crate::recording::spawn_screenpipe(state, app.clone(), None).await {
                 error!("safe relaunch: could not resume recording: {err}");
@@ -1349,7 +1371,9 @@ mod tests {
         assert_eq!(b.engine, Duration::from_secs(21));
         assert_eq!(b.http_drain, Duration::from_secs(3));
         // Capture and the engine at their own limits still fit the budget.
+        // Every other step runs after them, so none can shorten them.
         assert!(b.overall >= b.capture + b.engine);
+        assert!(!CRITICAL_STEPS.contains(&"keep_awake"));
         assert!(b.overall >= b.engine + b.http_drain);
         assert_eq!(b.overall + GUARD_MARGIN, Duration::from_secs(32));
     }
