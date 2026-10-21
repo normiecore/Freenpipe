@@ -16,6 +16,7 @@
 //! manager.rs  — coordinator loop: poll → select profile → broadcast
 //! ```
 
+pub mod keep_awake;
 pub mod manager;
 pub mod monitor;
 pub mod profile;
