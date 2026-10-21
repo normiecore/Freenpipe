@@ -8,7 +8,9 @@
 //! disable or to stop, and gives it back too if its owner goes away. Every
 //! call into the OS happens on that thread, which matters on Windows: the
 //! `SetThreadExecutionState` fallback belongs to the thread that set it.
-//! Callers wait for the thread to confirm, up to [`CONFIRM_TIMEOUT`].
+//! Callers wait for the thread to confirm, up to [`CONFIRM_TIMEOUT`]. An
+//! enable that is not confirmed in time is undone: a release is queued
+//! behind it, so a caller told "it failed" never leaves the computer held.
 //!
 //! "Awake" means the system does not sleep because the user is idle. The
 //! display may still turn off.
@@ -56,7 +58,8 @@ pub type BackendFactory = dyn Fn() -> Box<dyn AwakeBackend> + Send + Sync;
 /// Why a change did not take effect.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum KeepAwakeError {
-    /// The thread did not answer in time. It may still apply the change.
+    /// The thread did not answer in time. A disable may still take effect
+    /// later; an enable is undone (see [`KeepAwake::set_enabled`]).
     Timeout(Duration),
     /// The OS refused.
     Backend(String),
@@ -147,6 +150,10 @@ impl KeepAwake {
     /// Turn the hold on or off and wait for the thread to confirm. Blocks
     /// for up to the confirm timeout, so async callers run it on a blocking
     /// thread.
+    ///
+    /// When an enable times out, the thread may still take the hold once it
+    /// gets to the request. A release is then queued right behind it, so the
+    /// hold ends up off, matching both the error and [`is_enabled`](Self::is_enabled).
     pub fn set_enabled(&self, enabled: bool) -> Result<(), KeepAwakeError> {
         let mut worker = self.worker.lock().unwrap_or_else(|e| e.into_inner());
         if !enabled && worker.is_none() {
@@ -178,6 +185,21 @@ impl KeepAwake {
                     self.confirm_timeout.as_secs_f32(),
                     if enabled { "enable" } else { "disable" }
                 );
+                if enabled {
+                    // Nobody waits for this answer: the receiver is dropped
+                    // at once and the thread's reply goes nowhere.
+                    let (undo, _) = mpsc::sync_channel(1);
+                    let queued = worker.as_ref().is_some_and(|w| {
+                        w.tx.send(Request::Set {
+                            enabled: false,
+                            reply: undo,
+                        })
+                        .is_ok()
+                    });
+                    if queued {
+                        debug!("keep-awake: queued a release behind the unconfirmed enable");
+                    }
+                }
                 Err(KeepAwakeError::Timeout(self.confirm_timeout))
             }
             Err(mpsc::RecvTimeoutError::Disconnected) => {
@@ -649,10 +671,7 @@ mod tests {
         let k = fake(&log, false, Duration::ZERO);
         k.set_enabled(true).unwrap();
         drop(k);
-        let deadline = std::time::Instant::now() + Duration::from_secs(5);
-        while log.ops().len() < 2 && std::time::Instant::now() < deadline {
-            thread::sleep(Duration::from_millis(10));
-        }
+        wait_for_ops(&log, 2);
         assert_eq!(log.ops(), vec![hold(), release()]);
     }
 
@@ -670,8 +689,15 @@ mod tests {
         assert!(log.ops().is_empty());
     }
 
+    fn wait_for_ops(log: &Log, count: usize) {
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        while log.ops().len() < count && std::time::Instant::now() < deadline {
+            thread::sleep(Duration::from_millis(10));
+        }
+    }
+
     #[test]
-    fn a_slow_thread_times_out_and_is_released_on_stop() {
+    fn an_enable_that_times_out_is_undone_without_a_stop() {
         let log = Log::default();
         let k = fake(&log, false, Duration::from_millis(300))
             .with_confirm_timeout(Duration::from_millis(20));
@@ -680,9 +706,32 @@ mod tests {
             Err(KeepAwakeError::Timeout(Duration::from_millis(20)))
         );
         assert!(!k.is_enabled());
-        // The late hold is still given back on stop.
+        // The thread takes the late hold and then the queued release, while
+        // the handle stays alive (the app's switch shows off all along).
+        wait_for_ops(&log, 2);
+        assert_eq!(log.ops(), vec![hold(), release()]);
+        // Nothing is left to release.
         assert_eq!(k.stop(Duration::from_secs(3)), StopOutcome::Stopped);
         assert_eq!(log.ops(), vec![hold(), release()]);
+    }
+
+    #[test]
+    fn an_enable_after_a_timed_out_one_holds_again() {
+        let log = Log::default();
+        let k = fake(&log, false, Duration::from_millis(200))
+            .with_confirm_timeout(Duration::from_millis(20));
+        assert!(matches!(
+            k.set_enabled(true),
+            Err(KeepAwakeError::Timeout(_))
+        ));
+        // Queued behind the undo, a later enable that is given time to
+        // confirm ends with the hold taken.
+        let k = k.with_confirm_timeout(Duration::from_secs(3));
+        k.set_enabled(true).unwrap();
+        assert!(k.is_enabled());
+        assert_eq!(log.ops(), vec![hold(), release(), hold()]);
+        assert_eq!(k.stop(Duration::from_secs(3)), StopOutcome::Stopped);
+        assert_eq!(log.ops(), vec![hold(), release(), hold(), release()]);
     }
 
     #[test]

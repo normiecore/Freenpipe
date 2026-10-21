@@ -76,12 +76,11 @@ pub struct DiskSpaceLowEvent {
     pub data_dir: String,
 }
 
-/// Payload of `disk_space_recovered`.
+/// Payload of `disk_space_recovered`. The threshold itself is not part of
+/// it; [`latest_status`] carries both limits.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DiskSpaceRecoveredEvent {
     pub available_bytes: u64,
-    #[serde(default)]
-    pub threshold_bytes: u64,
     pub recovery_threshold_bytes: u64,
     pub data_dir: String,
 }
@@ -508,7 +507,6 @@ impl MonitorCore {
                 );
                 sink.disk_space_recovered(&DiskSpaceRecoveredEvent {
                     available_bytes,
-                    threshold_bytes: self.limits.threshold_bytes,
                     recovery_threshold_bytes: self.limits.recovery_threshold_bytes,
                     data_dir,
                 });
@@ -774,7 +772,6 @@ mod tests {
                 }),
                 Seen::Recovered(DiskSpaceRecoveredEvent {
                     available_bytes: 7 * GIB,
-                    threshold_bytes: 5 * GIB,
                     recovery_threshold_bytes: 6 * GIB,
                     data_dir: data_dir.clone(),
                 }),
@@ -1018,12 +1015,22 @@ mod tests {
             low,
             serde_json::json!({"available_bytes": 1, "threshold_bytes": 2, "data_dir": "d"})
         );
-        let recovered: DiskSpaceRecoveredEvent = serde_json::from_value(serde_json::json!({
-            "available_bytes": 9, "recovery_threshold_bytes": 3, "data_dir": "d"
+        let recovered = DiskSpaceRecoveredEvent {
+            available_bytes: 9,
+            recovery_threshold_bytes: 3,
+            data_dir: "d".into(),
+        };
+        assert_eq!(
+            serde_json::to_value(&recovered).unwrap(),
+            serde_json::json!({"available_bytes": 9, "recovery_threshold_bytes": 3, "data_dir": "d"})
+        );
+        // A payload with more fields (another writer's) still reads.
+        let wider: DiskSpaceRecoveredEvent = serde_json::from_value(serde_json::json!({
+            "available_bytes": 9, "threshold_bytes": 2, "recovery_threshold_bytes": 3,
+            "data_dir": "d"
         }))
         .unwrap();
-        assert_eq!(recovered.recovery_threshold_bytes, 3);
-        assert_eq!(recovered.threshold_bytes, 0);
+        assert_eq!(wider, recovered);
     }
 
     #[test]

@@ -23,7 +23,10 @@
 //!   recording.
 //! - On recovery it starts capture again, but only if the guard's stop is
 //!   still the last change to recording. A recording the user paused, or
-//!   started and paused again, stays paused.
+//!   started and paused again, stays paused. Recovery means free space past
+//!   the recovery threshold. A new monitor run whose first reading falls
+//!   between the two thresholds reports no incident; while the guard still
+//!   owes a restart, such a reading does not end the incident.
 //! - Whether the current incident was already announced is kept in
 //!   `disk-pressure-notification-state.json` in the data dir, so restarting
 //!   the app does not repeat the notification. Recovery re-arms it.
@@ -249,7 +252,13 @@ pub enum Signal {
     Low(u64),
     /// `disk_space_recovered` arrived.
     Recovered,
-    /// The latest status shows no incident.
+    /// The latest status shows no incident, but free space is not past the
+    /// recovery threshold. A monitor run that starts with the disk in that
+    /// band (an engine restart mid-incident) reports no incident, because it
+    /// never saw the drop.
+    Band,
+    /// The latest status shows no incident, with free space past the
+    /// recovery threshold.
     Normal,
 }
 
@@ -297,9 +306,7 @@ pub struct Facts {
     /// How often the recording intent has changed so far
     /// (`health::recording_intent_epoch`).
     pub intent_epoch: u64,
-    /// Persisted: an incident is in progress.
-    pub incident_active: bool,
-    /// Persisted: the incident was announced.
+    /// Persisted: the current incident was announced.
     pub incident_notified: bool,
 }
 
@@ -328,8 +335,14 @@ fn guard_pause_holds(facts: Facts, memory: GuardMemory) -> bool {
 /// The guard's rules (see the module docs).
 pub fn plan(signal: Signal, facts: Facts, memory: GuardMemory) -> Plan {
     match signal {
-        Signal::Low(generation) => plan_low(generation, facts, memory),
-        Signal::Recovered | Signal::Normal => {
+        Signal::Low(generation) => plan_low(Some(generation), facts, memory),
+        // The guard's pause stands until there is room past the recovery
+        // threshold, also when a new monitor run starts inside the band. A
+        // reading there is not a fresh low one either, so it stops nothing.
+        Signal::Band if guard_pause_holds(facts, memory) => plan_low(None, facts, memory),
+        // With nothing to give back, the band ends the incident as before:
+        // a later drop to the threshold is a new incident, announced afresh.
+        Signal::Band | Signal::Recovered | Signal::Normal => {
             let resume = guard_pause_holds(facts, memory);
             Plan {
                 resume_capture: resume,
@@ -343,7 +356,9 @@ pub fn plan(signal: Signal, facts: Facts, memory: GuardMemory) -> Plan {
     }
 }
 
-fn plan_low(generation: u64, facts: Facts, memory: GuardMemory) -> Plan {
+/// An incident goes on: `generation` is the run behind a low reading, `None`
+/// for a reading inside the band, which never counts as fresh.
+fn plan_low(generation: Option<u64>, facts: Facts, memory: GuardMemory) -> Plan {
     let holds = guard_pause_holds(facts, memory);
     let mut p = Plan {
         memory,
@@ -368,6 +383,9 @@ fn plan_low(generation: u64, facts: Facts, memory: GuardMemory) -> Plan {
         return p;
     }
     p.memory.guard_off_logged = false;
+    let Some(generation) = generation else {
+        return p;
+    };
     if memory.handled_generation == Some(generation) {
         // Already acted on this run's reading. A recording started since
         // then (from the tray, a deep link, a settings save that only
@@ -420,9 +438,10 @@ impl From<&DiskSpaceLowEvent> for Reading {
 
 impl From<&DiskSpaceRecoveredEvent> for Reading {
     fn from(e: &DiskSpaceRecoveredEvent) -> Self {
+        // The event has no threshold, and nothing on recovery quotes one.
         Self {
             available_bytes: Some(e.available_bytes),
-            threshold_bytes: Some(e.threshold_bytes),
+            threshold_bytes: None,
         }
     }
 }
@@ -501,9 +520,10 @@ impl Guard {
     }
 
     async fn handle(&mut self, signal: Signal, reading: Reading) {
-        // Only a low reading consults the setting; skip the store read on
-        // the routine "all fine" checks.
-        let guard_enabled = !matches!(signal, Signal::Low(_)) || self.guard_enabled();
+        // Only a reading that can keep an incident going consults the
+        // setting; skip the store read on the routine "all fine" checks.
+        let guard_enabled =
+            !matches!(signal, Signal::Low(_) | Signal::Band) || self.guard_enabled();
         // The epoch before the intent: a change between the two reads then
         // shows as a newer epoch, never as a missed one.
         let intent_epoch = crate::health::recording_intent_epoch();
@@ -511,7 +531,6 @@ impl Guard {
             guard_enabled,
             recording_intended: crate::health::recording_intended(),
             intent_epoch,
-            incident_active: self.state.incident_active,
             incident_notified: self.state.notified,
         };
         let mut plan = plan(signal, facts, self.memory);
@@ -732,8 +751,13 @@ fn low_event_generation(
 /// successful read can start or end an incident.
 fn status_signal(status: Option<&monitor::DiskPressureStatus>) -> Option<(Signal, Reading)> {
     let status = status.filter(|s| s.last_error.is_none())?;
+    let in_band = status
+        .available_bytes
+        .is_some_and(|available| available <= status.recovery_threshold_bytes);
     let signal = if status.low {
         Signal::Low(status.generation)
+    } else if in_band {
+        Signal::Band
     } else {
         Signal::Normal
     };
@@ -754,6 +778,8 @@ mod tests {
     struct Sim {
         f: Facts,
         m: GuardMemory,
+        /// The persisted `incident_active`.
+        incident_active: bool,
     }
 
     impl Sim {
@@ -763,10 +789,10 @@ mod tests {
                     guard_enabled,
                     recording_intended,
                     intent_epoch: 0,
-                    incident_active: false,
                     incident_notified: false,
                 },
                 m: GuardMemory::default(),
+                incident_active: false,
             }
         }
 
@@ -797,7 +823,7 @@ mod tests {
                 self.set_intent(true);
             }
             self.m = p.memory;
-            self.f.incident_active = p.incident_active;
+            self.incident_active = p.incident_active;
             self.f.incident_notified = p.incident_notified;
             p
         }
@@ -825,7 +851,7 @@ mod tests {
         assert!(p.stop_capture && !p.stop_again);
         assert_eq!(p.notify_low, Some(LowNotice::Paused));
         assert!(!s.f.recording_intended);
-        assert!(s.f.incident_active && s.f.incident_notified);
+        assert!(s.incident_active && s.f.incident_notified);
 
         // Repeated low readings of the same run (status ticks) change nothing.
         for _ in 0..3 {
@@ -836,7 +862,7 @@ mod tests {
         assert!(p.resume_capture && p.notify_resumed);
         assert!(s.f.recording_intended);
         assert_eq!(s.m, GuardMemory::default());
-        assert!(!s.f.incident_active && !s.f.incident_notified);
+        assert!(!s.incident_active && !s.f.incident_notified);
 
         // The next incident, even in the same monitor run, is announced again.
         let p = s.step(Signal::Low(1));
@@ -940,6 +966,63 @@ mod tests {
     }
 
     #[test]
+    fn a_new_run_inside_the_band_keeps_the_guards_pause_until_there_is_room() {
+        let mut s = Sim::new(true, true);
+        s.step(Signal::Low(1));
+        assert!(!s.f.recording_intended);
+        // The engine restarts without touching the recording intent (a crash
+        // respawn) after some space was freed: the new run's first reading is
+        // above the threshold but not past the recovery threshold, so it
+        // reports no incident. The guard's pause stands, and nothing else
+        // happens either.
+        for _ in 0..3 {
+            s.quiet(Signal::Band);
+        }
+        assert!(s.incident_active && s.f.incident_notified);
+        assert!(!s.f.recording_intended);
+        // Only room past the recovery threshold brings recording back.
+        let p = s.step(Signal::Normal);
+        assert!(p.resume_capture && p.notify_resumed);
+        assert!(!s.incident_active && !s.f.incident_notified);
+    }
+
+    #[test]
+    fn switching_the_guard_off_inside_the_band_gives_capture_back() {
+        let mut s = Sim::new(true, true);
+        s.step(Signal::Low(1));
+        s.quiet(Signal::Band);
+        s.f.guard_enabled = false;
+        let p = s.step(Signal::Band);
+        assert!(p.resume_capture && p.log_guard_off);
+        assert!(s.f.recording_intended);
+    }
+
+    #[test]
+    fn the_band_ends_an_incident_when_the_guard_owes_no_restart() {
+        // The user started recording after the guard's stop, then the engine
+        // restarted inside the band: the incident ends quietly, and a later
+        // drop to the threshold is a new one, announced as such.
+        let mut s = Sim::new(true, true);
+        s.step(Signal::Low(1));
+        s.user_start();
+        s.quiet(Signal::Band);
+        assert!(!s.incident_active && !s.f.incident_notified);
+        assert!(s.f.recording_intended);
+        let p = s.step(Signal::Low(2));
+        assert!(p.stop_capture && !p.stop_again);
+        assert_eq!(p.notify_low, Some(LowNotice::Paused));
+
+        // An app restart inside the band: the app started capture itself, so
+        // the guard owes nothing, and the persisted incident is cleared.
+        let mut s = Sim::new(true, true);
+        s.incident_active = true;
+        s.f.incident_notified = true;
+        s.quiet(Signal::Band);
+        assert!(!s.incident_active && !s.f.incident_notified);
+        assert!(s.f.recording_intended);
+    }
+
+    #[test]
     fn switching_the_guard_off_mid_incident_resumes_capture_and_on_again_stops_it() {
         let mut s = Sim::new(true, true);
         s.step(Signal::Low(1));
@@ -986,7 +1069,7 @@ mod tests {
     fn an_app_restart_mid_incident_stops_capture_without_a_second_notice() {
         // Persisted: the incident was announced by the previous app run.
         let mut s = Sim::new(true, true);
-        s.f.incident_active = true;
+        s.incident_active = true;
         s.f.incident_notified = true;
         let p = s.step(Signal::Low(1));
         assert!(p.stop_capture && !p.stop_again);
@@ -996,10 +1079,10 @@ mod tests {
     #[test]
     fn a_normal_status_clears_a_stale_incident_quietly() {
         let mut s = Sim::new(true, true);
-        s.f.incident_active = true;
+        s.incident_active = true;
         s.f.incident_notified = true;
         s.quiet(Signal::Normal);
-        assert!(!s.f.incident_active && !s.f.incident_notified);
+        assert!(!s.incident_active && !s.f.incident_notified);
     }
 
     #[test]
@@ -1151,6 +1234,13 @@ mod tests {
         let mut status = status_for("/data", 2, None);
         status.generation = 3;
         assert_eq!(status_signal(Some(&status)).unwrap().0, Signal::Normal);
+        // Above the threshold but not past the recovery threshold (50 free,
+        // recovery at 50): the band, unless the run itself reports low.
+        let mut band = status_for("/data", 49, None);
+        band.generation = 3;
+        assert_eq!(status_signal(Some(&band)).unwrap().0, Signal::Band);
+        band.low = true;
+        assert_eq!(status_signal(Some(&band)).unwrap().0, Signal::Low(3));
         status.low = true;
         let (signal, reading) = status_signal(Some(&status)).unwrap();
         assert_eq!(signal, Signal::Low(3));

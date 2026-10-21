@@ -48,7 +48,8 @@ export type CommandResult = { status: "ok"; data: unknown } | { status: "error";
 
 /**
  * Turn keep-awake on or off and save the setting. Turning it on is saved only
- * once the hold is taken, so a failure leaves the switch off. Turning it off
+ * once the hold is taken, so a failure leaves the switch off (and the engine
+ * undoes an enable it could not confirm in time). Turning it off
  * is always saved, so a hold that could not be released is not taken again at
  * the next start.
  */
