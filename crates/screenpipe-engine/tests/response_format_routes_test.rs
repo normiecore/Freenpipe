@@ -99,7 +99,7 @@ async fn fixture() -> Fixture {
         .bind(text)
         .bind(left)
         .bind(order)
-        .execute(&db.pool)
+        .execute(db.write_pool())
         .await
         .unwrap();
     }
