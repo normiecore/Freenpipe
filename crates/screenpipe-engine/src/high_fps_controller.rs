@@ -181,8 +181,7 @@ impl StarredState {
         if self.retired.len() >= MAX_RETIRED_STARRED {
             self.retired.pop_front();
         }
-        self.retired
-            .push_back((window.id.clone(), window.revision));
+        self.retired.push_back((window.id.clone(), window.revision));
     }
 
     /// Retire windows that have ended and return the one raising HD at
@@ -206,8 +205,13 @@ impl StarredState {
             .filter(|w| w.covers(now))
             .max_by(|a, b| a.end.cmp(&b.end).then_with(|| b.id.cmp(&a.id)))
             .cloned();
-        let key = current.as_ref().map(|w| (w.id.clone(), w.revision));
-        if key != self.raising {
+        let unchanged = match (&self.raising, &current) {
+            (Some((id, revision)), Some(w)) => w.same_revision(id, *revision),
+            (None, None) => true,
+            _ => false,
+        };
+        if !unchanged {
+            let key = current.as_ref().map(|w| (w.id.clone(), w.revision));
             match (&self.raising, &current) {
                 (_, Some(w)) => tracing::info!(
                     target: "capture::high_fps",
@@ -219,7 +223,7 @@ impl StarredState {
                 (Some((id, _)), None) => tracing::info!(
                     target: "capture::high_fps",
                     session_id = %id,
-                    "HD for starred session ended",
+                    "starred session no longer raises HD",
                 ),
                 (None, None) => {}
             }
@@ -1178,7 +1182,12 @@ mod tests {
         t0() + chrono::Duration::minutes(m)
     }
 
-    fn window(id: &str, start: DateTime<Utc>, end: DateTime<Utc>, revision: i64) -> StarredHdWindow {
+    fn window(
+        id: &str,
+        start: DateTime<Utc>,
+        end: DateTime<Utc>,
+        revision: i64,
+    ) -> StarredHdWindow {
         StarredHdWindow {
             id: id.to_string(),
             start,
@@ -1288,16 +1297,10 @@ mod tests {
         let slow = c.starred_sync_ticket();
         let save = c.starred_sync_ticket();
         assert!(c.install_starred_windows(save, vec![]));
-        assert!(!c.install_starred_windows(
-            slow,
-            vec![window("a", at_min(-1), at_min(10), 1)]
-        ));
+        assert!(!c.install_starred_windows(slow, vec![window("a", at_min(-1), at_min(10), 1)]));
         assert!(!c.snapshot().active);
         // Replaying the same ticket does nothing either.
-        assert!(!c.install_starred_windows(
-            save,
-            vec![window("a", at_min(-1), at_min(10), 1)]
-        ));
+        assert!(!c.install_starred_windows(save, vec![window("a", at_min(-1), at_min(10), 1)]));
         assert!(!c.snapshot().active);
     }
 

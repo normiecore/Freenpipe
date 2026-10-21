@@ -458,7 +458,9 @@ impl DatabaseManager {
             .fetch_one(&self.pool)
             .await?;
         Ok((
-            rows.into_iter().filter_map(SessionRow::into_session).collect(),
+            rows.into_iter()
+                .filter_map(SessionRow::into_session)
+                .collect(),
             total,
         ))
     }

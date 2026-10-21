@@ -504,7 +504,11 @@ mod tests {
             "urn:uuid:6f1c1d4e-2b8a-4f0e-9a51-0d6c7f3b2a10",
         ] {
             b.id = bad.to_string();
-            assert_eq!(validate_save(&b, now()), Err(SaveRejection::Identity), "{bad}");
+            assert_eq!(
+                validate_save(&b, now()),
+                Err(SaveRejection::Identity),
+                "{bad}"
+            );
         }
         b.id = ID.to_uppercase();
         assert!(validate_save(&b, now()).is_ok());
@@ -574,7 +578,11 @@ mod tests {
         assert!(validate_save(&body(now() - mins(1), now() + mins(120), 0), now()).is_ok());
         // Long-past sessions are fine.
         assert!(validate_save(
-            &body(now() - mins(30 * 24 * 60), now() - mins(30 * 24 * 60 - 30), 3),
+            &body(
+                now() - mins(30 * 24 * 60),
+                now() - mins(30 * 24 * 60 - 30),
+                3
+            ),
             now()
         )
         .is_ok());
@@ -607,9 +615,12 @@ mod tests {
     async fn harness(vision_disabled: bool, with_controller: bool) -> Harness {
         let dir = tempfile::tempdir().unwrap();
         let db = Arc::new(
-            DatabaseManager::new(dir.path().join("db.sqlite").to_str().unwrap(), Default::default())
-                .await
-                .unwrap(),
+            DatabaseManager::new(
+                dir.path().join("db.sqlite").to_str().unwrap(),
+                Default::default(),
+            )
+            .await
+            .unwrap(),
         );
         let audio_manager = Arc::new(
             AudioManagerBuilder::new()
@@ -706,8 +717,15 @@ mod tests {
         assert_eq!(created["id"], ID);
         assert_eq!(created["hd_requested"], false);
         assert_eq!(created["has_audio"], false);
+        // The engine's response layer may localise timestamps; the instant
+        // is what counts.
         assert_eq!(
-            created["start"],
+            parse_rfc3339(created["start"].as_str().unwrap()),
+            Some(truncate_to_millis(t - mins(5)))
+        );
+        let (_, utc) = call(&h.app, "GET", "/starred-sessions?timezone=utc", None, None).await;
+        assert_eq!(
+            utc["data"][0]["start"],
             format_starred_timestamp(truncate_to_millis(t - mins(5)))
         );
 
@@ -777,20 +795,36 @@ mod tests {
                 &h.app,
                 "POST",
                 "/starred-sessions",
-                Some(save_json(ID, t - mins(5), t + mins(10 + round), false, round)),
+                Some(save_json(
+                    ID,
+                    t - mins(5),
+                    t + mins(10 + round),
+                    false,
+                    round,
+                )),
                 None,
             );
             let b = call(
                 &h.app,
                 "POST",
                 "/starred-sessions",
-                Some(save_json(ID, t - mins(5), t + mins(20 + round), false, round)),
+                Some(save_json(
+                    ID,
+                    t - mins(5),
+                    t + mins(20 + round),
+                    false,
+                    round,
+                )),
                 None,
             );
             let ((sa, _), (sb, _)) = tokio::join!(a, b);
             let mut statuses = [sa, sb];
             statuses.sort();
-            assert_eq!(statuses, [StatusCode::OK, StatusCode::CONFLICT], "round {round}");
+            assert_eq!(
+                statuses,
+                [StatusCode::OK, StatusCode::CONFLICT],
+                "round {round}"
+            );
         }
         let stored = h.db.get_starred_session(ID).await.unwrap().unwrap();
         assert_eq!(stored.revision, 6);
@@ -802,7 +836,10 @@ mod tests {
         let t = Utc::now();
         let cases = [
             (save_json(ID, t - mins(25 * 60), t, false, 0), ERR_RANGE),
-            (save_json(ID, t - mins(5), t - mins(10), false, 0), ERR_ORDER),
+            (
+                save_json(ID, t - mins(5), t - mins(10), false, 0),
+                ERR_ORDER,
+            ),
             (save_json("nope", t - mins(5), t, false, 0), ERR_IDENTITY),
             (save_json(ID, t - mins(5), t, false, -2), ERR_IDENTITY),
             (
@@ -815,9 +852,8 @@ mod tests {
             assert_eq!(status, StatusCode::BAD_REQUEST, "{value}");
             assert_eq!(value["error"], message);
         }
-        let (rows, total) = h
-            .db
-            .list_starred_sessions(&StarredListFilter {
+        let (rows, total) =
+            h.db.list_starred_sessions(&StarredListFilter {
                 limit: 10,
                 ..Default::default()
             })
@@ -845,8 +881,7 @@ mod tests {
             .await;
             assert_eq!(status, StatusCode::OK, "{v}");
         }
-        h.db
-            .insert_audio_chunk("/tmp/fp-test/audio.mp4", Some(t - mins(20)))
+        h.db.insert_audio_chunk("/tmp/fp-test/audio.mp4", Some(t - mins(20)))
             .await
             .unwrap();
 
@@ -891,7 +926,14 @@ mod tests {
         let (status, v) = call(&h.app, "GET", &backwards, None, None).await;
         assert_eq!(status, StatusCode::BAD_REQUEST);
         assert_eq!(v["error"], ERR_ORDER);
-        let (status, v) = call(&h.app, "GET", "/starred-sessions?start_time=noon", None, None).await;
+        let (status, v) = call(
+            &h.app,
+            "GET",
+            "/starred-sessions?start_time=noon",
+            None,
+            None,
+        )
+        .await;
         assert_eq!(status, StatusCode::BAD_REQUEST);
         assert_eq!(v["error"], ERR_QUERY_TIMESTAMPS);
     }
@@ -1027,14 +1069,16 @@ mod tests {
     async fn the_sync_follows_rows_changed_outside_a_save() {
         let dir = tempfile::tempdir().unwrap();
         let db = Arc::new(
-            DatabaseManager::new(dir.path().join("db.sqlite").to_str().unwrap(), Default::default())
-                .await
-                .unwrap(),
+            DatabaseManager::new(
+                dir.path().join("db.sqlite").to_str().unwrap(),
+                Default::default(),
+            )
+            .await
+            .unwrap(),
         );
         let clock = ManualClock::at(now());
-        let controller = Arc::new(
-            HighFpsController::new(None, DefaultMode::Ask, 100).with_clock(clock.clone()),
-        );
+        let controller =
+            Arc::new(HighFpsController::new(None, DefaultMode::Ask, 100).with_clock(clock.clone()));
         // A row written by another client (or screenpipe) before startup.
         sqlx::query(
             "INSERT INTO starred_sessions (id, start, end, hd_requested, revision) \
@@ -1076,9 +1120,12 @@ mod tests {
     async fn the_sync_task_stops_when_the_controller_is_dropped() {
         let dir = tempfile::tempdir().unwrap();
         let db = Arc::new(
-            DatabaseManager::new(dir.path().join("db.sqlite").to_str().unwrap(), Default::default())
-                .await
-                .unwrap(),
+            DatabaseManager::new(
+                dir.path().join("db.sqlite").to_str().unwrap(),
+                Default::default(),
+            )
+            .await
+            .unwrap(),
         );
         let controller = Arc::new(HighFpsController::new(None, DefaultMode::Ask, 100));
         let task = tokio::spawn(run_hd_sync(

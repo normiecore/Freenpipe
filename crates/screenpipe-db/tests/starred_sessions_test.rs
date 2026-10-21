@@ -361,10 +361,7 @@ async fn has_audio_counts_chunks_with_a_file_inside_the_half_open_range() {
         })
         .await
         .unwrap();
-    let flags: Vec<(&str, bool)> = rows
-        .iter()
-        .map(|s| (s.id.as_str(), s.has_audio))
-        .collect();
+    let flags: Vec<(&str, bool)> = rows.iter().map(|s| (s.id.as_str(), s.has_audio)).collect();
     assert_eq!(flags, vec![(C, true), (B, false), (A, true)]);
 
     // Sub-second precision decides at the edges.
@@ -379,14 +376,32 @@ async fn has_audio_counts_chunks_with_a_file_inside_the_half_open_range() {
         ),
     )
     .await;
-    db.insert_audio_chunk("/audio/early.mp4", Some(mins(60) + Duration::milliseconds(500)))
-        .await
-        .unwrap();
-    assert!(!db.get_starred_session(edge).await.unwrap().unwrap().has_audio);
-    db.insert_audio_chunk("/audio/late.mp4", Some(mins(61) + Duration::milliseconds(100)))
-        .await
-        .unwrap();
-    assert!(db.get_starred_session(edge).await.unwrap().unwrap().has_audio);
+    db.insert_audio_chunk(
+        "/audio/early.mp4",
+        Some(mins(60) + Duration::milliseconds(500)),
+    )
+    .await
+    .unwrap();
+    assert!(
+        !db.get_starred_session(edge)
+            .await
+            .unwrap()
+            .unwrap()
+            .has_audio
+    );
+    db.insert_audio_chunk(
+        "/audio/late.mp4",
+        Some(mins(61) + Duration::milliseconds(100)),
+    )
+    .await
+    .unwrap();
+    assert!(
+        db.get_starred_session(edge)
+            .await
+            .unwrap()
+            .unwrap()
+            .has_audio
+    );
 }
 
 #[tokio::test]
@@ -601,7 +616,10 @@ async fn hd_listing_holds_only_unfinished_sessions_that_asked_for_hd() {
         .await
         .unwrap()
         .is_empty());
-    assert_eq!(db.list_hd_starred_sessions(mins(5), 1).await.unwrap().len(), 1);
+    assert_eq!(
+        db.list_hd_starred_sessions(mins(5), 1).await.unwrap().len(),
+        1
+    );
 
     // Turning HD off removes it.
     let mut off = write(B, mins(20), mins(30), 1);
