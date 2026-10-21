@@ -100,7 +100,12 @@ async fn preflight_rejects_a_file_that_is_not_sqlite() {
 async fn preflight_rejects_a_truncated_database() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("db.sqlite");
-    drop(open(&path).await);
+    let db = open(&path).await;
+    // Close every connection first so none checkpoints into the file later.
+    db.wal_checkpoint().await.unwrap();
+    db.pool.close().await;
+    db.write_pool().close().await;
+    drop(db);
     // Cut the file mid-page, as an interrupted copy would.
     let len = std::fs::metadata(&path).unwrap().len();
     let file = std::fs::OpenOptions::new().write(true).open(&path).unwrap();
@@ -346,4 +351,49 @@ fn shared_constants_match_screenpipe_core() {
         owner_file_path(Path::new(paths::DB_FILE)),
         Path::new(paths::DB_OWNER_FILE)
     );
+}
+
+#[tokio::test]
+async fn read_transaction_left_open_on_a_pooled_connection_does_not_pin_the_wal() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("db.sqlite");
+    let config = DbConfig {
+        read_pool_max: 1,
+        read_pool_min: 1,
+        ..DbConfig::default()
+    };
+    let db = DatabaseManager::new(path.to_str().unwrap(), config)
+        .await
+        .unwrap();
+    {
+        let mut conn = db.pool.acquire().await.unwrap();
+        sqlx::query("BEGIN").execute(&mut *conn).await.unwrap();
+        let _: i64 = sqlx::query_scalar("SELECT count(*) FROM frames")
+            .fetch_one(&mut *conn)
+            .await
+            .unwrap();
+        // Dropped with the transaction still open.
+    }
+    // The connection comes back rolled back...
+    let mut conn = tokio::time::timeout(Duration::from_secs(2), db.pool.acquire())
+        .await
+        .unwrap()
+        .unwrap();
+    let ok: i64 = sqlx::query_scalar("SELECT 1")
+        .fetch_one(&mut *conn)
+        .await
+        .unwrap();
+    assert_eq!(ok, 1);
+    drop(conn);
+    // ...so a later checkpoint copies every frame.
+    for i in 0..20 {
+        sqlx::query("INSERT INTO tags (name) VALUES (?1)")
+            .bind(format!("p{i}"))
+            .execute(db.write_pool())
+            .await
+            .unwrap();
+    }
+    let (busy, log, done) = db.wal_checkpoint().await.unwrap();
+    assert_eq!(busy, 0);
+    assert_eq!(log, done);
 }
