@@ -287,8 +287,8 @@ impl<T: Serialize> IntoResponse for Shaped<T> {
         }
         // Going through text keeps each object's field order, which
         // `serde_json::Value` would sort away.
-        let envelope = serde_json::to_vec(&self.body)
-            .and_then(|bytes| serde_json::from_slice::<Node>(&bytes));
+        let envelope =
+            serde_json::to_vec(&self.body).and_then(|bytes| serde_json::from_slice::<Node>(&bytes));
         match envelope {
             Ok(envelope) => self.shape.render(envelope),
             Err(e) => {
@@ -689,9 +689,15 @@ mod tests {
     fn format_names_parse_and_unknown_ones_are_rejected() {
         assert_eq!(ResponseFormat::parse(None), Ok(ResponseFormat::Json));
         assert_eq!(ResponseFormat::parse(Some("")), Ok(ResponseFormat::Json));
-        assert_eq!(ResponseFormat::parse(Some("json")), Ok(ResponseFormat::Json));
+        assert_eq!(
+            ResponseFormat::parse(Some("json")),
+            Ok(ResponseFormat::Json)
+        );
         assert_eq!(ResponseFormat::parse(Some("CSV")), Ok(ResponseFormat::Csv));
-        assert_eq!(ResponseFormat::parse(Some(" tsv ")), Ok(ResponseFormat::Tsv));
+        assert_eq!(
+            ResponseFormat::parse(Some(" tsv ")),
+            Ok(ResponseFormat::Tsv)
+        );
         for bad in ["xml", "table", "outline", "csv2"] {
             let err = ResponseFormat::parse(Some(bad)).unwrap_err();
             assert_eq!(
@@ -705,7 +711,10 @@ mod tests {
             body,
             json!({"error": "unknown format `xml` (expected json|csv|tsv)"})
         );
-        assert_eq!(ResponseFormat::Csv.content_type(), "text/csv; charset=utf-8");
+        assert_eq!(
+            ResponseFormat::Csv.content_type(),
+            "text/csv; charset=utf-8"
+        );
         assert_eq!(
             ResponseFormat::Tsv.content_type(),
             "text/tab-separated-values; charset=utf-8"
@@ -747,9 +756,12 @@ mod tests {
 
     #[tokio::test]
     async fn json_fields_flatten_rows_and_keep_the_envelope() {
-        let response = shape(None, Some("content.text,type,content.missing,content.tags.1"))
-            .respond(sample())
-            .into_response();
+        let response = shape(
+            None,
+            Some("content.text,type,content.missing,content.tags.1"),
+        )
+        .respond(sample())
+        .into_response();
         let r = rendered(response).await;
         assert_eq!(r.status, StatusCode::OK);
         assert_eq!(r.content_type.as_deref(), Some("application/json"));
@@ -934,8 +946,7 @@ mod tests {
 
     #[test]
     fn node_round_trips_numbers_and_key_order() {
-        let text =
-            r#"{"z":1,"a":-2,"m":1.5,"big":18446744073709551615,"n":null,"t":true,"s":"x"}"#;
+        let text = r#"{"z":1,"a":-2,"m":1.5,"big":18446744073709551615,"n":null,"t":true,"s":"x"}"#;
         let parsed: Node = serde_json::from_str(text).unwrap();
         assert_eq!(serde_json::to_string(&parsed).unwrap(), text);
     }

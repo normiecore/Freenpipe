@@ -103,10 +103,7 @@ pub fn local_day_start<Tz: TimeZone>(tz: &Tz, day: NaiveDate) -> Option<DateTime
 
 /// The earliest instant whose wall-clock time in `tz` is at or after
 /// `local`. Used for a local time that falls inside a DST gap.
-fn first_instant_at_or_after<Tz: TimeZone>(
-    tz: &Tz,
-    local: NaiveDateTime,
-) -> Option<DateTime<Utc>> {
+fn first_instant_at_or_after<Tz: TimeZone>(tz: &Tz, local: NaiveDateTime) -> Option<DateTime<Utc>> {
     // UTC offsets stay within -12 h..+14 h, so 36 h either side of the wall
     // time read as UTC is certain to bracket the answer.
     const BRACKET_SECS: i64 = 36 * 3600;
@@ -529,10 +526,7 @@ mod tests {
             "end_time": "today",
         }))
         .unwrap();
-        assert_eq!(
-            p.start_time,
-            local_day_start(&Local, day("2026-07-04"))
-        );
+        assert_eq!(p.start_time, local_day_start(&Local, day("2026-07-04")));
         assert!(p.end_time <= Utc::now());
         let empty: Params =
             serde_json::from_value(serde_json::json!({"start_time": "", "end_time": "now"}))

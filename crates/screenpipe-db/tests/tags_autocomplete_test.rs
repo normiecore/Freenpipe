@@ -80,7 +80,13 @@ async fn fixture() -> DatabaseManager {
         .insert_audio_chunk("/data/a2.mp4", Some(Utc::now()))
         .await
         .unwrap();
-    tag(&db, a1, TagContentType::Audio, &["work", "homework", "meeting"]).await;
+    tag(
+        &db,
+        a1,
+        TagContentType::Audio,
+        &["work", "homework", "meeting"],
+    )
+    .await;
     tag(&db, a2, TagContentType::Audio, &["homework"]).await;
 
     memory(&db, r#"["work","person:ada"]"#).await;
@@ -147,7 +153,13 @@ async fn the_part_after_a_namespace_counts_as_a_prefix() {
 async fn wildcards_in_the_query_match_literally() {
     let db = setup_db().await;
     let f = frame(&db, 0).await;
-    tag(&db, f, TagContentType::Vision, &["100%_done", "100x", "a\\b"]).await;
+    tag(
+        &db,
+        f,
+        TagContentType::Vision,
+        &["100%_done", "100x", "a\\b"],
+    )
+    .await;
     memory(&db, r#"["50%"]"#).await;
 
     let names = |v: Vec<TagUsage>| v.into_iter().map(|t| t.name).collect::<Vec<_>>();

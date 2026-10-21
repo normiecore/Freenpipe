@@ -1093,6 +1093,47 @@ mod tests {
         assert_ne!(yes, no, "Some(true) vs Some(false) must hash differently");
     }
 
+    /// The cache holds the JSON response before `format` / `fields` are
+    /// applied, so those two must not split the cache.
+    #[test]
+    fn test_search_cache_key_ignores_output_shape() {
+        let mk = |format: Option<&str>, fields: Option<&str>| SearchQuery {
+            q: Some("test".to_string()),
+            pagination: PaginationQuery {
+                limit: 10,
+                offset: 0,
+            },
+            content_type: ContentType::All,
+            start_time: None,
+            end_time: None,
+            app_name: None,
+            window_name: None,
+            frame_name: None,
+            include_frames: false,
+            min_length: None,
+            max_length: None,
+            speaker_ids: None,
+            focused: None,
+            on_screen: None,
+            browser_url: None,
+            speaker_name: None,
+            include_cloud: false,
+            max_content_length: None,
+            device_name: None,
+            machine_id: None,
+            filter_pii: false,
+            tags: None,
+            format: format.map(str::to_string),
+            fields: fields.map(str::to_string),
+        };
+        let plain = compute_search_cache_key(&mk(None, None));
+        assert_eq!(plain, compute_search_cache_key(&mk(Some("csv"), None)));
+        assert_eq!(
+            plain,
+            compute_search_cache_key(&mk(Some("json"), Some("type,content.text")))
+        );
+    }
+
     #[test]
     fn test_truncate_middle_short_text() {
         assert_eq!(truncate_middle("hello", 10), "hello");
