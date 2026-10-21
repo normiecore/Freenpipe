@@ -59,9 +59,10 @@ pub const ON_DEMAND_OCR_MAX_INFLIGHT: usize = 2;
 /// frame is corrupt and must not trigger a huge allocation.
 pub const SOURCE_SIDE_LIMIT: u32 = 32_768;
 
-/// Most pixels handed to an OCR engine in one request (about 8K UHD plus a
-/// margin). Larger images are scaled down to fit.
-pub const OCR_PIXEL_BUDGET: u64 = 40_000_000;
+/// Most pixels handed to an OCR engine in one request. 5K and 6K monitors fit
+/// unscaled; 8K frames are scaled to about 6.6K, which keeps text legible
+/// while bounding the memory a full queue can hold.
+pub const OCR_PIXEL_BUDGET: u64 = 25_000_000;
 
 /// Longest side assumed for the WinRT engine until the worker has read the
 /// real `OcrEngine::MaxImageDimension`. The worker re-checks every image
