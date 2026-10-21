@@ -350,7 +350,7 @@ async fn has_audio_counts_chunks_with_a_file_inside_the_half_open_range() {
     sqlx::query("INSERT INTO audio_chunks (file_path, timestamp) VALUES (?1, ?2)")
         .bind("/audio/c.mp4")
         .bind("2026-10-21 09:49:59.500")
-        .execute(&db.pool)
+        .execute(db.write_pool())
         .await
         .unwrap();
 
@@ -451,7 +451,7 @@ async fn rows_stored_in_other_rfc3339_spellings_read_back() {
     .bind(A)
     .bind(B)
     .bind(C)
-    .execute(&db.pool)
+    .execute(db.write_pool())
     .await
     .unwrap();
 

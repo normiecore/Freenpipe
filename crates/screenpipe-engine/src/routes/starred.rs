@@ -1188,7 +1188,7 @@ mod tests {
              VALUES (?1, '2026-10-21T08:55:00.000Z', '2026-10-21T09:10:00.000Z', 1, 3)",
         )
         .bind(ID)
-        .execute(&db.pool)
+        .execute(db.write_pool())
         .await
         .unwrap();
 
@@ -1199,7 +1199,7 @@ mod tests {
         // The row is deleted behind the engine's back.
         sqlx::query("DELETE FROM starred_sessions WHERE id = ?1")
             .bind(ID)
-            .execute(&db.pool)
+            .execute(db.write_pool())
             .await
             .unwrap();
         assert_eq!(sync_hd_bindings(&db, &controller).await.unwrap(), 0);
@@ -1211,7 +1211,7 @@ mod tests {
              VALUES (?1, '2026-10-21T08:00:00.000Z', '2026-10-21T08:30:00.000Z', 1, 1)",
         )
         .bind(OTHER)
-        .execute(&db.pool)
+        .execute(db.write_pool())
         .await
         .unwrap();
         assert_eq!(sync_hd_bindings(&db, &controller).await.unwrap(), 0);
@@ -1321,7 +1321,7 @@ mod tests {
         // An edit lands (another client) before the stop is written back.
         sqlx::query("UPDATE starred_sessions SET revision = 5 WHERE id = ?1")
             .bind(ID)
-            .execute(&h.db.pool)
+            .execute(h.db.write_pool())
             .await
             .unwrap();
         sync_hd_bindings(&h.db, &controller).await.unwrap();
