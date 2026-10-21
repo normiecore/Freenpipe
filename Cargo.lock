@@ -8349,6 +8349,7 @@ dependencies = [
  "base64 0.22.1",
  "bincode",
  "chrono",
+ "chrono-tz",
  "cidre 0.15.1 (git+https://github.com/yury/cidre.git?rev=8481f3f0dc7dd39bb5be80d9424bfac0cad3801a)",
  "clap",
  "colored",

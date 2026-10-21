@@ -19,6 +19,8 @@ use tracing::error;
 
 use crate::server::AppState;
 
+use super::response_format::{ResponseShape, Shaped};
+
 #[derive(OaSchema, Deserialize)]
 pub(crate) struct ElementsQuery {
     #[serde(default)]
@@ -53,6 +55,13 @@ pub(crate) struct ElementsQuery {
     limit: u32,
     #[serde(default)]
     offset: u32,
+    /// Response format: `json` (default), `csv` or `tsv`.
+    #[serde(default)]
+    format: Option<String>,
+    /// Comma-separated dotted paths to keep from each element, e.g.
+    /// `id,role,text,bounds.left`.
+    #[serde(default)]
+    fields: Option<String>,
 }
 
 fn default_limit() -> u32 {
@@ -127,7 +136,8 @@ impl From<Element> for ElementResponse {
 pub(crate) async fn search_elements(
     Query(query): Query<ElementsQuery>,
     State(state): State<Arc<AppState>>,
-) -> Result<JsonResponse<ElementsListResponse>, (StatusCode, JsonResponse<Value>)> {
+) -> Result<Shaped<ElementsListResponse>, (StatusCode, JsonResponse<Value>)> {
+    let shape = ResponseShape::from_query(query.format.as_deref(), query.fields.as_deref())?;
     let q = query.q.as_deref().unwrap_or("");
     let source = query
         .source
@@ -157,7 +167,7 @@ pub(crate) async fn search_elements(
             )
         })?;
 
-    Ok(JsonResponse(ElementsListResponse {
+    Ok(shape.respond(ElementsListResponse {
         data: elements.into_iter().map(ElementResponse::from).collect(),
         pagination: PaginationResponse {
             limit: query.limit,
@@ -173,7 +183,8 @@ pub(crate) async fn get_frame_elements(
     State(state): State<Arc<AppState>>,
     Path(frame_id): Path<i64>,
     Query(query): Query<FrameElementsQuery>,
-) -> Result<JsonResponse<ElementsListResponse>, (StatusCode, JsonResponse<Value>)> {
+) -> Result<Shaped<ElementsListResponse>, (StatusCode, JsonResponse<Value>)> {
+    let shape = ResponseShape::from_query(query.format.as_deref(), query.fields.as_deref())?;
     let source = query
         .source
         .as_deref()
@@ -192,7 +203,7 @@ pub(crate) async fn get_frame_elements(
         })?;
 
     let total = elements.len() as i64;
-    Ok(JsonResponse(ElementsListResponse {
+    Ok(shape.respond(ElementsListResponse {
         data: elements.into_iter().map(ElementResponse::from).collect(),
         pagination: PaginationResponse {
             limit: total as u32,
@@ -206,4 +217,10 @@ pub(crate) async fn get_frame_elements(
 pub(crate) struct FrameElementsQuery {
     #[serde(default)]
     source: Option<String>,
+    /// Response format: `json` (default), `csv` or `tsv`.
+    #[serde(default)]
+    format: Option<String>,
+    /// Comma-separated dotted paths to keep from each element.
+    #[serde(default)]
+    fields: Option<String>,
 }

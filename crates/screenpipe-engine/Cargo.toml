@@ -137,6 +137,8 @@ dhat = { version = "0.3", optional = true }
 tikv-jemallocator = { version = "0.6", optional = true }
 
 [dev-dependencies]
+# Fixed time zones (with DST rules) for the calendar-day parsing tests.
+chrono-tz = "0.10"
 env_logger = "0.10"
 tempfile = "3.3.0"
 tokio-tungstenite = "0.24"
