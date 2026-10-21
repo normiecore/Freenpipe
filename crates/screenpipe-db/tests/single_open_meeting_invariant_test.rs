@@ -28,7 +28,7 @@ mod tests {
             .await
             .unwrap();
         screenpipe_db::schema_migrations::migrator()
-            .run(&db.pool)
+            .run(db.write_pool())
             .await
             .unwrap();
         db
@@ -63,7 +63,7 @@ mod tests {
                 continue;
             }
             sqlx::query(sqlx::AssertSqlSafe(trimmed))
-                .execute(&db.pool)
+                .execute(db.write_pool())
                 .await
                 .unwrap_or_else(|e| panic!("stmt failed: {}\n{}", e, trimmed));
         }
@@ -77,7 +77,7 @@ mod tests {
         // (multiple concurrent open rows) the way old user DBs would have
         // it. Then re-run the migration body and check it healed cleanly.
         sqlx::query("DROP INDEX IF EXISTS idx_meetings_single_open")
-            .execute(&db.pool)
+            .execute(db.write_pool())
             .await
             .unwrap();
 

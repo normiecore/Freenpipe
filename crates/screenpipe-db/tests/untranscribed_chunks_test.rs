@@ -16,7 +16,7 @@ mod tests {
             .unwrap();
 
         match screenpipe_db::schema_migrations::migrator()
-            .run(&db.pool)
+            .run(db.write_pool())
             .await
         {
             Ok(_) => {}
@@ -214,7 +214,7 @@ mod tests {
         )
         .bind(ts.to_rfc3339())
         .bind((ts + Duration::minutes(1)).to_rfc3339())
-        .execute(&db.pool)
+        .execute(db.write_pool())
         .await
         .unwrap()
         .last_insert_rowid();
@@ -271,7 +271,7 @@ mod tests {
              VALUES (?1, NULL, 'manual', 'manual')",
         )
         .bind((ts - Duration::seconds(10)).to_rfc3339())
-        .execute(&db.pool)
+        .execute(db.write_pool())
         .await
         .unwrap()
         .last_insert_rowid();
@@ -322,7 +322,7 @@ mod tests {
              VALUES (?1, NULL, 'manual', 'manual')",
         )
         .bind(meeting_start.to_rfc3339())
-        .execute(&db.pool)
+        .execute(db.write_pool())
         .await
         .unwrap()
         .last_insert_rowid();
@@ -372,7 +372,7 @@ mod tests {
         )
         .bind(meeting_start.to_rfc3339())
         .bind((meeting_start + Duration::minutes(6)).to_rfc3339())
-        .execute(&db.pool)
+        .execute(db.write_pool())
         .await
         .unwrap()
         .last_insert_rowid();
@@ -501,7 +501,7 @@ mod tests {
              VALUES (?1, NULL, 'manual', 'manual')",
         )
         .bind(meeting_start.to_rfc3339())
-        .execute(&db.pool)
+        .execute(db.write_pool())
         .await
         .unwrap()
         .last_insert_rowid();
@@ -591,7 +591,7 @@ mod tests {
         )
         .bind(meeting_start.to_rfc3339())
         .bind(meeting_end.to_rfc3339())
-        .execute(&db.pool)
+        .execute(db.write_pool())
         .await
         .unwrap()
         .last_insert_rowid();
@@ -603,7 +603,7 @@ mod tests {
         )
         .bind(meeting_id)
         .bind("2026-05-14T11:01:00-07:00")
-        .execute(&db.pool)
+        .execute(db.write_pool())
         .await
         .unwrap();
 
@@ -614,7 +614,7 @@ mod tests {
         )
         .bind(meeting_id)
         .bind("2026-05-14T18:00:30Z")
-        .execute(&db.pool)
+        .execute(db.write_pool())
         .await
         .unwrap();
 

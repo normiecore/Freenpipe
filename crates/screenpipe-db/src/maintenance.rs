@@ -426,7 +426,8 @@ impl WalTracker {
         status.wal_file_bytes = wal_file_bytes;
         status.coordinator_skips = 0;
         status.last_error = None;
-        if mode == CheckpointMode::Restart {
+        if mode != CheckpointMode::Passive {
+            status.escalations += 1;
             self.last_escalation = Some(now);
         }
 
@@ -691,6 +692,7 @@ async fn page_size_of(pool: &SqlitePool) -> Result<i64, sqlx::Error> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use sqlx::ConnectOptions;
 
     fn status(log_pages: i64) -> WalMaintenanceStatus {
         WalMaintenanceStatus {
@@ -805,9 +807,177 @@ mod tests {
         );
     }
 
+    /// A file database with a writer pool configured like the real one.
+    async fn wal_database(dir: &tempfile::TempDir) -> (PathBuf, SqlitePool) {
+        let path = dir.path().join("db.sqlite");
+        let options = normal_mode_options(
+            SqliteConnectOptions::new()
+                .filename(&path)
+                .create_if_missing(true),
+            &DbConfig::default(),
+            ConnectionRole::Writer,
+        );
+        let pool = sqlx::sqlite::SqlitePoolOptions::new()
+            .max_connections(3)
+            .connect_with(options)
+            .await
+            .unwrap();
+        sqlx::query("CREATE TABLE t(x BLOB)")
+            .execute(&pool)
+            .await
+            .unwrap();
+        (path, pool)
+    }
+
+    async fn insert_rows(pool: &SqlitePool, n: usize) {
+        for _ in 0..n {
+            sqlx::query("INSERT INTO t(x) VALUES (randomblob(2000))")
+                .execute(pool)
+                .await
+                .unwrap();
+        }
+    }
+
+    async fn wait_for(
+        state: &WalMaintenanceState,
+        what: &str,
+        mut done: impl FnMut(&WalMaintenanceStatus) -> bool,
+    ) -> WalMaintenanceStatus {
+        let deadline = Instant::now() + Duration::from_secs(10);
+        loop {
+            let status = state.snapshot();
+            if done(&status) {
+                return status;
+            }
+            assert!(Instant::now() < deadline, "timed out waiting for {what}: {status:?}");
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    }
+
+    fn fast_config() -> WalMaintenanceConfig {
+        WalMaintenanceConfig {
+            interval: Duration::from_millis(50),
+            ..Default::default()
+        }
+    }
+
+    #[tokio::test]
+    async fn writer_never_checkpoints_inline_and_the_loop_does() {
+        let dir = tempfile::tempdir().unwrap();
+        let (path, pool) = wal_database(&dir).await;
+        let auto: i64 = sqlx::query_scalar("PRAGMA wal_autocheckpoint")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        assert_eq!(auto, 0);
+        insert_rows(&pool, 50).await;
+        let before = std::fs::metadata(wal_file_path(&path)).unwrap().len();
+        assert!(before > 0, "writes went to the WAL");
+
+        let (handle, rx) = MaintenanceHandle::new();
+        spawn_wal_maintenance(
+            pool.clone(),
+            Arc::new(Semaphore::new(1)),
+            path.clone(),
+            Arc::clone(&handle.wal),
+            fast_config(),
+            rx,
+        );
+        let status = wait_for(&handle.wal, "a checkpoint", |s| s.checkpoints > 0).await;
+        assert_eq!(status.last_mode, Some(CheckpointMode::Passive));
+        assert!(status.running);
+        assert_eq!(status.pending_pages, 0);
+        assert!(status.log_pages > 0 && status.log_pages == status.checkpointed);
+
+        // Dropping the handle (what dropping the DatabaseManager does) stops it.
+        let state = Arc::clone(&handle.wal);
+        drop(handle);
+        let stopped = wait_for(&state, "the loop to stop", |s| !s.running).await;
+        assert_eq!(stopped.stopped_reason.as_deref(), Some("database closed"));
+    }
+
+    #[tokio::test]
+    async fn pinned_reader_defers_the_checkpoint_until_it_lets_go() {
+        let dir = tempfile::tempdir().unwrap();
+        let (path, pool) = wal_database(&dir).await;
+        insert_rows(&pool, 5).await;
+
+        // A reader holding a snapshot from before the next writes.
+        let mut reader = SqliteConnectOptions::new()
+            .filename(&path)
+            .connect()
+            .await
+            .unwrap();
+        sqlx::query("BEGIN").execute(&mut reader).await.unwrap();
+        let _: i64 = sqlx::query_scalar("SELECT count(*) FROM t")
+            .fetch_one(&mut reader)
+            .await
+            .unwrap();
+        insert_rows(&pool, 40).await;
+
+        let (handle, rx) = MaintenanceHandle::new();
+        spawn_wal_maintenance(
+            pool.clone(),
+            Arc::new(Semaphore::new(1)),
+            path.clone(),
+            Arc::clone(&handle.wal),
+            fast_config(),
+            rx,
+        );
+        let deferred = wait_for(&handle.wal, "a deferral", |s| s.pending_pages > 0).await;
+        assert!(deferred.log_pages > deferred.checkpointed);
+
+        sqlx::query("COMMIT").execute(&mut reader).await.unwrap();
+        let drained = wait_for(&handle.wal, "the drain", |s| {
+            s.checkpoints > deferred.checkpoints && s.pending_pages == 0
+        })
+        .await;
+        assert_eq!(drained.backlog_seconds, 0);
+        use sqlx::Connection;
+        reader.close().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn a_large_log_escalates_to_restart_and_a_stalled_writer_cannot_block_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let (path, pool) = wal_database(&dir).await;
+        insert_rows(&pool, 20).await;
+
+        // The write coordinator is held for good, as by a wedged writer.
+        let coordinator = Arc::new(Semaphore::new(1));
+        let _wedged = Arc::clone(&coordinator).acquire_owned().await.unwrap();
+        let config = WalMaintenanceConfig {
+            interval: Duration::from_millis(50),
+            coordinator_wait: Duration::from_millis(20),
+            uncoordinated_after_skips: 2,
+            escalate_wal_bytes: 1,
+            escalation_cooldown: Duration::ZERO,
+            ..Default::default()
+        };
+        let (handle, rx) = MaintenanceHandle::new();
+        spawn_wal_maintenance(
+            pool.clone(),
+            coordinator,
+            path,
+            Arc::clone(&handle.wal),
+            config,
+            rx,
+        );
+        let status = wait_for(&handle.wal, "an escalation", |s| s.escalations > 0).await;
+        assert_eq!(status.last_mode, Some(CheckpointMode::Restart));
+        assert!(!status.busy);
+        // busy_timeout is back to the pool's value on every writer.
+        for _ in 0..3 {
+            let timeout: i64 = sqlx::query_scalar("PRAGMA busy_timeout")
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+            assert_eq!(timeout, CONNECTION_BUSY_TIMEOUT.as_millis() as i64);
+        }
+    }
+
     #[tokio::test]
     async fn offline_options_use_rollback_journal_and_exclusive_lock() {
-        use sqlx::ConnectOptions;
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("offline.sqlite");
         let mut conn = offline_connect_options(&path, true)

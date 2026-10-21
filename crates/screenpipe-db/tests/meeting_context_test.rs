@@ -13,7 +13,7 @@ mod tests {
             .unwrap();
 
         screenpipe_db::schema_migrations::migrator()
-            .run(&db.pool)
+            .run(db.write_pool())
             .await
             .unwrap();
 
@@ -62,7 +62,7 @@ mod tests {
         )
         .bind("2026-05-13T20:13:27.337-07:00")
         .bind("2026-05-14T03:15:02.036Z")
-        .execute(&db.pool)
+        .execute(db.write_pool())
         .await
         .unwrap()
         .last_insert_rowid();
@@ -82,7 +82,7 @@ mod tests {
         .bind(0_i64)
         .bind("2026-05-14T02:30:00+00:00")
         .bind("/tmp/old.rs")
-        .execute(&db.pool)
+        .execute(db.write_pool())
         .await
         .unwrap();
         sqlx::query(
@@ -93,7 +93,7 @@ mod tests {
         .bind(1_i64)
         .bind("2026-05-14T03:14:00+00:00")
         .bind("/tmp/inside.rs")
-        .execute(&db.pool)
+        .execute(db.write_pool())
         .await
         .unwrap();
 

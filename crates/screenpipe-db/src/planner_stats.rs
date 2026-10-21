@@ -437,7 +437,7 @@ async fn select_tables(conn: &mut PoolConnection<Sqlite>) -> Result<Vec<String>,
         .await?;
     for line in &lines {
         if let Some(table) = table_from_optimize_line(line) {
-            if !tables.contains(&table) {
+            if !table.starts_with("sqlite_") && table != REFRESH_TABLE && !tables.contains(&table) {
                 tables.push(table);
             }
         }
@@ -469,7 +469,28 @@ async fn select_tables(conn: &mut PoolConnection<Sqlite>) -> Result<Vec<String>,
             tables.push(table);
         }
     }
-    Ok(tables)
+
+    // An empty table without statistics has nothing to gain from ANALYZE
+    // (it would only be selected again on every run); one that still has
+    // statistics from when it held rows is analyzed so they are cleared.
+    let mut selected = Vec::with_capacity(tables.len());
+    for table in tables {
+        let has_rows: bool = sqlx::query_scalar(sqlx::AssertSqlSafe(format!(
+            "SELECT EXISTS(SELECT 1 FROM main.{})",
+            quote_ident(&table)
+        )))
+        .fetch_one(&mut **conn)
+        .await?;
+        let has_stats: bool = has_stat1
+            && sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM main.sqlite_stat1 WHERE tbl = ?1)")
+                .bind(&table)
+                .fetch_one(&mut **conn)
+                .await?;
+        if has_rows || has_stats {
+            selected.push(table);
+        }
+    }
+    Ok(selected)
 }
 
 /// Reload statistics here and make every other connection reload them.
@@ -606,6 +627,124 @@ mod tests {
         );
         assert_eq!(table_from_optimize_line("PRAGMA something"), None);
         assert_eq!(quote_ident("we\"ird"), "\"we\"\"ird\"");
+    }
+
+    async fn database(dir: &tempfile::TempDir) -> (PathBuf, SqlitePool) {
+        let path = dir.path().join("db.sqlite");
+        let options = crate::maintenance::normal_mode_options(
+            sqlx::sqlite::SqliteConnectOptions::new()
+                .filename(&path)
+                .create_if_missing(true),
+            &screenpipe_config::DbConfig::default(),
+            crate::maintenance::ConnectionRole::Writer,
+        );
+        let pool = sqlx::sqlite::SqlitePoolOptions::new()
+            .max_connections(2)
+            .connect_with(options)
+            .await
+            .unwrap();
+        for sql in [
+            "CREATE TABLE frames(id INTEGER PRIMARY KEY, app TEXT, ts TEXT)",
+            "CREATE INDEX idx_frames_app ON frames(app)",
+            "CREATE TABLE notes(id INTEGER PRIMARY KEY, body TEXT)",
+            "CREATE TABLE tags(id INTEGER PRIMARY KEY, name TEXT)",
+            "CREATE INDEX idx_tags_name ON tags(name)",
+            "INSERT INTO frames(app, ts) WITH RECURSIVE s(i) AS (SELECT 1 UNION ALL SELECT i+1 FROM s WHERE i < 500) \
+             SELECT 'app' || (i % 7), datetime('now') FROM s",
+            "INSERT INTO tags(name) VALUES ('a'), ('b')",
+        ] {
+            sqlx::query(sqlx::AssertSqlSafe(sql)).execute(&pool).await.unwrap();
+        }
+        (path, pool)
+    }
+
+    fn job(path: &Path, pool: &SqlitePool) -> PlannerJob {
+        PlannerJob {
+            write_pool: pool.clone(),
+            coordinator: Arc::new(Semaphore::new(1)),
+            report_path: report_path(path),
+            coordinator_wait: Duration::from_secs(2),
+        }
+    }
+
+    async fn busy_timeouts(pool: &SqlitePool) -> Vec<i64> {
+        let mut out = Vec::new();
+        let mut conns = Vec::new();
+        for _ in 0..2 {
+            let mut c = pool.acquire().await.unwrap();
+            out.push(
+                sqlx::query_scalar("PRAGMA busy_timeout")
+                    .fetch_one(&mut *c)
+                    .await
+                    .unwrap(),
+            );
+            conns.push(c);
+        }
+        out
+    }
+
+    #[tokio::test]
+    async fn run_analyzes_indexed_tables_and_records_success() {
+        let dir = tempfile::tempdir().unwrap();
+        let (path, pool) = database(&dir).await;
+        let (_tx, rx) = watch::channel(());
+        let attempt = job(&path, &pool).run_once(&rx).await;
+        assert_eq!(attempt.status, status::SUCCEEDED, "{attempt:?}");
+        assert_eq!(attempt.stage, stage::DONE);
+        assert!(attempt.analyzed_tables.contains(&"frames".to_string()));
+        assert!(attempt.analyzed_tables.contains(&"tags".to_string()));
+
+        let stats: i64 =
+            sqlx::query_scalar("SELECT count(*) FROM sqlite_stat1 WHERE tbl = 'frames'")
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        assert!(stats > 0);
+        let scratch: i64 = sqlx::query_scalar(
+            "SELECT count(*) FROM sqlite_schema WHERE name = '_screenpipe_planner_refresh'",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(scratch, 0);
+
+        let report = read_report(&report_path(&path));
+        assert_eq!(report.latest.as_ref().unwrap().status, status::SUCCEEDED);
+        assert!(report.last_success.is_some());
+        assert!(report.last_failure.is_none());
+        assert_eq!(busy_timeouts(&pool).await, vec![5000, 5000]);
+
+        // A second run finds nothing new to analyze and still succeeds.
+        let again = job(&path, &pool).run_once(&rx).await;
+        assert_eq!(again.status, status::SUCCEEDED);
+        assert!(again.analyzed_tables.is_empty(), "{again:?}");
+    }
+
+    #[tokio::test]
+    async fn run_backs_off_when_another_connection_holds_the_write_lock() {
+        use sqlx::ConnectOptions;
+        let dir = tempfile::tempdir().unwrap();
+        let (path, pool) = database(&dir).await;
+        let mut other = sqlx::sqlite::SqliteConnectOptions::new()
+            .filename(&path)
+            .connect()
+            .await
+            .unwrap();
+        sqlx::query("BEGIN IMMEDIATE").execute(&mut other).await.unwrap();
+
+        let (_tx, rx) = watch::channel(());
+        let started = Instant::now();
+        let attempt = job(&path, &pool).run_once(&rx).await;
+        assert_eq!(attempt.status, status::BUSY, "{attempt:?}");
+        assert!(started.elapsed() < Duration::from_secs(3), "never waits for the lock");
+        let report = read_report(&report_path(&path));
+        assert_eq!(report.last_failure.as_ref().unwrap().status, status::BUSY);
+        assert!(report.last_success.is_none());
+        assert_eq!(busy_timeouts(&pool).await, vec![5000, 5000]);
+
+        sqlx::query("ROLLBACK").execute(&mut other).await.unwrap();
+        let attempt = job(&path, &pool).run_once(&rx).await;
+        assert_eq!(attempt.status, status::SUCCEEDED, "{attempt:?}");
     }
 
     #[test]

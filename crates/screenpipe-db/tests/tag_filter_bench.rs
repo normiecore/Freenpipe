@@ -46,7 +46,7 @@ async fn migrated_db() -> DatabaseManager {
         .await
         .unwrap();
     screenpipe_db::schema_migrations::migrator()
-        .run(&db.pool)
+        .run(db.write_pool())
         .await
         .unwrap();
     db
@@ -54,7 +54,7 @@ async fn migrated_db() -> DatabaseManager {
 
 async fn exec(db: &DatabaseManager, sql: &str) {
     if let Err(e) = sqlx::query(sqlx::AssertSqlSafe(sql))
-        .execute(&db.pool)
+        .execute(db.write_pool())
         .await
     {
         let head: String = sql.chars().take(90).collect();

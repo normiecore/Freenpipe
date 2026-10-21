@@ -28,7 +28,7 @@ mod tests {
             .unwrap();
 
         screenpipe_db::schema_migrations::migrator()
-            .run(&db.pool)
+            .run(db.write_pool())
             .await
             .unwrap();
 
@@ -184,7 +184,7 @@ mod tests {
         // Tear down the auto_end row so it doesn't interfere
         sqlx::query("DELETE FROM meetings WHERE id = ?1")
             .bind(auto_id)
-            .execute(&db.pool)
+            .execute(db.write_pool())
             .await
             .unwrap();
 
@@ -249,7 +249,7 @@ mod tests {
              VALUES (?1, 'Arc', 'auto')",
         )
         .bind("2026-05-26T10:00:00Z")
-        .execute(&db.pool)
+        .execute(db.write_pool())
         .await
         .unwrap()
         .last_insert_rowid();

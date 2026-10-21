@@ -18,7 +18,7 @@ mod tests {
             .await
             .unwrap();
         screenpipe_db::schema_migrations::migrator()
-            .run(&db.pool)
+            .run(db.write_pool())
             .await
             .unwrap();
         db
@@ -46,7 +46,7 @@ mod tests {
         )
         .bind(meeting_start)
         .bind(meeting_end)
-        .execute(&db.pool)
+        .execute(db.write_pool())
         .await
         .unwrap()
         .last_insert_rowid()
@@ -76,7 +76,7 @@ mod tests {
         .bind(device_name)
         .bind(device_type)
         .bind(captured_at)
-        .execute(&db.pool)
+        .execute(db.write_pool())
         .await
         .unwrap();
     }
