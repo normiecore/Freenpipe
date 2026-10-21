@@ -191,13 +191,16 @@ fn discover_and_prepare() -> Option<TesseractInstall> {
         .map(|path| (path, false)),
     };
     let Some((binary, on_search_path)) = found else {
-        warn!(
-            "tesseract was not found (it is neither installed system-wide nor bundled beside \
-             the engine), so OCR through tesseract is off for the rest of this session; \
-             install tesseract-ocr and restart to get searchable screen text"
-        );
         if TESSERACT_IS_PRIMARY {
+            warn!(
+                "tesseract was not found (it is neither installed system-wide nor bundled beside \
+                 the engine), so OCR through tesseract is off for the rest of this session; \
+                 install tesseract-ocr and restart to get searchable screen text"
+            );
             crate::metrics::set_ocr_engine_available(false);
+        } else {
+            // Optional here: live capture uses the platform's own OCR engine.
+            debug!("tesseract not found; the optional tesseract OCR engine is off for this session");
         }
         return None;
     };
