@@ -4,9 +4,7 @@
 use crate::{AudioChunkInfo, UntranscribedChunk};
 use chrono::{DateTime, Utc};
 use image::DynamicImage;
-use libsqlite3_sys::sqlite3_auto_extension;
 use screenpipe_config::DbConfig;
-use sqlite_vec::sqlite3_vec_init;
 use sqlx::migrate::MigrateDatabase;
 use sqlx::pool::PoolConnection;
 use sqlx::sqlite::{SqliteConnectOptions, SqlitePool, SqlitePoolOptions};
@@ -274,9 +272,12 @@ impl Drop for ImmediateTx {
 }
 
 pub struct DatabaseManager {
-    /// Read-only pool. Used for all SELECT queries.
-    /// Separated from writes so read bursts (search, timeline, API) can never
-    /// starve the write pipeline. Size depends on DbConfig tier.
+    /// Read pool, used for every SELECT (search, timeline, API, pipes).
+    /// Its connections run with `query_only=ON`, so a read path can never
+    /// take the write lock; writes go through the write queue,
+    /// [`DatabaseManager::begin_immediate_with_retry`] or
+    /// [`DatabaseManager::write_pool`]. Separated from writes so read bursts
+    /// can never starve the write pipeline. Size depends on DbConfig tier.
     pub pool: SqlitePool,
     /// Dedicated write pool. Used exclusively by
     /// begin_immediate_with_retry(). Small pool is fine because writes are
@@ -296,6 +297,22 @@ pub struct DatabaseManager {
     /// Write coalescing queue. Hot-path writes are submitted here and
     /// batched into single transactions every 100ms.
     write_queue: crate::write_queue::WriteQueue,
+    /// WAL checkpoint and planner-statistics tasks; dropping the manager
+    /// stops them.
+    maintenance: crate::maintenance::MaintenanceHandle,
+    /// Ownership of the database file (see `ownership.rs`). `None` for
+    /// in-memory databases and [`DatabaseManager::attach`]. Declared last so
+    /// it is released after everything above.
+    _ownership: Option<crate::ownership::OwnershipGuard>,
+}
+
+/// Whether a `DatabaseManager` owns its database or only attaches to it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum OpenMode {
+    /// Claims the database (one owner per file) and runs maintenance.
+    Owner,
+    /// Uses a database another process may own; no claim, no maintenance.
+    Attached,
 }
 
 /// One level-0 OCR element row, buffered for bulk insertion.
@@ -362,7 +379,22 @@ fn is_in_memory_database(database_path: &str) -> bool {
 }
 
 impl DatabaseManager {
+    /// Open (creating if needed) the database at `database_path` and own it:
+    /// one owning manager per database file, in this process and across
+    /// processes (see `ownership.rs`). Runs the start-up preflight first and
+    /// starts WAL and planner maintenance for file databases.
     pub async fn new(database_path: &str, config: DbConfig) -> Result<Self, sqlx::Error> {
+        Self::open(database_path, config, OpenMode::Owner).await
+    }
+
+    /// Open a database that another process may own, without claiming it
+    /// and without background maintenance. For short-lived tools that read
+    /// a live database (`screenpipe status`, `search`, `export`, `backup`).
+    pub async fn attach(database_path: &str, config: DbConfig) -> Result<Self, sqlx::Error> {
+        Self::open(database_path, config, OpenMode::Attached).await
+    }
+
+    async fn open(database_path: &str, config: DbConfig, mode: OpenMode) -> Result<Self, sqlx::Error> {
         debug!(
             "Initializing DatabaseManager with database path: {} (mmap={}MB, cache={}KB, read_pool={})",
             database_path,
@@ -372,19 +404,10 @@ impl DatabaseManager {
         );
         let connection_string = format!("sqlite:{}", database_path);
 
-        unsafe {
-            // sqlite-vec declares its entry point without arguments; SQLite calls it
-            // with the standard extension-init signature, which libsqlite3-sys 0.37
-            // spells out in the sqlite3_auto_extension binding.
-            type ExtensionInit = unsafe extern "C" fn(
-                *mut libsqlite3_sys::sqlite3,
-                *mut *mut std::os::raw::c_char,
-                *const libsqlite3_sys::sqlite3_api_routines,
-            ) -> std::os::raw::c_int;
-            sqlite3_auto_extension(Some(std::mem::transmute::<*const (), ExtensionInit>(
-                sqlite3_vec_init as *const (),
-            )));
-        }
+        // Refuse a SQLite without the WAL-reset fix, and make sure sqlite-vec
+        // is registered for every connection opened from here on.
+        crate::preflight::check_sqlite_runtime()?;
+        crate::preflight::register_sqlite_vec()?;
 
         // Ensure the data dir exists before opening the file — a missing parent
         // dir makes SQLite fail with "unable to open database file"
@@ -392,32 +415,47 @@ impl DatabaseManager {
         // write_queue's runtime recovery (see ensure_db_parent_dir).
         crate::write_queue::ensure_db_parent_dir(database_path, true);
 
+        let base_options: SqliteConnectOptions = connection_string.parse()?;
+        let database_file: Option<std::path::PathBuf> = (!is_in_memory_database(database_path))
+            .then(|| base_options.get_filename().to_path_buf());
+
+        // Fail fast on a file that is not a database or whose header is
+        // damaged, before any pool touches it.
+        if let Some(file) = &database_file {
+            crate::preflight::preflight_database_file(
+                file,
+                crate::preflight::HEADER_READ_TIMEOUT,
+            )
+            .await?;
+        }
+
         // Create the database if it doesn't exist
         if !sqlx::Sqlite::database_exists(&connection_string).await? {
             sqlx::Sqlite::create_database(&connection_string).await?;
         }
 
-        let connect_options: SqliteConnectOptions = connection_string
-            .parse::<SqliteConnectOptions>()?
-            // busy_timeout is per-connection; setting it here ensures ALL pooled
-            // connections wait before returning SQLITE_BUSY ("database is locked").
-            // Keep this short (5s) so pool connections aren't held for ages waiting
-            // for the write lock — the app-level retry in begin_immediate_with_retry
-            // handles retries with backoff.
-            .busy_timeout(Duration::from_secs(5))
-            .pragma("journal_mode", "WAL")
-            // NORMAL is safe with WAL mode — commits only need to wait for WAL
-            // write, not fsync to main DB. Reduces commit latency significantly.
-            // Default (FULL) fsyncs on every commit which is unnecessary in WAL.
-            .pragma("synchronous", "NORMAL")
-            .pragma("cache_size", format!("-{}", config.cache_size_kb))
-            .pragma("mmap_size", config.mmap_size.to_string())
-            .pragma("temp_store", "MEMORY")
-            // Checkpoint after 4000 pages (~16MB) instead of default 1000 (~4MB).
-            // Reduces checkpoint stalls during write bursts — checkpoint happens
-            // during idle periods instead. WAL grows to ~16MB max (+12MB).
-            // Crash recovery: ~200ms replay at most.
-            .pragma("wal_autocheckpoint", "4000");
+        let ownership = match (&database_file, mode) {
+            (Some(file), OpenMode::Owner) => Some(
+                crate::ownership::acquire(file, crate::ownership::IN_PROCESS_RELEASE_WAIT).await?,
+            ),
+            _ => None,
+        };
+
+        // Pragma pack (see maintenance.rs): WAL, synchronous=NORMAL, tier
+        // cache/mmap, temp_store=MEMORY, wal_autocheckpoint=0; readers also
+        // query_only=ON. busy_timeout is per-connection and kept short (5s) so
+        // pool connections aren't held for ages waiting for the write lock —
+        // the app-level retry in begin_immediate_with_retry handles retries.
+        let writer_options = crate::maintenance::normal_mode_options(
+            base_options.clone(),
+            &config,
+            crate::maintenance::ConnectionRole::Writer,
+        );
+        let reader_options = crate::maintenance::normal_mode_options(
+            base_options,
+            &config,
+            crate::maintenance::ConnectionRole::Reader,
+        );
 
         // Fresh DB conversion to journal_mode=WAL requires an exclusive lock.
         // When the pool opens read_pool + write_pool connections concurrently,
@@ -427,7 +465,7 @@ impl DatabaseManager {
         // connection before pool creation makes pool connections see a WAL'd
         // DB and skip conversion entirely — no race.
         {
-            let mut conn = connect_options.connect().await?;
+            let mut conn = writer_options.connect().await?;
             sqlx::query("PRAGMA journal_mode=WAL")
                 .execute(&mut conn)
                 .await?;
@@ -435,11 +473,16 @@ impl DatabaseManager {
         }
 
         // Read pool: handles all SELECT queries (search, timeline, API, pipes).
+        // A connection coming back with a read transaction still open is
+        // rolled back first, so its snapshot never pins the WAL.
         let read_pool = SqlitePoolOptions::new()
             .max_connections(config.read_pool_max)
             .min_connections(config.read_pool_min)
             .acquire_timeout(Duration::from_secs(5))
-            .connect_with(connect_options.clone())
+            .after_release(|conn, _meta| {
+                Box::pin(crate::cancellable_query::rollback_abandoned_read(conn))
+            })
+            .connect_with(reader_options)
             .await?;
 
         // Write pool: dedicated to INSERT/UPDATE/DELETE via begin_immediate_with_retry().
@@ -449,7 +492,7 @@ impl DatabaseManager {
             .max_connections(config.write_pool_max)
             .min_connections(1)
             .acquire_timeout(Duration::from_secs(10))
-            .connect_with(connect_options)
+            .connect_with(writer_options)
             .await?;
 
         let write_semaphore = Arc::new(Semaphore::new(1));
@@ -458,37 +501,25 @@ impl DatabaseManager {
             Arc::clone(&write_semaphore),
             Arc::from(database_path),
         );
+        let (maintenance, maintenance_shutdown) = crate::maintenance::MaintenanceHandle::new();
         let db_manager = DatabaseManager {
             pool: read_pool,
             write_pool,
             write_semaphore,
             heavy_read_semaphore: Arc::new(Semaphore::new(2)),
             write_queue,
+            maintenance,
+            _ownership: ownership,
         };
 
-        // Checkpoint any stale WAL before running migrations or starting captures.
-        // A large WAL (500MB+) from a previous crash slows every read/write until
-        // checkpointed. TRUNCATE mode resets it to zero bytes.
-        match sqlx::query("PRAGMA wal_checkpoint(TRUNCATE)")
-            .fetch_one(&db_manager.pool)
-            .await
-        {
-            Ok(row) => {
-                let busy: i32 = row.get(0);
-                let log_pages: i32 = row.get(1);
-                let checkpointed: i32 = row.get(2);
-                if log_pages > 0 || busy == 1 {
-                    info!(
-                        "startup wal checkpoint: busy={}, pages={}, checkpointed={}",
-                        busy, log_pages, checkpointed
-                    );
-                }
-            }
-            Err(e) => warn!("startup wal checkpoint failed (continuing): {}", e),
+        // Fold a WAL left by the previous run before migrations and captures
+        // start. RESTART (not TRUNCATE) so the next writer restarts the log.
+        if mode == OpenMode::Owner {
+            crate::maintenance::startup_checkpoint(&db_manager.write_pool).await;
         }
 
         // Run migrations after establishing the connection
-        Self::run_migrations(&db_manager.pool).await?;
+        Self::run_migrations(&db_manager.write_pool).await?;
 
         // Surface corruption proactively at boot with a recovery hint,
         // instead of only discovering it later via worker query errors
@@ -499,6 +530,27 @@ impl DatabaseManager {
         // for in-memory pools (seen with the bundled 3.51.3).
         if !is_in_memory_database(database_path) {
             Self::spawn_startup_integrity_check(Arc::from(database_path));
+        }
+
+        if let (Some(file), OpenMode::Owner) = (database_file, mode) {
+            crate::maintenance::spawn_wal_maintenance(
+                db_manager.write_pool.clone(),
+                Arc::clone(&db_manager.write_semaphore),
+                file.clone(),
+                Arc::clone(&db_manager.maintenance.wal),
+                crate::maintenance::WalMaintenanceConfig::from_env(),
+                maintenance_shutdown.clone(),
+            );
+            crate::planner_stats::spawn_planner_maintenance(
+                crate::planner_stats::PlannerJob {
+                    write_pool: db_manager.write_pool.clone(),
+                    coordinator: Arc::clone(&db_manager.write_semaphore),
+                    report_path: crate::planner_stats::report_path(&file),
+                    coordinator_wait: Duration::from_secs(2),
+                },
+                crate::planner_stats::PlannerSchedule::from_env(),
+                maintenance_shutdown,
+            );
         }
 
         Ok(db_manager)
@@ -1777,7 +1829,7 @@ impl DatabaseManager {
                 .bind(status)
                 .bind(now)
                 .bind(audio_chunk_id)
-                .execute(&self.pool)
+                .execute(&self.write_pool)
                 .await?;
                 Ok(())
             }
@@ -1801,7 +1853,7 @@ impl DatabaseManager {
                 .bind(&reason)
                 .bind(MAX_TRANSCRIPTION_ATTEMPTS)
                 .bind(audio_chunk_id)
-                .execute(&self.pool)
+                .execute(&self.write_pool)
                 .await?;
                 Ok(())
             }
@@ -1818,7 +1870,7 @@ impl DatabaseManager {
                 .bind(now)
                 .bind(&reason)
                 .bind(audio_chunk_id)
-                .execute(&self.pool)
+                .execute(&self.write_pool)
                 .await?;
                 Ok(())
             }
@@ -1843,7 +1895,7 @@ impl DatabaseManager {
              WHERE id = ?1",
         )
         .bind(audio_chunk_id)
-        .execute(&self.pool)
+        .execute(&self.write_pool)
         .await?;
         Ok(())
     }
@@ -2155,7 +2207,7 @@ impl DatabaseManager {
             )
             .bind(bytes)
             .bind(speaker_id)
-            .execute(&self.pool)
+            .execute(&self.write_pool)
             .await?;
         } else {
             // At capacity — replace the most redundant embedding (closest to centroid)
@@ -2188,7 +2240,7 @@ impl DatabaseManager {
                     )
                     .bind(bytes)
                     .bind(redundant_id)
-                    .execute(&self.pool)
+                    .execute(&self.write_pool)
                     .await?;
                     debug!(
                         "speaker {}: rotated embedding {} (closest to centroid) with new sample",
@@ -2249,7 +2301,7 @@ impl DatabaseManager {
         .bind(bytes)
         .bind(new_count)
         .bind(speaker_id)
-        .execute(&self.pool)
+        .execute(&self.write_pool)
         .await?;
 
         Ok(())
@@ -3205,7 +3257,7 @@ impl DatabaseManager {
         sqlx::query("UPDATE frames SET text_source = ?1 WHERE id = ?2")
             .bind(text_source)
             .bind(frame_id)
-            .execute(&self.pool)
+            .execute(&self.write_pool)
             .await?;
         Ok(())
     }
@@ -3932,6 +3984,8 @@ impl DatabaseManager {
 
         let query_builder = sqlx::query_as(sqlx::AssertSqlSafe(sql));
 
+        // Interrupted if the request that wants these results goes away.
+        let mut reader = self.cancellable_read().await?;
         let raw_results: Vec<OCRResultRaw> = query_builder
             .bind(if has_fts { Some(&fts_query) } else { None })
             .bind(start_time)
@@ -3945,8 +3999,9 @@ impl DatabaseManager {
             .bind(limit)
             .bind(offset)
             .bind(&tags_json)
-            .fetch_all(&self.pool)
+            .fetch_all(reader.conn())
             .await?;
+        reader.finish();
 
         Ok(raw_results
             .into_iter()
@@ -5347,9 +5402,13 @@ impl DatabaseManager {
         Ok(())
     }
     pub async fn execute_raw_sql(&self, query: &str) -> Result<serde_json::Value, sqlx::Error> {
+        // Pipes send arbitrary (and sometimes very slow) SELECTs here: run it
+        // on a cancellable connection so a dropped request stops the query.
+        let mut reader = self.cancellable_read().await?;
         let rows = sqlx::query(sqlx::AssertSqlSafe(query))
-            .fetch_all(&self.pool)
+            .fetch_all(reader.conn())
             .await?;
+        reader.finish();
 
         let result: Vec<serde_json::Map<String, serde_json::Value>> = rows
             .iter()
@@ -5492,21 +5551,30 @@ impl DatabaseManager {
         LIMIT 10000
         "#;
 
-        // Execute queries in parallel
+        // Execute queries in parallel, each on a connection that is
+        // interrupted if the timeline request goes away mid-query.
+        let (mut frames_reader, mut audio_reader, mut live_reader) = tokio::try_join!(
+            self.cancellable_read(),
+            self.cancellable_read(),
+            self.cancellable_read()
+        )?;
         let (frame_rows, audio_rows, live_rows) = tokio::try_join!(
             sqlx::query(frames_query)
                 .bind(start)
                 .bind(end)
-                .fetch_all(&self.pool),
+                .fetch_all(frames_reader.conn()),
             sqlx::query(audio_query)
                 .bind(start)
                 .bind(end)
-                .fetch_all(&self.pool),
+                .fetch_all(audio_reader.conn()),
             sqlx::query(live_query)
                 .bind(start)
                 .bind(end)
-                .fetch_all(&self.pool)
+                .fetch_all(live_reader.conn())
         )?;
+        frames_reader.finish();
+        audio_reader.finish();
+        live_reader.finish();
 
         // Process into structured data with device-aware grouping
         let mut frames_map: BTreeMap<(DateTime<Utc>, i64), FrameData> = BTreeMap::new();
@@ -7630,7 +7698,7 @@ impl DatabaseManager {
         sqlx::query("UPDATE video_chunks SET cloud_blob_id = ?1 WHERE id = ?2")
             .bind(blob_id)
             .bind(chunk_id)
-            .execute(&self.pool)
+            .execute(&self.write_pool)
             .await?;
         Ok(())
     }
@@ -7644,7 +7712,7 @@ impl DatabaseManager {
         sqlx::query("UPDATE frames SET cloud_blob_id = ?1 WHERE id = ?2")
             .bind(blob_id)
             .bind(frame_id)
-            .execute(&self.pool)
+            .execute(&self.write_pool)
             .await?;
         Ok(())
     }
@@ -7731,7 +7799,7 @@ impl DatabaseManager {
     pub async fn mark_speaker_as_hallucination(&self, id: i64) -> Result<(), sqlx::Error> {
         sqlx::query("UPDATE speakers SET hallucination = TRUE WHERE id = ?")
             .bind(id)
-            .execute(&self.pool)
+            .execute(&self.write_pool)
             .await?;
 
         Ok(())
@@ -7800,7 +7868,7 @@ impl DatabaseManager {
         sqlx::query("UPDATE frames SET name = ?1 WHERE id = ?2")
             .bind(name)
             .bind(frame_id)
-            .execute(&self.pool)
+            .execute(&self.write_pool)
             .await?;
         Ok(())
     }
@@ -7814,7 +7882,7 @@ impl DatabaseManager {
         sqlx::query("UPDATE frames SET name = ?1 WHERE video_chunk_id = ?2")
             .bind(name)
             .bind(video_chunk_id)
-            .execute(&self.pool)
+            .execute(&self.write_pool)
             .await?;
         Ok(())
     }
@@ -7830,20 +7898,21 @@ impl DatabaseManager {
         ];
 
         for step in emergency_steps {
-            if let Err(e) = sqlx::query(step).execute(&self.pool).await {
+            if let Err(e) = sqlx::query(step).execute(&self.write_pool).await {
                 warn!("emergency step failed (continuing anyway): {}", e);
             }
         }
 
-        // Force checkpoint and cleanup WAL files
+        // Force checkpoint and cleanup WAL files (FULL: no TRUNCATE
+        // checkpoint anywhere; the journal_mode switch below drops the WAL).
         let wal_cleanup = [
-            "PRAGMA wal_checkpoint(TRUNCATE);",
+            "PRAGMA wal_checkpoint(FULL);",
             "PRAGMA journal_mode = DELETE;", // Temporarily disable WAL
             "PRAGMA journal_size_limit = 0;", // Clear journal
         ];
 
         for step in wal_cleanup {
-            if let Err(e) = sqlx::query(step).execute(&self.pool).await {
+            if let Err(e) = sqlx::query(step).execute(&self.write_pool).await {
                 warn!("wal cleanup failed (continuing anyway): {}", e);
             }
         }
@@ -7862,7 +7931,7 @@ impl DatabaseManager {
 
         for (query, step) in recovery_steps {
             debug!("running aggressive recovery step: {}", step);
-            match sqlx::query(query).execute(&self.pool).await {
+            match sqlx::query(query).execute(&self.write_pool).await {
                 Ok(_) => debug!("recovery step '{}' succeeded", step),
                 Err(e) => warn!("recovery step '{}' failed: {}", step, e),
             }
@@ -7872,14 +7941,15 @@ impl DatabaseManager {
         let restore_steps = [
             "PRAGMA synchronous = NORMAL;",
             "PRAGMA journal_mode = WAL;",
-            "PRAGMA wal_autocheckpoint = 1000;",
+            // Inline checkpoints stay off; the maintenance loop checkpoints.
+            "PRAGMA wal_autocheckpoint = 0;",
             "PRAGMA cache_size = -2000;", // Back to 2MB cache
             "PRAGMA locking_mode = NORMAL;",
             "PRAGMA busy_timeout = 5000;", // Back to 5s timeout
         ];
 
         for step in restore_steps {
-            if let Err(e) = sqlx::query(step).execute(&self.pool).await {
+            if let Err(e) = sqlx::query(step).execute(&self.write_pool).await {
                 warn!("restore step failed: {}", e);
             }
         }
@@ -8547,7 +8617,7 @@ LIMIT ? OFFSET ?
         sqlx::query("UPDATE speaker_embeddings SET speaker_id = ? WHERE id = ?")
             .bind(to_speaker_id)
             .bind(embedding_id)
-            .execute(&self.pool)
+            .execute(&self.write_pool)
             .await?;
         Ok(())
     }
@@ -8562,7 +8632,7 @@ LIMIT ? OFFSET ?
             sqlx::query("UPDATE audio_transcriptions SET speaker_id = ? WHERE audio_chunk_id = ?")
                 .bind(new_speaker_id)
                 .bind(audio_chunk_id)
-                .execute(&self.pool)
+                .execute(&self.write_pool)
                 .await?;
         Ok(result.rows_affected())
     }
@@ -8571,7 +8641,7 @@ LIMIT ? OFFSET ?
     pub async fn create_speaker_with_name(&self, name: &str) -> Result<Speaker, sqlx::Error> {
         let id = sqlx::query("INSERT INTO speakers (name) VALUES (?)")
             .bind(name)
-            .execute(&self.pool)
+            .execute(&self.write_pool)
             .await?
             .last_insert_rowid();
 
@@ -9258,38 +9328,41 @@ LIMIT ? OFFSET ?
         Ok(rows.into_iter().map(UiEventRecord::from).collect())
     }
 
-    /// Spawn a background task that runs `PRAGMA wal_checkpoint(TRUNCATE)` every 5 minutes.
-    /// This prevents unbounded WAL growth when long-running readers block auto-checkpoint.
+    /// Kept for callers written before WAL maintenance moved into
+    /// [`DatabaseManager::new`]: an owning manager of a file database starts
+    /// its PASSIVE checkpoint loop (and planner statistics maintenance) by
+    /// itself, so this does nothing.
     pub fn start_wal_maintenance(&self) {
-        let pool = self.pool.clone();
-        tokio::spawn(async move {
-            let mut interval = tokio::time::interval(Duration::from_secs(300));
-            loop {
-                interval.tick().await;
-                match sqlx::query("PRAGMA wal_checkpoint(TRUNCATE)")
-                    .fetch_one(&pool)
-                    .await
-                {
-                    Ok(row) => {
-                        let busy: i32 = row.get(0);
-                        let log_pages: i32 = row.get(1);
-                        let checkpointed: i32 = row.get(2);
-                        if busy == 1 {
-                            warn!(
-                                "wal checkpoint: busy (could not truncate), {} pages in WAL",
-                                log_pages
-                            );
-                        } else {
-                            debug!(
-                                "wal checkpoint: truncated, checkpointed {}/{} pages",
-                                checkpointed, log_pages
-                            );
-                        }
-                    }
-                    Err(e) => warn!("wal checkpoint failed: {}", e),
-                }
-            }
-        });
+        debug!("wal maintenance already runs with the database (see maintenance.rs)");
+    }
+
+    /// State of this database's WAL maintenance loop, for health reporting.
+    pub fn wal_maintenance_status(&self) -> crate::maintenance::WalMaintenanceStatus {
+        self.maintenance.wal.snapshot()
+    }
+
+    /// Stop WAL maintenance for this database generation, e.g. after a
+    /// SQLite hard fault. A new `DatabaseManager` starts it again.
+    pub fn stop_wal_maintenance(&self, reason: &str) {
+        self.maintenance.wal.stop(reason);
+    }
+
+    /// Pool for code outside this crate that must write directly (its own
+    /// tables, a worker that rewrites rows in place). The read pool is
+    /// `query_only`. Prefer the write queue for hot-path capture writes.
+    pub fn write_pool(&self) -> &SqlitePool {
+        &self.write_pool
+    }
+
+    /// A read-pool connection whose running statement is interrupted when
+    /// the returned guard is dropped before
+    /// [`crate::cancellable_query::CancellableConnection::finish`]: use it for
+    /// long reads that serve an HTTP request, so a client that goes away
+    /// stops the query (see `cancellable_query.rs`).
+    pub async fn cancellable_read(
+        &self,
+    ) -> Result<crate::cancellable_query::CancellableConnection, sqlx::Error> {
+        crate::cancellable_query::CancellableConnection::acquire(&self.pool).await
     }
 
     /// Spawn a one-shot background `PRAGMA quick_check` shortly after startup.
@@ -9366,14 +9439,38 @@ LIMIT ? OFFSET ?
         verdict
     }
 
-    /// Run `PRAGMA wal_checkpoint(TRUNCATE)` on demand, flushing WAL into the
-    /// main database file so it can be safely copied.
+    /// Checkpoint the WAL on demand (`POST /data/checkpoint`, `screenpipe
+    /// backup checkpoint`), so every committed frame is in the main database
+    /// file and it can be copied. Uses RESTART, never TRUNCATE: the next
+    /// writer starts the log from the beginning and the file is cut back to
+    /// `journal_size_limit`. Waits briefly for the write coordinator so the
+    /// checkpoint does not fight a write batch.
     /// Returns (busy, log_pages, checkpointed_pages).
     pub async fn wal_checkpoint(&self) -> Result<(i32, i32, i32), sqlx::Error> {
-        let row = sqlx::query("PRAGMA wal_checkpoint(TRUNCATE)")
-            .fetch_one(&self.pool)
-            .await?;
-        Ok((row.get(0), row.get(1), row.get(2)))
+        let permit = tokio::time::timeout(
+            Duration::from_secs(10),
+            Arc::clone(&self.write_semaphore).acquire_owned(),
+        )
+        .await
+        .ok()
+        .and_then(|p| p.ok());
+        let result = async {
+            let mut conn = self.write_pool.acquire().await?;
+            crate::maintenance::checkpoint(&mut conn, crate::maintenance::CheckpointMode::Restart)
+                .await
+        }
+        .await;
+        drop(permit);
+        let r = result?;
+        info!(
+            "on-demand wal checkpoint (RESTART): busy={}, log_pages={}, checkpointed={}",
+            r.busy as i32, r.log_pages, r.checkpointed
+        );
+        Ok((
+            r.busy as i32,
+            r.log_pages.clamp(i32::MIN as i64, i32::MAX as i64) as i32,
+            r.checkpointed.clamp(i32::MIN as i64, i32::MAX as i64) as i32,
+        ))
     }
 
     /// Create an atomic backup of the database using `VACUUM INTO`.
@@ -9383,7 +9480,7 @@ LIMIT ? OFFSET ?
             "VACUUM INTO '{}'",
             dest.replace('\'', "''")
         )))
-        .execute(&self.pool)
+        .execute(&self.write_pool)
         .await?;
         Ok(())
     }
