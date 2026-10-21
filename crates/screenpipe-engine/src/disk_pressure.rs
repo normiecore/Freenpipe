@@ -17,9 +17,9 @@
 //! reading for the app and for `/health`.
 //!
 //! Every monitor run (each engine start or restart) has its own
-//! [generation](DiskPressureStatus::generation). A run reports an incident
-//! once, so the app can tell a fresh `disk_space_low` (a new run that found
-//! the disk still full) from a reading it has already acted on. A reading's
+//! [generation](DiskPressureStatus::generation). A run reports each
+//! incident once, so the app can tell a fresh `disk_space_low` (a new run
+//! that found the disk still full) from a reading it has already acted on. A reading's
 //! status is stored before its event goes out, so a subscriber that gets the
 //! event finds that reading, and its generation, in [`latest_status`].
 //!
