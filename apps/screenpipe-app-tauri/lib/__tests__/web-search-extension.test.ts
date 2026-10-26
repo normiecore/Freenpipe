@@ -139,6 +139,27 @@ describe("sp_web_search extension", () => {
     expect(result.content[0].text).toContain("could not reach the search provider");
   });
 
+  test("cuts an over-long query by code points, never inside a surrogate pair", async () => {
+    requests.length = 0;
+    // 399 letters, then emoji: a cut by UTF-16 units at 400 would keep half
+    // of the first emoji.
+    const result = await loadTool().execute(
+      "t6",
+      { query: `${"a".repeat(399)}${"\u{1F600}".repeat(5)}` },
+      new AbortController().signal
+    );
+    const expected = `${"a".repeat(399)}\u{1F600}`;
+    expect(requests).toHaveLength(1);
+    expect(requests[0].body).toEqual({ query: expected });
+    expect(result.details.query).toBe(expected);
+    expect(Array.from(result.details.query)).toHaveLength(400);
+
+    // An unpaired surrogate from the caller is replaced, not sent on.
+    requests.length = 0;
+    await loadTool().execute("t7", { query: "abc\uD800def" }, new AbortController().signal);
+    expect(requests[0].body).toEqual({ query: "abc\uFFFDdef" });
+  });
+
   test("sends nothing for an empty query or a cancelled run", async () => {
     requests.length = 0;
     const empty = await loadTool().execute("t4", { query: "   " }, new AbortController().signal);

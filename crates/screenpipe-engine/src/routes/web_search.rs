@@ -537,7 +537,7 @@ pub fn from_hits(summary: Option<&str>, hits: Vec<Hit>, limit: usize) -> WebSear
 }
 
 /// The gateway already answers `{content, sources}`; clean and cap it the
-/// same way.
+/// same way (markup stripped, line breaks kept).
 pub fn from_gateway(json: &Value, limit: usize) -> WebSearchResponse {
     let limit = limit.clamp(1, MAX_RESULTS);
     let content = json
@@ -711,12 +711,17 @@ pub fn clean_line(raw: &str, max: usize) -> String {
 }
 
 /// Multi-line text: like [`clean_line`] but keeps line breaks (at most one
-/// blank line in a row).
+/// blank line in a row). Markup goes before the text is split into lines,
+/// so a tag that spans a line break is removed whole.
 fn clean_block(raw: &str, max: usize) -> String {
-    let (raw, cut) = raw_prefix(raw, max);
+    let (mut raw, cut) = raw_prefix(raw, max);
+    if cut {
+        raw = drop_partial_tag(raw);
+    }
+    let text = strip_markup(raw);
     let mut out = String::new();
     let mut pending_blank = false;
-    for line in raw.lines() {
+    for line in text.lines() {
         let line = visible_chars(line)
             .split_whitespace()
             .collect::<Vec<_>>()
@@ -1190,6 +1195,37 @@ mod tests {
             Some("https://h.test/".into())
         );
         assert_eq!(clean_block("a\r\n\r\n\r\nb\u{7}c", 100), "a\n\nb c");
+        // Multi-line text loses its markup too, including a tag that spans
+        // a line break, and keeps comparisons and entities as text.
+        assert_eq!(
+            clean_block(
+                "<p>Hello <b>world</b></p>\n<a\nhref=\"x\">link</a> &amp; x < 5",
+                100
+            ),
+            "Hello world\nlink & x < 5"
+        );
+        assert_eq!(clean_block("<div>\n\n</div>\nkept", 100), "kept");
+    }
+
+    #[test]
+    fn gateway_content_loses_its_markup() {
+        let answer = from_gateway(
+            &json!({"content": "<h1>Title</h1>\n<p>Body <i>text</i></p>", "sources": []}),
+            5,
+        );
+        assert_eq!(answer.content, "Title\nBody text");
+
+        // A field of nothing but tags cleans to nothing, quickly, and the
+        // answer says so instead of passing the tags on as text.
+        let started = std::time::Instant::now();
+        let tags = "<a>".repeat(700_000);
+        let answer = from_gateway(&json!({ "content": tags }), 5);
+        assert_eq!(answer.content, "No results.");
+        assert!(
+            started.elapsed() < PATHOLOGICAL_BUDGET,
+            "700,000 '<a>' took {:?}",
+            started.elapsed()
+        );
     }
 
     /// Generous on purpose: the linear pass takes milliseconds even in a

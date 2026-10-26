@@ -30,6 +30,15 @@ const REQUEST_TIMEOUT_MS = 45_000;
 
 type Source = { title?: string; url?: string };
 
+// At most `max` characters of `text`, counted in code points rather than
+// UTF-16 units, so a cut never splits a surrogate pair (an emoji, say).
+// Surrogates that arrive unpaired become U+FFFD: JSON parsers such as the
+// engine's reject them.
+function clip(text: string, max: number): string {
+  const whole = text.replace(/[\uD800-\uDFFF]/gu, "\uFFFD");
+  return whole.length <= max ? whole : Array.from(whole).slice(0, max).join("");
+}
+
 function localApiBase(): string {
   const explicit = (process.env.SCREENPIPE_LOCAL_API_URL || "")
     .trim()
@@ -57,11 +66,11 @@ function cleanSources(raw: unknown): Source[] {
     if (!item || typeof item !== "object") continue;
     const url =
       typeof item.url === "string" && /^https?:\/\//i.test(item.url)
-        ? item.url.slice(0, 2048)
+        ? clip(item.url, 2048)
         : undefined;
     const title =
       typeof item.title === "string" && item.title.trim()
-        ? item.title.trim().slice(0, 300)
+        ? clip(item.title.trim(), 300)
         : undefined;
     if (!url && !title) continue;
     sources.push({ title, url });
@@ -81,7 +90,7 @@ async function errorDetail(response: Response): Promise<string> {
   try {
     const body = (await response.json()) as any;
     const message = body?.message ?? body?.error?.message ?? body?.error;
-    return typeof message === "string" ? message.slice(0, 500) : "";
+    return typeof message === "string" ? clip(message, 500) : "";
   } catch {
     return "";
   }
@@ -105,10 +114,12 @@ export default function (pi: ExtensionAPI) {
       signal: AbortSignal,
       onUpdate: any
     ) {
-      const query = String(args?.query ?? "")
-        .replace(/\s+/g, " ")
-        .trim()
-        .slice(0, MAX_QUERY_CHARS);
+      const query = clip(
+        String(args?.query ?? "")
+          .replace(/\s+/g, " ")
+          .trim(),
+        MAX_QUERY_CHARS
+      );
       if (!query) {
         return toolResult("Web search needs a non-empty query.", [], "");
       }
@@ -170,7 +181,7 @@ export default function (pi: ExtensionAPI) {
         const data = (await response.json()) as { content?: unknown; sources?: unknown };
         const content =
           typeof data?.content === "string" && data.content.trim()
-            ? data.content.slice(0, MAX_TEXT_CHARS)
+            ? clip(data.content, MAX_TEXT_CHARS)
             : "No results.";
         const sources = cleanSources(data?.sources);
         // Results are third-party text. Say so, so the model treats them as
@@ -180,7 +191,7 @@ export default function (pi: ExtensionAPI) {
       } catch (err: any) {
         if (signal?.aborted) return toolResult("Cancelled", [], query);
         return toolResult(
-          `Web search failed: ${String(err?.message ?? err).slice(0, 300)}`,
+          `Web search failed: ${clip(String(err?.message ?? err), 300)}`,
           [],
           query
         );
