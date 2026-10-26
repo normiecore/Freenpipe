@@ -320,7 +320,19 @@ pub struct SearchResponse {
     /// With `include_related=true` and `tags`: namespace -> other tags found
     /// on the items carrying the requested tags, most frequent first.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub related: Option<BTreeMap<String, Vec<String>>>,
+    pub related: Option<RelatedTags>,
+}
+
+/// Namespace -> co-occurring tags (full names, most frequent first), as
+/// `SearchResponse.related` carries it. A JSON object of string arrays.
+#[derive(Serialize, Deserialize, Clone, Debug, Default, PartialEq, Eq)]
+#[serde(transparent)]
+pub struct RelatedTags(pub BTreeMap<String, Vec<String>>);
+
+impl OaSchema for RelatedTags {
+    fn schema() -> oasgen::Schema {
+        <std::collections::HashMap<String, Vec<String>> as OaSchema>::schema()
+    }
 }
 
 /// One `/search` hit: the content item (`type` and `content`) plus whether
@@ -959,7 +971,7 @@ async fn run_search(
                     scope.windows.as_ref(),
                 )
                 .await
-                .map(Some)
+                .map(|map| Some(RelatedTags(map)))
             },
         ),
     )
