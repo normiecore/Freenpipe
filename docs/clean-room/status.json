@@ -1,10 +1,10 @@
 {
- "generated_at": "2026-10-21T04:36:34Z",
+ "generated_at": "2026-10-26T22:37:30Z",
  "generator": "python3 tools/plan/status.py --write",
  "main": {
   "ref": "origin/main",
-  "sha": "f2f8672739b2b08c9584aff868079b18c4a633fe",
-  "code_sha": "f2f8672739b2b08c9584aff868079b18c4a633fe",
+  "sha": "4274991ac57ef99ff6262419299772ee71ecfdc3",
+  "code_sha": "4274991ac57ef99ff6262419299772ee71ecfdc3",
   "ci": {
    "state": "pending",
    "checks": {
@@ -19,31 +19,31 @@
    "max_attempt": 1,
    "runs": [
     {
-     "id": 39544949232,
+     "id": 40413838410,
      "name": "Secret Scan (trufflehog)",
      "event": "push",
      "status": "in_progress",
      "conclusion": null,
      "attempt": 1,
-     "url": "https://github.com/normiecore/Freenpipe/actions/runs/39544949232"
+     "url": "https://github.com/normiecore/Freenpipe/actions/runs/40413838410"
     },
     {
-     "id": 39544949250,
-     "name": "Freenpipe CI",
-     "event": "push",
-     "status": "pending",
-     "conclusion": null,
-     "attempt": 1,
-     "url": "https://github.com/normiecore/Freenpipe/actions/runs/39544949250"
-    },
-    {
-     "id": 39544949307,
+     "id": 40413838418,
      "name": "Windows CLI Integration Test",
      "event": "push",
      "status": "in_progress",
      "conclusion": null,
      "attempt": 1,
-     "url": "https://github.com/normiecore/Freenpipe/actions/runs/39544949307"
+     "url": "https://github.com/normiecore/Freenpipe/actions/runs/40413838418"
+    },
+    {
+     "id": 40413838430,
+     "name": "Freenpipe CI",
+     "event": "push",
+     "status": "pending",
+     "conclusion": null,
+     "attempt": 1,
+     "url": "https://github.com/normiecore/Freenpipe/actions/runs/40413838430"
     }
    ]
   }
@@ -63,13 +63,13 @@
   ]
  },
  "summary": {
-  "merged": 36,
+  "merged": 40,
   "in_review": 0,
-  "claimed": 2,
-  "ready": 35,
-  "blocked": 82,
+  "claimed": 4,
+  "ready": 31,
+  "blocked": 80,
   "total": 155,
-  "percent_merged": 23.2
+  "percent_merged": 25.8
  },
  "waves": [
   {
@@ -109,10 +109,10 @@
    "wave": 3,
    "name": "Feature backends (search, pipes, connections, capture, audio)",
    "total": 31,
-   "merged": 1,
+   "merged": 5,
    "in_review": 0,
-   "claimed": 2,
-   "ready": 20,
+   "claimed": 4,
+   "ready": 14,
    "blocked": 8,
    "complete": false
   },
@@ -123,8 +123,8 @@
    "merged": 0,
    "in_review": 0,
    "claimed": 0,
-   "ready": 3,
-   "blocked": 19,
+   "ready": 5,
+   "blocked": 17,
    "complete": false
   },
   {
@@ -746,7 +746,18 @@
     "W2-05",
     "W2-09"
    ],
-   "status": "ready"
+   "branch": {
+    "name": "wp/W3-02",
+    "sha": "7c121ef9d526b7eecc70706454aac1e72da9b263",
+    "claimed_by": null,
+    "claimed_at": null,
+    "last_commit_at": "2026-10-26T22:36:01Z",
+    "head_subject": "wip(W3-02): checkpoint of the attempt cut off by the session limit",
+    "commits_ahead": 5,
+    "work_commits": 5
+   },
+   "status": "claimed",
+   "stale": false
   },
   {
    "id": "W3-03",
@@ -796,7 +807,18 @@
     "W2-08",
     "W2-22"
    ],
-   "status": "ready"
+   "branch": {
+    "name": "wp/W3-06",
+    "sha": "829b53c4502e49283dbab45784e78dfc78d663f0",
+    "claimed_by": null,
+    "claimed_at": null,
+    "last_commit_at": "2026-10-26T20:45:45Z",
+    "head_subject": "wip(W3-06): keep keyed events for busy pipes, isolate scheduler tests per meeting",
+    "commits_ahead": 4,
+    "work_commits": 4
+   },
+   "status": "claimed",
+   "stale": false
   },
   {
    "id": "W3-07",
@@ -817,7 +839,18 @@
    "depends_on": [
     "W2-08"
    ],
-   "status": "ready"
+   "branch": {
+    "name": "wp/W3-08",
+    "sha": "abd39370fd29aaae618950a5658b3922e89e8b0c",
+    "claimed_by": null,
+    "claimed_at": null,
+    "last_commit_at": "2026-10-26T20:39:53Z",
+    "head_subject": "wip(W3-08): regenerate tauri.ts for excludeFromMeetingDetection; compare meeting_end by instant",
+    "commits_ahead": 3,
+    "work_commits": 3
+   },
+   "status": "claimed",
+   "stale": false
   },
   {
    "id": "W3-09",
@@ -850,18 +883,9 @@
     "W2-11",
     "W2-13"
    ],
-   "branch": {
-    "name": "wp/W3-11",
-    "sha": "4719063ee5b538167a7959ea8ba7fdf8f8f1e008",
-    "claimed_by": null,
-    "claimed_at": null,
-    "last_commit_at": "2026-10-21T04:35:26Z",
-    "head_subject": "wip(W3-11): checkpoint of the attempt cut off by the usage limit",
-    "commits_ahead": 1,
-    "work_commits": 1
-   },
-   "status": "claimed",
-   "stale": false
+   "status": "merged",
+   "merge_commit": "171689d5cb2e042654ab92d800710c2f8f1853d0",
+   "merged_at": "2026-10-26T19:37:39Z"
   },
   {
    "id": "W3-12",
@@ -872,18 +896,9 @@
     "W1-01",
     "W2-10"
    ],
-   "branch": {
-    "name": "wp/W3-12",
-    "sha": "a87b812a6143822a2768035c8378e6180f4298fd",
-    "claimed_by": null,
-    "claimed_at": null,
-    "last_commit_at": "2026-10-21T04:35:30Z",
-    "head_subject": "wip(W3-12): checkpoint of the attempt cut off by the usage limit",
-    "commits_ahead": 6,
-    "work_commits": 6
-   },
-   "status": "claimed",
-   "stale": false
+   "status": "merged",
+   "merge_commit": "fb8c43dcea65b0f958057b59452e2be3135e47bb",
+   "merged_at": "2026-10-26T22:34:16Z"
   },
   {
    "id": "W3-13",
@@ -894,7 +909,18 @@
     "W1-02",
     "W2-11"
    ],
-   "status": "ready"
+   "branch": {
+    "name": "wp/W3-13",
+    "sha": "acec8dac1c177a20492e4df2852b1e434b797fc1",
+    "claimed_by": null,
+    "claimed_at": null,
+    "last_commit_at": "2026-10-26T22:37:18Z",
+    "head_subject": "Merge main (6fb2c91) into wp/W3-13",
+    "commits_ahead": 6,
+    "work_commits": 6
+   },
+   "status": "claimed",
+   "stale": false
   },
   {
    "id": "W3-14",
@@ -905,7 +931,9 @@
     "W1-02",
     "W2-13"
    ],
-   "status": "ready"
+   "status": "merged",
+   "merge_commit": "0418c0a93542dd8d8ebefe32afd24ad843bf9c8d",
+   "merged_at": "2026-10-26T20:18:34Z"
   },
   {
    "id": "W3-15",
@@ -1028,7 +1056,9 @@
    "depends_on": [
     "W1-03"
    ],
-   "status": "ready"
+   "status": "merged",
+   "merge_commit": "6fb2c91c83583e3cb19da8d180ad449742011735",
+   "merged_at": "2026-10-26T22:34:26Z"
   },
   {
    "id": "W3-26",
@@ -1272,10 +1302,7 @@
    "depends_on": [
     "W3-11"
    ],
-   "unmet_deps": [
-    "W3-11"
-   ],
-   "status": "blocked"
+   "status": "ready"
   },
   {
    "id": "W4-15",
@@ -1298,10 +1325,7 @@
    "depends_on": [
     "W3-14"
    ],
-   "unmet_deps": [
-    "W3-14"
-   ],
-   "status": "blocked"
+   "status": "ready"
   },
   {
    "id": "W4-17",
@@ -1461,7 +1485,6 @@
     "W4-14"
    ],
    "unmet_deps": [
-    "W3-12",
     "W4-14"
    ],
    "status": "blocked"
@@ -1536,8 +1559,7 @@
     "W3-25"
    ],
    "unmet_deps": [
-    "W3-04",
-    "W3-25"
+    "W3-04"
    ],
    "status": "blocked"
   },
@@ -1655,7 +1677,6 @@
     "W4-22"
    ],
    "unmet_deps": [
-    "W3-14",
     "W3-15",
     "W4-22"
    ],
@@ -1867,8 +1888,7 @@
    ],
    "unmet_deps": [
     "W4-01",
-    "W3-24",
-    "W3-25"
+    "W3-24"
    ],
    "status": "blocked"
   },
