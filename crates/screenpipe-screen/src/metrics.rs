@@ -329,15 +329,26 @@ impl PipelineMetrics {
         self.ocr_gate_crop_ocr.fetch_add(1, Ordering::Relaxed);
     }
 
-    /// Record a frame rejected as corrupt (not stored, not compared). This is
-    /// an attempt's outcome, but not a landing: a monitor that only delivers
-    /// corrupt frames is stalled, and `/health` says the backend is rejecting
+    /// Record a frame rejected as corrupt (not stored, not compared). Both
+    /// kinds are an attempt's outcome. A black frame also counts as a landing,
+    /// like a dedup skip: the OS blanks what it will not let anyone capture
+    /// (protected video, the secure desktop, windows left out of the
+    /// capture), and the pipeline is working while it does. Decode-garbage
+    /// green is never content, so it is not a landing: a monitor that only
+    /// delivers it is stalled, and `/health` says the backend is rejecting
     /// frames.
     pub fn record_corrupt_frame(&self, kind: CorruptFrameKind) {
         match kind {
-            CorruptFrameKind::Black => self.frames_corrupt_black.fetch_add(1, Ordering::Relaxed),
-            CorruptFrameKind::Green => self.frames_corrupt_green.fetch_add(1, Ordering::Relaxed),
-        };
+            CorruptFrameKind::Black => {
+                self.frames_corrupt_black.fetch_add(1, Ordering::Relaxed);
+                self.last_db_write_ts
+                    .store(unix_now_secs(), Ordering::Relaxed);
+                self.mark_landing();
+            }
+            CorruptFrameKind::Green => {
+                self.frames_corrupt_green.fetch_add(1, Ordering::Relaxed);
+            }
+        }
     }
 
     /// Current lifetime values of every counter an attempt can end in.
@@ -1751,29 +1762,42 @@ mod tests {
     }
 
     #[test]
-    fn corrupt_frames_are_an_outcome_but_not_a_landing() {
+    fn green_frames_are_an_outcome_but_not_a_landing() {
         let m = PipelineMetrics::new();
-        for _ in 0..4 {
+        for _ in 0..3 {
             m.record_capture_attempt();
         }
-        m.record_corrupt_frame(CorruptFrameKind::Black);
         m.record_corrupt_frame(CorruptFrameKind::Green);
         m.record_corrupt_frame(CorruptFrameKind::Green);
         let snap = m.snapshot();
-        assert_eq!(snap.frames_corrupt_black, 1);
         assert_eq!(snap.frames_corrupt_green, 2);
-        // Three attempts ended as corrupt frames; one has no outcome yet.
+        // Two attempts ended as corrupt frames; one has no outcome yet.
         assert_eq!(snap.silent_loss, 1);
-        assert_eq!(snap.last_db_write_ts, 0, "a corrupt frame is not a landing");
+        assert_eq!(snap.last_db_write_ts, 0, "garbage is not a landing");
         let since = m.outcomes_since_last_landing();
-        assert_eq!(since.frames_corrupt, 3);
+        assert_eq!(since.frames_corrupt, 2);
         assert_eq!(
             classify_vision_stall(&evidence(since)),
             VisionStallCause::BackendRejecting
         );
-        // A landing resets the count.
-        m.record_dedup_skip();
-        assert_eq!(m.outcomes_since_last_landing().frames_corrupt, 0);
+    }
+
+    #[test]
+    fn black_frames_land_like_a_dedup_skip() {
+        let m = PipelineMetrics::new();
+        m.record_capture_attempt();
+        m.record_capture_attempt();
+        m.record_corrupt_frame(CorruptFrameKind::Green);
+        m.record_corrupt_frame(CorruptFrameKind::Black);
+        let snap = m.snapshot();
+        assert_eq!(snap.frames_corrupt_black, 1);
+        assert_eq!(snap.silent_loss, 0);
+        assert_eq!(snap.dedup_skips, 0, "counted once, as a corrupt frame");
+        assert!(
+            snap.last_db_write_ts > 0,
+            "an OS-blanked screen is a landing"
+        );
+        assert_eq!(m.outcomes_since_last_landing(), AttemptOutcomes::default());
     }
 
     #[test]

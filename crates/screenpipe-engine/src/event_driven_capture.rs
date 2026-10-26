@@ -762,8 +762,8 @@ pub async fn event_driven_capture_loop(
                     // Symmetry with the live loop — startup capture rarely
                     // hits dedup (no prior hash on first frame) but if it
                     // does, treat it the same way: pipeline cycled fine,
-                    // nothing new to write. A corrupt frame was counted by
-                    // track_frame_validity and is not a landing.
+                    // nothing new to write. A corrupt frame was already
+                    // recorded by track_frame_validity.
                     vision_metrics.record_dedup_skip();
                 }
             }
@@ -1503,10 +1503,10 @@ pub async fn event_driven_capture_loop(
                                 monitor_id
                             );
                         } else if output.rejected.is_some() {
-                            // The frame held no screen content (counted by
-                            // track_frame_validity). Not a landing: a monitor
-                            // that only delivers corrupt frames is stalled.
-                            // No frame comes of these triggers.
+                            // The frame held no screen content; the metrics
+                            // got it from track_frame_validity (a black frame
+                            // lands like a dedup skip, decode garbage does
+                            // not). No frame comes of these triggers.
                             if !correlation_ids.is_empty() {
                                 report_triggers_dropped(
                                     linker_tx.as_ref(),
