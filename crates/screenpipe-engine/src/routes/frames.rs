@@ -1092,10 +1092,21 @@ fn on_demand_ocr_error(frame_id: i64, e: &anyhow::Error) -> (StatusCode, JsonRes
 /// macOS, the shared `screenpipe-windows-ocr` thread on Windows (with the
 /// on-demand deadline), tesseract elsewhere. Fails with
 /// `OcrWorkerError::Unavailable` when no engine is installed.
-async fn on_demand_ocr(image: image::DynamicImage) -> anyhow::Result<(String, String)> {
+///
+/// `ticket` is the request's slot in [`ON_DEMAND_OCR_GATE`]. On macOS and
+/// Linux it moves into the blocking OCR job, so the slot stays taken until
+/// the engine finishes even when the client disconnects first (dropping the
+/// request future does not stop a blocking job). On Windows dropping the
+/// future withdraws a request that has not started, so holding the ticket
+/// for the await is enough.
+async fn on_demand_ocr(
+    image: image::DynamicImage,
+    ticket: screenpipe_screen::ocr_worker::InflightTicket<'static>,
+) -> anyhow::Result<(String, String)> {
     #[cfg(target_os = "macos")]
     {
         tokio::task::spawn_blocking(move || {
+            let _ticket = ticket;
             let (text, json, _confidence) = screenpipe_screen::perform_ocr_apple(&image, &[]);
             (text, json)
         })
@@ -1105,6 +1116,7 @@ async fn on_demand_ocr(image: image::DynamicImage) -> anyhow::Result<(String, St
 
     #[cfg(target_os = "windows")]
     {
+        let _ticket = ticket;
         screenpipe_screen::perform_ocr_windows_with_timeout(
             &image,
             &[],
@@ -1127,6 +1139,7 @@ async fn on_demand_ocr(image: image::DynamicImage) -> anyhow::Result<(String, St
             ));
         }
         tokio::task::spawn_blocking(move || {
+            let _ticket = ticket;
             let (text, json, _confidence) =
                 screenpipe_screen::perform_ocr_tesseract(&image, vec![]);
             (text, json)
@@ -1160,8 +1173,8 @@ pub async fn run_frame_ocr(
     }
 
     // Bound concurrent on-demand work (image load + OCR). The ticket is held
-    // until OCR finishes; a client that disconnects drops it, and on Windows
-    // also withdraws its queued request.
+    // until OCR finishes, also when the client disconnects meanwhile (see
+    // `on_demand_ocr`).
     let Some(ticket) = ON_DEMAND_OCR_GATE.try_enter() else {
         let busy = screenpipe_screen::OcrWorkerError::Busy {
             limit: ON_DEMAND_OCR_GATE.limit(),
@@ -1249,15 +1262,15 @@ pub async fn run_frame_ocr(
     );
 
     let ocr_result = if screenpipe_screen::ocr_availability::ocr_fault_injected() {
+        drop(ticket);
         Err(anyhow::Error::new(
             screenpipe_screen::OcrWorkerError::Unavailable(
                 screenpipe_screen::ocr_availability::SIMULATED_REASON.to_string(),
             ),
         ))
     } else {
-        on_demand_ocr(image).await
+        on_demand_ocr(image, ticket).await
     };
-    drop(ticket);
 
     let (ocr_text, ocr_text_json) = match ocr_result {
         Ok(result) => result,

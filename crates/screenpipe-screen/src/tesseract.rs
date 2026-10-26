@@ -1,9 +1,9 @@
 use image::{DynamicImage, GenericImageView};
-use rusty_tesseract::{Args, DataOutput, Image};
+use rusty_tesseract::{Args, Data, DataOutput, Image};
 use screenpipe_core::{Language, TESSERACT_LANGUAGES};
 use std::collections::HashMap;
-use std::ffi::OsString;
 use std::path::{Path, PathBuf};
+use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::OnceLock;
 use tracing::{debug, info, warn};
@@ -11,7 +11,10 @@ use tracing::{debug, info, warn};
 // Tesseract discovery (Freenpipe): the binary is looked up once per session,
 // installed system-wide or bundled beside the engine (including an AppImage's
 // `$APPDIR`). When none is found, OCR through tesseract stays off for the rest
-// of the session instead of failing on every frame.
+// of the session instead of failing on every frame. The binary found is run
+// by its full path, and the language data folder is given to that child
+// process only: discovery never changes this process's environment, which
+// other threads (and C libraries reading it) may be using at the same time.
 
 #[cfg(windows)]
 const TESSERACT_EXE: &str = "tesseract.exe";
@@ -28,13 +31,18 @@ const TESSERACT_IS_PRIMARY: bool = cfg!(not(any(target_os = "windows", target_os
 /// Consecutive failed runs after which tesseract is reported unavailable.
 const FAILURES_BEFORE_UNAVAILABLE: u32 = 3;
 
+/// Keeps a console window from flashing up for each tesseract run.
+#[cfg(windows)]
+const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+
 /// Where tesseract was found for this session.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TesseractInstall {
     /// The tesseract executable.
     pub binary: PathBuf,
-    /// The tessdata folder in use (`TESSDATA_PREFIX`), when one was found
-    /// or set by the user.
+    /// The tessdata folder given to tesseract as `TESSDATA_PREFIX`: the
+    /// user's own setting, or the folder found beside the binary or in a
+    /// distro location. `None` leaves tesseract to its built-in default.
     pub tessdata: Option<PathBuf>,
 }
 
@@ -44,7 +52,7 @@ static CONSECUTIVE_FAILURES: AtomicU32 = AtomicU32::new(0);
 /// The tesseract found for this session, discovering it on first use.
 /// `None` means OCR through tesseract is off until the engine restarts.
 pub fn tesseract_install() -> Option<&'static TesseractInstall> {
-    TESSERACT.get_or_init(discover_and_prepare).as_ref()
+    TESSERACT.get_or_init(discover).as_ref()
 }
 
 /// Whether a tesseract binary was found for this session.
@@ -90,39 +98,38 @@ fn well_known_install_dirs() -> Vec<PathBuf> {
     dirs
 }
 
-/// The places rusty-tesseract itself searches when it runs, in its order:
-/// every `PATH` folder, the working directory, the engine's folder (plus its
-/// `lib` on Linux and `../Resources` on macOS) and `~/.local/bin`. The flag
-/// marks candidates that come from `PATH`. Checked here rather than through
-/// `rusty_tesseract::find_tesseract_path`, which logs an error when nothing
-/// is found; on Windows and macOS tesseract is optional and its absence is
-/// normal.
+/// The places rusty-tesseract's own lookup searches, in its order: every
+/// `PATH` folder, the working directory, the engine's folder (plus its `lib`
+/// on Linux and `../Resources` on macOS) and `~/.local/bin`. Checked here
+/// rather than through `rusty_tesseract::find_tesseract_path`, which logs an
+/// error when nothing is found; on Windows and macOS tesseract is optional
+/// and its absence is normal.
 fn standard_binary_candidates(
     path_var: Option<&std::ffi::OsStr>,
     cwd: Option<&Path>,
     exe_dir: Option<&Path>,
     home: Option<&Path>,
-) -> Vec<(PathBuf, bool)> {
-    let mut out: Vec<(PathBuf, bool)> = path_var
+) -> Vec<PathBuf> {
+    let mut out: Vec<PathBuf> = path_var
         .map(|p| {
             std::env::split_paths(p)
                 .filter(|dir| !dir.as_os_str().is_empty())
-                .map(|dir| (dir.join(TESSERACT_EXE), true))
+                .map(|dir| dir.join(TESSERACT_EXE))
                 .collect()
         })
         .unwrap_or_default();
     if let Some(dir) = cwd {
-        out.push((dir.join(TESSERACT_EXE), false));
+        out.push(dir.join(TESSERACT_EXE));
     }
     if let Some(dir) = exe_dir {
-        out.push((dir.join(TESSERACT_EXE), false));
+        out.push(dir.join(TESSERACT_EXE));
         #[cfg(target_os = "macos")]
-        out.push((dir.join("..").join("Resources").join(TESSERACT_EXE), false));
+        out.push(dir.join("..").join("Resources").join(TESSERACT_EXE));
         #[cfg(target_os = "linux")]
-        out.push((dir.join("lib").join(TESSERACT_EXE), false));
+        out.push(dir.join("lib").join(TESSERACT_EXE));
     }
     if let Some(dir) = home {
-        out.push((dir.join(".local").join("bin").join(TESSERACT_EXE), false));
+        out.push(dir.join(".local").join("bin").join(TESSERACT_EXE));
     }
     out
 }
@@ -221,21 +228,7 @@ fn first_tessdata_with_eng(candidates: &[PathBuf]) -> Option<PathBuf> {
         .cloned()
 }
 
-/// `PATH` with `dir` appended (so a binary found outside `PATH` is what
-/// rusty-tesseract's lookup finds, without shadowing anything already there).
-fn path_with(current: Option<OsString>, dir: &Path) -> Option<OsString> {
-    let mut parts: Vec<PathBuf> = current
-        .as_deref()
-        .map(|p| std::env::split_paths(p).collect())
-        .unwrap_or_default();
-    if parts.iter().any(|p| p == dir) {
-        return None;
-    }
-    parts.push(dir.to_path_buf());
-    std::env::join_paths(parts).ok()
-}
-
-fn discover_and_prepare() -> Option<TesseractInstall> {
+fn discover() -> Option<TesseractInstall> {
     let exe_dir = exe_dir();
     let appdir = std::env::var_os("APPDIR").map(PathBuf::from);
 
@@ -248,16 +241,15 @@ fn discover_and_prepare() -> Option<TesseractInstall> {
         home_dir().as_deref(),
     )
     .into_iter()
-    .find(|(path, _)| path.is_file())
+    .find(|path| path.is_file())
     .or_else(|| {
         first_file(&extra_binary_candidates(
             exe_dir.as_deref(),
             appdir.as_deref(),
             &well_known_install_dirs(),
         ))
-        .map(|path| (path, false))
     });
-    let Some((binary, on_search_path)) = found else {
+    let Some(binary) = found else {
         if TESSERACT_IS_PRIMARY {
             warn!(
                 "tesseract was not found (it is neither installed system-wide nor bundled beside \
@@ -274,28 +266,15 @@ fn discover_and_prepare() -> Option<TesseractInstall> {
         return None;
     };
 
-    if !on_search_path {
-        if let Some(dir) = binary.parent() {
-            if let Some(path) = path_with(std::env::var_os("PATH"), dir) {
-                std::env::set_var("PATH", path);
-            }
-        }
-    }
-
-    // Ensure TESSDATA_PREFIX is set so tesseract can find language data files.
-    let tessdata = match std::env::var_os("TESSDATA_PREFIX") {
+    // The language data folder for tesseract's TESSDATA_PREFIX: the user's
+    // own setting wins, otherwise the first folder holding English data.
+    let tessdata = match std::env::var_os("TESSDATA_PREFIX").filter(|v| !v.is_empty()) {
         Some(user_set) => Some(PathBuf::from(user_set)),
-        None => {
-            let dir = first_tessdata_with_eng(&tessdata_candidates(
-                &binary,
-                exe_dir.as_deref(),
-                appdir.as_deref(),
-            ));
-            if let Some(dir) = &dir {
-                std::env::set_var("TESSDATA_PREFIX", dir);
-            }
-            dir
-        }
+        None => first_tessdata_with_eng(&tessdata_candidates(
+            &binary,
+            exe_dir.as_deref(),
+            appdir.as_deref(),
+        )),
     };
     info!(
         binary = %binary.display(),
@@ -327,6 +306,91 @@ fn empty_ocr() -> (String, String, Option<f64>) {
     (String::new(), "[]".to_string(), None)
 }
 
+/// Runs `install`'s tesseract on one image file and returns its TSV word
+/// data. The binary is started by its full path and `TESSDATA_PREFIX` is set
+/// on the child process only.
+fn run_tesseract_tsv(
+    install: &TesseractInstall,
+    image_path: &Path,
+    args: &Args,
+) -> Result<DataOutput, String> {
+    let mut command = Command::new(&install.binary);
+    command
+        .arg(image_path)
+        .arg("stdout")
+        .arg("-l")
+        .arg(&args.lang);
+    if let Some(dpi) = args.dpi {
+        command.arg("--dpi").arg(dpi.to_string());
+    }
+    if let Some(psm) = args.psm {
+        command.arg("--psm").arg(psm.to_string());
+    }
+    if let Some(oem) = args.oem {
+        command.arg("--oem").arg(oem.to_string());
+    }
+    for (key, value) in &args.config_variables {
+        command.arg("-c").arg(format!("{}={}", key, value));
+    }
+    command.arg("tsv");
+    if let Some(dir) = &install.tessdata {
+        command.env("TESSDATA_PREFIX", dir);
+    }
+    command
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        command.creation_flags(CREATE_NO_WINDOW);
+    }
+
+    let output = command
+        .output()
+        .map_err(|e| format!("could not run {}: {}", install.binary.display(), e))?;
+    if !output.status.success() {
+        return Err(format!(
+            "tesseract exited with {}: {}",
+            output.status,
+            String::from_utf8_lossy(&output.stderr).trim()
+        ));
+    }
+    let tsv = String::from_utf8_lossy(&output.stdout).into_owned();
+    let data = parse_tsv(&tsv);
+    Ok(DataOutput { output: tsv, data })
+}
+
+/// Rows of tesseract's TSV output, header line skipped. A row that does not
+/// parse is left out rather than failing the whole frame.
+fn parse_tsv(tsv: &str) -> Vec<Data> {
+    tsv.lines().skip(1).filter_map(parse_tsv_row).collect()
+}
+
+fn next_column<T: std::str::FromStr>(columns: &mut std::str::Split<'_, char>) -> Option<T> {
+    columns.next()?.trim().parse().ok()
+}
+
+/// One TSV row: eleven numeric columns, then the word (empty for the page,
+/// block, paragraph and line rows).
+fn parse_tsv_row(line: &str) -> Option<Data> {
+    let mut columns = line.split('\t');
+    Some(Data {
+        level: next_column(&mut columns)?,
+        page_num: next_column(&mut columns)?,
+        block_num: next_column(&mut columns)?,
+        par_num: next_column(&mut columns)?,
+        line_num: next_column(&mut columns)?,
+        word_num: next_column(&mut columns)?,
+        left: next_column(&mut columns)?,
+        top: next_column(&mut columns)?,
+        width: next_column(&mut columns)?,
+        height: next_column(&mut columns)?,
+        conf: next_column(&mut columns)?,
+        text: columns.next().unwrap_or("").trim().to_string(),
+    })
+}
+
 pub fn perform_ocr_tesseract(
     image: &DynamicImage,
     languages: Vec<Language>,
@@ -342,10 +406,10 @@ pub fn perform_ocr_tesseract(
         }
         return empty_ocr();
     }
-    if tesseract_install().is_none() {
+    let Some(install) = tesseract_install() else {
         // Logged once at discovery; OCR stays off for this session.
         return empty_ocr();
-    }
+    };
 
     let language_string = match languages.is_empty() {
         true => "eng".to_string(),
@@ -377,23 +441,23 @@ pub fn perform_ocr_tesseract(
         }
     };
 
-    // Extract data output. rusty-tesseract panics when its binary vanishes
-    // after discovery; contain that instead of losing the capture task.
-    let run = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        rusty_tesseract::image_to_data(&ocr_image, &args)
-    }));
-    let data_output = match run {
-        Ok(Ok(data)) => {
+    let image_path = match ocr_image.get_image_path() {
+        Ok(path) => PathBuf::from(path),
+        Err(e) => {
+            warn!("tesseract: no file for the image: {}", e);
+            return empty_ocr();
+        }
+    };
+
+    // Extract data output (a binary removed after discovery is an error
+    // here, not a panic).
+    let data_output = match run_tesseract_tsv(install, &image_path, &args) {
+        Ok(data) => {
             note_tesseract_success();
             data
         }
-        Ok(Err(e)) => {
+        Err(e) => {
             warn!("tesseract: OCR failed: {}", e);
-            note_tesseract_failure();
-            return empty_ocr();
-        }
-        Err(_) => {
-            warn!("tesseract: OCR run panicked");
             note_tesseract_failure();
             return empty_ocr();
         }
@@ -482,7 +546,7 @@ mod tests {
     }
 
     #[test]
-    fn path_folders_are_searched_first_and_flagged() {
+    fn path_folders_are_searched_first() {
         let tmp = tempfile::tempdir().unwrap();
         let on_path = tmp.path().join("path-bin");
         let cwd = tmp.path().join("cwd");
@@ -491,22 +555,20 @@ mod tests {
         let path_var = std::env::join_paths([&on_path]).unwrap();
         let candidates =
             standard_binary_candidates(Some(&path_var), Some(&cwd), Some(&exe_dir), Some(&home));
-        assert_eq!(candidates[0], (on_path.join(TESSERACT_EXE), true));
-        assert_eq!(candidates[1], (cwd.join(TESSERACT_EXE), false));
-        assert_eq!(candidates[2], (exe_dir.join(TESSERACT_EXE), false));
+        assert_eq!(candidates[0], on_path.join(TESSERACT_EXE));
+        assert_eq!(candidates[1], cwd.join(TESSERACT_EXE));
+        assert_eq!(candidates[2], exe_dir.join(TESSERACT_EXE));
         assert_eq!(
             candidates.last().unwrap(),
-            &(home.join(".local").join("bin").join(TESSERACT_EXE), false)
+            &home.join(".local").join("bin").join(TESSERACT_EXE)
         );
 
-        // The first existing file wins, and only a PATH hit is flagged.
+        // The first existing file wins.
         let in_home = home.join(".local").join("bin").join(TESSERACT_EXE);
         touch(&in_home);
-        let found = candidates.iter().find(|(p, _)| p.is_file()).cloned();
-        assert_eq!(found, Some((in_home, false)));
+        assert_eq!(first_file(&candidates), Some(in_home));
         touch(&on_path.join(TESSERACT_EXE));
-        let found = candidates.iter().find(|(p, _)| p.is_file()).cloned();
-        assert_eq!(found, Some((on_path.join(TESSERACT_EXE), true)));
+        assert_eq!(first_file(&candidates), Some(on_path.join(TESSERACT_EXE)));
     }
 
     #[test]
@@ -586,16 +648,108 @@ mod tests {
     }
 
     #[test]
-    fn path_gets_the_folder_appended_once() {
-        let a = PathBuf::from("/opt/a");
-        let b = PathBuf::from("/opt/b");
-        let current = std::env::join_paths([&a]).unwrap();
-        let joined = path_with(Some(current.clone()), &b).unwrap();
-        let parts: Vec<PathBuf> = std::env::split_paths(&joined).collect();
-        assert_eq!(parts, vec![a.clone(), b]);
-        assert_eq!(path_with(Some(current), &a), None);
-        let only: Vec<PathBuf> = std::env::split_paths(&path_with(None, &a).unwrap()).collect();
-        assert_eq!(only, vec![a]);
+    fn tsv_rows_parse_and_bad_rows_are_skipped() {
+        let tsv = "level\tpage_num\tblock_num\tpar_num\tline_num\tword_num\tleft\ttop\twidth\theight\tconf\ttext\n\
+                   1\t1\t0\t0\t0\t0\t0\t0\t696\t89\t-1\t\n\
+                   5\t1\t1\t1\t1\t1\t18\t29\t144\t35\t95.64\tLOREM\n\
+                   not\ta\trow\n\
+                   5\t1\t1\t1\t1\t2\t181\t29\t123\t35\t92.3\tIPSUM";
+        let rows = parse_tsv(tsv);
+        assert_eq!(rows.len(), 3);
+        assert_eq!(rows[0].level, 1);
+        assert_eq!(rows[0].conf, -1.0);
+        assert!(rows[0].text.is_empty());
+        assert_eq!(
+            (rows[1].word_num, rows[1].left, rows[1].width, rows[1].text.as_str()),
+            (1, 18, 144, "LOREM")
+        );
+        assert_eq!(rows[2].text, "IPSUM");
+        assert!(parse_tsv("").is_empty());
+    }
+
+    /// Runs a stand-in tesseract (a shell script) and checks that it gets the
+    /// image, the language and `TESSDATA_PREFIX`, while this process's own
+    /// environment stays untouched.
+    #[cfg(unix)]
+    #[test]
+    fn the_found_binary_runs_with_tessdata_set_for_it_alone() {
+        use std::os::unix::fs::PermissionsExt;
+        let tmp = tempfile::tempdir().unwrap();
+        let tessdata = tmp.path().join("tessdata-marker");
+        fs::create_dir_all(&tessdata).unwrap();
+        let fake = tmp.path().join("fake-tesseract");
+        fs::write(
+            &fake,
+            "#!/bin/sh\n\
+             printf 'level\\tpage_num\\tblock_num\\tpar_num\\tline_num\\tword_num\\tleft\\ttop\\twidth\\theight\\tconf\\ttext\\n'\n\
+             printf '5\\t1\\t1\\t1\\t1\\t1\\t1\\t2\\t3\\t4\\t90\\t%s\\n' \"$(basename \"$TESSDATA_PREFIX\")\"\n\
+             printf '5\\t1\\t1\\t1\\t1\\t2\\t1\\t2\\t3\\t4\\t80\\t%s\\n' \"$4\"\n\
+             test -f \"$1\" && printf '5\\t1\\t1\\t1\\t1\\t3\\t1\\t2\\t3\\t4\\t70\\timage-found\\n'\n\
+             exit 0\n",
+        )
+        .unwrap();
+        fs::set_permissions(&fake, fs::Permissions::from_mode(0o755)).unwrap();
+        let image = tmp.path().join("frame.png");
+        fs::write(&image, b"png").unwrap();
+        let install = TesseractInstall {
+            binary: fake,
+            tessdata: Some(tessdata.clone()),
+        };
+        let args = Args {
+            lang: "eng+deu".into(),
+            ..Args::default()
+        };
+
+        let out = run_with_retry(|| run_tesseract_tsv(&install, &image, &args)).unwrap();
+        let words: Vec<&str> = out.data.iter().map(|d| d.text.as_str()).collect();
+        assert_eq!(words, vec!["tessdata-marker", "eng+deu", "image-found"]);
+        assert_ne!(std::env::var_os("TESSDATA_PREFIX"), Some(tessdata.into()));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_failing_binary_is_an_error_not_a_panic() {
+        use std::os::unix::fs::PermissionsExt;
+        let tmp = tempfile::tempdir().unwrap();
+        let fake = tmp.path().join("broken-tesseract");
+        fs::write(&fake, "#!/bin/sh\necho 'no eng data' >&2\nexit 1\n").unwrap();
+        fs::set_permissions(&fake, fs::Permissions::from_mode(0o755)).unwrap();
+        let install = TesseractInstall {
+            binary: fake,
+            tessdata: None,
+        };
+        let err = run_with_retry(|| {
+            run_tesseract_tsv(&install, &tmp.path().join("x.png"), &Args::default())
+        })
+        .unwrap_err();
+        assert!(err.contains("no eng data"), "{}", err);
+
+        let gone = TesseractInstall {
+            binary: tmp.path().join("removed-after-discovery"),
+            tessdata: None,
+        };
+        let err = run_tesseract_tsv(&gone, &tmp.path().join("x.png"), &Args::default())
+            .unwrap_err();
+        assert!(err.contains("could not run"), "{}", err);
+    }
+
+    /// Retries a run that hit "text file busy": a script written by a test
+    /// can briefly stay open in a child forked by a parallel test.
+    #[cfg(unix)]
+    fn run_with_retry(
+        run: impl Fn() -> Result<DataOutput, String>,
+    ) -> Result<DataOutput, String> {
+        let mut result = run();
+        for _ in 0..20 {
+            match &result {
+                Err(e) if e.contains("busy") => {
+                    std::thread::sleep(std::time::Duration::from_millis(50));
+                    result = run();
+                }
+                _ => break,
+            }
+        }
+        result
     }
 
     #[test]

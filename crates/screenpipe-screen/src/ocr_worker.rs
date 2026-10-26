@@ -22,14 +22,17 @@
 //!   the next request starts a fresh thread.
 //! - A thread stuck on one request for longer than
 //!   [`WorkerConfig::wedge_after`] is abandoned and replaced, up to
-//!   [`WorkerConfig::max_abandoned`] stuck threads at a time.
+//!   [`WorkerConfig::max_abandoned`] stuck threads at a time. Requests queued
+//!   behind the stuck one are taken out of its queue at that moment and
+//!   answered with [`OcrWorkerError::ExitedBeforeTaking`], so their images
+//!   are freed instead of waiting on a call that may never return.
 
 use std::collections::VecDeque;
 use std::fmt;
 use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::sync::atomic::{AtomicU64, AtomicU8, AtomicUsize, Ordering};
 use std::sync::mpsc::{self, Receiver, SyncSender, TrySendError};
-use std::sync::{Arc, Mutex, PoisonError};
+use std::sync::{Arc, Mutex, PoisonError, TryLockError};
 use std::time::{Duration, Instant};
 
 use image::{DynamicImage, GenericImageView};
@@ -586,8 +589,14 @@ struct Envelope<J, R> {
     queued: QueuedMark,
 }
 
+/// The receiving end of a worker thread's queue. The thread holds the lock
+/// only while it waits for the next request, never while it runs one, so the
+/// submit side can empty the queue of a thread it abandons.
+type SharedRx<J, R> = Arc<Mutex<Receiver<Envelope<J, R>>>>;
+
 struct Slot<J, R> {
     tx: SyncSender<Envelope<J, R>>,
+    rx: SharedRx<J, R>,
     shared: Arc<ThreadShared>,
 }
 
@@ -761,9 +770,11 @@ impl<J: Send + 'static, R: Send + 'static> DedicatedWorker<J, R> {
         ) {
             Ok(_) => {
                 self.stats.abandoned_stuck.fetch_add(1, Ordering::Relaxed);
+                let released = release_queued(&slot.rx);
                 warn!(
                     thread = %self.config.thread_name,
                     busy_secs = busy.as_secs(),
+                    released,
                     "OCR worker thread is stuck on one request; leaving it behind and starting a new one"
                 );
             }
@@ -794,6 +805,7 @@ impl<J: Send + 'static, R: Send + 'static> DedicatedWorker<J, R> {
         }
 
         let (tx, rx) = mpsc::sync_channel::<Envelope<J, R>>(self.config.queue_capacity);
+        let rx: SharedRx<J, R> = Arc::new(Mutex::new(rx));
         let shared = Arc::new(ThreadShared {
             state: AtomicU8::new(THREAD_RUNNING),
             busy_since_ms: AtomicU64::new(0),
@@ -810,7 +822,10 @@ impl<J: Send + 'static, R: Send + 'static> DedicatedWorker<J, R> {
         };
         std::thread::Builder::new()
             .name(self.config.thread_name.clone())
-            .spawn(move || ctx.run(rx))
+            .spawn({
+                let rx = rx.clone();
+                move || ctx.run(rx)
+            })
             .map_err(|e| {
                 error!(
                     thread = %self.config.thread_name,
@@ -821,7 +836,7 @@ impl<J: Send + 'static, R: Send + 'static> DedicatedWorker<J, R> {
 
         inner.generation = generation;
         inner.recent_starts.push_back(now);
-        inner.slot = Some(Slot { tx, shared });
+        inner.slot = Some(Slot { tx, rx, shared });
         self.stats.threads_started.fetch_add(1, Ordering::Relaxed);
         if generation > 1 {
             self.stats.restarts.fetch_add(1, Ordering::Relaxed);
@@ -895,8 +910,27 @@ impl Drop for ExitMark {
     }
 }
 
+/// Answers every request waiting in an abandoned thread's queue with
+/// [`OcrWorkerError::ExitedBeforeTaking`] and frees its image. Returns how
+/// many were released. When the thread holds the lock it is no longer stuck
+/// (it is waiting for the next request), and it works through the queue
+/// itself before it exits.
+fn release_queued<J, R>(rx: &Mutex<Receiver<Envelope<J, R>>>) -> usize {
+    let rx = match rx.try_lock() {
+        Ok(rx) => rx,
+        Err(TryLockError::Poisoned(poisoned)) => poisoned.into_inner(),
+        Err(TryLockError::WouldBlock) => return 0,
+    };
+    let mut released = 0;
+    while let Ok(envelope) = rx.try_recv() {
+        let _ = envelope.reply.send(Err(OcrWorkerError::ExitedBeforeTaking));
+        released += 1;
+    }
+    released
+}
+
 impl<J, R> ThreadContext<J, R> {
-    fn run(self, rx: Receiver<Envelope<J, R>>) {
+    fn run(self, rx: SharedRx<J, R>) {
         let exit = ExitMark {
             shared: self.shared.clone(),
             abandoned_live: self.abandoned_live.clone(),
@@ -918,7 +952,11 @@ impl<J, R> ThreadContext<J, R> {
             }
         };
 
-        while let Ok(envelope) = rx.recv() {
+        loop {
+            // The lock guard is a temporary of this statement: it is released
+            // as soon as a request arrives, before the request runs.
+            let next = rx.lock().unwrap_or_else(PoisonError::into_inner).recv();
+            let Ok(envelope) = next else { break };
             let Envelope { job, reply, queued } = envelope;
             drop(queued);
             if reply.is_closed() {
@@ -1452,26 +1490,50 @@ mod tests {
         assert!(w.stats().threads_started <= (MAX_RESTARTS_PER_WINDOW + 1) as u64);
     }
 
-    #[tokio::test]
-    async fn a_stuck_thread_is_replaced_up_to_the_limit() {
-        let mut config = test_config("ocr-test-stuck", 4);
-        config.wedge_after = Duration::from_millis(50);
+    /// A job for [`stuck_worker`]: `Some` blocks on the gate (raising the
+    /// flag once it runs), `None` answers at once.
+    type StuckJob = Option<(Gate, Arc<AtomicBool>)>;
+
+    const STUCK_AFTER: Duration = Duration::from_millis(50);
+
+    fn stuck_worker(name: &str) -> DedicatedWorker<StuckJob, &'static str> {
+        let mut config = test_config(name, 4);
+        config.wedge_after = STUCK_AFTER;
         config.max_abandoned = 1;
         let factory = handler_factory(|| {
-            |job: Option<Gate>| {
-                if let Some(g) = job {
-                    g.wait();
+            |job: StuckJob| match job {
+                Some((gate, started)) => {
+                    started.store(true, Ordering::SeqCst);
+                    gate.wait();
                     "unstuck"
-                } else {
-                    "quick"
                 }
+                None => "quick",
             }
         });
-        let w = DedicatedWorker::new(config, factory);
+        DedicatedWorker::new(config, factory)
+    }
+
+    /// Submits a blocking job and returns once the thread is running it and
+    /// has been busy for longer than [`STUCK_AFTER`].
+    fn submit_stuck(
+        w: &DedicatedWorker<StuckJob, &'static str>,
+        gate: &Gate,
+    ) -> ReplyRx<&'static str> {
+        let started = Arc::new(AtomicBool::new(false));
+        let rx = w.submit(Some((gate.clone(), started.clone()))).unwrap();
+        wait_until("blocking job to start", || started.load(Ordering::SeqCst));
+        // The busy mark is stored before the handler runs, so from here the
+        // thread counts as stuck once STUCK_AFTER has passed.
+        std::thread::sleep(STUCK_AFTER * 2);
+        rx
+    }
+
+    #[tokio::test]
+    async fn a_stuck_thread_is_replaced_up_to_the_limit() {
+        let w = stuck_worker("ocr-test-stuck");
 
         let g1 = Gate::default();
-        let stuck = w.submit(Some(g1.clone())).unwrap();
-        std::thread::sleep(Duration::from_millis(120));
+        let stuck = submit_stuck(&w, &g1);
 
         // The stuck thread is left behind; a fresh one answers.
         assert_eq!(w.run(None, LONG).await.unwrap(), "quick");
@@ -1481,8 +1543,7 @@ mod tests {
         // The replacement gets stuck too, and the limit of one abandoned
         // thread is reached: report it instead of leaking more threads.
         let g2 = Gate::default();
-        let stuck2 = w.submit(Some(g2.clone())).unwrap();
-        std::thread::sleep(Duration::from_millis(120));
+        let stuck2 = submit_stuck(&w, &g2);
         assert!(matches!(
             w.submit(None).unwrap_err(),
             OcrWorkerError::Stuck { .. }
@@ -1497,6 +1558,34 @@ mod tests {
         assert_eq!(w.run(None, LONG).await.unwrap(), "quick");
         g2.open();
         assert_eq!(stuck2.await.unwrap().unwrap(), "unstuck");
+    }
+
+    #[tokio::test]
+    async fn requests_queued_behind_a_stuck_thread_are_released() {
+        let w = stuck_worker("ocr-test-stuck-queue");
+        let gate = Gate::default();
+        let started = Arc::new(AtomicBool::new(false));
+        let stuck = w.submit(Some((gate.clone(), started.clone()))).unwrap();
+        wait_until("blocking job to start", || started.load(Ordering::SeqCst));
+        let mut behind = w.submit(None).unwrap();
+        assert_eq!(w.stats().queued, 1);
+        std::thread::sleep(STUCK_AFTER * 2);
+
+        // The next request abandons the stuck thread; the one queued behind
+        // it is answered (and its job freed) before that request returns.
+        assert_eq!(w.run(None, LONG).await.unwrap(), "quick");
+        assert_eq!(
+            behind.try_recv().expect("queued request answered at once"),
+            Err(OcrWorkerError::ExitedBeforeTaking)
+        );
+        assert_eq!(w.stats().queued, 0);
+
+        // The left-behind thread still answers its own caller and exits.
+        gate.open();
+        assert_eq!(stuck.await.unwrap().unwrap(), "unstuck");
+        wait_until("abandoned thread exit", || {
+            w.abandoned_live.load(Ordering::SeqCst) == 0
+        });
     }
 
     #[tokio::test]
