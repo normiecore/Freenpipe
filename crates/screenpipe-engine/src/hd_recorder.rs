@@ -231,9 +231,13 @@ mod macos {
             .pixel_exclusions()
             .map(<[u32]>::to_vec)
         else {
-            anyhow::bail!(
-                "window exclusion list unknown; no HD chunk starts until a refresh succeeds"
+            // The probe logged the unknown state once; retry quietly.
+            debug!(
+                "hd recorder: window exclusion list for monitor {monitor_id} unknown; \
+                 no HD chunk starts until a refresh succeeds"
             );
+            tokio::time::sleep(Duration::from_secs(2)).await;
+            return Ok(());
         };
 
         // Open the dedicated high-fps stream. start_hd_capture blocks while SCK
