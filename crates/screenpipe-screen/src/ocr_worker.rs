@@ -1508,6 +1508,35 @@ mod tests {
         assert_eq!(b.await.unwrap().unwrap(), "2");
     }
 
+    /// The Windows OCR worker is a `Lazy` static with image jobs and text
+    /// replies (`microsoft.rs`, compiled only on Windows); prove the same
+    /// shape is `Send + Sync` here so Linux builds catch a regression.
+    #[test]
+    fn a_worker_with_image_jobs_can_live_in_a_static() {
+        #[allow(dead_code)]
+        enum ImageJob {
+            Recognize { image: BgraImage, languages: Vec<String> },
+            Probe,
+        }
+        #[allow(dead_code)]
+        enum TextReply {
+            Text(Result<(String, String, Option<f64>), OcrWorkerError>),
+            Probe(Vec<String>),
+        }
+        fn static_ready<T: Send + Sync + 'static>() {}
+        static_ready::<DedicatedWorker<ImageJob, TextReply>>();
+        static_ready::<InflightGate>();
+
+        static WORKER: once_cell::sync::Lazy<DedicatedWorker<ImageJob, TextReply>> =
+            once_cell::sync::Lazy::new(|| {
+                DedicatedWorker::new(
+                    test_config("ocr-test-static", 1),
+                    handler_factory(|| |_job: ImageJob| TextReply::Probe(Vec::new())),
+                )
+            });
+        assert!(!WORKER.is_running());
+    }
+
     // --- inflight gate ----------------------------------------------------
 
     #[test]

@@ -90,10 +90,56 @@ fn well_known_install_dirs() -> Vec<PathBuf> {
     dirs
 }
 
-/// Binary locations tried after rusty-tesseract's own search (`PATH`, the
-/// working directory, the engine's folder and its `lib`, `~/.local/bin`):
-/// bundle folders beside the engine, the AppImage tree, then installer
-/// defaults.
+/// The places rusty-tesseract itself searches when it runs, in its order:
+/// every `PATH` folder, the working directory, the engine's folder (plus its
+/// `lib` on Linux and `../Resources` on macOS) and `~/.local/bin`. The flag
+/// marks candidates that come from `PATH`. Checked here rather than through
+/// `rusty_tesseract::find_tesseract_path`, which logs an error when nothing
+/// is found; on Windows and macOS tesseract is optional and its absence is
+/// normal.
+fn standard_binary_candidates(
+    path_var: Option<&std::ffi::OsStr>,
+    cwd: Option<&Path>,
+    exe_dir: Option<&Path>,
+    home: Option<&Path>,
+) -> Vec<(PathBuf, bool)> {
+    let mut out: Vec<(PathBuf, bool)> = path_var
+        .map(|p| {
+            std::env::split_paths(p)
+                .filter(|dir| !dir.as_os_str().is_empty())
+                .map(|dir| (dir.join(TESSERACT_EXE), true))
+                .collect()
+        })
+        .unwrap_or_default();
+    if let Some(dir) = cwd {
+        out.push((dir.join(TESSERACT_EXE), false));
+    }
+    if let Some(dir) = exe_dir {
+        out.push((dir.join(TESSERACT_EXE), false));
+        #[cfg(target_os = "macos")]
+        out.push((dir.join("..").join("Resources").join(TESSERACT_EXE), false));
+        #[cfg(target_os = "linux")]
+        out.push((dir.join("lib").join(TESSERACT_EXE), false));
+    }
+    if let Some(dir) = home {
+        out.push((dir.join(".local").join("bin").join(TESSERACT_EXE), false));
+    }
+    out
+}
+
+fn home_dir() -> Option<PathBuf> {
+    #[cfg(windows)]
+    let var = "USERPROFILE";
+    #[cfg(not(windows))]
+    let var = "HOME";
+    std::env::var_os(var)
+        .filter(|v| !v.is_empty())
+        .map(PathBuf::from)
+}
+
+/// Binary locations tried after the standard search (see
+/// [`standard_binary_candidates`]): bundle folders beside the engine, the
+/// AppImage tree, then installer defaults.
 fn extra_binary_candidates(
     exe_dir: Option<&Path>,
     appdir: Option<&Path>,
@@ -193,15 +239,24 @@ fn discover_and_prepare() -> Option<TesseractInstall> {
     let exe_dir = exe_dir();
     let appdir = std::env::var_os("APPDIR").map(PathBuf::from);
 
-    let found = match rusty_tesseract::find_tesseract_path() {
-        Some(path) => Some((path, true)),
-        None => first_file(&extra_binary_candidates(
+    let path_var = std::env::var_os("PATH");
+    let cwd = std::env::current_dir().ok();
+    let found = standard_binary_candidates(
+        path_var.as_deref(),
+        cwd.as_deref(),
+        exe_dir.as_deref(),
+        home_dir().as_deref(),
+    )
+    .into_iter()
+    .find(|(path, _)| path.is_file())
+    .or_else(|| {
+        first_file(&extra_binary_candidates(
             exe_dir.as_deref(),
             appdir.as_deref(),
             &well_known_install_dirs(),
         ))
-        .map(|path| (path, false)),
-    };
+        .map(|path| (path, false))
+    });
     let Some((binary, on_search_path)) = found else {
         if TESSERACT_IS_PRIMARY {
             warn!(
@@ -424,6 +479,44 @@ mod tests {
         touch(&bundled);
         let candidates = extra_binary_candidates(Some(&exe_dir), None, &[]);
         assert_eq!(first_file(&candidates), Some(bundled));
+    }
+
+    #[test]
+    fn path_folders_are_searched_first_and_flagged() {
+        let tmp = tempfile::tempdir().unwrap();
+        let on_path = tmp.path().join("path-bin");
+        let cwd = tmp.path().join("cwd");
+        let exe_dir = tmp.path().join("app");
+        let home = tmp.path().join("home");
+        let path_var = std::env::join_paths([&on_path]).unwrap();
+        let candidates = standard_binary_candidates(
+            Some(&path_var),
+            Some(&cwd),
+            Some(&exe_dir),
+            Some(&home),
+        );
+        assert_eq!(candidates[0], (on_path.join(TESSERACT_EXE), true));
+        assert_eq!(candidates[1], (cwd.join(TESSERACT_EXE), false));
+        assert_eq!(candidates[2], (exe_dir.join(TESSERACT_EXE), false));
+        assert_eq!(
+            candidates.last().unwrap(),
+            &(home.join(".local").join("bin").join(TESSERACT_EXE), false)
+        );
+
+        // The first existing file wins, and only a PATH hit is flagged.
+        let in_home = home.join(".local").join("bin").join(TESSERACT_EXE);
+        touch(&in_home);
+        let found = candidates.iter().find(|(p, _)| p.is_file()).cloned();
+        assert_eq!(found, Some((in_home, false)));
+        touch(&on_path.join(TESSERACT_EXE));
+        let found = candidates.iter().find(|(p, _)| p.is_file()).cloned();
+        assert_eq!(found, Some((on_path.join(TESSERACT_EXE), true)));
+    }
+
+    #[test]
+    fn empty_path_entries_are_ignored() {
+        let candidates = standard_binary_candidates(Some(std::ffi::OsStr::new("")), None, None, None);
+        assert!(candidates.is_empty());
     }
 
     #[test]

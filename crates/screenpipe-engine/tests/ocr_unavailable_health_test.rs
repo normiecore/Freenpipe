@@ -4,7 +4,9 @@
 //! With no OCR engine or language installed (simulated through the
 //! `FREENPIPE_OCR_FAULT` test hook), the startup OCR probe makes `/health`
 //! report `vision_reason = ocr_unavailable` while capture is otherwise
-//! healthy. Its own test binary, because the OCR state is process-wide.
+//! healthy, and the on-demand OCR route answers 503 without caching an empty
+//! result. Its own test binary with a single test, because the OCR state and
+//! the hook's environment variable are process-wide.
 
 use axum::body::{to_bytes, Body};
 use axum::http::{Request, StatusCode};
@@ -17,15 +19,21 @@ use std::sync::Arc;
 use tokio_util::sync::CancellationToken;
 use tower::ServiceExt;
 
+async fn json_of(response: axum::response::Response) -> serde_json::Value {
+    let bytes = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+    serde_json::from_slice(&bytes).unwrap()
+}
+
 #[tokio::test]
-async fn startup_probe_reports_ocr_unavailable_on_health() {
+async fn ocr_unavailable_is_reported_and_capture_carries_on() {
     // Simulate a machine without any OCR language pack / tesseract.
     std::env::set_var(
         screenpipe_screen::ocr_availability::OCR_FAULT_ENV,
         "unavailable",
     );
 
-    let dir = tempfile::tempdir().unwrap().keep();
+    let tmp = tempfile::tempdir().unwrap();
+    let dir = tmp.path().to_path_buf();
     let db = Arc::new(
         DatabaseManager::new("sqlite::memory:", Default::default())
             .await
@@ -54,9 +62,9 @@ async fn startup_probe_reports_ocr_unavailable_on_health() {
             .unwrap(),
     );
     let server = SCServer::new(
-        db,
+        db.clone(),
         SocketAddr::from(([127, 0, 0, 1], 3035)),
-        dir,
+        dir.clone(),
         false, // vision enabled
         true,  // audio disabled: no devices in a test process
         audio_manager,
@@ -71,6 +79,7 @@ async fn startup_probe_reports_ocr_unavailable_on_health() {
 
     let router = server.create_router().await;
     let response = router
+        .clone()
         .oneshot(
             Request::builder()
                 .uri("/health")
@@ -80,8 +89,7 @@ async fn startup_probe_reports_ocr_unavailable_on_health() {
         .await
         .unwrap();
     assert_eq!(response.status(), StatusCode::OK);
-    let bytes = to_bytes(response.into_body(), usize::MAX).await.unwrap();
-    let health: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+    let health = json_of(response).await;
 
     assert_eq!(health["frame_status"], "ok", "{}", health);
     assert_eq!(health["vision_reason"], "ocr_unavailable", "{}", health);
@@ -93,6 +101,58 @@ async fn startup_probe_reports_ocr_unavailable_on_health() {
         "{}",
         health
     );
+
+    // A stored frame without text: on-demand OCR answers 503 with the frame
+    // id instead of a 200 with no positions, so the timeline does not keep
+    // "no text" for a frame that was never read.
+    let snapshot = dir.join("frame.jpg");
+    image::RgbImage::from_pixel(64, 32, image::Rgb([250, 250, 250]))
+        .save(&snapshot)
+        .unwrap();
+    let frame_id = db
+        .insert_snapshot_frame(
+            "monitor_1",
+            chrono::Utc::now(),
+            snapshot.to_str().unwrap(),
+            Some("Notepad"),
+            Some("notes.txt"),
+            None,
+            true,
+            Some("click"),
+            None,
+            None,
+            None,
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+    let response = router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(format!("/frames/{}/text", frame_id))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+    let body = json_of(response).await;
+    assert_eq!(body["frame_id"], frame_id, "{}", body);
+    assert!(
+        body["error"]
+            .as_str()
+            .is_some_and(|e| e.contains("OCR unavailable")),
+        "{}",
+        body
+    );
+    assert!(db
+        .get_frame_text_positions(frame_id)
+        .await
+        .unwrap()
+        .is_empty());
 
     std::env::remove_var(screenpipe_screen::ocr_availability::OCR_FAULT_ENV);
 }

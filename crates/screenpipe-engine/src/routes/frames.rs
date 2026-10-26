@@ -1077,6 +1077,54 @@ fn on_demand_ocr_error(frame_id: i64, e: &anyhow::Error) -> (StatusCode, JsonRes
     )
 }
 
+/// Runs the platform OCR engine for the on-demand route: Apple Vision on
+/// macOS, the shared `screenpipe-windows-ocr` thread on Windows (with the
+/// on-demand deadline), tesseract elsewhere. Fails with
+/// `OcrWorkerError::Unavailable` when no engine is installed.
+async fn on_demand_ocr(image: image::DynamicImage) -> anyhow::Result<(String, String)> {
+    #[cfg(target_os = "macos")]
+    {
+        tokio::task::spawn_blocking(move || {
+            let (text, json, _confidence) = screenpipe_screen::perform_ocr_apple(&image, &[]);
+            (text, json)
+        })
+        .await
+        .map_err(|e| anyhow::anyhow!("OCR task failed: {}", e))
+    }
+
+    #[cfg(target_os = "windows")]
+    {
+        screenpipe_screen::perform_ocr_windows_with_timeout(
+            &image,
+            &[],
+            screenpipe_screen::ocr_worker::ON_DEMAND_OCR_TIMEOUT,
+        )
+        .await
+        .map(|(text, json, _confidence)| (text, json))
+    }
+
+    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
+    {
+        let found = tokio::task::spawn_blocking(screenpipe_screen::tesseract::tesseract_available)
+            .await
+            .unwrap_or(false);
+        if !found {
+            return Err(anyhow::Error::new(
+                screenpipe_screen::OcrWorkerError::Unavailable(
+                    "tesseract was not found; install tesseract-ocr".to_string(),
+                ),
+            ));
+        }
+        tokio::task::spawn_blocking(move || {
+            let (text, json, _confidence) =
+                screenpipe_screen::perform_ocr_tesseract(&image, vec![]);
+            (text, json)
+        })
+        .await
+        .map_err(|e| anyhow::anyhow!("OCR task failed: {}", e))
+    }
+}
+
 /// Run on-demand OCR on a frame that has no stored bounding boxes.
 /// Loads the snapshot JPEG, runs the platform OCR engine (on Windows the
 /// shared `screenpipe-windows-ocr` thread), stores the result, and returns
@@ -1189,55 +1237,28 @@ pub async fn run_frame_ocr(
         "on-demand OCR started"
     );
 
-    #[cfg(target_os = "macos")]
-    let ocr_result: anyhow::Result<(String, String)> = tokio::task::spawn_blocking(move || {
-        let (text, json, _confidence) = screenpipe_screen::perform_ocr_apple(&image, &[]);
-        (text, json)
-    })
-    .await
-    .map_err(|e| anyhow::anyhow!("OCR task failed: {}", e));
-
-    #[cfg(target_os = "windows")]
-    let ocr_result: anyhow::Result<(String, String)> =
-        screenpipe_screen::perform_ocr_windows_with_timeout(
-            &image,
-            &[],
-            screenpipe_screen::ocr_worker::ON_DEMAND_OCR_TIMEOUT,
-        )
-        .await
-        .map(|(text, json, _confidence)| (text, json));
-
-    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
-    let ocr_result: anyhow::Result<(String, String)> = {
-        let unavailable = if screenpipe_screen::ocr_availability::ocr_fault_injected() {
-            Some(screenpipe_screen::ocr_availability::SIMULATED_REASON.to_string())
-        } else if !tokio::task::spawn_blocking(screenpipe_screen::tesseract::tesseract_available)
-            .await
-            .unwrap_or(false)
-        {
-            Some("tesseract was not found; install tesseract-ocr".to_string())
-        } else {
-            None
-        };
-        match unavailable {
-            Some(reason) => Err(anyhow::Error::new(
-                screenpipe_screen::OcrWorkerError::Unavailable(reason),
-            )),
-            None => tokio::task::spawn_blocking(move || {
-                let (text, json, _confidence) =
-                    screenpipe_screen::perform_ocr_tesseract(&image, vec![]);
-                (text, json)
-            })
-            .await
-            .map_err(|e| anyhow::anyhow!("OCR task failed: {}", e)),
-        }
+    let ocr_result = if screenpipe_screen::ocr_availability::ocr_fault_injected() {
+        Err(anyhow::Error::new(
+            screenpipe_screen::OcrWorkerError::Unavailable(
+                screenpipe_screen::ocr_availability::SIMULATED_REASON.to_string(),
+            ),
+        ))
+    } else {
+        on_demand_ocr(image).await
     };
     drop(ticket);
 
     let (ocr_text, ocr_text_json) = match ocr_result {
         Ok(result) => result,
         Err(e) => {
-            error!("on-demand OCR failed for frame {}: {}", frame_id, e);
+            // Shed requests (load, no OCR installed, slow answer) are routine
+            // while the timeline scrubs; only real engine failures are errors.
+            match screenpipe_screen::ocr_worker::worker_error_of(&e) {
+                Some(shed) if shed.is_skip() => {
+                    debug!("on-demand OCR for frame {} skipped: {}", frame_id, shed)
+                }
+                _ => error!("on-demand OCR failed for frame {}: {}", frame_id, e),
+            }
             return Err(on_demand_ocr_error(frame_id, &e));
         }
     };
