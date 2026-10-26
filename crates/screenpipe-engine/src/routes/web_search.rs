@@ -287,9 +287,7 @@ pub async fn search(
                     "the search provider did not answer in time: {detail}"
                 ))
             } else {
-                SearchError::Unreachable(format!(
-                    "could not reach the search provider: {detail}"
-                ))
+                SearchError::Unreachable(format!("could not reach the search provider: {detail}"))
             }
         })?;
         let status = resp.status();
@@ -366,10 +364,7 @@ fn build_request(
             .get(&cfg.url)
             .query(&[("q", query), ("count", count.as_str())])
             .header(reqwest::header::ACCEPT, "application/json")
-            .header(
-                "X-Subscription-Token",
-                cfg.api_key.as_deref().unwrap_or(""),
-            ),
+            .header("X-Subscription-Token", cfg.api_key.as_deref().unwrap_or("")),
         ProviderKind::Tavily => client
             .post(&cfg.url)
             .bearer_auth(cfg.api_key.as_deref().unwrap_or(""))
@@ -885,7 +880,9 @@ mod tests {
             ("a".into(), DEFAULT_RESULTS)
         );
         assert_eq!(
-            parse_request(br#"{"query":"a","max_results":0}"#).unwrap().1,
+            parse_request(br#"{"query":"a","max_results":0}"#)
+                .unwrap()
+                .1,
             1
         );
     }

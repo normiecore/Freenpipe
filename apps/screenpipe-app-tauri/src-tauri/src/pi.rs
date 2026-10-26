@@ -3105,7 +3105,10 @@ error: InstallFailed extracting tarball"#;
         assert!(!ext.exists());
         sync(true);
         let body = std::fs::read_to_string(&ext).unwrap();
-        assert!(body.contains("/v1/web-search"), "chat search goes through the engine");
+        assert!(
+            body.contains("/v1/web-search"),
+            "chat search goes through the engine"
+        );
         sync(false);
         assert!(!ext.exists());
     }

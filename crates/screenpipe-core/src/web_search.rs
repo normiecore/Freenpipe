@@ -339,8 +339,11 @@ mod tests {
 
     #[test]
     fn a_pasted_searxng_search_page_resolves_to_its_root() {
-        let cfg = resolve_with(env_of(&[(URL_ENV, "https://searx.example.test/search")]), None)
-            .unwrap();
+        let cfg = resolve_with(
+            env_of(&[(URL_ENV, "https://searx.example.test/search")]),
+            None,
+        )
+        .unwrap();
         assert_eq!(cfg.url, "https://searx.example.test");
         let cfg = resolve_with(
             env_of(&[(URL_ENV, "https://searx.example.test/sub/search/")]),

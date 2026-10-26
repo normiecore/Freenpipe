@@ -685,7 +685,10 @@ impl PiExecutor {
     /// user's search provider, so it is installed only when one is
     /// configured; otherwise it is removed and no search tool is offered.
     pub fn ensure_web_search_extension(project_dir: &Path) -> Result<()> {
-        Self::ensure_web_search_extension_with(project_dir, extensions_manifest::web_search_wanted())
+        Self::ensure_web_search_extension_with(
+            project_dir,
+            extensions_manifest::web_search_wanted(),
+        )
     }
 
     fn ensure_web_search_extension_with(project_dir: &Path, search_configured: bool) -> Result<()> {

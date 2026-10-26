@@ -573,7 +573,8 @@ pub async fn forward(
         Ok(Ok(resp)) => resp,
     };
 
-    let status = StatusCode::from_u16(upstream.status().as_u16()).unwrap_or(StatusCode::BAD_GATEWAY);
+    let status =
+        StatusCode::from_u16(upstream.status().as_u16()).unwrap_or(StatusCode::BAD_GATEWAY);
     let content_type = upstream
         .headers()
         .get(reqwest::header::CONTENT_TYPE)
@@ -691,7 +692,10 @@ mod tests {
     async fn error_of(resp: Response) -> (StatusCode, Value) {
         let status = resp.status();
         let bytes = to_bytes(resp.into_body(), usize::MAX).await.unwrap();
-        (status, serde_json::from_slice(&bytes).unwrap_or(Value::Null))
+        (
+            status,
+            serde_json::from_slice(&bytes).unwrap_or(Value::Null),
+        )
     }
 
     // -- preset resolution --------------------------------------------------
@@ -751,7 +755,12 @@ mod tests {
 
     #[test]
     fn bad_urls_are_refused() {
-        for url in ["localhost:11434/v1", "ftp://x.test/v1", "http://", "http://a b/v1"] {
+        for url in [
+            "localhost:11434/v1",
+            "ftp://x.test/v1",
+            "http://",
+            "http://a b/v1",
+        ] {
             let preset = json!({"id": "p", "provider": "custom", "model": "m", "url": url});
             assert_eq!(
                 target_for_preset(&preset, &no_gateway()),
@@ -815,12 +824,18 @@ mod tests {
         assert_eq!(v["temperature"], 0.2);
         assert_eq!(v["messages"][0]["content"], "hi");
 
-        let (bytes, streaming) = prepare_body(br#"{"model":"mine","messages":[]}"#, &target(None)).unwrap();
+        let (bytes, streaming) =
+            prepare_body(br#"{"model":"mine","messages":[]}"#, &target(None)).unwrap();
         assert!(!streaming);
-        assert_eq!(serde_json::from_slice::<Value>(&bytes).unwrap()["model"], "mine");
+        assert_eq!(
+            serde_json::from_slice::<Value>(&bytes).unwrap()["model"],
+            "mine"
+        );
 
         assert_eq!(
-            prepare_body(br#"{"messages":[]}"#, &target(None)).unwrap_err().code(),
+            prepare_body(br#"{"messages":[]}"#, &target(None))
+                .unwrap_err()
+                .code(),
             "model_missing"
         );
     }
@@ -884,7 +899,9 @@ mod tests {
             .route(
                 "/v1/chat/completions",
                 post(
-                    |MockState(seen): MockState<Seen>, headers: axum::http::HeaderMap, body: String| async move {
+                    |MockState(seen): MockState<Seen>,
+                     headers: axum::http::HeaderMap,
+                     body: String| async move {
                         let auth = headers
                             .get(header::AUTHORIZATION)
                             .and_then(|v| v.to_str().ok())
@@ -961,8 +978,13 @@ mod tests {
         assert_eq!(resp.status(), StatusCode::OK);
         assert_eq!(resp.headers()[header::CONTENT_TYPE], "text/event-stream");
         assert_eq!(resp.headers()[header::CACHE_CONTROL], "no-cache");
-        let text = String::from_utf8(to_bytes(resp.into_body(), usize::MAX).await.unwrap().to_vec())
-            .unwrap();
+        let text = String::from_utf8(
+            to_bytes(resp.into_body(), usize::MAX)
+                .await
+                .unwrap()
+                .to_vec(),
+        )
+        .unwrap();
         let events: Vec<&str> = text.split("\n\n").filter(|e| !e.is_empty()).collect();
         assert_eq!(events.len(), 4, "{text}");
         assert!(events[0].starts_with("data: ") && events[0].contains("\"hel\""));
@@ -976,13 +998,25 @@ mod tests {
             "url": "http://user:hunter22@127.0.0.1:9/v1",
             "model": "m", "apiKey": "sk-never-shown", "defaultPreset": true
         }]));
-        let resp = proxy(Ok(store), &no_gateway(), br#"{"messages":[]}"#, Timeouts::default()).await;
+        let resp = proxy(
+            Ok(store),
+            &no_gateway(),
+            br#"{"messages":[]}"#,
+            Timeouts::default(),
+        )
+        .await;
         let (status, body) = error_of(resp).await;
         assert_eq!(status, StatusCode::BAD_GATEWAY);
         assert_eq!(body["error"]["code"], "upstream_unreachable");
         let message = body["error"]["message"].as_str().unwrap();
-        assert!(message.starts_with("could not reach the AI provider: "), "{message}");
-        assert!(!message.contains("sk-never-shown") && !message.contains("hunter22"), "{message}");
+        assert!(
+            message.starts_with("could not reach the AI provider: "),
+            "{message}"
+        );
+        assert!(
+            !message.contains("sk-never-shown") && !message.contains("hunter22"),
+            "{message}"
+        );
     }
 
     #[tokio::test]
@@ -999,7 +1033,13 @@ mod tests {
             response: Duration::from_millis(300),
             ..Timeouts::default()
         };
-        let resp = proxy(Ok(store_for(addr)), &no_gateway(), br#"{"messages":[]}"#, timeouts).await;
+        let resp = proxy(
+            Ok(store_for(addr)),
+            &no_gateway(),
+            br#"{"messages":[]}"#,
+            timeouts,
+        )
+        .await;
         let (status, body) = error_of(resp).await;
         assert_eq!(status, StatusCode::GATEWAY_TIMEOUT);
         assert_eq!(body["error"]["code"], "upstream_timeout");
@@ -1017,17 +1057,34 @@ mod tests {
             }),
         );
         let addr = serve(router).await;
-        let resp = proxy(Ok(store_for(addr)), &no_gateway(), br#"{"messages":[]}"#, Timeouts::default()).await;
+        let resp = proxy(
+            Ok(store_for(addr)),
+            &no_gateway(),
+            br#"{"messages":[]}"#,
+            Timeouts::default(),
+        )
+        .await;
         assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
-        let text = String::from_utf8(to_bytes(resp.into_body(), usize::MAX).await.unwrap().to_vec())
-            .unwrap();
+        let text = String::from_utf8(
+            to_bytes(resp.into_body(), usize::MAX)
+                .await
+                .unwrap()
+                .to_vec(),
+        )
+        .unwrap();
         assert!(!text.contains("sk-preset-secret"), "{text}");
         assert!(text.contains("[redacted]"), "{text}");
     }
 
     #[tokio::test]
     async fn settings_problems_are_reported_before_any_request() {
-        let resp = proxy(Err("store.bin is encrypted".into()), &no_gateway(), b"{}", Timeouts::default()).await;
+        let resp = proxy(
+            Err("store.bin is encrypted".into()),
+            &no_gateway(),
+            b"{}",
+            Timeouts::default(),
+        )
+        .await;
         let (status, body) = error_of(resp).await;
         assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR);
         assert_eq!(body["error"]["code"], "settings_unreadable");
@@ -1066,12 +1123,17 @@ mod tests {
                             }
                             sent.fetch_add(1, Ordering::SeqCst);
                             Some((
-                                Ok::<_, std::io::Error>(Bytes::from(format!("data: {{\"n\":{n}}}\n\n"))),
+                                Ok::<_, std::io::Error>(Bytes::from(format!(
+                                    "data: {{\"n\":{n}}}\n\n"
+                                ))),
                                 (flag, n + 1),
                             ))
                         }
                     });
-                    ([(header::CONTENT_TYPE, "text/event-stream")], Body::from_stream(stream))
+                    (
+                        [(header::CONTENT_TYPE, "text/event-stream")],
+                        Body::from_stream(stream),
+                    )
                 }
             }),
         );
@@ -1095,11 +1157,19 @@ mod tests {
         )
         .await;
         assert_eq!(resp.status(), StatusCode::OK);
-        let text = String::from_utf8(to_bytes(resp.into_body(), usize::MAX).await.unwrap().to_vec())
-            .unwrap();
+        let text = String::from_utf8(
+            to_bytes(resp.into_body(), usize::MAX)
+                .await
+                .unwrap()
+                .to_vec(),
+        )
+        .unwrap();
         assert!(text.starts_with("data: {\"n\":0}"), "{text}");
         assert!(text.contains("\"code\":\"upstream_timeout\""), "{text}");
-        assert!(text.ends_with("\n\n"), "the error is a complete SSE event: {text}");
+        assert!(
+            text.ends_with("\n\n"),
+            "the error is a complete SSE event: {text}"
+        );
     }
 
     #[tokio::test]
@@ -1136,7 +1206,15 @@ mod tests {
             LOCAL_CHAT_PATH,
             post(move |body: Bytes| {
                 let store = store.clone();
-                async move { proxy(Ok(store), &GatewayAccess::default(), &body, Timeouts::default()).await }
+                async move {
+                    proxy(
+                        Ok(store),
+                        &GatewayAccess::default(),
+                        &body,
+                        Timeouts::default(),
+                    )
+                    .await
+                }
             }),
         );
         let proxy_addr = serve(proxy_router).await;
@@ -1170,6 +1248,10 @@ mod tests {
         .expect("the provider kept streaming after the caller left");
         let after = sent.load(Ordering::SeqCst);
         tokio::time::sleep(Duration::from_millis(300)).await;
-        assert_eq!(sent.load(Ordering::SeqCst), after, "provider still producing");
+        assert_eq!(
+            sent.load(Ordering::SeqCst),
+            after,
+            "provider still producing"
+        );
     }
 }

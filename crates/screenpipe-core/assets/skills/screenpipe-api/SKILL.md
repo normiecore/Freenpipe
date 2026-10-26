@@ -562,6 +562,19 @@ curl http://localhost:3030/audio/list           # Audio devices
 curl http://localhost:3030/vision/list          # Monitors
 ```
 
+To run a prompt on the user's own AI model (their default AI preset), send an OpenAI
+chat-completions body to the local proxy. The engine adds the provider key; you never need it.
+Add `"stream": true` for server-sent events.
+
+```bash
+curl -X POST http://localhost:3030/v1/local/chat/completions \
+  -H "Content-Type: application/json" \
+  -d '{"messages":[{"role":"user","content":"Summarize this in one sentence: ..."}]}'
+```
+
+A 400 means no default preset (or one without a base URL) is set up; tell the user to add one
+in Freenpipe's AI settings instead of retrying.
+
 ---
 
 ## Deep Links
