@@ -660,7 +660,12 @@ mod tests {
         assert_eq!(rows[0].conf, -1.0);
         assert!(rows[0].text.is_empty());
         assert_eq!(
-            (rows[1].word_num, rows[1].left, rows[1].width, rows[1].text.as_str()),
+            (
+                rows[1].word_num,
+                rows[1].left,
+                rows[1].width,
+                rows[1].text.as_str()
+            ),
             (1, 18, 144, "LOREM")
         );
         assert_eq!(rows[2].text, "IPSUM");
@@ -728,17 +733,15 @@ mod tests {
             binary: tmp.path().join("removed-after-discovery"),
             tessdata: None,
         };
-        let err = run_tesseract_tsv(&gone, &tmp.path().join("x.png"), &Args::default())
-            .unwrap_err();
+        let err =
+            run_tesseract_tsv(&gone, &tmp.path().join("x.png"), &Args::default()).unwrap_err();
         assert!(err.contains("could not run"), "{}", err);
     }
 
     /// Retries a run that hit "text file busy": a script written by a test
     /// can briefly stay open in a child forked by a parallel test.
     #[cfg(unix)]
-    fn run_with_retry(
-        run: impl Fn() -> Result<DataOutput, String>,
-    ) -> Result<DataOutput, String> {
+    fn run_with_retry(run: impl Fn() -> Result<DataOutput, String>) -> Result<DataOutput, String> {
         let mut result = run();
         for _ in 0..20 {
             match &result {

@@ -32,7 +32,7 @@ use std::fmt;
 use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::sync::atomic::{AtomicU64, AtomicU8, AtomicUsize, Ordering};
 use std::sync::mpsc::{self, Receiver, SyncSender, TrySendError};
-use std::sync::{Arc, Mutex, PoisonError, TryLockError};
+use std::sync::{Arc, Mutex, PoisonError, TryLockError, Weak};
 use std::time::{Duration, Instant};
 
 use image::{DynamicImage, GenericImageView};
@@ -589,14 +589,17 @@ struct Envelope<J, R> {
     queued: QueuedMark,
 }
 
-/// The receiving end of a worker thread's queue. The thread holds the lock
-/// only while it waits for the next request, never while it runs one, so the
-/// submit side can empty the queue of a thread it abandons.
+/// The receiving end of a worker thread's queue. The thread owns the only
+/// strong reference, so the queue closes (and requests still in it are
+/// answered by their reply channel closing) as soon as the thread ends. It
+/// holds the lock only while it waits for the next request, never while it
+/// runs one, so the submit side can empty the queue of a thread it abandons
+/// through its weak reference.
 type SharedRx<J, R> = Arc<Mutex<Receiver<Envelope<J, R>>>>;
 
 struct Slot<J, R> {
     tx: SyncSender<Envelope<J, R>>,
-    rx: SharedRx<J, R>,
+    rx: Weak<Mutex<Receiver<Envelope<J, R>>>>,
     shared: Arc<ThreadShared>,
 }
 
@@ -770,7 +773,7 @@ impl<J: Send + 'static, R: Send + 'static> DedicatedWorker<J, R> {
         ) {
             Ok(_) => {
                 self.stats.abandoned_stuck.fetch_add(1, Ordering::Relaxed);
-                let released = release_queued(&slot.rx);
+                let released = slot.rx.upgrade().map_or(0, |rx| release_queued(&rx));
                 warn!(
                     thread = %self.config.thread_name,
                     busy_secs = busy.as_secs(),
@@ -806,6 +809,7 @@ impl<J: Send + 'static, R: Send + 'static> DedicatedWorker<J, R> {
 
         let (tx, rx) = mpsc::sync_channel::<Envelope<J, R>>(self.config.queue_capacity);
         let rx: SharedRx<J, R> = Arc::new(Mutex::new(rx));
+        let rx_handle = Arc::downgrade(&rx);
         let shared = Arc::new(ThreadShared {
             state: AtomicU8::new(THREAD_RUNNING),
             busy_since_ms: AtomicU64::new(0),
@@ -822,10 +826,7 @@ impl<J: Send + 'static, R: Send + 'static> DedicatedWorker<J, R> {
         };
         std::thread::Builder::new()
             .name(self.config.thread_name.clone())
-            .spawn({
-                let rx = rx.clone();
-                move || ctx.run(rx)
-            })
+            .spawn(move || ctx.run(rx))
             .map_err(|e| {
                 error!(
                     thread = %self.config.thread_name,
@@ -836,7 +837,11 @@ impl<J: Send + 'static, R: Send + 'static> DedicatedWorker<J, R> {
 
         inner.generation = generation;
         inner.recent_starts.push_back(now);
-        inner.slot = Some(Slot { tx, rx, shared });
+        inner.slot = Some(Slot {
+            tx,
+            rx: rx_handle,
+            shared,
+        });
         self.stats.threads_started.fetch_add(1, Ordering::Relaxed);
         if generation > 1 {
             self.stats.restarts.fetch_add(1, Ordering::Relaxed);
