@@ -2,26 +2,26 @@
 
 > Generated file: the merger routine regenerates it with `python3 tools/plan/status.py --write`. Do not edit it by hand. The plan is [PLAN.md](PLAN.md); the process is [docs/dev/cloud-runbook.md](../dev/cloud-runbook.md).
 
-Generated 2026-10-21T04:36:34Z from `origin/main` (latest code commit `f2f8672`). GitHub data: available (via gh).
+Generated 2026-10-26T22:37:30Z from `origin/main` (latest code commit `4274991`). GitHub data: available (via gh).
 
 ## Progress
 
-**36 of 155 work packages merged (23.2%)**: 0 in review, 2 claimed, 35 ready, 82 blocked.
+**40 of 155 work packages merged (25.8%)**: 0 in review, 4 claimed, 31 ready, 80 blocked.
 
 | Wave | Theme | Merged | In review | Claimed | Ready | Blocked | Progress |
 |---|---|---|---|---|---|---|---|
 | 0 | Foundation: build, ee/ stubs, de-cloud, rebrand | 13/13 | 0 | 0 | 0 | 0 | `##########` 100% |
 | 1 | Cross-cutting foundations: schema v2.7, settings schema, integration seams | 5/5 | 0 | 0 | 0 | 0 | `##########` 100% |
 | 2 | Engine data layer and core backends | 17/27 | 0 | 0 | 10 | 0 | `######----` 63% |
-| 3 | Feature backends (search, pipes, connections, capture, audio) | 1/31 | 0 | 2 | 20 | 8 | `----------` 3% |
-| 4 | Advanced backends, agents runtime, app shell | 0/22 | 0 | 0 | 3 | 19 | `----------` 0% |
+| 3 | Feature backends (search, pipes, connections, capture, audio) | 5/31 | 0 | 4 | 14 | 8 | `##--------` 16% |
+| 4 | Advanced backends, agents runtime, app shell | 0/22 | 0 | 0 | 5 | 17 | `----------` 0% |
 | 5 | Feature UIs and second-tier backends | 0/24 | 0 | 0 | 2 | 22 | `----------` 0% |
 | 6 | Agent/workflow UIs, piggyback, hybrid bulk | 0/21 | 0 | 0 | 0 | 21 | `----------` 0% |
 | 7 | Hybrid lifecycle, overlays, chat follow-ups | 0/9 | 0 | 0 | 0 | 9 | `----------` 0% |
 | 8 | Final UI pieces and surface audit | 0/3 | 0 | 0 | 0 | 3 | `----------` 0% |
-| all | | 36/155 | 0 | 2 | 35 | 82 | `##--------` 23.2% |
+| all | | 40/155 | 0 | 4 | 31 | 80 | `###-------` 25.8% |
 
-CI on main (merge gate on the latest non-status commit `f2f8672`): **pending** (test-windows: in_progress; trufflehog: in_progress; waiting for windows, linux, gates)
+CI on main (merge gate on the latest non-status commit `4274991`): **pending** (test-windows: in_progress; trufflehog: in_progress; waiting for windows, linux, gates)
 
 ## In review
 
@@ -31,8 +31,10 @@ None.
 
 | WP | Worker | Last commit (UTC) | Work commits | State |
 |---|---|---|---|---|
-| W3-11 | unknown | 2026-10-21T04:35:26Z | 1 | active |
-| W3-12 | unknown | 2026-10-21T04:35:30Z | 6 | active |
+| W3-02 | unknown | 2026-10-26T22:36:01Z | 5 | active |
+| W3-06 | unknown | 2026-10-26T20:45:45Z | 4 | active |
+| W3-08 | unknown | 2026-10-26T20:39:53Z | 3 | active |
+| W3-13 | unknown | 2026-10-26T22:37:18Z | 6 | active |
 
 ## Ready, in plan order
 
@@ -48,22 +50,16 @@ None.
 | W2-21 | 2 | L | OAuth v2 flow and new OAuth integrations |
 | W2-24 | 2 | M | Engine local stubs: attribution headers, telemetry no-op routes, local data-sync |
 | W2-25 | 2 | L | Frontend stack refresh and browser-dev mock runtime |
-| W3-02 | 3 | L | Search v2: parsed content, starred, actor and related filters |
 | W3-03 | 3 | L | Element API formats and state |
-| W3-06 | 3 | L | Event-trigger idempotency, run outcome verification, meeting-summary finalizer |
 | W3-07 | 3 | M | Live meeting overlay websocket |
-| W3-08 | 3 | L | UI-scan meeting detector: calendar binding and lock awareness |
 | W3-09 | 3 | L | Retention v2: lean mode, strip, NULL-safe deletes, coverage |
 | W3-10 | 3 | L | PII redaction surfaces v2 |
-| W3-13 | 3 | L | URL domain rules, Windows window identity, input-hook watchdog |
-| W3-14 | 3 | L | Audio capture modes and device status events |
 | W3-15 | 3 | L | Software AEC3 + NS + AGC2 (aecMode=screenpipe) |
 | W3-16 | 3 | L | Reconciliation durability, identification gating, STT retries, dedup |
 | W3-17 | 3 | L | Startup health diagnostics (health-startup.json) and ORT init watchdog |
 | W3-18 | 3 | L | Notifications v2 backend on :11435 |
 | W3-23 | 3 | L | Pi extension set expansion and extension packages |
 | W3-24 | 3 | L | Agent self-improvement: skills store, user profile, learning |
-| W3-25 | 3 | L | Local OpenAI-compatible proxy and BYO web search |
 | W3-27 | 3 | L | SQLite hard-fault quarantine coordinator |
 | W3-28 | 3 | L | Headless mode and search-only mode |
 | W3-29 | 3 | M | Recording health incident state |
@@ -71,6 +67,8 @@ None.
 | W4-03 | 4 | XL | ACP agent runtime and screenpipe-tools MCP |
 | W4-04 | 4 | L | Cloud coding agents (BYO Cursor/Codex/Claude) |
 | W4-05 | 4 | M | Chat runtime commands and per-turn connections context |
+| W4-14 | 4 | L | Capture loop B: tree-walker worker and foreground identity gate |
+| W4-16 | 4 | L | Bluetooth meeting gate, output follow and speaker watchdog |
 | W5-07 | 5 | XL | Hybrid storage format hybrid-parquet-v1 |
 | W5-11 | 5 | L | Captured-moment replay server and open command |
 
@@ -184,24 +182,24 @@ Complete waves awaiting the integration checklist: 1.
 | W2-26 | L | merged | App engine supervision: auto-respawn, port-conflict classification, safe relaunch | merge `b215b2f` |
 | W2-27 | L | merged | App startup hardening: argv helper modes, autostart, focus handoff, env, AVX2, WER, opener | merge `db1b49f` |
 
-### Wave 3: Feature backends (search, pipes, connections, capture, audio) (1/31 merged)
+### Wave 3: Feature backends (search, pipes, connections, capture, audio) (5/31 merged)
 
 | WP | Size | Status | Title | Detail |
 |---|---|---|---|---|
 | W3-01 | L | blocked | Semantic projection worker and actors API | waits for W2-06 |
-| W3-02 | L | ready | Search v2: parsed content, starred, actor and related filters |  |
+| W3-02 | L | claimed | Search v2: parsed content, starred, actor and related filters | unknown, last commit 2026-10-26T22:36:01Z |
 | W3-03 | L | ready | Element API formats and state |  |
 | W3-04 | L | blocked | Activity APIs: activity-summary v2 and activity-ledger route | waits for W2-07 |
 | W3-05 | L | blocked | Structured output targets | waits for W2-02, W2-03 |
-| W3-06 | L | ready | Event-trigger idempotency, run outcome verification, meeting-summary finalizer |  |
+| W3-06 | L | claimed | Event-trigger idempotency, run outcome verification, meeting-summary finalizer | unknown, last commit 2026-10-26T20:45:45Z |
 | W3-07 | M | ready | Live meeting overlay websocket |  |
-| W3-08 | L | ready | UI-scan meeting detector: calendar binding and lock awareness |  |
+| W3-08 | L | claimed | UI-scan meeting detector: calendar binding and lock awareness | unknown, last commit 2026-10-26T20:39:53Z |
 | W3-09 | L | ready | Retention v2: lean mode, strip, NULL-safe deletes, coverage |  |
 | W3-10 | L | ready | PII redaction surfaces v2 |  |
-| W3-11 | L | claimed | Capture loop hardening A: stages and wedge watchdog, probe timeouts, fail-closed exclusions, corrupt frames | unknown, last commit 2026-10-21T04:35:26Z |
-| W3-12 | M | claimed | Dedicated Windows OCR worker and OCR availability reporting | unknown, last commit 2026-10-21T04:35:30Z |
-| W3-13 | L | ready | URL domain rules, Windows window identity, input-hook watchdog |  |
-| W3-14 | L | ready | Audio capture modes and device status events |  |
+| W3-11 | L | merged | Capture loop hardening A: stages and wedge watchdog, probe timeouts, fail-closed exclusions, corrupt frames | merge `171689d` |
+| W3-12 | M | merged | Dedicated Windows OCR worker and OCR availability reporting | merge `fb8c43d` |
+| W3-13 | L | claimed | URL domain rules, Windows window identity, input-hook watchdog | unknown, last commit 2026-10-26T22:37:18Z |
+| W3-14 | L | merged | Audio capture modes and device status events | merge `0418c0a` |
 | W3-15 | L | ready | Software AEC3 + NS + AGC2 (aecMode=screenpipe) |  |
 | W3-16 | L | ready | Reconciliation durability, identification gating, STT retries, dedup |  |
 | W3-17 | L | ready | Startup health diagnostics (health-startup.json) and ORT init watchdog |  |
@@ -212,7 +210,7 @@ Complete waves awaiting the integration checklist: 1.
 | W3-22 | M | blocked | Local integrations: memory-sync guidance, Obsidian memories, Hermes, WhatsApp sign-out | waits for W2-20 |
 | W3-23 | L | ready | Pi extension set expansion and extension packages |  |
 | W3-24 | L | ready | Agent self-improvement: skills store, user profile, learning |  |
-| W3-25 | L | ready | Local OpenAI-compatible proxy and BYO web search |  |
+| W3-25 | L | merged | Local OpenAI-compatible proxy and BYO web search | merge `6fb2c91` |
 | W3-26 | M | blocked | Connect broker and connection-gate tools | waits for W2-20 |
 | W3-27 | L | ready | SQLite hard-fault quarantine coordinator |  |
 | W3-28 | L | ready | Headless mode and search-only mode |  |
@@ -237,9 +235,9 @@ Complete waves awaiting the integration checklist: 1.
 | W4-11 | L | blocked | Live Views backend | waits for W3-05 |
 | W4-12 | XL | blocked | Audio-process (mic-holder) meeting detector | waits for W3-08 |
 | W4-13 | XL | blocked | Event-driven retained UIA tree on Windows | waits for W3-13 |
-| W4-14 | L | blocked | Capture loop B: tree-walker worker and foreground identity gate | waits for W3-11 |
+| W4-14 | L | ready | Capture loop B: tree-walker worker and foreground identity gate |  |
 | W4-15 | L | blocked | Redaction pseudonyms, a11y-aware secret detection, configurable models | waits for W3-10 |
-| W4-16 | L | blocked | Bluetooth meeting gate, output follow and speaker watchdog | waits for W3-14 |
+| W4-16 | L | ready | Bluetooth meeting gate, output follow and speaker watchdog |  |
 | W4-17 | L | blocked | Calendar v2: all-calendar Google events and reminder scheduler | waits for W2-21, W3-18 |
 | W4-18 | L | blocked | Bee pairing and browser snapshot v2 with /act | waits for W2-20 |
 | W4-19 | L | blocked | Window inventory, screen-share protection, renderer heartbeat | waits for W3-28 |
@@ -256,13 +254,13 @@ Complete waves awaiting the integration checklist: 1.
 | W5-03 | M | blocked | Meeting room-change offers | waits for W4-12 |
 | W5-04 | L | blocked | Audio device lifecycle hardening and shared engine reuse | waits for W4-16 |
 | W5-05 | L | blocked | Capture loop C: screenshot policy, scroll cadence, width cap, frozen streams | waits for W4-14 |
-| W5-06 | L | blocked | OCR text-region gate and crop OCR | waits for W3-12, W4-14 |
+| W5-06 | L | blocked | OCR text-region gate and crop OCR | waits for W4-14 |
 | W5-07 | XL | ready | Hybrid storage format hybrid-parquet-v1 |  |
 | W5-08 | L | blocked | Database self-heal user flow | waits for W4-09 |
 | W5-09 | M | blocked | Tray menu v2 | waits for W4-20 |
 | W5-10 | L | blocked | Workflow video jobs in the app | waits for W4-21 |
 | W5-11 | L | ready | Captured-moment replay server and open command |  |
-| W5-12 | L | blocked | Activity history generator (app) | waits for W3-04, W3-25 |
+| W5-12 | L | blocked | Activity history generator (app) | waits for W3-04 |
 | W5-13 | L | blocked | Notifications UI v2: inbox window, bell, panel, preferences | waits for W3-18, W4-19 |
 | W5-14 | L | blocked | Starred sessions UI, star shortcut, overlay snooze/anchor, CLI | waits for W4-19 |
 | W5-15 | L | blocked | Chat tabs, split pane, side chat, groups and landing cards | waits for W4-05, W4-22 |
@@ -270,7 +268,7 @@ Complete waves awaiting the integration checklist: 1.
 | W5-17 | L | blocked | Meetings workspace UI | waits for W4-22 |
 | W5-18 | L | blocked | Timeline and search window v2 | waits for W3-02, W4-22 |
 | W5-19 | L | blocked | Settings navigation v2, general, AI features, permissions | waits for W4-22, W4-20 |
-| W5-20 | L | blocked | Screen and audio settings | waits for W3-14, W3-15, W4-22 |
+| W5-20 | L | blocked | Screen and audio settings | waits for W3-15, W4-22 |
 | W5-21 | M | blocked | Deep links v2 | waits for W4-22 |
 | W5-22 | M | blocked | Viewer, permission recovery and help refresh | waits for W4-22 |
 | W5-23 | L | blocked | Connections UI catalogue | waits for W3-19, W3-20, W3-21, W4-18 |
@@ -289,7 +287,7 @@ Complete waves awaiting the integration checklist: 1.
 | W6-07 | XL | blocked | Workflows workspace UI | waits for W4-01, W4-22 |
 | W6-08 | L | blocked | Workflow ready-to-review notifications | waits for W4-01, W3-18 |
 | W6-09 | L | blocked | Video render CLI mode and Pi video-sop extension | waits for W5-10 |
-| W6-10 | M | blocked | Workflow-to-skill drafting | waits for W4-01, W3-24, W3-25 |
+| W6-10 | M | blocked | Workflow-to-skill drafting | waits for W4-01, W3-24 |
 | W6-11 | L | blocked | Built-in MCP server v0.20 and portable MCP launcher | waits for W4-01, W2-03, W5-01 |
 | W6-12 | XL | blocked | Live Views dashboards UI | waits for W4-11, W5-16 |
 | W6-13 | L | blocked | Activity view UI | waits for W5-12, W3-04 |

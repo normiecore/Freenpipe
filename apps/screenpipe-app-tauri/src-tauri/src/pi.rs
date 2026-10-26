@@ -650,18 +650,13 @@ fn ensure_screenpipe_skill(project_dir: &str) -> Result<(), String> {
         .map_err(|e| format!("Failed to install screenpipe skills: {}", e))
 }
 
-/// Whether a chat session gets the web-search extension. Searches go to the
-/// user's AI gateway (`{gateway}/web-search`), so the tool is offered only to
-/// the gateway-backed provider and only when a gateway is configured.
-fn chat_web_search_wanted(
-    provider_config: Option<&PiProviderConfig>,
-    gateway_configured: bool,
-) -> bool {
-    let is_gateway_provider = match provider_config {
-        Some(config) => matches!(config.provider.as_str(), "screenpipe-cloud" | "pi"),
-        None => true, // no preset = the gateway provider
-    };
-    is_gateway_provider && gateway_configured
+/// Whether a chat session gets the web-search extension. Its `sp_web_search`
+/// tool calls the engine's `/v1/web-search` route, which forwards to the
+/// user's search provider, so any chat model may use it once a provider is
+/// configured (call after `gateway_access`, which re-applies the gateway
+/// setting that `SCREENPIPE_WEB_SEARCH_PROVIDER=gateway` searches through).
+fn chat_web_search_wanted() -> bool {
+    screenpipe_core::web_search::is_configured()
 }
 
 /// Configuration for which AI provider Pi should use
@@ -1066,10 +1061,10 @@ pub async fn pi_start_inner(
 
     // Bundled chat extensions (pi_extensions_manifest.rs): the MCP bridge,
     // which lets the agent reach user-registered MCP servers, and web-search
-    // for gateway presets with a gateway.
+    // when a search provider is configured.
     crate::pi_extensions_manifest::sync_chat_extensions(
         std::path::Path::new(&project_dir),
-        chat_web_search_wanted(provider_config.as_ref(), gateway.is_some()),
+        chat_web_search_wanted(),
     )?;
 
     // Ensure Pi is configured with the user's provider
@@ -1320,7 +1315,7 @@ pub async fn pi_start_inner(
         if let Some(ref key) = gateway.key {
             cmd.env("SCREENPIPE_API_KEY", key);
         }
-        // Read by the web-search extension.
+        // For agents that talk to the gateway directly.
         cmd.env(screenpipe_core::ai_gateway::URL_ENV, &gateway.base);
     }
 
@@ -3092,30 +3087,30 @@ error: InstallFailed extracting tarball"#;
     }
 
     #[test]
-    fn test_web_search_extension_needs_a_gateway() {
+    fn test_web_search_extension_follows_the_search_configuration() {
         let dir = tempfile::tempdir().unwrap();
         let ext = dir
             .path()
             .join(".pi")
             .join("extensions")
             .join("web-search.ts");
-        let pc = make_provider_config("screenpipe-cloud", "auto");
-        let sync = |provider: &PiProviderConfig, gateway: bool| {
-            crate::pi_extensions_manifest::sync_chat_extensions(
-                dir.path(),
-                super::chat_web_search_wanted(Some(provider), gateway),
-            )
-            .unwrap()
+        assert_eq!(
+            super::chat_web_search_wanted(),
+            screenpipe_core::web_search::is_configured()
+        );
+        let sync = |wanted: bool| {
+            crate::pi_extensions_manifest::sync_chat_extensions(dir.path(), wanted).unwrap()
         };
-
-        sync(&pc, false);
+        sync(false);
         assert!(!ext.exists());
-        sync(&pc, true);
-        assert!(ext.exists());
-        let ollama = make_provider_config("native-ollama", "llama3");
-        sync(&ollama, true);
+        sync(true);
+        let body = std::fs::read_to_string(&ext).unwrap();
+        assert!(
+            body.contains("/v1/web-search"),
+            "chat search goes through the engine"
+        );
+        sync(false);
         assert!(!ext.exists());
-        assert!(super::chat_web_search_wanted(None, true));
     }
 
     #[tokio::test]

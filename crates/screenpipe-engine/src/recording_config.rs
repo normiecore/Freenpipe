@@ -31,6 +31,9 @@ pub struct RecordingConfig {
     pub data_dir: PathBuf,
 
     // Feature toggles
+    /// Audio is off: `disableAudio`, or `audioCaptureMode` set to
+    /// `disabled`. Every startup path reads this one flag, so the two
+    /// settings cannot disagree about whether the audio manager runs.
     pub disable_audio: bool,
     pub disable_vision: bool,
     /// Disable the timeline / rewind feature. Skips timeline-only backend work
@@ -298,7 +301,8 @@ impl RecordingConfig {
             audio_chunk_duration: settings.audio_chunk_duration.max(0) as u64,
             port: settings.port,
             data_dir,
-            disable_audio: settings.disable_audio,
+            disable_audio: settings.disable_audio
+                || settings.audio_capture_mode() == AudioCaptureMode::Disabled,
             disable_vision: settings.disable_vision,
             disable_timeline: settings.disable_timeline,
             use_pii_removal: settings.use_pii_removal,
@@ -497,6 +501,11 @@ impl RecordingConfig {
         crate::routes::health::publish_audio_capture_mode(self.audio_capture_mode);
         AudioManagerBuilder::new()
             .is_disabled(self.disable_audio)
+            .audio_capture_mode(if self.disable_audio {
+                AudioCaptureMode::Disabled
+            } else {
+                self.audio_capture_mode
+            })
             .audio_chunk_duration(Duration::from_secs(self.audio_chunk_duration))
             .vad_engine(VadEngineEnum::Silero)
             .languages(self.languages.clone())
@@ -735,6 +744,52 @@ mod tests {
         assert_eq!(vision.min_capture_interval_ms, Some(120));
         assert_eq!(vision.capture_on_keystroke, Some(true));
         assert_eq!(vision.capture_on_clipboard, Some(true));
+    }
+
+    fn with_capture(mode: &str, disable_audio: bool) -> RecordingConfig {
+        let settings: screenpipe_config::RecordingSettings = serde_json::from_value(
+            serde_json::json!({ "audioCaptureMode": mode, "disableAudio": disable_audio }),
+        )
+        .unwrap();
+        build(&settings)
+    }
+
+    #[test]
+    fn capture_mode_disabled_turns_audio_off() {
+        let c = with_capture("disabled", false);
+        assert!(c.disable_audio, "audioCaptureMode=disabled must stop audio");
+        assert_eq!(c.audio_capture_mode, AudioCaptureMode::Disabled);
+
+        let c = with_capture("always", true);
+        assert!(c.disable_audio, "disableAudio still turns audio off");
+
+        for mode in ["always", "meetings-only"] {
+            let c = with_capture(mode, false);
+            assert!(!c.disable_audio, "{mode} keeps audio on");
+        }
+        // A store without the key records always, as before.
+        let c = build(&serde_json::from_value(serde_json::json!({})).unwrap());
+        assert!(!c.disable_audio);
+        assert_eq!(c.audio_capture_mode, AudioCaptureMode::Always);
+    }
+
+    #[tokio::test]
+    async fn disabled_capture_mode_reaches_the_audio_manager() {
+        let dir = tempfile::tempdir().unwrap();
+        for (mode, disable_audio) in [("disabled", false), ("always", true)] {
+            let c = with_capture(mode, disable_audio);
+            let options = c
+                .to_audio_manager_builder(dir.path().to_path_buf(), Vec::new())
+                .build_options()
+                .await
+                .unwrap();
+            assert!(options.is_disabled, "{mode}/{disable_audio}");
+            assert_eq!(options.capture_mode, AudioCaptureMode::Disabled);
+            assert!(
+                options.enabled_devices.is_empty(),
+                "no device is enumerated when audio is off"
+            );
+        }
     }
 
     #[test]

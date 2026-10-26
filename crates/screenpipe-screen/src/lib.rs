@@ -18,21 +18,29 @@ pub mod wgc_capture;
 pub use monitor::HdCapture;
 pub use monitor::{last_monitor_list_outcome, MonitorListError, MonitorListOutcome};
 pub mod metrics;
+/// Startup probe of the platform OCR engine (`vision_reason=ocr_unavailable`).
+pub mod ocr_availability;
 pub mod ocr_cache;
+/// Dedicated OCR thread with a bounded queue, and OCR image validation.
+pub mod ocr_worker;
 pub mod tesseract;
 pub mod utils;
 #[cfg(target_os = "macos")]
 pub use apple::perform_ocr_apple;
 pub use core::RealtimeVisionEvent;
 pub use metrics::{
-    CaptureLoopStage, CorruptFrameKind, LoopStageGuard, LoopStageReport, MetricsSnapshot,
-    PipelineMetrics,
+    AttemptEnd, CaptureLoopStage, CorruptFrameKind, LoopLiveness, LoopStageGuard, LoopStageReport,
+    MetricsSnapshot, PipelineMetrics,
 };
 pub use utils::OcrEngine;
 pub mod capture_screenshot_by_window;
 pub use custom_ocr::perform_ocr_custom;
 #[cfg(target_os = "windows")]
-pub use microsoft::perform_ocr_windows;
+pub use microsoft::{
+    perform_ocr_windows, perform_ocr_windows_with_timeout, probe_windows_ocr,
+    windows_ocr_worker_stats, WindowsOcrProbe,
+};
+pub use ocr_worker::{OcrImageError, OcrWorkerError};
 pub use tesseract::perform_ocr_tesseract;
 pub mod browser_utils;
 pub mod snapshot_writer;

@@ -6,8 +6,9 @@ use crate::brand::PRODUCT_NAME;
 use crate::commands::{hide_main_window, show_main_window};
 use crate::enterprise_policy::{is_app_ui_hidden, is_tray_item_hidden};
 use crate::health::{
-    get_audio_device_status, get_high_fps_status, get_recording_info, get_recording_status,
-    set_high_fps_status, DeviceKind, HighFpsCacheEntry, RecordingStatus,
+    get_audio_device_status, get_audio_wait_state, get_high_fps_status, get_recording_info,
+    get_recording_status, set_high_fps_status, AudioWaitState, DeviceKind, HighFpsCacheEntry,
+    RecordingStatus,
 };
 use crate::recording::local_api_context_from_app;
 use crate::store::{OnboardingStore, SettingsStore};
@@ -401,6 +402,26 @@ struct MenuState {
     hd_remaining_secs: u64,
     hd_session_kind: String,
     hd_interval_ms: u64,
+    /// meetings-only audio waiting state, shown in the status line.
+    audio_wait: AudioWaitState,
+}
+
+/// The status line of the tray menu. While screen capture runs and
+/// `meetings-only` audio has no meeting, the line says that audio waits.
+fn recording_status_label(status: RecordingStatus, audio_wait: AudioWaitState) -> String {
+    match (status, audio_wait) {
+        (RecordingStatus::Recording, AudioWaitState::WaitingForMeeting) => {
+            "● Recording screen · audio starts with a meeting".to_string()
+        }
+        (RecordingStatus::Recording, AudioWaitState::MeetingDetectionUnavailable) => {
+            "● Recording screen · audio needs meeting detection".to_string()
+        }
+        (RecordingStatus::Starting, _) => "○ Starting…".to_string(),
+        (RecordingStatus::Recording, AudioWaitState::None) => "● Recording".to_string(),
+        (RecordingStatus::Paused, _) => "◐ Paused".to_string(),
+        (RecordingStatus::Stopped, _) => "○ Stopped".to_string(),
+        (RecordingStatus::Error, _) => "○ Error".to_string(),
+    }
 }
 
 pub fn setup_tray(app: &AppHandle, update_item: Option<&tauri::menu::MenuItem<Wry>>) -> Result<()> {
@@ -644,13 +665,7 @@ fn create_dynamic_menu(
 
     // --- Recording status + devices ---
     let effective_status = get_effective_recording_status();
-    let status_text = match effective_status {
-        RecordingStatus::Starting => "○ Starting…",
-        RecordingStatus::Recording => "● Recording",
-        RecordingStatus::Paused => "◐ Paused",
-        RecordingStatus::Stopped => "○ Stopped",
-        RecordingStatus::Error => "○ Error",
-    };
+    let status_text = recording_status_label(effective_status, get_audio_wait_state());
     menu_builder = menu_builder.item(&PredefinedMenuItem::separator(app)?);
 
     if effective_status == RecordingStatus::Recording
@@ -1333,6 +1348,7 @@ async fn update_menu_if_needed(
         hd_remaining_secs: hd.remaining_secs,
         hd_session_kind: hd.session_kind,
         hd_interval_ms: hd.interval_ms,
+        audio_wait: get_audio_wait_state(),
     };
 
     // Compare with last state (poison-safe: run handler must not panic)
@@ -1469,6 +1485,34 @@ mod brand_label_tests {
         assert_eq!(
             version_label("2.7.104", true, true),
             "Freenpipe v2.7.104 (Enterprise)"
+        );
+    }
+}
+
+#[cfg(test)]
+mod audio_wait_label_tests {
+    use super::*;
+
+    #[test]
+    fn status_line_mentions_meetings_only_waiting() {
+        assert_eq!(
+            recording_status_label(RecordingStatus::Recording, AudioWaitState::None),
+            "● Recording"
+        );
+        assert!(recording_status_label(
+            RecordingStatus::Recording,
+            AudioWaitState::WaitingForMeeting
+        )
+        .contains("audio starts with a meeting"));
+        assert!(recording_status_label(
+            RecordingStatus::Recording,
+            AudioWaitState::MeetingDetectionUnavailable
+        )
+        .contains("meeting detection"));
+        // Other states keep their wording whatever audio does.
+        assert_eq!(
+            recording_status_label(RecordingStatus::Paused, AudioWaitState::WaitingForMeeting),
+            "◐ Paused"
         );
     }
 }

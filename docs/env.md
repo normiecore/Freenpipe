@@ -118,6 +118,9 @@ services used are left out.
 | `SCREENPIPE_REMOTE_PATH` | Remote path for LAN sync. |
 | `SCREENPIPE_AI_GATEWAY_URL` | Base URL of the user's AI gateway (bring your own). |
 | `SCREENPIPE_AI_GATEWAY_KEY` | Key for the user's AI gateway. |
+| `SCREENPIPE_WEB_SEARCH_PROVIDER` | Web search provider behind `/v1/web-search` and the agents' `sp_web_search` tool: `searxng`, `brave`, `tavily`, `gateway` (the AI gateway's `/web-search`) or `off`. Unset: `searxng` when `SCREENPIPE_WEB_SEARCH_URL` is set, else web search is off. A configured AI gateway is used for search only with `gateway`. |
+| `SCREENPIPE_WEB_SEARCH_URL` | Base URL of your SearXNG instance (its JSON output must be enabled), or a replacement endpoint for `brave`/`tavily`. |
+| `SCREENPIPE_WEB_SEARCH_API_KEY` | Your own key for `brave` or `tavily`; sent as a bearer token to a SearXNG instance when set. |
 
 ## Pipes and agents (given to agent child processes)
 
@@ -182,6 +185,7 @@ Not read by screenpipe, so they carry a `FREENPIPE_` prefix and are not in
 
 | Variable | Meaning |
 |---|---|
+| `FREENPIPE_OCR_FAULT` | Test hook: `unavailable` (or `1`/`true`) makes every OCR backend behave as if no OCR engine or language were installed (Windows OCR language pack, tesseract), so `/health` reports `vision_reason` `ocr_unavailable` while capture and accessibility text carry on. |
 | `FREENPIPE_WHISPER_GPU_FAULT` | Test hook: `inference` (or `1`/`true`) makes GPU whisper inference fail, `state` makes GPU state creation fail, so the CPU recovery can be checked on real hardware. CPU sessions are never affected. |
 | `FREENPIPE_VULKAN_RUNTIME_DIR` | Build time (`scripts/stage_bundled_runtime.js`): folder holding the unpacked Vulkan runtime components whose `vulkan-1.dll` the Windows installer ships. |
 | `FREENPIPE_BUNDLE_DIRECTML` | Build time: `1` also ships Microsoft's `DirectML.dll` (held back until the release licence audit). |
