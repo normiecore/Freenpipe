@@ -598,7 +598,10 @@ impl DatabaseManager {
     }
 
     /// Number of frames [`Self::search_parsed`] can return for `filter`.
-    pub async fn count_parsed(&self, filter: &ParsedSearchFilter<'_>) -> Result<usize, sqlx::Error> {
+    pub async fn count_parsed(
+        &self,
+        filter: &ParsedSearchFilter<'_>,
+    ) -> Result<usize, sqlx::Error> {
         if filter.scope.matches_nothing() {
             return Ok(0);
         }
@@ -618,8 +621,13 @@ impl DatabaseManager {
     async fn load_parsed_runs(
         &self,
         run_ids: &[i64],
-    ) -> Result<(HashMap<i64, SemanticRun>, HashMap<i64, Vec<ParsedItemRecord>>), sqlx::Error>
-    {
+    ) -> Result<
+        (
+            HashMap<i64, SemanticRun>,
+            HashMap<i64, Vec<ParsedItemRecord>>,
+        ),
+        sqlx::Error,
+    > {
         let ids_json = serde_json::to_string(run_ids).unwrap_or_else(|_| "[]".to_string());
         let mut conn = self.pool.acquire().await?;
 
@@ -934,7 +942,9 @@ mod tests {
             .await
             .unwrap();
         let seq = |n: u32| {
-            format!("WITH RECURSIVE n(i) AS (SELECT 0 UNION ALL SELECT i + 1 FROM n WHERE i < {n} - 1)")
+            format!(
+                "WITH RECURSIVE n(i) AS (SELECT 0 UNION ALL SELECT i + 1 FROM n WHERE i < {n} - 1)"
+            )
         };
         let at = |step: &str| {
             format!(
@@ -1145,12 +1155,18 @@ mod tests {
                     query: "word5",
                     ..base(&scope_none)
                 },
-                vec!["semantic_items_fts VIRTUAL TABLE", "idx_frames_semantic_run_id"],
+                vec![
+                    "semantic_items_fts VIRTUAL TABLE",
+                    "idx_frames_semantic_run_id",
+                ],
             ),
             (
                 "actor",
                 base(&actor),
-                vec!["idx_semantic_item_actors_actor", "idx_frames_semantic_run_id"],
+                vec![
+                    "idx_semantic_item_actors_actor",
+                    "idx_frames_semantic_run_id",
+                ],
             ),
             (
                 "time range",

@@ -954,7 +954,8 @@ pub(crate) const RUN_COLUMNS: &str = "r.id, r.input_fingerprint, r.parser_id, r.
      r.input_content_hash, r.status, r.item_count, r.text_bytes, r.parse_duration_us, \
      r.created_at";
 
-pub(crate) const ITEM_COLUMNS: &str = "i.id AS item_id, i.entity_fingerprint, i.version_fingerprint, \
+pub(crate) const ITEM_COLUMNS: &str =
+    "i.id AS item_id, i.entity_fingerprint, i.version_fingerprint, \
      i.kind, i.item_key, i.identity_quality, i.title, i.body, i.actor, i.occurred_at, \
      i.timestamp_precision, i.status AS item_status, i.metadata_json, \
      i.created_at AS item_created_at";

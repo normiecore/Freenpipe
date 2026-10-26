@@ -126,7 +126,10 @@ async fn star(db: &DatabaseManager, id: &str, start: DateTime<Utc>, end: DateTim
         })
         .await
         .unwrap();
-    assert!(matches!(outcome, StarredSaveOutcome::Saved(_)), "{outcome:?}");
+    assert!(
+        matches!(outcome, StarredSaveOutcome::Saved(_)),
+        "{outcome:?}"
+    );
 }
 
 async fn fixture() -> Fixture {
@@ -175,7 +178,14 @@ async fn fixture() -> Fixture {
         &run(
             "chat",
             vec![
-                item("c", None, SemanticItemKind::Conversation, Some("Launch"), None, None),
+                item(
+                    "c",
+                    None,
+                    SemanticItemKind::Conversation,
+                    Some("Launch"),
+                    None,
+                    None,
+                ),
                 item(
                     "m1",
                     Some("c"),
@@ -261,7 +271,10 @@ impl Fixture {
         let response = self.router.clone().oneshot(request).await.unwrap();
         let status = response.status();
         let bytes = to_bytes(response.into_body(), usize::MAX).await.unwrap();
-        (status, serde_json::from_slice(&bytes).unwrap_or(Value::Null))
+        (
+            status,
+            serde_json::from_slice(&bytes).unwrap_or(Value::Null),
+        )
     }
 }
 
@@ -354,15 +367,24 @@ async fn actor_and_frame_filters_narrow_parsed_results() {
     assert_eq!(content["text"], "Launch\n  Ada: ship xylophone on friday");
 
     let (_, body) = fx
-        .api(&format!("/search?content_type=parsed&frame_id={}", fx.notes_frame))
+        .api(&format!(
+            "/search?content_type=parsed&frame_id={}",
+            fx.notes_frame
+        ))
         .await;
     assert_eq!(frame_ids(&body), vec![fx.notes_frame]);
     assert_eq!(body["pagination"]["total"], 1);
 
     for (uri, status) in [
-        ("/search?content_type=ocr&frame_id=1", StatusCode::BAD_REQUEST),
+        (
+            "/search?content_type=ocr&frame_id=1",
+            StatusCode::BAD_REQUEST,
+        ),
         ("/search?actor_id=1", StatusCode::BAD_REQUEST),
-        ("/search?content_type=parsed&actor_id=0", StatusCode::BAD_REQUEST),
+        (
+            "/search?content_type=parsed&actor_id=0",
+            StatusCode::BAD_REQUEST,
+        ),
     ] {
         let (got, body) = fx.api(uri).await;
         assert_eq!(got, status, "{uri}: {body}");
@@ -384,10 +406,19 @@ async fn starred_only_returns_full_pages_of_starred_hits() {
     let (_, page2) = fx
         .api("/search?q=alpha&content_type=ocr&starred_only=true&limit=2&offset=2")
         .await;
-    assert_eq!(frame_ids(&page1), inside[..2].to_vec(), "the filter runs before paging");
+    assert_eq!(
+        frame_ids(&page1),
+        inside[..2].to_vec(),
+        "the filter runs before paging"
+    );
     assert_eq!(frame_ids(&page2), inside[2..].to_vec());
     assert_eq!(page1["pagination"]["total"], 3);
-    for hit in page1["data"].as_array().unwrap().iter().chain(page2["data"].as_array().unwrap()) {
+    for hit in page1["data"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .chain(page2["data"].as_array().unwrap())
+    {
         assert_eq!(hit["starred"], true, "{hit}");
     }
 
@@ -431,7 +462,10 @@ async fn starred_filter_errors_are_clear() {
         .api("/search?starred_only=true&start_time=2026-09-01T00:00:00Z&end_time=2026-09-02T00:00:00Z")
         .await;
     assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
-    assert!(body["error"].as_str().unwrap().contains("start_time"), "{body}");
+    assert!(
+        body["error"].as_str().unwrap().contains("start_time"),
+        "{body}"
+    );
     // A narrower range is accepted.
     let (status, _) = fx
         .api("/search?starred_only=true&start_time=2026-09-01T00:00:00Z&end_time=2026-09-01T01:00:00Z")

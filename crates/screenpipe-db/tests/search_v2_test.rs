@@ -109,7 +109,12 @@ async fn search(
     .expect("search")
 }
 
-async fn count(db: &DatabaseManager, q: &str, content_type: ContentType, scope: &SearchScope) -> usize {
+async fn count(
+    db: &DatabaseManager,
+    q: &str,
+    content_type: ContentType,
+    scope: &SearchScope,
+) -> usize {
     db.count_search_results_with_scope(
         q,
         content_type,
@@ -151,7 +156,11 @@ fn frame_ids(results: &[SearchResult]) -> Vec<i64> {
 async fn the_default_scope_returns_what_search_with_tags_returns() {
     let (_dir, db) = open_db().await;
     ten_frames(&db).await;
-    for content_type in [ContentType::All, ContentType::OCR, ContentType::Accessibility] {
+    for content_type in [
+        ContentType::All,
+        ContentType::OCR,
+        ContentType::Accessibility,
+    ] {
         for (limit, offset) in [(3, 0), (3, 3), (20, 0)] {
             let before = db
                 .search_with_tags(
@@ -243,7 +252,9 @@ async fn windows_filter_frames_before_pagination() {
 
     // No windows at all matches nothing.
     let none = scope_with(SearchWindows::default());
-    assert!(search(&db, "alpha", ContentType::All, 20, 0, &none).await.is_empty());
+    assert!(search(&db, "alpha", ContentType::All, 20, 0, &none)
+        .await
+        .is_empty());
     assert_eq!(count(&db, "alpha", ContentType::OCR, &none).await, 0);
 }
 
@@ -253,7 +264,13 @@ async fn windows_are_half_open_and_compare_instants_not_spellings() {
     let at_start = frame(&db, at(2), "Editor", "edge start").await;
     let at_end = frame(&db, at(4), "Editor", "edge end").await;
     let inside = frame(&db, at(3), "Editor", "edge inside").await;
-    let just_before = frame(&db, at(2) - Duration::milliseconds(1), "Editor", "edge before").await;
+    let just_before = frame(
+        &db,
+        at(2) - Duration::milliseconds(1),
+        "Editor",
+        "edge before",
+    )
+    .await;
     // Another writer's spelling of an instant inside the window.
     sqlx::query("UPDATE frames SET timestamp = '2026-10-01T09:03:00.000Z' WHERE id = ?1")
         .bind(inside)
@@ -263,7 +280,10 @@ async fn windows_are_half_open_and_compare_instants_not_spellings() {
     let scope = scope_with(SearchWindows::new([(at(2), at(4))]));
     let hits = frame_ids(&search(&db, "edge", ContentType::OCR, 20, 0, &scope).await);
     assert!(hits.contains(&at_start), "the start is inside");
-    assert!(hits.contains(&inside), "a Z-suffixed timestamp still matches");
+    assert!(
+        hits.contains(&inside),
+        "a Z-suffixed timestamp still matches"
+    );
     assert!(!hits.contains(&at_end), "the end is outside");
     assert!(!hits.contains(&just_before));
     assert_eq!(hits.len(), 2);
@@ -306,9 +326,14 @@ async fn windows_filter_audio_and_input_and_never_match_memories() {
     );
 
     for m in [2, 5] {
-        db.insert_ui_event(&ui_event(at(m), UiEventType::Text, Some("typed words"), None))
-            .await
-            .unwrap();
+        db.insert_ui_event(&ui_event(
+            at(m),
+            UiEventType::Text,
+            Some("typed words"),
+            None,
+        ))
+        .await
+        .unwrap();
     }
     let input = search(&db, "", ContentType::Input, 20, 0, &scope).await;
     assert_eq!(input.len(), 1);
@@ -329,7 +354,9 @@ async fn windows_filter_audio_and_input_and_never_match_memories() {
             .len(),
         1
     );
-    assert!(search(&db, "", ContentType::Memory, 20, 0, &scope).await.is_empty());
+    assert!(search(&db, "", ContentType::Memory, 20, 0, &scope)
+        .await
+        .is_empty());
     assert_eq!(count(&db, "", ContentType::Memory, &scope).await, 0);
 }
 
@@ -482,7 +509,15 @@ async fn parsed_fixture(db: &DatabaseManager) -> ParsedFixture {
         &run(
             "chat",
             vec![
-                item("c", None, SemanticItemKind::Conversation, "conv", Some("Launch"), None, None),
+                item(
+                    "c",
+                    None,
+                    SemanticItemKind::Conversation,
+                    "conv",
+                    Some("Launch"),
+                    None,
+                    None,
+                ),
                 item(
                     "m1",
                     Some("c"),
@@ -570,7 +605,9 @@ async fn parsed_search_returns_handled_runs_with_items_and_actors() {
         "newest first; no frame without a run, no empty run"
     );
     assert_eq!(count(&db, "", ContentType::Parsed, &none).await, 2);
-    assert!(!hits.iter().any(|p| p.frame_id == fx.plain || p.frame_id == fx.empty_run));
+    assert!(!hits
+        .iter()
+        .any(|p| p.frame_id == fx.plain || p.frame_id == fx.empty_run));
 
     let chat = hits[1];
     assert_eq!(chat.app_name, "Chat");
@@ -587,14 +624,25 @@ async fn parsed_search_returns_handled_runs_with_items_and_actors() {
     assert_eq!(chat.items[1].actor.as_deref(), Some("Ada"));
     assert_eq!(chat.items[1].assigned_actor_id, Some(fx.ada));
     assert_eq!(chat.items[1].assigned_actor_name.as_deref(), Some("Ada"));
-    assert_eq!(chat.items[1].assignment_source.as_deref(), Some("heuristic"));
+    assert_eq!(
+        chat.items[1].assignment_source.as_deref(),
+        Some("heuristic")
+    );
     assert_eq!(chat.items[0].assigned_actor_id, None);
 
     // Text search goes through the item index.
     let budget = search(&db, "budget", ContentType::Parsed, 20, 0, &none).await;
-    assert_eq!(parsed(&budget).iter().map(|p| p.frame_id).collect::<Vec<_>>(), vec![fx.notes]);
+    assert_eq!(
+        parsed(&budget)
+            .iter()
+            .map(|p| p.frame_id)
+            .collect::<Vec<_>>(),
+        vec![fx.notes]
+    );
     assert_eq!(count(&db, "budget", ContentType::Parsed, &none).await, 1);
-    assert!(search(&db, "nowhere", ContentType::Parsed, 20, 0, &none).await.is_empty());
+    assert!(search(&db, "nowhere", ContentType::Parsed, 20, 0, &none)
+        .await
+        .is_empty());
 
     // Parsed items are never part of `all`.
     let all = search(&db, "", ContentType::All, 50, 0, &none).await;
@@ -612,13 +660,18 @@ async fn parsed_filters_by_frame_actor_and_windows() {
         ..Default::default()
     };
     let hits = search(&db, "", ContentType::Parsed, 20, 0, &one).await;
-    assert_eq!(parsed(&hits).iter().map(|p| p.frame_id).collect::<Vec<_>>(), vec![fx.chat]);
+    assert_eq!(
+        parsed(&hits).iter().map(|p| p.frame_id).collect::<Vec<_>>(),
+        vec![fx.chat]
+    );
     assert_eq!(count(&db, "", ContentType::Parsed, &one).await, 1);
     let missing = SearchScope {
         frame_id: Some(fx.plain),
         ..Default::default()
     };
-    assert!(search(&db, "", ContentType::Parsed, 20, 0, &missing).await.is_empty());
+    assert!(search(&db, "", ContentType::Parsed, 20, 0, &missing)
+        .await
+        .is_empty());
 
     let by_ada = SearchScope {
         actor_id: Some(fx.ada),
@@ -629,18 +682,29 @@ async fn parsed_filters_by_frame_actor_and_windows() {
     assert_eq!(hits.len(), 1);
     assert_eq!(hits[0].frame_id, fx.chat);
     let locals: Vec<&str> = hits[0].items.iter().map(|i| i.local_id.as_str()).collect();
-    assert_eq!(locals, vec!["c", "m1"], "Ada's message and its conversation");
+    assert_eq!(
+        locals,
+        vec!["c", "m1"],
+        "Ada's message and its conversation"
+    );
     assert_eq!(count(&db, "", ContentType::Parsed, &by_ada).await, 1);
     // Text and actor must meet on one item.
-    assert!(search(&db, "agreed", ContentType::Parsed, 20, 0, &by_ada).await.is_empty());
+    assert!(search(&db, "agreed", ContentType::Parsed, 20, 0, &by_ada)
+        .await
+        .is_empty());
     assert_eq!(
-        search(&db, "friday", ContentType::Parsed, 20, 0, &by_ada).await.len(),
+        search(&db, "friday", ContentType::Parsed, 20, 0, &by_ada)
+            .await
+            .len(),
         1
     );
 
     let windows = scope_with(SearchWindows::new([(at(2), at(3))]));
     let hits = search(&db, "", ContentType::Parsed, 20, 0, &windows).await;
-    assert_eq!(parsed(&hits).iter().map(|p| p.frame_id).collect::<Vec<_>>(), vec![fx.notes]);
+    assert_eq!(
+        parsed(&hits).iter().map(|p| p.frame_id).collect::<Vec<_>>(),
+        vec![fx.notes]
+    );
     assert_eq!(count(&db, "", ContentType::Parsed, &windows).await, 1);
 }
 
@@ -672,7 +736,10 @@ async fn related_tags_group_co_occurring_tags_by_namespace() {
         .unwrap();
     assert_eq!(related["person"], vec!["person:ada", "person:bob"]);
     assert_eq!(related["other"], vec!["urgent"]);
-    assert!(!related.contains_key("project"), "requested tags are not listed");
+    assert!(
+        !related.contains_key("project"),
+        "requested tags are not listed"
+    );
 
     // The time range and the windows narrow the items it is computed over.
     let related = db
@@ -682,7 +749,13 @@ async fn related_tags_group_co_occurring_tags_by_namespace() {
     assert_eq!(related["person"], vec!["person:ada", "person:bob"]);
     assert!(!related.contains_key("other"));
     let related = db
-        .related_search_tags(&wanted, frames, None, None, Some(&SearchWindows::new([(at(3), at(4))])))
+        .related_search_tags(
+            &wanted,
+            frames,
+            None,
+            None,
+            Some(&SearchWindows::new([(at(3), at(4))])),
+        )
         .await
         .unwrap();
     assert_eq!(related["person"], vec!["person:bob"]);

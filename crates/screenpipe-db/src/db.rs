@@ -4577,7 +4577,8 @@ impl DatabaseManager {
             ORDER BY julianday(captured_at) DESC, id DESC
             LIMIT ?8 OFFSET ?9
             "#,
-            window_condition = crate::ext::search_parsed::live_segment_window_condition(scope, "?10"),
+            window_condition =
+                crate::ext::search_parsed::live_segment_window_condition(scope, "?10"),
         );
         let mut live_query = sqlx::query_as::<_, LiveAudioResultRaw>(sqlx::AssertSqlSafe(sql))
             .bind(query)
@@ -4668,7 +4669,8 @@ impl DatabaseManager {
               AND (?6 IS NULL OR speaker_name LIKE '%' || ?6 || '%' COLLATE NOCASE)
               {window_condition}
             "#,
-            window_condition = crate::ext::search_parsed::live_segment_window_condition(scope, "?7"),
+            window_condition =
+                crate::ext::search_parsed::live_segment_window_condition(scope, "?7"),
         );
         let mut count_query = sqlx::query_scalar::<_, i64>(sqlx::AssertSqlSafe(sql))
             .bind(query)
@@ -5298,9 +5300,8 @@ impl DatabaseManager {
                 // parameters, which bind before it.
                 window_condition = match &scope.windows {
                     Some(_) => {
-                        let n = 7
-                            + usize::from(speaker_name.is_some())
-                            + usize::from(!tags.is_empty());
+                        let n =
+                            7 + usize::from(speaker_name.is_some()) + usize::from(!tags.is_empty());
                         format!(
                             "AND {}",
                             crate::ext::search_parsed::window_filter_sql(

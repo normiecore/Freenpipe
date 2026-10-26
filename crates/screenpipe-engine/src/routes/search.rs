@@ -762,7 +762,12 @@ async fn starred_windows(
     end_time: Option<DateTime<Utc>>,
 ) -> Result<SearchWindows, ApiError> {
     if let Some(id) = &filter.session_id {
-        if db.get_starred_session(id).await.map_err(db_error)?.is_none() {
+        if db
+            .get_starred_session(id)
+            .await
+            .map_err(db_error)?
+            .is_none()
+        {
             return Err(api_error(
                 StatusCode::NOT_FOUND,
                 "starred session not found",
@@ -1210,7 +1215,10 @@ async fn run_search(
     };
 
     let mut response = SearchResponse {
-        data: content_items.into_iter().map(StarredSearchHit::from).collect(),
+        data: content_items
+            .into_iter()
+            .map(StarredSearchHit::from)
+            .collect(),
         pagination: PaginationInfo {
             limit: query.pagination.limit,
             offset: query.pagination.offset,
@@ -1722,7 +1730,10 @@ mod tests {
         assert_eq!(q.starred_session_id.as_deref(), Some("x"));
         // Empty values mean "not given".
         let q = parse_query("frame_id=&actor_id=&starred_only=");
-        assert_eq!((q.frame_id, q.actor_id, q.starred_only), (None, None, false));
+        assert_eq!(
+            (q.frame_id, q.actor_id, q.starred_only),
+            (None, None, false)
+        );
         let uri: axum::http::Uri = "http://localhost/search?frame_id=abc".parse().unwrap();
         assert!(Query::<SearchQuery>::try_from_uri(&uri).is_err());
     }
@@ -1760,9 +1771,12 @@ mod tests {
         );
         let id = "6f1c1d4e-2b8a-4f0e-9a51-0d6c7f3b2a10";
         assert_eq!(
-            plan_search(&parse_query(&format!("starred_session_id=%20{id}%20")), None)
-                .unwrap()
-                .starred,
+            plan_search(
+                &parse_query(&format!("starred_session_id=%20{id}%20")),
+                None
+            )
+            .unwrap()
+            .starred,
             Some(StarredFilter {
                 session_id: Some(id.to_string())
             })
@@ -1777,8 +1791,16 @@ mod tests {
 
     #[test]
     fn related_needs_tags_and_is_refused_to_restricted_pipes() {
-        assert!(!plan_search(&parse_query("include_related=true"), None).unwrap().related);
-        assert!(plan_search(&parse_query("include_related=true&tags=a"), None).unwrap().related);
+        assert!(
+            !plan_search(&parse_query("include_related=true"), None)
+                .unwrap()
+                .related
+        );
+        assert!(
+            plan_search(&parse_query("include_related=true&tags=a"), None)
+                .unwrap()
+                .related
+        );
 
         let endpoints_only = perms(vec![PermissionRule::Api {
             method: "GET".into(),
@@ -1836,7 +1858,10 @@ mod tests {
         assert_eq!(value["starred"], true);
         let back: StarredSearchHit = serde_json::from_value(value).unwrap();
         assert!(back.starred);
-        assert!(back.capture_time().is_none(), "memories have no capture time");
+        assert!(
+            back.capture_time().is_none(),
+            "memories have no capture time"
+        );
         // Older payloads without the flag still read.
         let old: StarredSearchHit = serde_json::from_value(serde_json::json!({
             "type": "Memory",
@@ -1885,7 +1910,12 @@ mod tests {
             text_bytes: 2,
             items: vec![
                 item("c", None, "thread", None),
-                item("m1", Some("c"), "a very long message body", Some((3, "Ada"))),
+                item(
+                    "m1",
+                    Some("c"),
+                    "a very long message body",
+                    Some((3, "Ada")),
+                ),
             ],
         };
         let content = parsed_to_content(&result, None);
@@ -1901,7 +1931,11 @@ mod tests {
 
         let short = parsed_to_content(&result, Some(10));
         assert!(short.text.contains("...(truncated"));
-        assert!(short.items[1].body.as_deref().unwrap().contains("...(truncated"));
+        assert!(short.items[1]
+            .body
+            .as_deref()
+            .unwrap()
+            .contains("...(truncated"));
         assert_eq!(short.items[0].body.as_deref(), Some("thread"));
     }
 
@@ -1939,7 +1973,10 @@ mod tests {
 
     #[test]
     fn busy_and_timeout_errors_are_json() {
-        assert_eq!(db_error(sqlx::Error::PoolTimedOut).0, StatusCode::SERVICE_UNAVAILABLE);
+        assert_eq!(
+            db_error(sqlx::Error::PoolTimedOut).0,
+            StatusCode::SERVICE_UNAVAILABLE
+        );
         assert_eq!(
             db_error(sqlx::Error::RowNotFound).0,
             StatusCode::INTERNAL_SERVER_ERROR

@@ -1209,10 +1209,7 @@ mod tests {
 
     #[test]
     fn search_windows_sql_json_carries_exact_and_widened_bounds() {
-        let w = SearchWindows::new([(
-            t("2026-10-21T09:00:00.250Z"),
-            t("2026-10-21T10:00:00Z"),
-        )]);
+        let w = SearchWindows::new([(t("2026-10-21T09:00:00.250Z"), t("2026-10-21T10:00:00Z"))]);
         let rows: Vec<Vec<String>> = serde_json::from_str(&w.to_sql_json()).unwrap();
         assert_eq!(
             rows,
