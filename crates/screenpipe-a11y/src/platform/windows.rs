@@ -36,7 +36,9 @@ use super::input_queue::{
 use super::window_identity::{self, FrameChild};
 use super::windows_uia::{self, ClickElementRequest};
 
-use windows::Win32::Foundation::{CloseHandle, BOOL, HANDLE, HINSTANCE, HWND, LPARAM, LRESULT, WPARAM};
+use windows::Win32::Foundation::{
+    CloseHandle, BOOL, HANDLE, HINSTANCE, HWND, LPARAM, LRESULT, WPARAM,
+};
 use windows::Win32::Security::{
     GetSidSubAuthority, GetSidSubAuthorityCount, GetTokenInformation, TokenIntegrityLevel,
     TOKEN_MANDATORY_LABEL, TOKEN_QUERY,

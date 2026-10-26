@@ -636,7 +636,10 @@ mod tests {
         assert!(!hooks_can_see_input(Some(MEDIUM), InputTarget::Unreadable));
         // An elevated engine sees elevated apps; only system-level hooks
         // are sure to see a process whose level cannot be read.
-        assert!(hooks_can_see_input(Some(HIGH), InputTarget::Integrity(HIGH)));
+        assert!(hooks_can_see_input(
+            Some(HIGH),
+            InputTarget::Integrity(HIGH)
+        ));
         assert!(!hooks_can_see_input(Some(HIGH), InputTarget::Unreadable));
         assert!(hooks_can_see_input(
             Some(SYSTEM_INTEGRITY_RID),
