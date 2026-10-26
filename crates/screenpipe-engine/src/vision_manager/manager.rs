@@ -194,6 +194,12 @@ impl VisionManager {
         &self.db
     }
 
+    /// Pipeline metrics the capture loops report into, including their loop
+    /// stages and liveness (read by the wedge watchdog).
+    pub(crate) fn vision_metrics(&self) -> &Arc<PipelineMetrics> {
+        &self.config.vision_metrics
+    }
+
     /// True when the user paused this monitor from the recording popover.
     pub fn is_user_paused(&self, monitor_id: u32) -> bool {
         self.device_control.is_paused(monitor_id)
@@ -419,6 +425,19 @@ impl VisionManager {
 
     /// Stop all recording
     pub async fn stop(&self) -> Result<()> {
+        self.stop_capture_tasks(true).await
+    }
+
+    /// Stop every capture task for a restart that starts them again right
+    /// away (the capture-loop wedge watchdog). Unlike [`Self::stop`] it keeps
+    /// the focus tracker running: a stopped tracker is never started again,
+    /// so after a plain stop and start every monitor would be captured at the
+    /// full focused rate.
+    pub(crate) async fn stop_for_restart(&self) -> Result<()> {
+        self.stop_capture_tasks(false).await
+    }
+
+    async fn stop_capture_tasks(&self, shut_down_focus_tracker: bool) -> Result<()> {
         let mut status = self.status.write().await;
         if *status == VisionManagerStatus::Stopped {
             debug!("VisionManager already stopped");
@@ -466,7 +485,9 @@ impl VisionManager {
         }
 
         // Shut down the focus controller.
-        self.focus_controller.shutdown();
+        if shut_down_focus_tracker {
+            self.focus_controller.shutdown();
+        }
 
         let mut status = self.status.write().await;
         *status = VisionManagerStatus::Stopped;
@@ -840,6 +861,20 @@ impl VisionManager {
         self.linker_stop
             .store(true, std::sync::atomic::Ordering::Relaxed);
         self.stop().await
+    }
+}
+
+#[cfg(test)]
+impl VisionManager {
+    /// Force the manager status (tests stand in for a running manager
+    /// without real displays).
+    pub(crate) async fn set_status_for_test(&self, status: VisionManagerStatus) {
+        *self.status.write().await = status;
+    }
+
+    /// Register `task` as `monitor_id`'s capture task.
+    pub(crate) fn insert_capture_task_for_test(&self, monitor_id: u32, task: JoinHandle<()>) {
+        self.recording_tasks.insert(monitor_id, task);
     }
 }
 
