@@ -1264,8 +1264,16 @@ async fn health_check_inner(state: &Arc<AppState>) -> HealthCheckResponse {
     // captures recovery attempts.
     let stream_hijacked = audio_snap.stream_timeouts > 0;
 
+    // `meetings-only` capture keeps every stream closed until a meeting
+    // starts: no audio then is the intended state, not a stall.
+    let audio_waiting_for_meeting = !state.audio_disabled
+        && audio_devices.is_empty()
+        && state.audio_manager.capture_waiting_for_meeting();
+
     let legacy_audio = if state.audio_disabled {
         LegacyAudioStatus::Disabled
+    } else if audio_waiting_for_meeting {
+        LegacyAudioStatus::Ok
     } else if audio_never_captured {
         LegacyAudioStatus::NotStarted
     } else if stream_hijacked && global_audio_active {
