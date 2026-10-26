@@ -55,12 +55,32 @@ fn meeting_ended(meeting_id: i64) {
     screenpipe_events::send_event("meeting_ended", json!({ "meeting_id": meeting_id })).unwrap();
 }
 
-/// A started scheduler with one `meeting_ended` pipe on `agent`.
+/// Gate that only lets this test's meetings start pipes. Every test pipe
+/// listens to `meeting_ended`, and a pipe busy with another test's meeting
+/// would drop this test's event (a busy pipe skips events).
+fn only_meetings(owned: &[i64]) -> super::EventGate {
+    let owned: Arc<Vec<i64>> = Arc::new(owned.to_vec());
+    Arc::new(move |_name, data| {
+        let owned = owned.clone();
+        Box::pin(async move {
+            let id = data.get("meeting_id").and_then(|v| v.as_i64());
+            if id.is_some_and(|id| owned.contains(&id)) {
+                None
+            } else {
+                Some("another test's meeting".to_string())
+            }
+        })
+    })
+}
+
+/// A started scheduler with one `meeting_ended` pipe on `agent` that only
+/// reacts to the `owned` meetings.
 async fn scheduler(
     dir: &std::path::Path,
     pipe: &str,
     store: Arc<MemoryPipeStore>,
     agent: Arc<ScriptedAgent>,
+    owned: &[i64],
     configure: impl FnOnce(&mut PipeManager),
 ) -> PipeManager {
     let pipes_dir = write_event_pipe(dir, pipe, "scripted");
@@ -69,6 +89,7 @@ async fn scheduler(
     let store: Arc<dyn PipeStore> = store;
     let mut manager = PipeManager::new(pipes_dir, executors, Some(store), 3035);
     manager.scheduler_tick = Duration::from_millis(40);
+    manager.set_event_gate(only_meetings(owned));
     configure(&mut manager);
     let ready = Arc::new(SchedulerReady::default());
     manager.add_run_hook(ready.clone());
@@ -100,10 +121,18 @@ async fn two_meeting_ended_events_for_one_meeting_run_the_pipe_once() {
     let pipe = format!("w306-once-{}", unique_id());
     let store = Arc::new(MemoryPipeStore::default());
     let agent = Arc::new(ScriptedAgent::new(&finished_answer("Saved."), true));
-    let mut manager = scheduler(dir.path(), &pipe, store.clone(), agent.clone(), |_| {}).await;
-
     let meeting = unique_id();
     let key = meeting.to_string();
+    let mut manager = scheduler(
+        dir.path(),
+        &pipe,
+        store.clone(),
+        agent.clone(),
+        &[meeting],
+        |_| {},
+    )
+    .await;
+
     // Both deliveries land in one pass ...
     meeting_ended(meeting);
     meeting_ended(meeting);
@@ -124,6 +153,46 @@ async fn two_meeting_ended_events_for_one_meeting_run_the_pipe_once() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_meeting_that_ends_while_the_pipe_is_busy_still_gets_its_run() {
+    let dir = tempfile::tempdir().unwrap();
+    let pipe = format!("w306-busy-{}", unique_id());
+    let store = Arc::new(MemoryPipeStore::default());
+    let mut agent = ScriptedAgent::new(&finished_answer("Saved."), true);
+    // Long enough for the second meeting to end while the first runs.
+    agent.delay = Duration::from_millis(600);
+    let agent = Arc::new(agent);
+    let first = unique_id();
+    let second = unique_id();
+    let mut manager = scheduler(
+        dir.path(),
+        &pipe,
+        store.clone(),
+        agent.clone(),
+        &[first, second],
+        |_| {},
+    )
+    .await;
+
+    meeting_ended(first);
+    let first_key = first.to_string();
+    assert!(
+        wait_until(Duration::from_secs(10), || !store
+            .executions_for_key(&first_key)
+            .is_empty())
+        .await
+    );
+    meeting_ended(second);
+    let second_key = second.to_string();
+    assert!(wait_until(Duration::from_secs(15), || finished(&store, &second_key)).await);
+    assert!(finished(&store, &first_key));
+    assert_eq!(store.executions_for_key(&first_key).len(), 1);
+    assert_eq!(store.executions_for_key(&second_key).len(), 1);
+    assert_eq!(agent.runs_mentioning(&format!("instance `{second_key}`")), 1);
+
+    manager.stop_scheduler().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn two_schedulers_racing_on_one_store_run_the_pipe_once() {
     let dir_a = tempfile::tempdir().unwrap();
     let dir_b = tempfile::tempdir().unwrap();
@@ -131,11 +200,27 @@ async fn two_schedulers_racing_on_one_store_run_the_pipe_once() {
     let store = Arc::new(MemoryPipeStore::default());
     let agent_a = Arc::new(ScriptedAgent::new(&finished_answer("A"), true));
     let agent_b = Arc::new(ScriptedAgent::new(&finished_answer("B"), true));
-    let mut a = scheduler(dir_a.path(), &pipe, store.clone(), agent_a.clone(), |_| {}).await;
-    let mut b = scheduler(dir_b.path(), &pipe, store.clone(), agent_b.clone(), |_| {}).await;
-
     let meeting = unique_id();
     let key = meeting.to_string();
+    let mut a = scheduler(
+        dir_a.path(),
+        &pipe,
+        store.clone(),
+        agent_a.clone(),
+        &[meeting],
+        |_| {},
+    )
+    .await;
+    let mut b = scheduler(
+        dir_b.path(),
+        &pipe,
+        store.clone(),
+        agent_b.clone(),
+        &[meeting],
+        |_| {},
+    )
+    .await;
+
     meeting_ended(meeting);
     assert!(wait_until(Duration::from_secs(10), || finished(&store, &key)).await);
     tokio::time::sleep(Duration::from_millis(400)).await;
@@ -157,11 +242,18 @@ async fn cancelling_a_queued_run_releases_its_claim() {
     let pipe = format!("w306-cancel-{}", unique_id());
     let store = Arc::new(MemoryPipeStore::default());
     let agent = Arc::new(ScriptedAgent::new(&finished_answer("Saved."), true));
-    let mut manager = scheduler(dir.path(), &pipe, store.clone(), agent.clone(), |_| {}).await;
-
     let meeting = unique_id();
     let key = meeting.to_string();
     let needle = format!("instance `{key}`");
+    let mut manager = scheduler(
+        dir.path(),
+        &pipe,
+        store.clone(),
+        agent.clone(),
+        &[meeting],
+        |_| {},
+    )
+    .await;
 
     // Hold the run in its queued state.
     let gate = store.running_gate.write().await;
@@ -260,10 +352,10 @@ async fn a_clean_exit_without_a_final_answer_is_recorded_as_failed() {
     })
     .to_string();
     let agent = Arc::new(ScriptedAgent::new(&tool_only, true));
-    let mut manager = scheduler(dir.path(), &pipe, store.clone(), agent, |_| {}).await;
-
     let meeting = unique_id();
     let key = meeting.to_string();
+    let mut manager = scheduler(dir.path(), &pipe, store.clone(), agent, &[meeting], |_| {}).await;
+
     meeting_ended(meeting);
     assert!(wait_until(Duration::from_secs(10), || finished(&store, &key)).await);
     let row = &store.executions_for_key(&key)[0];
@@ -279,17 +371,29 @@ async fn the_event_gate_keeps_trivial_events_from_starting_pipes() {
     let pipe = format!("w306-gate-{}", unique_id());
     let store = Arc::new(MemoryPipeStore::default());
     let agent = Arc::new(ScriptedAgent::new(&finished_answer("ok"), true));
-    let mut manager = scheduler(dir.path(), &pipe, store.clone(), agent.clone(), |m| {
-        m.set_event_gate(Arc::new(|_name, data| {
-            Box::pin(async move {
-                (data.get("trivial") == Some(&json!(true))).then(|| "trivial meeting".to_string())
-            })
-        }));
-    })
-    .await;
-
     let meeting = unique_id();
     let key = meeting.to_string();
+    let mut manager = scheduler(
+        dir.path(),
+        &pipe,
+        store.clone(),
+        agent.clone(),
+        &[meeting],
+        |m| {
+            let own = only_meetings(&[meeting]);
+            m.set_event_gate(Arc::new(move |name, data| {
+                let own = own.clone();
+                Box::pin(async move {
+                    if data.get("trivial") == Some(&json!(true)) {
+                        return Some("trivial meeting".to_string());
+                    }
+                    own(name, data).await
+                })
+            }));
+        },
+    )
+    .await;
+
     screenpipe_events::send_event(
         "meeting_ended",
         json!({"meeting_id": meeting, "trivial": true}),
@@ -312,7 +416,8 @@ async fn a_refresh_request_runs_the_pipe_once_under_its_key() {
     let pipe = format!("w306-refresh-{}", unique_id());
     let store = Arc::new(MemoryPipeStore::default());
     let agent = Arc::new(ScriptedAgent::new(&finished_answer("ok"), true));
-    let mut manager = scheduler(dir.path(), &pipe, store.clone(), agent.clone(), |_| {}).await;
+    // Refresh requests name the pipe; no meeting event may start it.
+    let mut manager = scheduler(dir.path(), &pipe, store.clone(), agent.clone(), &[], |_| {}).await;
 
     let meeting = unique_id();
     let key = recovery_trigger_key(meeting, 1);
@@ -710,7 +815,7 @@ async fn a_summary_run_that_forgot_to_save_is_rescued_end_to_end() {
     let agent = Arc::new(ScriptedAgent::new(&printed_summary_stdout(), true));
     let hook_store: Arc<dyn PipeStore> = store.clone();
     let hook_notes: Arc<dyn MeetingSummaryNotes> = notes.clone();
-    let mut manager = scheduler(dir.path(), &pipe, store.clone(), agent, |m| {
+    let mut manager = scheduler(dir.path(), &pipe, store.clone(), agent, &[meeting], |m| {
         m.add_run_hook(Arc::new(MeetingSummaryFinalizer::for_pipe(
             hook_store, hook_notes, &pipe,
         )));

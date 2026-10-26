@@ -3971,6 +3971,8 @@ impl PipeManager {
 
                     for (event_name, data) in &pending_events {
                         let mut matched: Vec<String> = Vec::new();
+                        // Pipes the event is for that already have a run.
+                        let mut busy: Vec<String> = Vec::new();
                         for (name, config, _body) in &pipe_snapshot {
                             if !config.enabled {
                                 continue;
@@ -4008,24 +4010,14 @@ impl PipeManager {
                                     let r = running.lock().await;
                                     r.contains_key(name)
                                 };
-                                if already_running {
-                                    debug!(
-                                        "scheduler: event '{}' skipped pipe '{}' (already running)",
-                                        event_name, name
-                                    );
-                                    continue;
-                                }
-                                if event_triggered.contains_key(name) {
-                                    debug!(
-                                        "scheduler: event '{}' skipped pipe '{}' (a run is already planned this pass)",
-                                        event_name, name
-                                    );
+                                if already_running || event_triggered.contains_key(name) {
+                                    busy.push(name.clone());
                                     continue;
                                 }
                                 matched.push(name.clone());
                             }
                         }
-                        if matched.is_empty() {
+                        if matched.is_empty() && busy.is_empty() {
                             continue;
                         }
 
@@ -4042,6 +4034,32 @@ impl PipeManager {
                         }
 
                         let key = event_runs::event_instance_key(event_name, data);
+                        // A busy pipe keeps an event that has an instance key
+                        // (another meeting ended while the summary of the
+                        // last one runs) and tries it again on a later pass;
+                        // the claim stops it from running twice. Events
+                        // without a key are dropped, as before.
+                        for name in busy {
+                            match key {
+                                Some(_) => {
+                                    debug!(
+                                        "scheduler: event '{}' for busy pipe '{}' kept for a later pass",
+                                        event_name, name
+                                    );
+                                    to_defer.push(event_runs::EventRun {
+                                        pipe: name,
+                                        event: event_name.clone(),
+                                        key: key.clone(),
+                                        data: data.clone(),
+                                        directed: true,
+                                    });
+                                }
+                                None => debug!(
+                                    "scheduler: event '{}' skipped pipe '{}' (already running)",
+                                    event_name, name
+                                ),
+                            }
+                        }
                         for name in matched {
                             info!(
                                 "scheduler: event '{}' triggered pipe '{}'",

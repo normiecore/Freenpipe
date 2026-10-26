@@ -31,7 +31,7 @@ pub const CLAIM_RETENTION_DAYS: i64 = 30;
 /// Longest event payload shown to the agent, in characters.
 pub const TRIGGER_CONTEXT_MAX_CHARS: usize = 2_000;
 
-/// How long a refresh request that cannot start yet (agent still installing,
+/// How long a directed run that cannot start yet (agent still installing,
 /// pipe busy) is kept and tried again.
 pub const DEFERRED_REQUEST_TTL: std::time::Duration = std::time::Duration::from_secs(10 * 60);
 
@@ -54,8 +54,10 @@ pub struct EventRun {
     pub key: Option<String>,
     /// Payload shown to the agent.
     pub data: Value,
-    /// Asked for by pipe name (a refresh request) instead of matched by the
-    /// pipe's trigger list.
+    /// Aimed at one pipe (a refresh request, or a keyed event kept while the
+    /// pipe was busy) instead of matched against trigger lists. Such a run is
+    /// kept and tried again when it cannot start yet, for up to
+    /// [`DEFERRED_REQUEST_TTL`], and does not pass the event gate again.
     pub directed: bool,
 }
 
