@@ -1039,8 +1039,9 @@ fn get_window_info(hwnd: HWND) -> (String, Option<String>, u32) {
         let mut pid: u32 = 0;
         GetWindowThreadProcessId(hwnd, Some(&mut pid));
 
-        let app_name =
-            super::windows::get_process_name(pid).unwrap_or_else(|| "Unknown".to_string());
+        // Same identity as frames and app switches (UWP apps resolved
+        // behind ApplicationFrameHost, Edge hosts folded into msedge.exe).
+        let app_name = super::windows::get_effective_app_name(hwnd, pid);
 
         (app_name, title, pid)
     }
