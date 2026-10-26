@@ -1730,6 +1730,13 @@ impl CaptureOutput {
 /// stream is released, so the next capture opens a fresh session.
 const CORRUPT_STREAK_RELEASE: u32 = 3;
 
+/// While the run goes on, the stream is released again after every this many
+/// further corrupt frames. A session that keeps handing out zeroed buffers
+/// (a device left broken by a GPU reset) then recovers without a restart,
+/// and a screen the OS blanks on purpose for a whole film costs one cheap
+/// reopen per this many frames.
+const CORRUPT_STREAK_RELEASE_AGAIN_EVERY: u32 = 30;
+
 /// Run of corrupt frames on one monitor.
 #[derive(Debug, Default)]
 struct CorruptStreak {
@@ -1737,11 +1744,13 @@ struct CorruptStreak {
 }
 
 impl CorruptStreak {
-    /// Count a corrupt frame; true exactly when the run reaches
-    /// [`CORRUPT_STREAK_RELEASE`] (once per run).
+    /// Count a corrupt frame; true when the run reaches
+    /// [`CORRUPT_STREAK_RELEASE`] and after every
+    /// [`CORRUPT_STREAK_RELEASE_AGAIN_EVERY`] further frames of it.
     fn on_corrupt(&mut self) -> bool {
         self.count = self.count.saturating_add(1);
-        self.count == CORRUPT_STREAK_RELEASE
+        self.count >= CORRUPT_STREAK_RELEASE
+            && (self.count - CORRUPT_STREAK_RELEASE) % CORRUPT_STREAK_RELEASE_AGAIN_EVERY == 0
     }
 
     fn on_valid(&mut self) {
@@ -1750,8 +1759,9 @@ impl CorruptStreak {
 }
 
 /// Count a frame the corruption guard rejected (it is not stored and not used
-/// as the change baseline) and release the capture stream once per run of
-/// corrupt frames. A frame with real pixels ends the run.
+/// as the change baseline) and release the capture stream when the run of
+/// corrupt frames calls for it (see [`CorruptStreak::on_corrupt`]). A frame
+/// with real pixels ends the run.
 fn track_frame_validity(
     output: &CaptureOutput,
     streak: &mut CorruptStreak,
@@ -1770,7 +1780,8 @@ fn track_frame_validity(
 }
 
 /// Add a corrupt frame to the monitor's run, releasing the capture stream
-/// when the run reaches [`CORRUPT_STREAK_RELEASE`].
+/// when the run reaches [`CORRUPT_STREAK_RELEASE`] and again after every
+/// [`CORRUPT_STREAK_RELEASE_AGAIN_EVERY`] further frames.
 fn extend_corrupt_streak(
     streak: &mut CorruptStreak,
     kind: CorruptFrameKind,
@@ -1783,7 +1794,7 @@ fn extend_corrupt_streak(
             "monitor {}: {} corrupt frames in a row (last: {:?}); releasing the \
              capture stream so the next capture opens a fresh one",
             monitor_id,
-            CORRUPT_STREAK_RELEASE,
+            streak.count,
             kind
         );
         release_stream();
@@ -3193,7 +3204,7 @@ mod tests {
     }
 
     #[test]
-    fn a_run_of_corrupt_frames_releases_the_stream_once() {
+    fn a_run_of_corrupt_frames_releases_the_stream_on_a_bounded_schedule() {
         let metrics = screenpipe_screen::PipelineMetrics::new();
         let mut streak = CorruptStreak::default();
         let releases = std::cell::Cell::new(0);
@@ -3207,7 +3218,7 @@ mod tests {
                 releases.set(releases.get() + 1)
             });
         }
-        assert_eq!(releases.get(), 1, "released once per run");
+        assert_eq!(releases.get(), 1, "released once early in a run");
         assert_eq!(metrics.snapshot().frames_corrupt_green, 6);
 
         // A good frame ends the run; the next run releases again.
@@ -3229,6 +3240,25 @@ mod tests {
             });
         }
         assert_eq!(releases.get(), 2);
+    }
+
+    #[test]
+    fn a_stream_that_stays_black_is_released_again_every_thirty_frames() {
+        // A session left broken by a GPU reset keeps returning zeroed
+        // buffers after the first release; it gets further fresh starts.
+        let metrics = screenpipe_screen::PipelineMetrics::new();
+        let mut streak = CorruptStreak::default();
+        let mut released_at = Vec::new();
+        for frame in 1..=100u32 {
+            let black = guard_frame_pixels(Some(image::DynamicImage::new_rgb8(64, 64)), 1)
+                .err()
+                .unwrap();
+            track_frame_validity(&black, &mut streak, &metrics, 1, || {
+                released_at.push(frame)
+            });
+        }
+        assert_eq!(released_at, vec![3, 33, 63, 93]);
+        assert_eq!(metrics.snapshot().frames_corrupt_black, 100);
     }
 
     #[test]

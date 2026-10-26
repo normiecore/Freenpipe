@@ -269,12 +269,32 @@ pub const FRAME_VALIDITY_GRID: u32 = 64;
 /// (terminals, dark themes, video) carry at least some pixels above it.
 const BLACK_CHANNEL_MAX: u8 = 2;
 
-/// Decode-garbage green is what zero-filled YUV turns into: red and blue clamp
-/// to 0, green lands between roughly 77 and 136 depending on the colour
-/// matrix. The bounds keep a little slack for rounding.
+/// Decode-garbage green is what zero-filled YUV (Y = U = V = 0) turns into:
+/// red and blue clamp to 0 and green lands on a value fixed by the colour
+/// matrix. Worked out from the standard conversion coefficients:
+///
+/// | matrix         | limited range | full range |
+/// |----------------|---------------|------------|
+/// | BT.709         | 76.9          | 83.9       |
+/// | BT.2020        | 88.6          | (94.2)     |
+/// | BT.601 / JPEG  | 135.6         | 135.5      |
+///
+/// Only narrow windows around those values count, with a few levels of slack
+/// for rounding and integer shader paths. Flat dark greens that real content
+/// uses as a background stay outside them: the solitaire felt and CSS `green`
+/// (0,128,0), CSS `darkgreen` (0,100,0), and anything brighter. Full-range
+/// BT.2020 is left out on purpose: it sits next to `darkgreen`, and HDR
+/// output reaches the capture path already converted to RGB.
 const GARBAGE_GREEN_RB_MAX: u8 = 4;
-const GARBAGE_GREEN_G_MIN: u8 = 64;
-const GARBAGE_GREEN_G_MAX: u8 = 160;
+const GARBAGE_GREEN_G_WINDOWS: [std::ops::RangeInclusive<u8>; 2] = [74..=90, 132..=139];
+
+/// True when a pixel has the colour of zeroed YUV run through a common
+/// colour matrix (see [`GARBAGE_GREEN_G_WINDOWS`]).
+fn is_garbage_green(red: u8, green: u8, blue: u8) -> bool {
+    red <= GARBAGE_GREEN_RB_MAX
+        && blue <= GARBAGE_GREEN_RB_MAX
+        && GARBAGE_GREEN_G_WINDOWS.iter().any(|w| w.contains(&green))
+}
 
 /// A grid row belongs to a garbage band when at least this share of its
 /// samples is garbage green (a cursor or one stray pixel may cross it).
@@ -322,10 +342,7 @@ pub fn detect_corrupt_frame(image: &DynamicImage) -> Option<crate::metrics::Corr
             if red.max(green).max(blue) > BLACK_CHANNEL_MAX {
                 lit_samples += 1;
             }
-            if red <= GARBAGE_GREEN_RB_MAX
-                && blue <= GARBAGE_GREEN_RB_MAX
-                && (GARBAGE_GREEN_G_MIN..=GARBAGE_GREEN_G_MAX).contains(&green)
-            {
+            if is_garbage_green(red, green, blue) {
                 garbage += 1;
             }
         }
@@ -526,8 +543,9 @@ mod frame_validity_tests {
 
     #[test]
     fn green_band_for_each_colour_matrix_is_corrupt() {
-        // BT.601 and BT.709, limited and full range, of zeroed YUV.
-        for g in [136u8, 135, 77, 84] {
+        // BT.601 and BT.709, limited and full range, and limited BT.2020, of
+        // zeroed YUV, plus the edges of the slack around them.
+        for g in [136u8, 135, 77, 84, 89, 74, 90, 132, 139] {
             let mut img = fill([200, 200, 200]);
             rect(&mut img, 0, 810, W, 270, [0, g, 0]);
             assert_eq!(check(img), Some(CorruptFrameKind::Green), "green {g}");
@@ -553,20 +571,52 @@ mod frame_validity_tests {
         rect(&mut img, 0, H - 72, W, 72, [16, 124, 16]);
         assert_eq!(check(img), None);
 
-        // A pure green banner that does not span the full width.
+        // A banner of decode-garbage colour that does not span the full width.
         let mut img = fill([255, 255, 255]);
-        rect(&mut img, 200, 0, W - 400, 200, [0, 128, 0]);
+        rect(&mut img, 200, 0, W - 400, 200, [0, 135, 0]);
         assert_eq!(check(img), None);
 
-        // A thin full-width pure green bar inside the page.
+        // A thin full-width bar of decode-garbage colour inside the page.
         let mut img = fill([255, 255, 255]);
-        rect(&mut img, 0, 400, W, 60, [0, 128, 0]);
+        rect(&mut img, 0, 400, W, 60, [0, 135, 0]);
         assert_eq!(check(img), None);
 
         // Spreadsheet green, success banners, chroma-key green.
         for color in [[33, 115, 70], [40, 167, 69], [0, 177, 64], [30, 215, 96]] {
             assert_eq!(check(fill(color)), None, "{color:?}");
         }
+    }
+
+    #[test]
+    fn flat_dark_green_backgrounds_are_valid() {
+        // CSS `green` / the classic solitaire felt, CSS `darkgreen`, and the
+        // greens just outside the garbage windows, as whole frames.
+        for g in [128u8, 100, 64, 73, 91, 96, 131, 140, 160] {
+            assert_eq!(check(fill([0, g, 0])), None, "green {g}");
+        }
+    }
+
+    #[test]
+    fn maximized_solitaire_felt_is_valid() {
+        // A maximized card game: title bar, the tableau in the upper half,
+        // the bare (0,128,0) felt below it, and the taskbar.
+        let mut img = fill([0, 128, 0]);
+        rect(&mut img, 0, 0, W, 32, [243, 243, 243]);
+        for col in 0..7 {
+            rect(&mut img, 60 + col * 260, 120, 180, 420, [250, 250, 250]);
+        }
+        rect(&mut img, 0, H - 48, W, 48, [32, 32, 32]);
+        assert_eq!(check(img), None);
+    }
+
+    #[test]
+    fn dark_green_page_between_title_bar_and_taskbar_is_valid() {
+        // A slide or web page on a CSS `darkgreen` background.
+        let mut img = fill([0, 100, 0]);
+        rect(&mut img, 0, 0, W, 32, [243, 243, 243]);
+        text_line(&mut img, 200, 300, 40, [255, 255, 255]);
+        rect(&mut img, 0, H - 48, W, 48, [32, 32, 32]);
+        assert_eq!(check(img), None);
     }
 
     #[test]
@@ -581,7 +631,7 @@ mod frame_validity_tests {
     fn tiny_images_are_classified_without_panicking() {
         assert_eq!(check(RgbImage::new(1, 1)), Some(CorruptFrameKind::Black));
         assert_eq!(
-            check(RgbImage::from_pixel(3, 2, Rgb([0, 120, 0]))),
+            check(RgbImage::from_pixel(3, 2, Rgb([0, 136, 0]))),
             Some(CorruptFrameKind::Green)
         );
         assert_eq!(check(RgbImage::from_pixel(5, 7, Rgb([9, 9, 9]))), None);
