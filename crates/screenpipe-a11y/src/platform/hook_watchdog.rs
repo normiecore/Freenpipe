@@ -24,8 +24,11 @@
 //! - Attempts in a streak back off exponentially up to a cap, so a hook that
 //!   keeps failing (or keeps being removed) cannot make the thread spin. The
 //!   streak ends once the hooks have delivered callbacks for a while.
-//! - Input that went to a desktop the hooks cannot see (the secure desktop
-//!   of the lock screen or a UAC prompt) is set aside instead of counted.
+//! - Input the hooks cannot see is set aside instead of counted: input to
+//!   the secure desktop (lock screen, UAC prompt), and input to a window of
+//!   a process running at a higher integrity level than ours (an elevated
+//!   app while the engine is not elevated), which Windows withholds from
+//!   lower-integrity low-level hooks. See [`hooks_can_see_input`].
 //! - Logs carry durations and counts only, never input content.
 
 use std::time::Duration;
@@ -214,6 +217,45 @@ fn millis(d: Duration) -> u64 {
     u64::try_from(d.as_millis()).unwrap_or(u64::MAX)
 }
 
+/// Relative identifier of the System mandatory integrity level. Windows
+/// integrity levels are the last sub-authority of a token's mandatory label
+/// SID: untrusted 0x0000, low 0x1000, medium 0x2000, high 0x3000 (elevated),
+/// system 0x4000.
+pub const SYSTEM_INTEGRITY_RID: u32 = 0x4000;
+
+/// Where the newest input went, as far as the integrity check is concerned.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum InputTarget {
+    /// No foreground window, or one whose process could not be named.
+    Unknown,
+    /// The foreground window's process runs at this integrity level.
+    Integrity(u32),
+    /// The foreground window's process exists but its integrity level could
+    /// not be read, which in practice means it runs with more privileges
+    /// than we do (elevated, system or protected).
+    Unreadable,
+}
+
+/// Whether low-level hooks running at `own_integrity` are called for input
+/// that goes to `target`.
+///
+/// Windows does not call a low-level hook for input that goes to a window of
+/// a process with a higher integrity level than the hook's own process, so
+/// while an elevated app has the focus a non-elevated engine's hooks stay
+/// silent although the system reports input. That silence is no sign of a
+/// removed hook. When our own level is unknown, the input is assumed to be
+/// visible (the watchdog then behaves as if there were no check).
+pub fn hooks_can_see_input(own_integrity: Option<u32>, target: InputTarget) -> bool {
+    let Some(own) = own_integrity else {
+        return true;
+    };
+    match target {
+        InputTarget::Unknown => true,
+        InputTarget::Integrity(level) => level <= own,
+        InputTarget::Unreadable => own >= SYSTEM_INTEGRITY_RID,
+    }
+}
+
 /// Replaces the low-level hooks. Implemented by the Win32 hook set, and by
 /// test hooks.
 pub trait HookReinstaller {
@@ -227,8 +269,9 @@ pub trait HookReinstaller {
 pub enum TickOutcome {
     Healthy,
     Waiting,
-    /// The input went to a desktop the hooks cannot see; nothing was done.
-    ForeignDesktop,
+    /// The input went where the hooks cannot see it (the secure desktop, or
+    /// a window of a more privileged process); nothing was done.
+    InputHidden,
     Reinstalled {
         attempt: u32,
         silent_for_ms: u64,
@@ -242,16 +285,17 @@ pub enum TickOutcome {
 
 /// Evaluate the watchdog and, when an attempt is due, reinstall the hooks.
 ///
-/// `input_desktop_visible` is asked only when an attempt is due: `false`
-/// means the input went to a desktop the hooks cannot see, which is set
-/// aside instead of acted on.
+/// `input_visible_to_hooks` is asked only when an attempt is due: `false`
+/// means the input went where the hooks cannot see it (another desktop, or
+/// a window of a more privileged process), so it is set aside instead of
+/// acted on.
 pub fn tick(
     watchdog: &mut HookWatchdog,
     now_ms: u64,
     last_callback_ms: Option<u64>,
     last_input_ms: Option<u64>,
     hooks: &mut dyn HookReinstaller,
-    input_desktop_visible: &dyn Fn() -> bool,
+    input_visible_to_hooks: &dyn Fn() -> bool,
 ) -> TickOutcome {
     match watchdog.evaluate(now_ms, last_callback_ms, last_input_ms) {
         WatchdogVerdict::Healthy => TickOutcome::Healthy,
@@ -269,13 +313,13 @@ pub fn tick(
             attempt,
             silent_for_ms,
         } => {
-            if !input_desktop_visible() {
+            if !input_visible_to_hooks() {
                 debug!(
                     silent_for_ms,
-                    "input went to a desktop the hooks cannot see; not reinstalling"
+                    "input went where the hooks cannot see it (secure desktop or a more privileged window); not reinstalling"
                 );
                 watchdog.ignore_input_until(now_ms);
-                return TickOutcome::ForeignDesktop;
+                return TickOutcome::InputHidden;
             }
             match hooks.reinstall() {
                 Ok(()) => {
@@ -531,7 +575,7 @@ mod tests {
                 &mut hooks,
                 &hidden
             ),
-            TickOutcome::ForeignDesktop
+            TickOutcome::InputHidden
         );
         // Still the same (set-aside) input: nothing to do.
         assert_eq!(
@@ -567,6 +611,78 @@ mod tests {
         let mut hooks = TestHooks::default();
         assert!(matches!(
             tick(&mut wd, 8_000, None, Some(6_500), &mut hooks, &visible),
+            TickOutcome::Reinstalled { attempt: 1, .. }
+        ));
+    }
+
+    #[test]
+    fn input_to_more_privileged_windows_is_hidden_from_the_hooks() {
+        const MEDIUM: u32 = 0x2000;
+        const HIGH: u32 = 0x3000;
+        // A normal engine and a normal app: the hooks see the input.
+        assert!(hooks_can_see_input(
+            Some(MEDIUM),
+            InputTarget::Integrity(MEDIUM)
+        ));
+        assert!(hooks_can_see_input(
+            Some(MEDIUM),
+            InputTarget::Integrity(0x1000)
+        ));
+        // An elevated app in front of a normal engine: they do not.
+        assert!(!hooks_can_see_input(
+            Some(MEDIUM),
+            InputTarget::Integrity(HIGH)
+        ));
+        assert!(!hooks_can_see_input(Some(MEDIUM), InputTarget::Unreadable));
+        // An elevated engine sees elevated apps; only system-level hooks
+        // are sure to see a process whose level cannot be read.
+        assert!(hooks_can_see_input(Some(HIGH), InputTarget::Integrity(HIGH)));
+        assert!(!hooks_can_see_input(Some(HIGH), InputTarget::Unreadable));
+        assert!(hooks_can_see_input(
+            Some(SYSTEM_INTEGRITY_RID),
+            InputTarget::Unreadable
+        ));
+        // Nothing to compare: behave as if there were no check.
+        assert!(hooks_can_see_input(Some(MEDIUM), InputTarget::Unknown));
+        assert!(hooks_can_see_input(None, InputTarget::Integrity(HIGH)));
+        assert!(hooks_can_see_input(None, InputTarget::Unreadable));
+    }
+
+    #[test]
+    fn typing_into_an_elevated_window_does_not_trigger_reinstalls() {
+        let mut wd = watchdog();
+        let mut hooks = TestHooks::default();
+        let elevated_in_front =
+            || hooks_can_see_input(Some(0x2000), InputTarget::Integrity(0x3000));
+        // Ten minutes of typing into an elevated terminal: the system keeps
+        // reporting input, the hooks hear nothing, and that is expected.
+        let mut hidden = 0;
+        for now in (5_000..605_000).step_by(500) {
+            let outcome = tick(
+                &mut wd,
+                now,
+                Some(1_000),
+                Some(now - 1_200),
+                &mut hooks,
+                &elevated_in_front,
+            );
+            if outcome == TickOutcome::InputHidden {
+                hidden += 1;
+            }
+        }
+        assert_eq!(hooks.reinstalls, 0);
+        assert!(hidden > 0);
+        // Focus back on a normal window and the hooks still silent: now it
+        // is a removed hook, and it is reinstalled.
+        assert!(matches!(
+            tick(
+                &mut wd,
+                610_000,
+                Some(1_000),
+                Some(608_500),
+                &mut hooks,
+                &visible
+            ),
             TickOutcome::Reinstalled { attempt: 1, .. }
         ));
     }

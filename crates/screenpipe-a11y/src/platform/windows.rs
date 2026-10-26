@@ -29,21 +29,26 @@ use std::thread;
 use std::time::{Duration, Instant};
 use tracing::{debug, error, info, warn};
 
-use super::hook_watchdog::{self, HookReinstaller, HookWatchdog, HookWatchdogConfig};
+use super::hook_watchdog::{self, HookReinstaller, HookWatchdog, HookWatchdogConfig, InputTarget};
 use super::input_queue::{
     input_queue, DropReporter, InputPriority, InputQueueReceiver, InputQueueSender,
 };
 use super::window_identity::{self, FrameChild};
 use super::windows_uia::{self, ClickElementRequest};
 
-use windows::Win32::Foundation::{BOOL, HINSTANCE, HWND, LPARAM, LRESULT, WPARAM};
+use windows::Win32::Foundation::{CloseHandle, BOOL, HANDLE, HINSTANCE, HWND, LPARAM, LRESULT, WPARAM};
+use windows::Win32::Security::{
+    GetSidSubAuthority, GetSidSubAuthorityCount, GetTokenInformation, TokenIntegrityLevel,
+    TOKEN_MANDATORY_LABEL, TOKEN_QUERY,
+};
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::System::StationsAndDesktops::{
     CloseDesktop, OpenInputDesktop, DESKTOP_CONTROL_FLAGS, DESKTOP_READOBJECTS,
 };
 use windows::Win32::System::SystemInformation::GetTickCount;
 use windows::Win32::System::Threading::{
-    GetCurrentThread, GetCurrentThreadId, SetThreadPriority, THREAD_PRIORITY,
+    GetCurrentProcess, GetCurrentProcessId, GetCurrentThread, GetCurrentThreadId, OpenProcess,
+    OpenProcessToken, SetThreadPriority, PROCESS_QUERY_LIMITED_INFORMATION, THREAD_PRIORITY,
     THREAD_PRIORITY_BELOW_NORMAL, THREAD_PRIORITY_HIGHEST, THREAD_PRIORITY_IDLE,
     THREAD_PRIORITY_LOWEST, THREAD_PRIORITY_NORMAL,
 };
@@ -1001,6 +1006,73 @@ fn input_desktop_is_visible() -> bool {
     }
 }
 
+/// Mandatory integrity level (the label SID's last sub-authority, for
+/// example 0x2000 for medium and 0x3000 for an elevated process) of the
+/// process behind `process`, or `None` when its token cannot be read.
+fn process_integrity_level(process: HANDLE) -> Option<u32> {
+    unsafe {
+        let mut token = HANDLE::default();
+        OpenProcessToken(process, TOKEN_QUERY, &mut token).ok()?;
+        let level = token_integrity_level(token);
+        let _ = CloseHandle(token);
+        level
+    }
+}
+
+/// Integrity level recorded in an open token (see [`process_integrity_level`]).
+unsafe fn token_integrity_level(token: HANDLE) -> Option<u32> {
+    // The first call only reports the size the label needs.
+    let mut needed = 0u32;
+    let _ = GetTokenInformation(token, TokenIntegrityLevel, None, 0, &mut needed);
+    if needed == 0 || needed > 1024 {
+        return None;
+    }
+    // u64 cells keep the label (which holds a pointer) suitably aligned.
+    let mut buf = vec![0u64; (needed as usize).div_ceil(8)];
+    GetTokenInformation(
+        token,
+        TokenIntegrityLevel,
+        Some(buf.as_mut_ptr().cast()),
+        needed,
+        &mut needed,
+    )
+    .ok()?;
+    let label = &*(buf.as_ptr() as *const TOKEN_MANDATORY_LABEL);
+    let sid = label.Label.Sid;
+    if sid.is_invalid() {
+        return None;
+    }
+    let count = *GetSidSubAuthorityCount(sid);
+    if count == 0 {
+        return None;
+    }
+    Some(*GetSidSubAuthority(sid, u32::from(count) - 1))
+}
+
+/// Where input currently goes, for the watchdog's integrity check: the
+/// integrity level of the foreground window's process.
+fn foreground_input_target() -> InputTarget {
+    unsafe {
+        let hwnd = GetForegroundWindow();
+        if hwnd == HWND::default() {
+            return InputTarget::Unknown;
+        }
+        let mut pid: u32 = 0;
+        GetWindowThreadProcessId(hwnd, Some(&mut pid));
+        if pid == 0 || pid == GetCurrentProcessId() {
+            return InputTarget::Unknown;
+        }
+        match OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, pid) {
+            Ok(process) => {
+                let level = process_integrity_level(process);
+                let _ = CloseHandle(process);
+                level.map_or(InputTarget::Unreadable, InputTarget::Integrity)
+            }
+            Err(_) => InputTarget::Unreadable,
+        }
+    }
+}
+
 /// Message loop of a hook thread: installs the hooks, keeps them serviced,
 /// and runs the watchdog that reinstalls them (on this thread, which owns
 /// them) when Windows removed them silently. Returns once `stop` is set,
@@ -1016,6 +1088,13 @@ fn run_hook_thread_loop(hooks: &mut LowLevelHooks, stop: &AtomicBool) {
     }
     let mut watchdog = HookWatchdog::new(HookWatchdogConfig::default(), 0);
     let mut last_check = Instant::now();
+    // Our own integrity level, to recognise input that goes to a more
+    // privileged window (which our hooks are never called for).
+    let own_integrity = process_integrity_level(unsafe { GetCurrentProcess() });
+    let input_visible_to_hooks = || {
+        input_desktop_is_visible()
+            && hook_watchdog::hooks_can_see_input(own_integrity, foreground_input_target())
+    };
 
     unsafe {
         SetTimer(
@@ -1049,7 +1128,7 @@ fn run_hook_thread_loop(hooks: &mut LowLevelHooks, stop: &AtomicBool) {
                     last_callback_ms,
                     last_input_ms,
                     hooks,
-                    &input_desktop_is_visible,
+                    &input_visible_to_hooks,
                 );
             }
         }
