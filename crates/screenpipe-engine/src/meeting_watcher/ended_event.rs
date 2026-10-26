@@ -180,7 +180,8 @@ mod tests {
 
         let p = load_meeting_ended_payload(&db, id, Some("explicit_stop")).await;
         assert_eq!(p["meeting_id"], id);
-        assert_eq!(p["meeting_end"], end.as_str());
+        // The database may store the end in its own RFC 3339 spelling.
+        assert_eq!(p["meeting_end"].as_str().and_then(parse_ts), parse_ts(&end));
         assert_eq!(p["transcript_segments"], 2);
         let secs = p["duration_secs"].as_i64().unwrap();
         assert!((89..=91).contains(&secs), "duration {secs}");
