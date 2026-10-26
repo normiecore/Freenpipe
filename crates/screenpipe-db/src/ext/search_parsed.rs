@@ -1124,7 +1124,7 @@ mod tests {
         ] {
             let p = plan(&db, &sql).await;
             println!("{table}:\n{}", p.join("\n"));
-            assert_plan(&p, &[&format!("SEARCH sw_t USING"), index], &["SCAN sw_t"]);
+            assert_plan(&p, &["SEARCH sw_t USING", index], &["SCAN sw_t"]);
             assert!(full_scans(&p).is_empty(), "{table}: {p:?}");
         }
     }

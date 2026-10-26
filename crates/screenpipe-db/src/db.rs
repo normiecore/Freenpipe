@@ -3917,7 +3917,7 @@ impl DatabaseManager {
         }
 
         // Sort results by timestamp in descending order
-        results.sort_by(|a, b| b.sort_timestamp().cmp(&a.sort_timestamp()));
+        results.sort_by_key(|r| std::cmp::Reverse(r.sort_timestamp()));
 
         // For ContentType::All, sub-functions each fetched limit+offset rows
         // with offset=0. Now apply pagination once on the globally-sorted set.
