@@ -999,6 +999,10 @@ impl AudioManager {
             targets.len()
         );
         for device in &targets {
+            if self.status().await != AudioManagerStatus::Running {
+                debug!("meetings-only: capture stopped while meeting devices were opening");
+                break;
+            }
             match self.try_start_device(device).await {
                 Ok(DeviceStart::Skipped(
                     DeviceStartSkip::WaitingForMeeting | DeviceStartSkip::MeetingEndedDuringOpen,
@@ -1097,6 +1101,7 @@ impl AudioManager {
             .is_running_mut(device)
             .ok_or_else(|| anyhow!("audio device state missing after starting device: {device}"))?;
         let device_clone = device.clone();
+        let is_running_flag = is_running.clone();
         let metrics = self.metrics.clone();
         let meeting_audio_tap = self.meeting_audio_tap.clone();
 
@@ -1126,6 +1131,12 @@ impl AudioManager {
                 return Err(anyhow!("record_device {} failed: {}", device_clone, e));
             }
 
+            // A deliberate stop (graceful release, pause) clears the
+            // running flag first; only an exit without it is unexpected.
+            if !is_running_flag.load(Ordering::Relaxed) {
+                debug!("recording for device {} stopped", device_clone);
+                return Ok(());
+            }
             warn!(
                 "recording handle for device {} exited unexpectedly with Ok",
                 device_clone
