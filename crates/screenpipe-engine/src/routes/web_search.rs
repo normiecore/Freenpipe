@@ -606,25 +606,37 @@ fn is_invisible(c: char) -> bool {
     )
 }
 
+/// Whether a `<` followed by `c` can start a tag.
+fn opens_tag(c: char) -> bool {
+    c.is_ascii_alphabetic() || c == '/' || c == '!'
+}
+
 /// Remove `<...>` markup and decode the handful of entities search APIs use
 /// in snippets. A `<` starts a tag only when a letter, `/` or `!` follows it
 /// and a `>` closes it later, so comparisons such as `x < 5 and y > 3` and a
 /// stray `<` keep their text.
+///
+/// Runs in linear time: every byte is searched once and copied at most once.
+/// A `<` that does not open a tag is copied without looking for a `>`, and
+/// once a tag finds no closing `>` none can follow, so the remainder is
+/// copied as it is.
 fn strip_markup(raw: &str) -> String {
     let mut out = String::with_capacity(raw.len());
     let mut rest = raw;
     while let Some(pos) = rest.find('<') {
         out.push_str(&rest[..pos]);
         let after = &rest[pos + 1..];
-        let opens_tag = after
-            .chars()
-            .next()
-            .is_some_and(|c| c.is_ascii_alphabetic() || c == '/' || c == '!');
+        if !after.chars().next().is_some_and(opens_tag) {
+            out.push('<');
+            rest = after;
+            continue;
+        }
         match after.find('>') {
-            Some(end) if opens_tag => rest = &after[end + 1..],
-            _ => {
+            Some(end) => rest = &after[end + 1..],
+            None => {
                 out.push('<');
                 rest = after;
+                break;
             }
         }
     }
@@ -646,16 +658,62 @@ fn visible_chars(raw: &str) -> String {
         .collect()
 }
 
+/// Raw bytes looked at per character of cleaned output. Markup and runs of
+/// whitespace rarely reach this ratio, and the bound keeps a hostile
+/// multi-megabyte provider field from costing more than a few hundred KB of
+/// work per field.
+const RAW_BYTES_PER_CHAR: usize = 32;
+/// Raw bytes always looked at, however short the cleaned output may be.
+const MIN_RAW_BYTES: usize = 1_024;
+
+/// The start of `raw` that can matter for a cleaned text of at most `max`
+/// characters (ending on a character boundary), and whether anything was
+/// cut off.
+fn raw_prefix(raw: &str, max: usize) -> (&str, bool) {
+    let limit = max.saturating_mul(RAW_BYTES_PER_CHAR).max(MIN_RAW_BYTES);
+    if raw.len() <= limit {
+        return (raw, false);
+    }
+    let mut end = limit;
+    while !raw.is_char_boundary(end) {
+        end -= 1;
+    }
+    (&raw[..end], true)
+}
+
+/// `prefix` without a tag that the cut in [`raw_prefix`] split open, so a
+/// shortened field does not end in a fragment such as `<spa`.
+fn drop_partial_tag(prefix: &str) -> &str {
+    match prefix.rfind('<') {
+        Some(pos)
+            if !prefix[pos..].contains('>')
+                && prefix[pos + 1..].chars().next().map_or(true, opens_tag) =>
+        {
+            &prefix[..pos]
+        }
+        _ => prefix,
+    }
+}
+
 /// One line of plain text: markup, control and invisible characters gone,
 /// whitespace collapsed, at most `max` characters.
 pub fn clean_line(raw: &str, max: usize) -> String {
+    let (mut raw, cut) = raw_prefix(raw, max);
+    if cut {
+        raw = drop_partial_tag(raw);
+    }
     let text = visible_chars(&strip_markup(raw));
-    truncate_chars(&text.split_whitespace().collect::<Vec<_>>().join(" "), max)
+    truncate_chars(
+        &text.split_whitespace().collect::<Vec<_>>().join(" "),
+        max,
+        cut,
+    )
 }
 
 /// Multi-line text: like [`clean_line`] but keeps line breaks (at most one
 /// blank line in a row).
 fn clean_block(raw: &str, max: usize) -> String {
+    let (raw, cut) = raw_prefix(raw, max);
     let mut out = String::new();
     let mut pending_blank = false;
     for line in raw.lines() {
@@ -673,11 +731,13 @@ fn clean_block(raw: &str, max: usize) -> String {
         out.push_str(&line);
         pending_blank = false;
     }
-    truncate_chars(&out, max)
+    truncate_chars(&out, max, cut)
 }
 
-fn truncate_chars(text: &str, max: usize) -> String {
-    if text.chars().count() <= max {
+/// At most `max` characters of `text`, ending in `…` when it was longer or
+/// when its raw source was `cut` short. Empty text stays empty.
+fn truncate_chars(text: &str, max: usize, cut: bool) -> String {
+    if text.is_empty() || (!cut && text.chars().count() <= max) {
         return text.to_string();
     }
     let mut out: String = text.chars().take(max.saturating_sub(1)).collect();
@@ -1130,5 +1190,87 @@ mod tests {
             Some("https://h.test/".into())
         );
         assert_eq!(clean_block("a\r\n\r\n\r\nb\u{7}c", 100), "a\n\nb c");
+    }
+
+    /// Generous on purpose: the linear pass takes milliseconds even in a
+    /// debug build, while the old quadratic scan took minutes on these
+    /// inputs in a release build.
+    const PATHOLOGICAL_BUDGET: std::time::Duration = std::time::Duration::from_secs(10);
+
+    #[test]
+    fn markup_stripping_is_linear_on_hostile_fields() {
+        let lone = "<".repeat(2_000_000);
+        let started = std::time::Instant::now();
+        assert_eq!(strip_markup(&lone), lone, "a stray `<` keeps its text");
+        assert!(
+            started.elapsed() < PATHOLOGICAL_BUDGET,
+            "2,000,000 '<' took {:?}",
+            started.elapsed()
+        );
+
+        let unclosed = "<a".repeat(1_000_000);
+        let started = std::time::Instant::now();
+        assert_eq!(
+            strip_markup(&unclosed),
+            unclosed,
+            "tags that never close keep their text"
+        );
+        assert!(
+            started.elapsed() < PATHOLOGICAL_BUDGET,
+            "1,000,000 '<a' took {:?}",
+            started.elapsed()
+        );
+
+        // Closed tags and stray `<` interleaved still take one pass.
+        let mixed = "<b>x</b> < ".repeat(200_000);
+        let started = std::time::Instant::now();
+        assert_eq!(strip_markup(&mixed), "x < ".repeat(200_000));
+        assert!(started.elapsed() < PATHOLOGICAL_BUDGET);
+    }
+
+    #[test]
+    fn hostile_provider_fields_clean_quickly() {
+        let started = std::time::Instant::now();
+        let lone = "<".repeat(2_000_000);
+        let title = clean_line(&lone, MAX_TITLE_CHARS);
+        assert_eq!(title.chars().count(), MAX_TITLE_CHARS);
+        assert!(title.ends_with('…'));
+        assert!(title.trim_end_matches('…').chars().all(|c| c == '<'));
+
+        let unclosed = "<a".repeat(1_000_000);
+        assert_eq!(clean_line(&unclosed, 10), "<a<a<a<a<…");
+        assert!(clean_block(&lone, MAX_CONTENT_CHARS).ends_with('…'));
+        assert!(
+            started.elapsed() < PATHOLOGICAL_BUDGET,
+            "cleaning took {:?}",
+            started.elapsed()
+        );
+    }
+
+    #[test]
+    fn long_raw_fields_are_bounded_before_cleaning() {
+        // Short fields are untouched by the bound.
+        assert_eq!(raw_prefix("abc", 10), ("abc", false));
+        // The cut lands on a character boundary.
+        let wide = "é".repeat(4_000);
+        let (prefix, cut) = raw_prefix(&wide, 1);
+        assert!(cut);
+        assert_eq!(prefix.len(), MIN_RAW_BYTES);
+        let (prefix, cut) = raw_prefix(&format!("x{wide}"), 1);
+        assert!(cut);
+        assert_eq!(prefix.len(), MIN_RAW_BYTES - 1);
+        // Text past the bound is reported as cut even when what is left
+        // fits, and a tag the cut split open is dropped.
+        let padded = format!("{}tail", "<i></i>".repeat(1_000));
+        assert_eq!(clean_line(&format!("head {padded}"), 20), "head…");
+        assert_eq!(drop_partial_tag("a <spa"), "a ");
+        assert_eq!(drop_partial_tag("a <"), "a ");
+        assert_eq!(drop_partial_tag("a <b>c"), "a <b>c");
+        assert_eq!(drop_partial_tag("x < 5"), "x < 5");
+        // A field that is all markup or space stays empty rather than
+        // becoming `…`.
+        assert_eq!(clean_line(&padded, 20), "");
+        assert_eq!(clean_line(&" ".repeat(5_000), 20), "");
+        assert_eq!(clean_block(&"\n".repeat(300_000), 100), "");
     }
 }
