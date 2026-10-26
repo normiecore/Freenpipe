@@ -13,8 +13,9 @@
 //!
 //! The provider comes from [`screenpipe_core::web_search`]: a SearXNG
 //! instance, the Brave or Tavily API with the user's key, or the user's AI
-//! gateway. With none configured the route answers 501
-//! `web_search_not_configured` and sends nothing anywhere.
+//! gateway when the user named it as the search provider. With none
+//! configured the route answers 501 `web_search_not_configured` and sends
+//! nothing anywhere.
 //!
 //! Provider output is untrusted third-party text. The route keeps only
 //! titles, http(s) addresses and snippets, strips markup and control or
@@ -606,18 +607,28 @@ fn is_invisible(c: char) -> bool {
 }
 
 /// Remove `<...>` markup and decode the handful of entities search APIs use
-/// in snippets.
+/// in snippets. A `<` starts a tag only when a letter, `/` or `!` follows it
+/// and a `>` closes it later, so comparisons such as `x < 5 and y > 3` and a
+/// stray `<` keep their text.
 fn strip_markup(raw: &str) -> String {
     let mut out = String::with_capacity(raw.len());
-    let mut in_tag = false;
-    for c in raw.chars() {
-        match c {
-            '<' => in_tag = true,
-            '>' if in_tag => in_tag = false,
-            _ if !in_tag => out.push(c),
-            _ => {}
+    let mut rest = raw;
+    while let Some(pos) = rest.find('<') {
+        out.push_str(&rest[..pos]);
+        let after = &rest[pos + 1..];
+        let opens_tag = after
+            .chars()
+            .next()
+            .is_some_and(|c| c.is_ascii_alphabetic() || c == '/' || c == '!');
+        match after.find('>') {
+            Some(end) if opens_tag => rest = &after[end + 1..],
+            _ => {
+                out.push('<');
+                rest = after;
+            }
         }
     }
+    out.push_str(rest);
     out.replace("&lt;", "<")
         .replace("&gt;", ">")
         .replace("&quot;", "\"")
@@ -1091,6 +1102,23 @@ mod tests {
     fn text_cleaning_rules() {
         assert_eq!(clean_line("a\u{200B}b\u{202E}c", 10), "abc");
         assert_eq!(clean_line("<i>x</i> &lt;y&gt;", 20), "x <y>");
+        // Only a `<` that opens a real tag starts markup.
+        assert_eq!(
+            clean_line("x < 5 and y > 3", 40),
+            "x < 5 and y > 3",
+            "comparisons keep their text"
+        );
+        assert_eq!(
+            clean_line("a <b>bold</b> and a lone < at the end", 60),
+            "a bold and a lone < at the end"
+        );
+        assert_eq!(clean_line("costs <$5 <br/>today", 40), "costs <$5 today");
+        assert_eq!(
+            clean_line("unclosed <tag forever", 40),
+            "unclosed <tag forever"
+        );
+        assert_eq!(clean_line("<!-- note -->kept</p>", 40), "kept");
+        assert_eq!(clean_line("ends with <", 40), "ends with <");
         assert_eq!(clean_line("abcdef", 4), "abc…");
         assert_eq!(
             clean_url("HTTPS://Example.test/a b"),

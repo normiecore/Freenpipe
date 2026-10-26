@@ -256,6 +256,12 @@ pub struct PiExecutor {
     /// is also exported as a deprecated alias (one release) for old pipe.md
     /// files on disk. None = auth disabled.
     pub api_auth_key: Option<String>,
+    /// Port the engine's local API listens on. Exported to the Pi
+    /// subprocess as `SCREENPIPE_LOCAL_API_PORT` and
+    /// `SCREENPIPE_LOCAL_API_URL` so bundled extensions (`sp_web_search`)
+    /// reach this engine, not whatever listens on the default port. `None`
+    /// leaves both as the parent process has them.
+    pub local_api_port: Option<u16>,
 }
 
 impl PiExecutor {
@@ -264,6 +270,7 @@ impl PiExecutor {
             user_token: Arc::new(ArcSwap::new(Arc::new(user_token))),
             api_url: SCREENPIPE_API_URL.to_string(),
             api_auth_key: None,
+            local_api_port: None,
         }
     }
 
@@ -277,6 +284,7 @@ impl PiExecutor {
             user_token,
             api_url: SCREENPIPE_API_URL.to_string(),
             api_auth_key: None,
+            local_api_port: None,
         }
     }
 
@@ -318,6 +326,36 @@ impl PiExecutor {
     pub fn with_api_auth_key(mut self, key: Option<String>) -> Self {
         self.api_auth_key = key.filter(|k| !k.is_empty());
         self
+    }
+
+    /// Record the port the engine's local API listens on (the pipe
+    /// manager's `api_port`), so agent runs call this engine.
+    pub fn with_local_api_port(mut self, port: u16) -> Self {
+        self.local_api_port = Some(port);
+        self
+    }
+
+    /// The local API environment for a Pi subprocess: the key (with its
+    /// deprecated alias) and, when known, the port and base URL.
+    fn local_api_env(&self) -> Vec<(&'static str, String)> {
+        let mut vars = Vec::new();
+        // Canonical name: SCREENPIPE_LOCAL_API_KEY. The AUTH_KEY alias is
+        // kept ONE release as a deprecated fallback for user-installed
+        // pipe.md files that hardcoded the old name (e.g. an older
+        // meeting-summary install on disk that install_builtin_pipes won't
+        // overwrite). TODO(remove next release): drop SCREENPIPE_API_AUTH_KEY.
+        if let Some(ref key) = self.api_auth_key {
+            vars.push((crate::env::SCREENPIPE_LOCAL_API_KEY, key.clone()));
+            vars.push((crate::env::SCREENPIPE_API_AUTH_KEY, key.clone())); // deprecated alias
+        }
+        if let Some(port) = self.local_api_port {
+            vars.push((crate::env::SCREENPIPE_LOCAL_API_PORT, port.to_string()));
+            vars.push((
+                crate::env::SCREENPIPE_LOCAL_API_URL,
+                format!("http://localhost:{port}"),
+            ));
+        }
+        vars
     }
 
     /// Whether the screenpipe-api skill gets the cloud media analysis
@@ -1098,15 +1136,8 @@ impl PiExecutor {
             }
         }
 
-        // Canonical name: SCREENPIPE_LOCAL_API_KEY. The AUTH_KEY alias is
-        // kept ONE release as a deprecated fallback for user-installed
-        // pipe.md files that hardcoded the old name (e.g. an older
-        // meeting-summary install on disk that install_builtin_pipes won't
-        // overwrite). TODO(remove next release): drop SCREENPIPE_API_AUTH_KEY.
-        if let Some(ref key) = self.api_auth_key {
-            cmd.env("SCREENPIPE_LOCAL_API_KEY", key);
-            cmd.env("SCREENPIPE_API_AUTH_KEY", key); // deprecated alias
-        }
+        // Local API key, port and URL (see `local_api_env`).
+        cmd.envs(self.local_api_env());
 
         // Auto-auth the agent's `curl localhost:3030/...` calls via a bash
         // shim sourced from $BASH_ENV on every subshell. See bash_env.rs.
@@ -1253,11 +1284,8 @@ impl PiExecutor {
             }
         }
 
-        // See spawn_pi above — TODO(remove next release): drop the deprecated alias.
-        if let Some(ref key) = self.api_auth_key {
-            cmd.env("SCREENPIPE_LOCAL_API_KEY", key);
-            cmd.env("SCREENPIPE_API_AUTH_KEY", key); // deprecated alias
-        }
+        // Local API key, port and URL (see `local_api_env`).
+        cmd.envs(self.local_api_env());
 
         // Tag this run's local API calls with the owning chat/session so the
         // owned-browser sidebar can route navigations to the right chat (the
@@ -2831,6 +2859,26 @@ mod tests {
             return; // a developer-provided gateway; nothing to assert
         }
         assert_eq!(screenpipe_cloud_models("", Some("k")).await, json!([]));
+    }
+
+    #[test]
+    fn runs_learn_the_local_api_port_and_key() {
+        let vars = |exec: &PiExecutor| -> std::collections::HashMap<&'static str, String> {
+            exec.local_api_env().into_iter().collect()
+        };
+        // Nothing known: nothing exported, the parent's values stand.
+        assert!(vars(&PiExecutor::new(None)).is_empty());
+
+        // A dev engine on port 3035: extensions must call that engine, not
+        // whatever listens on 3030.
+        let exec = PiExecutor::new(None)
+            .with_api_auth_key(Some("local-key".into()))
+            .with_local_api_port(3035);
+        let env = vars(&exec);
+        assert_eq!(env["SCREENPIPE_LOCAL_API_PORT"], "3035");
+        assert_eq!(env["SCREENPIPE_LOCAL_API_URL"], "http://localhost:3035");
+        assert_eq!(env["SCREENPIPE_LOCAL_API_KEY"], "local-key");
+        assert_eq!(env["SCREENPIPE_API_AUTH_KEY"], "local-key");
     }
 
     #[test]

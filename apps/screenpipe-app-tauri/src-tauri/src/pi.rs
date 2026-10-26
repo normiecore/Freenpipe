@@ -654,7 +654,7 @@ fn ensure_screenpipe_skill(project_dir: &str) -> Result<(), String> {
 /// tool calls the engine's `/v1/web-search` route, which forwards to the
 /// user's search provider, so any chat model may use it once a provider is
 /// configured (call after `gateway_access`, which re-applies the gateway
-/// setting the provider may fall back to).
+/// setting that `SCREENPIPE_WEB_SEARCH_PROVIDER=gateway` searches through).
 fn chat_web_search_wanted() -> bool {
     screenpipe_core::web_search::is_configured()
 }

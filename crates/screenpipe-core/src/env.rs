@@ -221,8 +221,8 @@ pub const SCREENPIPE_AI_GATEWAY_URL: &str = "SCREENPIPE_AI_GATEWAY_URL";
 /// Key for the user's AI gateway.
 pub const SCREENPIPE_AI_GATEWAY_KEY: &str = "SCREENPIPE_AI_GATEWAY_KEY";
 /// Web search provider for `/v1/web-search`: `searxng`, `brave`, `tavily`,
-/// `gateway` or `off` (bring your own; unset means none unless a URL or an
-/// AI gateway is configured).
+/// `gateway` or `off` (bring your own; unset means SearXNG when a URL is
+/// set, otherwise none).
 pub const SCREENPIPE_WEB_SEARCH_PROVIDER: &str = "SCREENPIPE_WEB_SEARCH_PROVIDER";
 /// Base URL of the user's SearXNG instance, or another endpoint for the
 /// named web search provider.

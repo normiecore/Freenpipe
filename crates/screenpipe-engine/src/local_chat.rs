@@ -16,10 +16,16 @@
 //! - The preset key goes only into the upstream `Authorization` header. It
 //!   is never logged, and every error text that leaves the engine has it
 //!   (and any `user:password@` part of a URL) blanked out first.
-//! - Nothing goes to a host the user did not configure. A preset without a
-//!   base URL is an error, except a local Ollama preset, which defaults to
-//!   Ollama's loopback address. `screenpipe-cloud` presets map to the user's
-//!   own AI gateway ([`screenpipe_core::ai_gateway`]) or are refused.
+//! - Nothing goes to a host the user did not choose. A preset's own URL wins.
+//!   Without one, a preset whose provider the user picked by name (`openai`,
+//!   `anthropic`) goes to that provider's public API with the user's key, the
+//!   way pipes, Pi chat and the suggestions engine already treat such a
+//!   preset, and a local Ollama preset goes to Ollama's loopback address.
+//!   Any other preset without a base URL is an error. `screenpipe-cloud`
+//!   presets map to the user's own AI gateway
+//!   ([`screenpipe_core::ai_gateway`]) or are refused.
+//! - `anthropic` presets are sent to Anthropic's OpenAI-compatible surface,
+//!   which lives under `/v1`; the settings store their base without it.
 //! - Waits are bounded: connecting, the wait for the provider's answer to
 //!   start, and every gap between streamed chunks have their own limit.
 //! - When the caller hangs up, the response body is dropped, which drops the
@@ -52,6 +58,15 @@ pub const MAX_REQUEST_BYTES: usize = 50 * 1024 * 1024;
 /// Loopback address of a local Ollama server's OpenAI-compatible API, used
 /// for `native-ollama` presets that leave the URL empty.
 pub const OLLAMA_DEFAULT_URL: &str = "http://localhost:11434/v1";
+
+/// OpenAI's public API root, for `openai` presets that leave the URL empty.
+/// Only reached with the user's own key, because they picked OpenAI.
+pub const OPENAI_DEFAULT_URL: &str = "https://api.openai.com/v1";
+
+/// Anthropic's public API root, for `anthropic` presets that leave the URL
+/// empty. Only reached with the user's own key, because they picked
+/// Anthropic.
+pub const ANTHROPIC_DEFAULT_URL: &str = "https://api.anthropic.com/v1";
 
 /// Most bytes of an upstream error body passed back to the caller.
 const MAX_ERROR_BODY_BYTES: usize = 64 * 1024;
@@ -335,10 +350,17 @@ pub fn target_for_preset(
     } else {
         let base = match non_empty_str(preset, "url") {
             Some(url) => url.to_string(),
-            None if provider == "native-ollama" => OLLAMA_DEFAULT_URL.to_string(),
-            None => {
-                return Err(LocalChatError::MissingBaseUrl { preset: preset_id });
-            }
+            None => match provider_default_url(&provider) {
+                Some(default) => default.to_string(),
+                None => {
+                    return Err(LocalChatError::MissingBaseUrl { preset: preset_id });
+                }
+            },
+        };
+        let base = if provider == "anthropic" {
+            anthropic_openai_base(&base)
+        } else {
+            base
         };
         (base, preset_key)
     };
@@ -353,6 +375,31 @@ pub fn target_for_preset(
         api_key,
         model,
     })
+}
+
+/// The endpoint a preset without a URL uses: the public API of a provider
+/// the user picked by name, or Ollama's loopback address. `None` for every
+/// other provider (`custom` and unknown types need their own URL).
+fn provider_default_url(provider: &str) -> Option<&'static str> {
+    match provider {
+        "native-ollama" => Some(OLLAMA_DEFAULT_URL),
+        "openai" => Some(OPENAI_DEFAULT_URL),
+        "anthropic" => Some(ANTHROPIC_DEFAULT_URL),
+        _ => None,
+    }
+}
+
+/// Anthropic's OpenAI-compatible chat completions live under `/v1`, while
+/// the AI settings save Anthropic presets with the bare host
+/// (`https://api.anthropic.com`). Add `/v1` unless the base already has it
+/// or already names the full endpoint.
+fn anthropic_openai_base(base: &str) -> String {
+    let base = base.trim().trim_end_matches('/');
+    if base.ends_with("/v1") || base.ends_with("/chat/completions") {
+        base.to_string()
+    } else {
+        format!("{base}/v1")
+    }
 }
 
 /// `{base}/chat/completions`, accepting a base that already ends with it.
@@ -735,22 +782,73 @@ mod tests {
     }
 
     #[test]
-    fn a_preset_without_url_is_refused_except_local_ollama() {
+    fn a_preset_without_url_uses_the_named_providers_endpoint_or_is_refused() {
         let custom = json!({"id": "c", "provider": "custom", "model": "m", "url": " "});
         assert_eq!(
             target_for_preset(&custom, &no_gateway()),
             Err(LocalChatError::MissingBaseUrl { preset: "c".into() })
         );
-        // No hosted default either, even for a well-known provider.
-        let openai = json!({"id": "o", "provider": "openai", "model": "gpt", "apiKey": "k"});
+        let unknown = json!({"id": "u", "provider": "something-new", "model": "m"});
         assert_eq!(
-            target_for_preset(&openai, &no_gateway()),
-            Err(LocalChatError::MissingBaseUrl { preset: "o".into() })
+            target_for_preset(&unknown, &no_gateway()),
+            Err(LocalChatError::MissingBaseUrl { preset: "u".into() })
         );
+        // A CLI-made OpenAI preset (`presets add --provider openai`, no
+        // --url) reaches the provider the user picked, as it does elsewhere.
+        let openai = json!({"id": "o", "provider": "openai", "model": "gpt", "apiKey": "k"});
+        let target = target_for_preset(&openai, &no_gateway()).unwrap();
+        assert_eq!(target.url, "https://api.openai.com/v1/chat/completions");
+        assert_eq!(target.api_key.as_deref(), Some("k"));
+        let anthropic = json!({"id": "a", "provider": "anthropic", "model": "claude", "url": "",
+                               "apiKey": "ak"});
+        let target = target_for_preset(&anthropic, &no_gateway()).unwrap();
+        assert_eq!(target.url, "https://api.anthropic.com/v1/chat/completions");
+        assert_eq!(target.api_key.as_deref(), Some("ak"));
         let ollama = json!({"id": "l", "provider": "native-ollama", "model": "llama3"});
         let target = target_for_preset(&ollama, &no_gateway()).unwrap();
         assert_eq!(target.url, "http://localhost:11434/v1/chat/completions");
         assert_eq!(target.api_key, None);
+    }
+
+    #[test]
+    fn anthropic_presets_use_the_openai_compatible_v1_surface() {
+        // The AI settings save Anthropic presets with the bare host.
+        for (url, expected) in [
+            (
+                "https://api.anthropic.com",
+                "https://api.anthropic.com/v1/chat/completions",
+            ),
+            (
+                "https://api.anthropic.com/",
+                "https://api.anthropic.com/v1/chat/completions",
+            ),
+            (
+                "https://api.anthropic.com/v1/",
+                "https://api.anthropic.com/v1/chat/completions",
+            ),
+            (
+                "https://api.anthropic.com/v1/chat/completions",
+                "https://api.anthropic.com/v1/chat/completions",
+            ),
+            (
+                "http://127.0.0.1:9000/anthropic",
+                "http://127.0.0.1:9000/anthropic/v1/chat/completions",
+            ),
+        ] {
+            let preset = json!({"id": "a", "provider": "anthropic", "model": "claude-x",
+                                "url": url, "apiKey": "ak", "defaultPreset": true});
+            let target = target_for_preset(&preset, &no_gateway()).unwrap();
+            assert_eq!(target.url, expected, "{url}");
+            assert_eq!(target.api_key.as_deref(), Some("ak"));
+            assert_eq!(target.model.as_deref(), Some("claude-x"));
+        }
+        // Other providers keep their URL as given.
+        let openai = json!({"id": "o", "provider": "openai", "model": "gpt",
+                            "url": "https://api.openai.com/v1"});
+        assert_eq!(
+            target_for_preset(&openai, &no_gateway()).unwrap().url,
+            "https://api.openai.com/v1/chat/completions"
+        );
     }
 
     #[test]

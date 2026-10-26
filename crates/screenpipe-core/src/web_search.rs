@@ -15,9 +15,14 @@
 //!    `tavily`, `gateway`, or `off` to disable web search even when something
 //!    else is configured.
 //! 2. With no provider named, [`URL_ENV`] alone means a SearXNG instance.
-//! 3. With neither, the user's AI gateway ([`crate::ai_gateway`]) serves
-//!    searches at `{gateway}/web-search` when one is configured. That keeps
-//!    the behaviour gateway users already had.
+//! 3. Otherwise web search is off.
+//!
+//! The user's AI gateway ([`crate::ai_gateway`]) serves searches at
+//! `{gateway}/web-search` only when [`PROVIDER_ENV`] is `gateway`. A
+//! configured gateway alone does not turn search on: most self-hosted
+//! gateways (LiteLLM, OpenRouter and the like) have no such route, and a
+//! run on a local model must not start sending agent-written queries to a
+//! remote host without an explicit opt-in.
 //!
 //! `brave` and `tavily` need [`API_KEY_ENV`]; their public API hosts are used
 //! unless [`URL_ENV`] points somewhere else (a proxy, a test server). The
@@ -159,7 +164,7 @@ impl ConfigProblem {
             ConfigProblem::NotConfigured => format!(
                 "web search is not configured. Point {URL_ENV} at a SearXNG instance, or set \
                  {PROVIDER_ENV} to brave or tavily together with {API_KEY_ENV}, then restart \
-                 Freenpipe. An AI gateway that serves /web-search also works."
+                 Freenpipe. {PROVIDER_ENV}=gateway uses an AI gateway that serves /web-search."
             ),
             ConfigProblem::Disabled => {
                 format!("web search is turned off ({PROVIDER_ENV}=off).")
@@ -210,7 +215,8 @@ pub fn is_configured() -> bool {
 }
 
 /// Pure form of [`resolve`]: the environment and the gateway base are
-/// supplied by the caller.
+/// supplied by the caller. The gateway base is used only when
+/// [`PROVIDER_ENV`] is `gateway`.
 pub fn resolve_with(
     env: impl Fn(&str) -> Option<String>,
     gateway_base: Option<String>,
@@ -238,7 +244,7 @@ pub fn resolve_with(
         }
         None if url.is_some() => ProviderKind::SearXng,
         None if api_key.is_some() => return Err(ConfigProblem::KeyWithoutProvider),
-        None if gateway_base.is_some() => ProviderKind::Gateway,
+        // A configured AI gateway alone is not a search opt-in.
         None => return Err(ConfigProblem::NotConfigured),
     };
 
@@ -417,8 +423,17 @@ mod tests {
     }
 
     #[test]
-    fn the_gateway_is_the_fallback_and_can_be_named() {
-        let cfg = resolve_with(env_of(&[]), Some("http://127.0.0.1:4000/v1/".into())).unwrap();
+    fn the_gateway_searches_only_when_named() {
+        // A configured gateway alone does not turn web search on.
+        assert_eq!(
+            resolve_with(env_of(&[]), Some("http://127.0.0.1:4000/v1/".into())),
+            Err(ConfigProblem::NotConfigured)
+        );
+        let cfg = resolve_with(
+            env_of(&[(PROVIDER_ENV, "gateway")]),
+            Some("http://127.0.0.1:4000/v1/".into()),
+        )
+        .unwrap();
         assert_eq!(cfg.provider, ProviderKind::Gateway);
         assert_eq!(cfg.url, "http://127.0.0.1:4000/v1");
         assert_eq!(cfg.api_key, None);

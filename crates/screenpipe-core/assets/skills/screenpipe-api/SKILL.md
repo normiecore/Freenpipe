@@ -568,6 +568,7 @@ Add `"stream": true` for server-sent events.
 
 ```bash
 curl -X POST http://localhost:3030/v1/local/chat/completions \
+  -H "Authorization: Bearer $SCREENPIPE_LOCAL_API_KEY" \
   -H "Content-Type: application/json" \
   -d '{"messages":[{"role":"user","content":"Summarize this in one sentence: ..."}]}'
 ```
