@@ -51,6 +51,23 @@ fn ocr_semaphore() -> &'static Semaphore {
     OCR_SEMAPHORE.get_or_init(|| Semaphore::new(1))
 }
 
+/// Logs a live OCR that produced no text. Requests shed by the Windows OCR
+/// worker (queue full, no engine installed, image refused, slow answer) are
+/// expected under load or on machines without an OCR language: the frame is
+/// still stored, so they are not capture failures and stay at debug level.
+#[cfg(target_os = "windows")]
+fn log_live_ocr_failure(e: &anyhow::Error) {
+    match screenpipe_screen::ocr_worker::worker_error_of(e) {
+        Some(shed) if shed.is_skip() => {
+            debug!(
+                "windows OCR skipped; storing the frame without OCR text: {}",
+                shed
+            )
+        }
+        _ => warn!("windows OCR failed: {}", e),
+    }
+}
+
 /// Context for a paired capture operation — replaces positional arguments.
 pub struct CaptureContext<'a> {
     pub db: &'a DatabaseManager,
@@ -183,13 +200,17 @@ pub async fn paired_capture(
     // Never on withheld pixels: `image` is then only a placeholder.
     let run_ocr = !ctx.pixels_withheld && (!has_accessibility_text || a11y_is_thin);
     let (ocr_text, ocr_text_json) = if run_ocr {
-        // Windows native OCR is async, so call it directly (not inside spawn_blocking)
+        // Windows OCR runs on the dedicated screenpipe-windows-ocr thread.
+        // The request is queued without blocking: a full queue, a missing
+        // OCR language or a refused image comes back at once as an error and
+        // the frame is stored without OCR text (accessibility text, when
+        // present, is kept either way).
         #[cfg(target_os = "windows")]
         let raw = {
             match screenpipe_screen::perform_ocr_windows(&ctx.image, &ctx.languages).await {
                 Ok((text, json, _confidence)) => (text, json),
                 Err(e) => {
-                    warn!("windows OCR failed: {}", e);
+                    log_live_ocr_failure(&e);
                     (String::new(), "[]".to_string())
                 }
             }
@@ -197,26 +218,35 @@ pub async fn paired_capture(
         // Apple and Tesseract OCR are sync, use spawn_blocking with semaphore
         // to limit concurrent OCR and avoid CPU spikes on multi-monitor setups.
         #[cfg(not(target_os = "windows"))]
-        let raw = {
-            let _permit = ocr_semaphore().acquire().await.unwrap();
-            let image_for_ocr = ctx.image.clone();
-            let languages = ctx.languages.clone();
-            tokio::task::spawn_blocking(move || {
-                #[cfg(target_os = "macos")]
-                {
-                    let (text, json, _confidence) =
-                        screenpipe_screen::perform_ocr_apple(&image_for_ocr, &languages);
-                    (text, json)
-                }
-                #[cfg(not(target_os = "macos"))]
-                {
-                    let (text, json, _confidence) =
-                        screenpipe_screen::perform_ocr_tesseract(&image_for_ocr, languages);
-                    (text, json)
-                }
-            })
-            .await
-            .unwrap_or_else(|_| (String::new(), "[]".to_string()))
+        let raw = match ocr_semaphore().acquire().await {
+            Ok(_permit) => {
+                let image_for_ocr = ctx.image.clone();
+                let languages = ctx.languages.clone();
+                tokio::task::spawn_blocking(move || {
+                    #[cfg(target_os = "macos")]
+                    {
+                        let (text, json, _confidence) =
+                            screenpipe_screen::perform_ocr_apple(&image_for_ocr, &languages);
+                        (text, json)
+                    }
+                    #[cfg(not(target_os = "macos"))]
+                    {
+                        let (text, json, _confidence) =
+                            screenpipe_screen::perform_ocr_tesseract(&image_for_ocr, languages);
+                        (text, json)
+                    }
+                })
+                .await
+                .unwrap_or_else(|e| {
+                    warn!("OCR task failed; storing the frame without OCR text: {}", e);
+                    (String::new(), "[]".to_string())
+                })
+            }
+            Err(_closed) => {
+                // Only happens while shutting down; keep the frame.
+                debug!("OCR semaphore closed; storing the frame without OCR text");
+                (String::new(), "[]".to_string())
+            }
         };
 
         // Strip editor gutter noise (see strip_gutter_noise doc). Applied to

@@ -182,6 +182,7 @@ Not read by screenpipe, so they carry a `FREENPIPE_` prefix and are not in
 
 | Variable | Meaning |
 |---|---|
+| `FREENPIPE_OCR_FAULT` | Test hook: `unavailable` (or `1`/`true`) makes every OCR backend behave as if no OCR engine or language were installed (Windows OCR language pack, tesseract), so `/health` reports `vision_reason` `ocr_unavailable` while capture and accessibility text carry on. |
 | `FREENPIPE_WHISPER_GPU_FAULT` | Test hook: `inference` (or `1`/`true`) makes GPU whisper inference fail, `state` makes GPU state creation fail, so the CPU recovery can be checked on real hardware. CPU sessions are never affected. |
 | `FREENPIPE_VULKAN_RUNTIME_DIR` | Build time (`scripts/stage_bundled_runtime.js`): folder holding the unpacked Vulkan runtime components whose `vulkan-1.dll` the Windows installer ships. |
 | `FREENPIPE_BUNDLE_DIRECTML` | Build time: `1` also ships Microsoft's `DirectML.dll` (held back until the release licence audit). |
