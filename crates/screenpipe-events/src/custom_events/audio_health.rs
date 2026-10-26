@@ -87,7 +87,11 @@ impl AudioCaptureHealthEvent {
         self
     }
 
-    pub fn with_streams(mut self, captured_outputs: Vec<String>, capturing_inputs: Vec<String>) -> Self {
+    pub fn with_streams(
+        mut self,
+        captured_outputs: Vec<String>,
+        capturing_inputs: Vec<String>,
+    ) -> Self {
         self.captured_outputs = captured_outputs;
         self.capturing_inputs = capturing_inputs;
         self

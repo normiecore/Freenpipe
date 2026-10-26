@@ -1688,7 +1688,10 @@ mod tests {
             AudioWaitState::from_capture_status(Some("recording")),
             AudioWaitState::None
         );
-        assert_eq!(AudioWaitState::from_capture_status(None), AudioWaitState::None);
+        assert_eq!(
+            AudioWaitState::from_capture_status(None),
+            AudioWaitState::None
+        );
         let parsed: HealthCheckResponse = serde_json::from_value(serde_json::json!({
             "status": "healthy",
             "last_frame_timestamp": null,

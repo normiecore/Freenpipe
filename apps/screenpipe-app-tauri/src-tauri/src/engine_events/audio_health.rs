@@ -192,7 +192,9 @@ pub(super) fn handle(app: &AppHandle, name: &str, data: &Value) {
             .insert(device);
     }
     let actions = if notice.offer_restart {
-        vec![json!({ "label": "restart recording", "action": "restart_recording", "primary": true })]
+        vec![
+            json!({ "label": "restart recording", "action": "restart_recording", "primary": true }),
+        ]
     } else {
         Vec::new()
     };

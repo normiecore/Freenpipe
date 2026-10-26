@@ -195,7 +195,9 @@ impl CaptureGateState {
 
     /// Forget every session device (they are being closed).
     pub fn take_session_devices(&mut self) -> Vec<String> {
-        std::mem::take(&mut self.session_devices).into_iter().collect()
+        std::mem::take(&mut self.session_devices)
+            .into_iter()
+            .collect()
     }
 
     /// True when the streams should be closed: `meetings-only`, no meeting,
@@ -413,14 +415,20 @@ mod tests {
     #[test]
     fn meeting_start_opens_and_end_releases_after_grace() {
         let mut g = meetings_only();
-        assert_eq!(g.meeting_started(Some(7), 1_000), GateTransition::MeetingStarted);
+        assert_eq!(
+            g.meeting_started(Some(7), 1_000),
+            GateTransition::MeetingStarted
+        );
         assert!(!g.waiting_for_meeting());
         assert_eq!(g.start_gate(), StartGate::Open { session: true });
         assert!(g.mark_session_device("Mic (input)"));
         assert!(g.is_session_device("Mic (input)"));
         assert!(!g.release_due(1_010));
 
-        assert_eq!(g.meeting_ended(Some(7), 2_000), GateTransition::MeetingEnded);
+        assert_eq!(
+            g.meeting_ended(Some(7), 2_000),
+            GateTransition::MeetingEnded
+        );
         assert!(g.waiting_for_meeting());
         assert_eq!(g.start_gate(), StartGate::WaitingForMeeting);
         assert!(!g.release_due(2_000 + SESSION_RELEASE_GRACE_SECS - 1));
@@ -434,7 +442,10 @@ mod tests {
     #[test]
     fn duplicate_and_foreign_announcements_are_ignored() {
         let mut g = meetings_only();
-        assert_eq!(g.meeting_started(Some(1), 10), GateTransition::MeetingStarted);
+        assert_eq!(
+            g.meeting_started(Some(1), 10),
+            GateTransition::MeetingStarted
+        );
         // The same meeting announced again (event plus status change).
         assert_eq!(g.meeting_started(Some(1), 11), GateTransition::Unchanged);
         assert_eq!(g.meeting_started(None, 12), GateTransition::Unchanged);

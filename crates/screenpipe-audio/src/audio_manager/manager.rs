@@ -656,7 +656,11 @@ impl AudioManager {
         }
 
         if graceful {
-            if let Some(handle) = self.recording_handles.get(device).map(|p| p.value().clone()) {
+            if let Some(handle) = self
+                .recording_handles
+                .get(device)
+                .map(|p| p.value().clone())
+            {
                 let started = std::time::Instant::now();
                 while started.elapsed() < GRACEFUL_STOP_WAIT {
                     if handle.lock().await.is_finished() {
@@ -864,7 +868,9 @@ impl AudioManager {
                     device
                 );
                 let _ = self.stop_device_recording_quiet(device, false).await;
-                return Ok(DeviceStart::Skipped(DeviceStartSkip::MeetingEndedDuringOpen));
+                return Ok(DeviceStart::Skipped(
+                    DeviceStartSkip::MeetingEndedDuringOpen,
+                ));
             }
             if device.device_type == DeviceType::Input
                 && self.capture_gate.note_session_input_opened(&name)
@@ -1974,7 +1980,11 @@ impl AudioManager {
         }
 
         if had_handle {
-            let user_disabled = self.user_disabled_devices.read().await.contains(device_name);
+            let user_disabled = self
+                .user_disabled_devices
+                .read()
+                .await
+                .contains(device_name);
             publish_device_status(
                 device_name,
                 false,

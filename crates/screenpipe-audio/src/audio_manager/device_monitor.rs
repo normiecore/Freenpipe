@@ -277,9 +277,13 @@ fn longest_missing_pinned(inputs: &PinnedFallbackInputs<'_>) -> Option<String> {
 pub(crate) enum UnavailableDecision {
     Idle,
     /// `pinned` is gone past the grace window and nothing can stand in.
-    Announce { pinned: String },
+    Announce {
+        pinned: String,
+    },
     /// The announced device records again: say capture is back.
-    Restored { pinned: String },
+    Restored {
+        pinned: String,
+    },
     /// Drop the announcement quietly (unpinned, a fallback took over, or the
     /// mode changed).
     Forget,
@@ -525,7 +529,8 @@ pub async fn start_device_monitor(
                 // once the post-meeting grace has passed, and forget recovery
                 // state so the next meeting starts from a clean slate.
                 let _ = crate::stream_invalidation::take();
-                if audio_manager.capture_release_due() && !audio_manager.current_devices().is_empty()
+                if audio_manager.capture_release_due()
+                    && !audio_manager.current_devices().is_empty()
                 {
                     let released = audio_manager.release_session_streams().await;
                     if released > 0 {
@@ -965,9 +970,10 @@ pub async fn start_device_monitor(
                                 warn!(
                                     "[DEVICE_RECOVERY] no microphone is available any more; no microphone audio is recorded until one returns"
                                 );
-                                let event = screenpipe_events::AudioDeviceFallbackEvent::unavailable(
-                                    screenpipe_events::NO_INPUT_PLACEHOLDER,
-                                );
+                                let event =
+                                    screenpipe_events::AudioDeviceFallbackEvent::unavailable(
+                                        screenpipe_events::NO_INPUT_PLACEHOLDER,
+                                    );
                                 let _ = screenpipe_events::send_event(event.event_name(), event);
                             }
                             NoInputEvent::Restored => {
@@ -2215,9 +2221,12 @@ mod tests {
     // --- Fallback-unavailable decider tests ---
 
     fn missing_for(name: &str, secs: u64, now: Instant) -> HashMap<String, Instant> {
-        [(name.to_string(), now.checked_sub(Duration::from_secs(secs)).unwrap())]
-            .into_iter()
-            .collect()
+        [(
+            name.to_string(),
+            now.checked_sub(Duration::from_secs(secs)).unwrap(),
+        )]
+        .into_iter()
+        .collect()
     }
 
     fn unavailable_for(
@@ -2371,7 +2380,15 @@ mod tests {
         );
 
         // Follow-default mode never keeps a pinned announcement.
-        let mut inputs = build_inputs(&pinned, &nothing_running, &disabled, None, &missing, None, now);
+        let mut inputs = build_inputs(
+            &pinned,
+            &nothing_running,
+            &disabled,
+            None,
+            &missing,
+            None,
+            now,
+        );
         inputs.use_system_default = true;
         assert_eq!(
             unavailable_for(&inputs, Some("AirPods (input)")),

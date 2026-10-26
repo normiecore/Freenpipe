@@ -126,7 +126,10 @@ pub(super) fn prefs_allow_capture_notice(prefs: Option<&Value>, now_ms: i64) -> 
     if !flag("notificationsEnabled") || !flag("captureStalls") {
         return false;
     }
-    let snoozed_until = prefs.get("snoozeUntil").and_then(Value::as_i64).unwrap_or(0);
+    let snoozed_until = prefs
+        .get("snoozeUntil")
+        .and_then(Value::as_i64)
+        .unwrap_or(0);
     snoozed_until <= now_ms
 }
 
@@ -148,7 +151,13 @@ pub(super) fn show_os_notification(app: &tauri::AppHandle, title: String, body: 
     use tauri_plugin_notification::NotificationExt;
     let app = app.clone();
     std::thread::spawn(move || {
-        if let Err(e) = app.notification().builder().title(&title).body(&body).show() {
+        if let Err(e) = app
+            .notification()
+            .builder()
+            .title(&title)
+            .body(&body)
+            .show()
+        {
             tracing::warn!("audio notice: failed to show OS notification: {}", e);
         }
     });
@@ -187,12 +196,16 @@ mod tests {
     #[test]
     fn user_disabled_devices_follow_status_events() {
         let mut d = UserDisabledDevices::default();
-        d.observe_status(&json!({"device_name": "Mic (input)", "is_running": false, "is_user_disabled": true}));
+        d.observe_status(
+            &json!({"device_name": "Mic (input)", "is_running": false, "is_user_disabled": true}),
+        );
         assert!(d.contains("Mic (input)"));
         // A status without the flag changes nothing.
         d.observe_status(&json!({"device_name": "Mic (input)"}));
         assert!(d.contains("Mic (input)"));
-        d.observe_status(&json!({"device_name": "Mic (input)", "is_running": true, "is_user_disabled": false}));
+        d.observe_status(
+            &json!({"device_name": "Mic (input)", "is_running": true, "is_user_disabled": false}),
+        );
         assert!(!d.contains("Mic (input)"));
         d.observe_status(&json!({"is_user_disabled": true}));
         assert!(!d.contains(""));

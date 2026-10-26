@@ -77,9 +77,12 @@ async fn post_json(router: Router, uri: &str, body: serde_json::Value) -> (Statu
 #[tokio::test]
 async fn audio_start_returns_the_disabled_error() {
     for server_audio_disabled in [true, false] {
-        let (status, text) =
-            post_json(router(server_audio_disabled).await, "/audio/start", serde_json::json!({}))
-                .await;
+        let (status, text) = post_json(
+            router(server_audio_disabled).await,
+            "/audio/start",
+            serde_json::json!({}),
+        )
+        .await;
         assert_eq!(status, StatusCode::CONFLICT, "{text}");
         let value: serde_json::Value = serde_json::from_str(&text).unwrap();
         assert_eq!(value["success"], false);
@@ -106,7 +109,12 @@ async fn device_start_returns_the_disabled_error() {
 async fn health_reports_disabled_capture_mode() {
     let response = router(true)
         .await
-        .oneshot(Request::builder().uri("/health").body(Body::empty()).unwrap())
+        .oneshot(
+            Request::builder()
+                .uri("/health")
+                .body(Body::empty())
+                .unwrap(),
+        )
         .await
         .unwrap();
     let bytes = to_bytes(response.into_body(), usize::MAX).await.unwrap();

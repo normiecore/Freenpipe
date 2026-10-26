@@ -87,7 +87,11 @@ pub(super) fn notice_for(
         return None;
     }
     let no_input = pinned.is_empty() || pinned == NO_INPUT_PLACEHOLDER;
-    let subject = if no_input { NO_INPUT_PLACEHOLDER } else { pinned };
+    let subject = if no_input {
+        NO_INPUT_PLACEHOLDER
+    } else {
+        pinned
+    };
     match name {
         "audio_device_fallback_engaged" => {
             if no_input || fallback.is_empty() {
