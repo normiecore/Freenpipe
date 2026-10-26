@@ -13,6 +13,11 @@
 //!   again (a grace period after the meeting ends, so a meeting that ends and
 //!   restarts at once, such as a room change, keeps its streams).
 //!
+//! A newly confirmed meeting raises an open request and wakes the device
+//! monitor, which opens the configured devices itself. Keeping every device
+//! start on that one task means a meeting open never races the monitor's own
+//! starts and stops (default-device sync, reconnects).
+//!
 //! The state machine is plain data driven by explicit timestamps, so it is
 //! tested without devices, clocks or an async runtime. [`CaptureGate`] wraps
 //! it in a mutex for the manager.
@@ -82,6 +87,8 @@ pub struct CaptureGateState {
     /// Session inputs that failed to open during the current meeting, so the
     /// failure and the recovery are each reported once.
     failed_session_inputs: BTreeSet<String>,
+    /// A meeting was confirmed and its devices have not been opened yet.
+    open_requested: bool,
 }
 
 impl CaptureGateState {
@@ -92,6 +99,7 @@ impl CaptureGateState {
             ended: VecDeque::new(),
             session_devices: BTreeSet::new(),
             failed_session_inputs: BTreeSet::new(),
+            open_requested: false,
         }
     }
 
@@ -136,6 +144,7 @@ impl CaptureGateState {
             }
             None => {
                 self.meeting = Some(ConfirmedMeeting { id, since: now });
+                self.open_requested = true;
                 GateTransition::MeetingStarted
             }
         }
@@ -155,7 +164,15 @@ impl CaptureGateState {
         self.push_ended(current.since, now);
         self.meeting = None;
         self.failed_session_inputs.clear();
+        self.open_requested = false;
         GateTransition::MeetingEnded
+    }
+
+    /// Take the pending request to open the configured devices for the
+    /// confirmed meeting. True at most once per confirmed meeting; false
+    /// when the meeting already ended.
+    pub fn take_open_request(&mut self) -> bool {
+        std::mem::take(&mut self.open_requested) && self.meeting.is_some()
     }
 
     fn push_ended(&mut self, started: u64, ended: u64) {
@@ -256,6 +273,10 @@ impl CaptureGateState {
 #[derive(Debug)]
 pub struct CaptureGate {
     state: Mutex<CaptureGateState>,
+    /// Wakes the device monitor's idle wait when a meeting is confirmed.
+    /// `notify_one` keeps a permit, so a wake sent while the monitor is busy
+    /// is seen at its next wait.
+    monitor_wake: tokio::sync::Notify,
 }
 
 pub(crate) fn now_epoch_secs() -> u64 {
@@ -269,6 +290,7 @@ impl CaptureGate {
     pub fn new(mode: AudioCaptureMode) -> Self {
         Self {
             state: Mutex::new(CaptureGateState::new(mode)),
+            monitor_wake: tokio::sync::Notify::new(),
         }
     }
 
@@ -335,6 +357,20 @@ impl CaptureGate {
 
     pub fn note_session_input_opened(&self, device: &str) -> bool {
         self.with(|s| s.note_session_input_opened(device))
+    }
+
+    pub fn take_open_request(&self) -> bool {
+        self.with(|s| s.take_open_request())
+    }
+
+    /// Wake the device monitor so it acts on a gate change at once.
+    pub fn wake_monitor(&self) {
+        self.monitor_wake.notify_one();
+    }
+
+    /// Resolves when [`Self::wake_monitor`] was called (now or earlier).
+    pub async fn monitor_woken(&self) {
+        self.monitor_wake.notified().await;
     }
 }
 
@@ -468,6 +504,37 @@ mod tests {
         // Audio from either meeting is kept.
         assert_eq!(g.chunk_verdict(150, 180), ChunkVerdict::Keep);
         assert_eq!(g.chunk_verdict(210, 240), ChunkVerdict::Keep);
+    }
+
+    #[test]
+    fn open_request_is_taken_once_per_confirmed_meeting() {
+        let mut g = meetings_only();
+        assert!(!g.take_open_request(), "nothing to open while waiting");
+        g.meeting_started(Some(1), 100);
+        assert!(g.take_open_request());
+        assert!(!g.take_open_request(), "the request is taken once");
+        // Duplicates and a replacing meeting keep the open streams.
+        g.meeting_started(Some(1), 101);
+        g.meeting_started(Some(2), 102);
+        assert!(!g.take_open_request());
+        // A meeting that ends before its devices were opened needs nothing.
+        g.meeting_ended(Some(2), 103);
+        g.meeting_started(Some(3), 104);
+        g.meeting_ended(Some(3), 105);
+        assert!(!g.take_open_request());
+        // `always` never asks.
+        let mut always = CaptureGateState::new(AudioCaptureMode::Always);
+        always.meeting_started(Some(4), 106);
+        assert!(!always.take_open_request());
+    }
+
+    #[tokio::test]
+    async fn wake_sent_before_the_wait_is_not_lost() {
+        let gate = CaptureGate::new(AudioCaptureMode::MeetingsOnly);
+        gate.wake_monitor();
+        tokio::time::timeout(std::time::Duration::from_secs(1), gate.monitor_woken())
+            .await
+            .expect("a stored wake resolves the next wait");
     }
 
     #[test]

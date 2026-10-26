@@ -154,6 +154,11 @@ pub struct AudioManager {
     meetings_only_handle: Arc<RwLock<Option<JoinHandle<()>>>>,
     /// Chunks dropped by `meetings-only` capture (for rate-limited logging).
     dropped_unattributed_chunks: Arc<AtomicU64>,
+    /// Shared by every clone. Clones share all the handles above, so the
+    /// teardown in `Drop` runs only for the last clone; dropping any other
+    /// clone (a spawned task's copy, the meetings-only loop's) must leave
+    /// capture running.
+    lifetime: Arc<()>,
 }
 
 /// What [`AudioManager::try_start_device`] did.
@@ -298,6 +303,7 @@ impl AudioManager {
             capture_gate,
             meetings_only_handle: Arc::new(RwLock::new(None)),
             dropped_unattributed_chunks: Arc::new(AtomicU64::new(0)),
+            lifetime: Arc::new(()),
         };
 
         Ok(manager)
@@ -488,7 +494,7 @@ impl AudioManager {
             }
             if self.capture_gate.mode() == AudioCaptureMode::MeetingsOnly {
                 info!("audio capture waits for an active meeting (meetings-only mode)");
-                let manager = self.clone();
+                let manager = self_arc.clone();
                 *guard = Some(tokio::spawn(async move {
                     run_meetings_only_loop(manager).await;
                 }));
@@ -753,6 +759,13 @@ impl AudioManager {
             );
         }
         if outcome == DeviceStart::Skipped(DeviceStartSkip::WaitingForMeeting) {
+            // The next meeting opens the configured devices, so enrol this one
+            // as an ungated start would.
+            self.options
+                .write()
+                .await
+                .enabled_devices
+                .insert(device.to_string());
             info!(
                 "audio device {} did not start: capture is gated until a meeting starts (meetings-only mode)",
                 device_name
@@ -987,8 +1000,21 @@ impl AudioManager {
         released
     }
 
-    /// Open the configured devices for a meeting that just started.
-    async fn open_meeting_session_devices(&self) {
+    /// True once per confirmed `meetings-only` meeting: its devices still
+    /// have to be opened. Taken by the device monitor.
+    pub(crate) fn take_meeting_open_request(&self) -> bool {
+        self.capture_gate.take_open_request()
+    }
+
+    /// Resolves when a gate change wants the device monitor's attention
+    /// (a meeting was confirmed).
+    pub(crate) async fn capture_gate_woken(&self) {
+        self.capture_gate.monitor_woken().await;
+    }
+
+    /// Open the configured devices for a meeting that just started. Called by
+    /// the device monitor only (see [`Self::take_meeting_open_request`]).
+    pub(crate) async fn open_meeting_session_devices(&self) {
         let enabled = self.enabled_devices().await;
         let user_disabled = self.user_disabled_devices.read().await.clone();
         let mut targets: Vec<AudioDevice> = enabled
@@ -1029,12 +1055,13 @@ impl AudioManager {
     async fn handle_meeting_signal(&self, signal: MeetingSignal) {
         match signal.apply(&self.capture_gate) {
             GateTransition::MeetingStarted => {
-                // Open on a separate task so a quick end is applied at once
-                // (a device that finishes opening afterwards is closed).
-                let manager = self.clone();
-                tokio::spawn(async move {
-                    manager.open_meeting_session_devices().await;
-                });
+                // The device monitor opens the devices: it is the one task
+                // that starts and stops streams, so the open cannot race its
+                // default-device sync or reconnects. A quick end is still
+                // applied at once (a device that finishes opening afterwards
+                // is closed again).
+                debug!("meetings-only: meeting confirmed; waking the device monitor");
+                self.capture_gate.wake_monitor();
             }
             GateTransition::MeetingEnded => {
                 info!(
@@ -1046,23 +1073,47 @@ impl AudioManager {
         }
     }
 
-    /// Adopt a meeting that was already open when capture started.
+    /// Adopt a meeting that was already open when capture started (a
+    /// capture restart in the middle of a meeting), unless the row looks
+    /// left behind by a crash (see [`adopt_open_meeting`]).
     async fn seed_meeting_from_db(&self) {
         if !self.capture_gate.waiting_for_meeting() {
             return;
         }
-        match self.db.get_most_recent_active_meeting_id().await {
-            Ok(Some(id)) => {
-                info!(
-                    "meetings-only: meeting {} is already in progress; opening audio devices",
-                    id
-                );
-                self.handle_meeting_signal(MeetingSignal::Started(Some(id)))
-                    .await;
+        let meeting = match self.db.get_most_recent_active_meeting().await {
+            Ok(Some(meeting)) => meeting,
+            Ok(None) => return,
+            Err(e) => {
+                debug!("meetings-only: could not look up an open meeting: {}", e);
+                return;
             }
-            Ok(None) => {}
-            Err(e) => debug!("meetings-only: could not look up an open meeting: {}", e),
+        };
+        let detector_running = self.meeting_detector().await.is_some();
+        if !adopt_open_meeting(
+            &meeting.detection_source,
+            &meeting.meeting_start,
+            Utc::now(),
+            detector_running,
+        ) {
+            info!(
+                "meetings-only: not adopting open meeting {} (source {}, started {}): it looks left over from an earlier run{}",
+                meeting.id,
+                meeting.detection_source,
+                meeting.meeting_start,
+                if detector_running {
+                    ""
+                } else {
+                    " and meeting detection is off, so nothing would end it"
+                }
+            );
+            return;
         }
+        info!(
+            "meetings-only: meeting {} is already in progress; opening audio devices",
+            meeting.id
+        );
+        self.handle_meeting_signal(MeetingSignal::Started(Some(meeting.id)))
+            .await;
     }
 
     /// End the confirmed meeting if the database says it is over (its end
@@ -1999,6 +2050,44 @@ impl AudioManager {
     }
 }
 
+/// Oldest open meeting `meetings-only` capture adopts at start. The meeting
+/// detector's startup sweep (`close_orphaned_meetings`) treats a manual
+/// meeting open longer than half a day as abandoned; the same bound applies
+/// here.
+const ADOPT_OPEN_MEETING_MAX_AGE_SECS: i64 = 12 * 60 * 60;
+
+/// Whether an open meeting row found when capture starts is a meeting in
+/// progress (`true`) or a row a crash left open (`false`).
+///
+/// * Rows older than [`ADOPT_OPEN_MEETING_MAX_AGE_SECS`], or whose start
+///   cannot be read, are never adopted.
+/// * A manual meeting is adopted: only the user (`/meetings/stop`) ends it,
+///   with or without the detector.
+/// * Any other row is adopted only while the meeting detector runs. The
+///   detector closes rows left by a crash at startup and ends the meetings
+///   it reattaches; without it nothing would ever end such a row, and
+///   `meetings-only` would record without end.
+fn adopt_open_meeting(
+    detection_source: &str,
+    meeting_start: &str,
+    now: DateTime<Utc>,
+    detector_running: bool,
+) -> bool {
+    let started = DateTime::parse_from_rfc3339(meeting_start)
+        .map(|t| t.with_timezone(&Utc))
+        .or_else(|_| {
+            chrono::NaiveDateTime::parse_from_str(meeting_start, "%Y-%m-%d %H:%M:%S%.f")
+                .map(|t| t.and_utc())
+        });
+    let Ok(started) = started else {
+        return false;
+    };
+    if now.signed_duration_since(started).num_seconds() > ADOPT_OPEN_MEETING_MAX_AGE_SECS {
+        return false;
+    }
+    detection_source == "manual" || detector_running
+}
+
 /// Length of a recorded chunk in whole seconds (rounded up).
 fn chunk_duration_secs(audio: &AudioInput) -> u64 {
     let frames_per_sec = audio.sample_rate as u64 * u64::from(audio.channels.max(1));
@@ -2008,11 +2097,11 @@ fn chunk_duration_secs(audio: &AudioInput) -> u64 {
     (audio.data.len() as u64).div_ceil(frames_per_sec)
 }
 
-/// Follow meeting announcements for `meetings-only` capture: open the
-/// configured devices when a meeting is confirmed, note its end (the device
-/// monitor releases the streams after the grace period), adopt a meeting
-/// that was already open at startup, and catch a missed end.
-async fn run_meetings_only_loop(manager: AudioManager) {
+/// Follow meeting announcements for `meetings-only` capture: confirm a
+/// meeting (the device monitor then opens the configured devices), note its
+/// end (the monitor releases the streams after the grace period), adopt a
+/// meeting that was already open at startup, and catch a missed end.
+async fn run_meetings_only_loop(manager: Arc<AudioManager>) {
     use futures::StreamExt;
 
     let mut started = screenpipe_events::subscribe_to_event::<serde_json::Value>("meeting_started");
@@ -2133,6 +2222,13 @@ async fn run_meeting_speaker_constraint_loop(
 
 impl Drop for AudioManager {
     fn drop(&mut self) {
+        // Every clone shares the handles below. Only the last clone tears
+        // them down: `Arc::into_inner` hands the token back to exactly one
+        // of any clones dropped at the same time.
+        let lifetime = std::mem::replace(&mut self.lifetime, Arc::new(()));
+        if Arc::into_inner(lifetime).is_none() {
+            return;
+        }
         let rec = self.recording_handles.clone();
         let recording = self.recording_receiver_handle.clone();
         let transcript = self.transcription_receiver_handle.clone();
@@ -2167,6 +2263,143 @@ impl Drop for AudioManager {
 mod tests {
     use super::*;
     use crate::core::device::{AudioDevice, DeviceType};
+
+    // ── Clone lifetime, meeting open and gated resume ─────────
+
+    /// Tests that build a real manager touch the process-wide device
+    /// monitor slot (the teardown stops it), so they run one at a time.
+    static MANAGER_TEST_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
+    /// A manager built without models or devices: options start disabled
+    /// (no VAD or segmentation download) and are switched on afterwards.
+    async fn test_manager(mode: AudioCaptureMode) -> AudioManager {
+        let db = Arc::new(
+            DatabaseManager::new("sqlite::memory:", Default::default())
+                .await
+                .unwrap(),
+        );
+        let options = AudioManagerOptions {
+            is_disabled: true,
+            capture_mode: mode,
+            ..Default::default()
+        };
+        let manager = AudioManager::new(options, db).await.unwrap();
+        manager.options.write().await.is_disabled = false;
+        manager
+    }
+
+    /// Poll until every handle reports `finished`, for up to two seconds.
+    async fn all_finished(handles: &[&tokio::task::AbortHandle]) -> bool {
+        for _ in 0..40 {
+            if handles.iter().all(|h| h.is_finished()) {
+                return true;
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+        false
+    }
+
+    #[tokio::test]
+    async fn dropping_a_clone_leaves_capture_running() {
+        let _serial = MANAGER_TEST_LOCK.lock().await;
+        let manager = test_manager(AudioCaptureMode::MeetingsOnly).await;
+        *manager.status.write().await = AudioManagerStatus::Running;
+
+        let recording = tokio::spawn(std::future::pending::<()>());
+        let transcription = tokio::spawn(std::future::pending::<()>());
+        let meetings_loop = tokio::spawn(std::future::pending::<()>());
+        let device_task = tokio::spawn(std::future::pending::<Result<()>>());
+        let monitor = tokio::spawn(std::future::pending::<()>());
+        let watched = [
+            recording.abort_handle(),
+            transcription.abort_handle(),
+            meetings_loop.abort_handle(),
+            device_task.abort_handle(),
+            monitor.abort_handle(),
+        ];
+        *manager.recording_receiver_handle.write().await = Some(recording);
+        *manager.transcription_receiver_handle.write().await = Some(transcription);
+        *manager.meetings_only_handle.write().await = Some(meetings_loop);
+        manager.recording_handles.insert(
+            AudioDevice::new("Test Mic".to_string(), DeviceType::Input),
+            Arc::new(Mutex::new(device_task)),
+        );
+        *super::super::DEVICE_MONITOR.lock().await = Some(monitor);
+
+        // A confirmed meeting asks the device monitor to open the devices;
+        // it starts no task holding a copy of the manager.
+        manager
+            .handle_meeting_signal(MeetingSignal::Started(Some(1)))
+            .await;
+        assert!(manager.take_meeting_open_request());
+        assert!(!manager.take_meeting_open_request());
+
+        // Copies held by tasks come and go while capture runs.
+        drop(manager.clone());
+        drop(Arc::new(manager.clone()));
+        tokio::time::sleep(Duration::from_millis(200)).await;
+        for handle in &watched {
+            assert!(!handle.is_finished(), "a dropped clone stopped capture");
+        }
+        assert!(super::super::DEVICE_MONITOR.lock().await.is_some());
+        assert!(!manager.current_devices().is_empty());
+
+        // The last owner still tears everything down.
+        drop(manager);
+        let watched_refs: Vec<&tokio::task::AbortHandle> = watched.iter().collect();
+        assert!(
+            all_finished(&watched_refs).await,
+            "dropping the last owner must stop capture"
+        );
+        assert!(super::super::DEVICE_MONITOR.lock().await.is_none());
+    }
+
+    #[tokio::test]
+    async fn gated_resume_enrols_the_device_for_the_next_meeting() {
+        let _serial = MANAGER_TEST_LOCK.lock().await;
+        let manager = test_manager(AudioCaptureMode::MeetingsOnly).await;
+        *manager.status.write().await = AudioManagerStatus::Running;
+        let name = "Test Mic (input)";
+        manager.stop_device(name).await.ok();
+        assert!(!manager.enabled_devices().await.contains(name));
+
+        let outcome = manager.resume_device(name).await.unwrap();
+        assert_eq!(
+            outcome,
+            DeviceStart::Skipped(DeviceStartSkip::WaitingForMeeting)
+        );
+        assert!(
+            manager.enabled_devices().await.contains(name),
+            "the next meeting opens enabled devices only"
+        );
+        assert!(manager.current_devices().is_empty());
+    }
+
+    #[test]
+    fn open_meetings_are_adopted_only_when_something_ends_them() {
+        let now = DateTime::parse_from_rfc3339("2026-10-26T12:00:00Z")
+            .unwrap()
+            .with_timezone(&Utc);
+        let recent = "2026-10-26T11:00:00.000Z";
+        let stale = "2026-10-25T23:00:00.000Z";
+        // Manual meetings end only through the user: adopted either way.
+        assert!(adopt_open_meeting("manual", recent, now, true));
+        assert!(adopt_open_meeting("manual", recent, now, false));
+        // Detected meetings need the detector to end them.
+        assert!(adopt_open_meeting("ui_scan", recent, now, true));
+        assert!(!adopt_open_meeting("ui_scan", recent, now, false));
+        // Rows older than the orphan bound are left behind by a crash.
+        assert!(!adopt_open_meeting("manual", stale, now, true));
+        assert!(!adopt_open_meeting("ui_scan", stale, now, true));
+        // Space-separated timestamps parse too; unreadable ones never adopt.
+        assert!(adopt_open_meeting(
+            "manual",
+            "2026-10-26 11:30:00",
+            now,
+            false
+        ));
+        assert!(!adopt_open_meeting("manual", "yesterday", now, true));
+    }
 
     #[test]
     fn test_central_handler_restart_result_defaults() {

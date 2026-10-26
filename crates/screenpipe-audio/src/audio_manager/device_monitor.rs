@@ -548,7 +548,10 @@ pub async fn start_device_monitor(
                     }
                     released_this_idle_period = true;
                 }
-                needs_initial_sync = true;
+                // `needs_initial_sync` is left alone: the default-device
+                // tracker below catches a default that changed while idle,
+                // and a re-armed sync would stop and restart the microphone
+                // the meeting just opened.
                 disconnected_devices.clear();
                 failed_devices.clear();
                 no_input_retry_count = 0;
@@ -557,10 +560,23 @@ pub async fn start_device_monitor(
                 active_pinned_fallback = None;
                 logged_pinned_fallback_default_disabled.clear();
                 no_input_watch.pause();
-                sleep(Duration::from_secs(2)).await;
+                // A confirmed meeting wakes the monitor at once.
+                tokio::select! {
+                    _ = sleep(Duration::from_secs(2)) => {}
+                    _ = audio_manager.capture_gate_woken() => {}
+                }
                 continue;
             }
             released_this_idle_period = false;
+
+            // `meetings-only`: a meeting was confirmed. Open its devices here,
+            // on the one task that also starts and stops streams for
+            // recovery, so the open never races those starts.
+            if audio_manager.status().await == AudioManagerStatus::Running
+                && audio_manager.take_meeting_open_request()
+            {
+                audio_manager.open_meeting_session_devices().await;
+            }
 
             if audio_manager.status().await == AudioManagerStatus::Running {
                 // Check if sleep/wake or display reconfiguration requested

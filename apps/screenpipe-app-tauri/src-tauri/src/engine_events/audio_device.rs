@@ -42,6 +42,15 @@ pub(super) const EVENT_NAMES: [&str; 4] = [
 
 /// `pinned_device` when no microphone exists at all (engine placeholder).
 const NO_INPUT_PLACEHOLDER: &str = "__no_input__";
+/// The same placeholder read as one string. The target's binary has the
+/// field name and the placeholder side by side, so this spelling cannot be
+/// ruled out; both are treated alike (open question W3-14 §10).
+const NO_INPUT_PLACEHOLDER_LONG: &str = "pinned_device__no_input__";
+
+/// True when `pinned` names no device: empty or the no-input placeholder.
+fn is_no_input(pinned: &str) -> bool {
+    pinned.is_empty() || pinned == NO_INPUT_PLACEHOLDER || pinned == NO_INPUT_PLACEHOLDER_LONG
+}
 
 /// Map an engine event name (snake_case, `audio_device_` prefix) to the
 /// kebab-case Tauri event the webview listens for.
@@ -83,10 +92,10 @@ pub(super) fn notice_for(
     let field = |key: &str| data.get(key).and_then(Value::as_str).unwrap_or("").trim();
     let pinned = field("pinned_device");
     let fallback = field("fallback_device");
-    if !pinned.is_empty() && pinned != NO_INPUT_PLACEHOLDER && user_disabled(pinned) {
+    let no_input = is_no_input(pinned);
+    if !no_input && user_disabled(pinned) {
         return None;
     }
-    let no_input = pinned.is_empty() || pinned == NO_INPUT_PLACEHOLDER;
     let subject = if no_input {
         NO_INPUT_PLACEHOLDER
     } else {
@@ -239,6 +248,14 @@ mod tests {
         .unwrap();
         assert_eq!(n.key, "unavailable:__no_input__");
         assert!(!n.body.contains("__no_input__"));
+        // The long spelling of the placeholder reads the same way.
+        let long = notice_for(
+            "audio_device_fallback_unavailable",
+            &json!({"state": "unavailable", "pinned_device": "pinned_device__no_input__", "fallback_device": ""}),
+            nobody_disabled,
+        )
+        .unwrap();
+        assert_eq!(long, n);
         let n = notice_for(
             "audio_device_fallback_unavailable",
             &json!({"pinned_device": "Headset (input)", "fallback_device": ""}),
