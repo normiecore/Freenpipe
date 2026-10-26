@@ -14,7 +14,9 @@
 //! - [`PipeRunHook::after_run`] once the run's result is stored in the
 //!   execution record, before the run-complete callback fires;
 //! - [`PipeRunHook::on_event`] for each event the scheduler receives, before
-//!   it matches events to pipe triggers.
+//!   it matches events to pipe triggers;
+//! - [`PipeRunHook::on_scheduler_start`] each time the scheduler starts, once
+//!   it listens for events (so events a hook sends from there are heard).
 //!
 //! Hooks run one after another in registration order and are awaited, so a
 //! hook that has slow work to do should spawn it. A hook that panics is
@@ -36,6 +38,11 @@ pub struct RunStart<'a> {
     pub pipe_name: &'a str,
     /// What started the run: `manual`, `scheduled` or `event`.
     pub trigger: &'a str,
+    /// Event behind an event-triggered run (`pipe_executions.trigger_event`).
+    pub trigger_event: Option<&'a str>,
+    /// Instance key of that event, e.g. the meeting id
+    /// (`pipe_executions.trigger_key`).
+    pub trigger_key: Option<&'a str>,
     /// Row id in `pipe_executions`, when the run is persisted.
     pub execution_id: Option<i64>,
     /// The pipe's directory (`<data dir>/pipes/<name>`).
@@ -74,6 +81,8 @@ pub trait PipeRunHook: Send + Sync {
     async fn after_run(&self, _run: &RunEnd<'_>) {}
 
     async fn on_event(&self, _event: &PipeEvent<'_>) {}
+
+    async fn on_scheduler_start(&self) {}
 }
 
 /// The hooks registered on a pipe manager.
@@ -120,6 +129,17 @@ impl PipeHooks {
     pub async fn on_event(&self, event: &PipeEvent<'_>) {
         for hook in &self.hooks {
             guard(hook.name(), "on_event", hook.on_event(event)).await;
+        }
+    }
+
+    pub async fn on_scheduler_start(&self) {
+        for hook in &self.hooks {
+            guard(
+                hook.name(),
+                "on_scheduler_start",
+                hook.on_scheduler_start(),
+            )
+            .await;
         }
     }
 }
@@ -174,6 +194,12 @@ mod tests {
                 .lock()
                 .unwrap()
                 .push(format!("{}:event:{}", self.label, event.name));
+        }
+        async fn on_scheduler_start(&self) {
+            self.seen
+                .lock()
+                .unwrap()
+                .push(format!("{}:scheduler_start", self.label));
         }
     }
 
@@ -230,6 +256,8 @@ mod tests {
         let start = RunStart {
             pipe_name: "digest",
             trigger: "scheduled",
+            trigger_event: None,
+            trigger_key: None,
             execution_id: Some(7),
             pipe_dir: dir,
         };
@@ -249,6 +277,7 @@ mod tests {
                 data: &data,
             })
             .await;
+        hooks.on_scheduler_start().await;
 
         assert_eq!(
             *seen.lock().unwrap(),
@@ -259,6 +288,8 @@ mod tests {
                 "b:after:digest:false:Some(\"timeout\")",
                 "a:event:meeting_ended",
                 "b:event:meeting_ended",
+                "a:scheduler_start",
+                "b:scheduler_start",
             ]
         );
     }
@@ -276,6 +307,8 @@ mod tests {
             .before_run(&RunStart {
                 pipe_name: "p",
                 trigger: "manual",
+                trigger_event: None,
+                trigger_key: None,
                 execution_id: None,
                 pipe_dir: Path::new("."),
             })
@@ -293,6 +326,8 @@ mod tests {
         let start = RunStart {
             pipe_name: "p",
             trigger: "event",
+            trigger_event: Some("meeting_ended"),
+            trigger_key: Some("12"),
             execution_id: None,
             pipe_dir: Path::new("."),
         };

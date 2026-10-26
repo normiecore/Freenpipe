@@ -1329,6 +1329,9 @@ async fn main() -> anyhow::Result<()> {
     if config.api_auth {
         pipe_manager.set_local_api_key(config.api_auth_key.clone());
     }
+    // Meeting summaries: check each summary run's outcome, retry runs a
+    // restart interrupted, and keep trivial meetings from starting pipes.
+    screenpipe_engine::pipe_store::attach_meeting_summary_support(&mut pipe_manager, db.clone());
     pipe_manager.install_builtin_pipes().ok();
     if let Err(e) = pipe_manager.load_pipes().await {
         tracing::warn!("failed to load pipes: {}", e);
