@@ -2258,9 +2258,11 @@ mod tests {
     #[test]
     fn worker_aggregates_typed_text_until_the_typing_pause() {
         let (tx, rx) = crossbeam_channel::bounded(64);
-        let mut config = crate::config::UiCaptureConfig::default();
-        config.capture_text = true;
-        config.apply_pii_removal = false;
+        let config = crate::config::UiCaptureConfig {
+            capture_text: true,
+            apply_pii_removal: false,
+            ..Default::default()
+        };
         let timeout = config.text_timeout_ms;
         let mut worker = make_worker(tx, config);
 
@@ -2282,9 +2284,11 @@ mod tests {
     #[test]
     fn worker_defers_clipboard_reads_until_due() {
         let (tx, rx) = crossbeam_channel::bounded(64);
-        let mut config = crate::config::UiCaptureConfig::default();
-        config.capture_clipboard = true;
-        config.capture_clipboard_content = false;
+        let config = crate::config::UiCaptureConfig {
+            capture_clipboard: true,
+            capture_clipboard_content: false,
+            ..Default::default()
+        };
         let mut worker = make_worker(tx, config);
 
         worker.handle(raw(
@@ -2310,10 +2314,12 @@ mod tests {
     #[test]
     fn worker_coalesces_wheel_ticks_and_flushes_on_click() {
         let (tx, rx) = crossbeam_channel::bounded(64);
-        let mut config = crate::config::UiCaptureConfig::default();
-        config.capture_scroll = true;
-        config.capture_clicks = true;
-        config.capture_context = false;
+        let config = crate::config::UiCaptureConfig {
+            capture_scroll: true,
+            capture_clicks: true,
+            capture_context: false,
+            ..Default::default()
+        };
         let mut worker = make_worker(tx, config);
 
         worker.handle(raw(RawInputKind::Wheel { delta: 120 }, 0));
@@ -2335,10 +2341,12 @@ mod tests {
     #[test]
     fn worker_finish_flushes_everything() {
         let (tx, rx) = crossbeam_channel::bounded(64);
-        let mut config = crate::config::UiCaptureConfig::default();
-        config.capture_text = true;
-        config.capture_scroll = true;
-        config.apply_pii_removal = false;
+        let config = crate::config::UiCaptureConfig {
+            capture_text: true,
+            capture_scroll: true,
+            apply_pii_removal: false,
+            ..Default::default()
+        };
         let mut worker = make_worker(tx, config);
         worker.handle(key(0x41, 0));
         worker.handle(raw(RawInputKind::Wheel { delta: 120 }, 5));

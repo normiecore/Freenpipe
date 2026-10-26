@@ -548,7 +548,13 @@ impl UrlPolicy {
                 UrlRule::Domain(rule) => match CompiledDomainRule::compile(rule) {
                     Ok(compiled) => rules.blocked.push(BlockRule::Domain(compiled)),
                     Err(error) => {
-                        let fallback = entry.legacy_pattern().trim().to_lowercase();
+                        // The host the rule names when it can be read (so a
+                        // URL-form domain still blocks its host), else the
+                        // text as written.
+                        let fallback = rule_host(&rule.domain)
+                            .unwrap_or_else(|_| entry.legacy_pattern())
+                            .trim()
+                            .to_lowercase();
                         if !fallback.is_empty() {
                             rules.blocked.push(BlockRule::Legacy(fallback));
                         }
@@ -987,6 +993,24 @@ mod tests {
         assert!(p.is_blocked("https://bank.com"));
         assert!(p.is_blocked("https://help.bank.com"));
         assert!(!p.is_blocked("https://notbank.com"));
+
+        // A broken rule written as a URL still blocks the host it names.
+        let p = block_policy(vec![rule(
+            "https://Bank.example/login",
+            false,
+            &["help.bank.example"],
+        )
+        .into()]);
+        assert_eq!(p.rejected_rules().len(), 1);
+        assert!(p.is_blocked("https://bank.example"));
+        assert!(p.is_blocked("https://help.bank.example/faq"));
+        assert!(!p.is_blocked("https://notbank.example"));
+
+        // So does a host that is too short to be valid (legacy word match).
+        let p = block_policy(vec![rule("intranet", false, &[]).into()]);
+        assert!(p.is_blocked("http://intranet/wiki"));
+        assert!(p.is_blocked("https://intranet.corp.example"));
+        assert!(!p.is_blocked("https://myintranet.example"));
     }
 
     #[test]
