@@ -8,8 +8,10 @@
 //! Captures happen only on meaningful user events: app switch, window focus,
 //! click, typing pause, scroll stop, clipboard, and periodic idle fallback.
 
+use crate::capture_exclusions::ExclusionProbe;
 use crate::hot_frame_cache::{HotFrame, HotFrameCache};
 use crate::power::PowerProfile;
+use crate::visual_probe::{ProbeOutcome, VisualProbe};
 use anyhow::Result;
 use chrono::Utc;
 use screenpipe_a11y::tree::TreeWalkerConfig;
@@ -17,12 +19,11 @@ use screenpipe_a11y::ActivityFeed;
 use screenpipe_capture::paired_capture::{paired_capture, CaptureContext, PairedCaptureResult};
 use screenpipe_core::window_pattern::{self, WindowPattern};
 use screenpipe_db::DatabaseManager;
-use screenpipe_screen::capture_screenshot_by_window::{get_excluded_sck_window_ids, WindowFilters};
 use screenpipe_screen::frame_comparison::{FrameComparer, FrameComparisonConfig};
 use screenpipe_screen::monitor::{list_monitors, SafeMonitor};
 use screenpipe_screen::snapshot_writer::SnapshotWriter;
-use screenpipe_screen::utils::capture_monitor_image;
-use screenpipe_screen::CaptureLoopStage;
+use screenpipe_screen::utils::{capture_monitor_image, detect_corrupt_frame};
+use screenpipe_screen::{AttemptEnd, CaptureLoopStage, CorruptFrameKind, LoopStageGuard};
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
@@ -590,6 +591,12 @@ pub async fn event_driven_capture_loop(
     // Publishes this loop's current stage for /health (loop_stage); the
     // monitor is unregistered when the loop returns.
     let loop_stage = vision_metrics.track_capture_loop(monitor_id);
+    // The window-exclusion refresh and the change probe each run under a
+    // deadline, so a hung window server or capture backend cannot freeze
+    // this loop. Unknown exclusions withhold frame pixels (fail closed).
+    let mut exclusions = ExclusionProbe::for_tree_walker_config(monitor_id, &tree_walker_config);
+    let mut visual_probe = VisualProbe::new(monitor_id);
+    let mut corrupt_streak = CorruptStreak::default();
     // Carries the frame comparer's thumbnail failures into the shared
     // metrics, where /health reports them.
     let mut frame_diff_watch = screenpipe_screen::metrics::FrameDiffWatch::default();
@@ -698,6 +705,7 @@ pub async fn event_driven_capture_loop(
             .checked_sub(Duration::from_millis(500))
             .unwrap_or(Instant::now()); // allow capture
         vision_metrics.record_capture_attempt();
+        loop_stage.attempt_started();
         loop_stage.enter(CaptureLoopStage::Capture);
         match capture_with_timeout(
             CAPTURE_OPERATION_TIMEOUT,
@@ -710,14 +718,26 @@ pub async fn event_driven_capture_loop(
                 &mut walk_budget,
                 false, // screenshot enabled on startup
                 false, // hd not active at startup (Manual is dedup-exempt anyway)
+                &mut exclusions,
+                &loop_stage,
             ),
         )
         .await
         {
             Ok(Ok(output)) => {
+                loop_stage.attempt_finished(AttemptEnd::Answered);
                 state.mark_captured();
-                if let Some(ref mut comparer) = frame_comparer {
-                    let _ = comparer.compare(&output.image);
+                track_frame_validity(
+                    &output,
+                    &mut corrupt_streak,
+                    &vision_metrics,
+                    monitor_id,
+                    || release_stream_marked(&monitor, &loop_stage, CaptureLoopStage::Capture),
+                );
+                if let (Some(comparer), Some(image)) =
+                    (frame_comparer.as_mut(), output.image.as_ref())
+                {
+                    let _ = comparer.compare(image);
                 }
                 if let Some(ref result) = output.result {
                     last_content_hash = result.content_hash;
@@ -730,6 +750,7 @@ pub async fn event_driven_capture_loop(
                     vision_metrics.record_capture();
                     vision_metrics.record_db_write(Duration::from_millis(result.duration_ms));
                     if let Some(ref cache) = hot_frame_cache {
+                        loop_stage.enter(CaptureLoopStage::HotCachePush);
                         push_to_hot_cache(cache, result, &device_name, &CaptureTrigger::Manual)
                             .await;
                     }
@@ -737,19 +758,22 @@ pub async fn event_driven_capture_loop(
                         "startup capture for monitor {}: frame_id={}, dur={}ms",
                         monitor_id, result.frame_id, result.duration_ms
                     );
-                } else {
+                } else if output.rejected.is_none() {
                     // Symmetry with the live loop — startup capture rarely
                     // hits dedup (no prior hash on first frame) but if it
                     // does, treat it the same way: pipeline cycled fine,
-                    // nothing new to write.
+                    // nothing new to write. A corrupt frame was already
+                    // recorded by track_frame_validity.
                     vision_metrics.record_dedup_skip();
                 }
             }
             Ok(Err(e)) => {
+                loop_stage.attempt_finished(AttemptEnd::Answered);
                 vision_metrics.record_drop_error();
                 warn!("startup capture failed for monitor {}: {}", monitor_id, e);
             }
             Err(_timeout) => {
+                loop_stage.attempt_finished(AttemptEnd::DeadlineOverrun);
                 vision_metrics.record_drop_timeout();
                 warn!(
                     "startup capture timed out after {:?} for monitor {}; continuing with live capture loop",
@@ -764,11 +788,6 @@ pub async fn event_driven_capture_loop(
         );
     }
     state.phase_next_idle_capture(idle_phase_delay);
-
-    // Cache sorted excluded SCK window IDs to avoid recreating the persistent
-    // SCK stream every time a transient window (tooltip, popup, badge) appears
-    // or disappears.  Only update when the sorted set actually changes.
-    let mut cached_excluded_ids: Vec<u32> = Vec::new();
 
     // Track whether this monitor is currently in Cold state so we release
     // its OS-level capture session exactly once per Active/Warm → Cold edge.
@@ -812,6 +831,7 @@ pub async fn event_driven_capture_loop(
         let mut warm_trigger_override: Option<CaptureTrigger> = None;
         {
             use crate::focus_aware_controller::CaptureState;
+            loop_stage.enter(CaptureLoopStage::FocusGate);
             let capture_state = focus_controller.state_for_monitor(&monitor);
 
             // Fires exactly once per focus-away transition, not every Cold
@@ -819,6 +839,7 @@ pub async fn event_driven_capture_loop(
             // churn sck-rs / WGC locks.
             let is_cold = matches!(capture_state, CaptureState::Cold);
             if is_cold && !was_cold {
+                loop_stage.enter(CaptureLoopStage::ReleaseStream);
                 monitor.release_capture_stream();
             }
             was_cold = is_cold;
@@ -830,8 +851,9 @@ pub async fn event_driven_capture_loop(
                     // changed. ~5s between screenshots keeps CPU low while
                     // still catching bursty events (notifications, popups).
                     // The full-rate Active path costs far more (OCR + DB +
-                    // a11y tree walk) — Warm does a screenshot + 15×15 sample
-                    // diff and only progresses if the diff crosses threshold.
+                    // a11y tree walk) — Warm does a screenshot + sample diff
+                    // and only progresses if the diff crosses threshold.
+                    loop_stage.enter(CaptureLoopStage::WarmWait);
                     if last_warm_visual_check.elapsed() < Duration::from_secs(5) {
                         tokio::time::sleep(Duration::from_millis(250)).await;
                         continue;
@@ -845,15 +867,38 @@ pub async fn event_driven_capture_loop(
                         continue;
                     };
 
-                    // Use cached excluded window ids if available to avoid
-                    // re-enumerating every Warm tick. If the list hasn't been
-                    // seeded yet (Active path fills it), this snapshot pass
-                    // is still correct — it just might include pixels from
-                    // soon-to-be-excluded transient windows.
-                    loop_stage.enter(CaptureLoopStage::WarmWait);
-                    let snap = capture_monitor_image(&monitor, &cached_excluded_ids).await;
-                    match snap {
-                        Ok((image, _)) => {
+                    // The Warm probe reuses the exclusion list from the last
+                    // refresh while it is known: its image is only diffed,
+                    // never stored, and a capture it triggers refreshes the
+                    // list before taking pixels it keeps. While the list is
+                    // unknown, refresh it first, and take no pixels at all if
+                    // it stays unknown.
+                    if exclusions.state().pixel_exclusions().is_none() {
+                        loop_stage.enter(CaptureLoopStage::ExclusionProbe);
+                        exclusions.refresh().await;
+                    }
+                    let Some(excluded) = exclusions.state().pixel_exclusions().map(<[u32]>::to_vec)
+                    else {
+                        loop_stage.enter(CaptureLoopStage::WarmWait);
+                        tokio::time::sleep(Duration::from_millis(250)).await;
+                        continue;
+                    };
+                    loop_stage.enter(CaptureLoopStage::VisualProbe);
+                    match visual_probe.screenshot(&monitor, &excluded).await {
+                        ProbeOutcome::Image(image)
+                            if usable_probe_image(
+                                &image,
+                                &mut corrupt_streak,
+                                monitor_id,
+                                || {
+                                    release_stream_marked(
+                                        &monitor,
+                                        &loop_stage,
+                                        CaptureLoopStage::VisualProbe,
+                                    )
+                                },
+                            ) =>
+                        {
                             let diff = comparer.compare(&image);
                             if diff > visual_change_threshold {
                                 debug!(
@@ -864,12 +909,26 @@ pub async fn event_driven_capture_loop(
                                 // Fall through to normal capture path with
                                 // warm_trigger_override set.
                             } else {
+                                loop_stage.enter(CaptureLoopStage::WarmWait);
                                 tokio::time::sleep(Duration::from_millis(250)).await;
                                 continue;
                             }
                         }
-                        Err(e) => {
+                        ProbeOutcome::Image(_) => {
+                            // A corrupt probe image is neither a change nor a
+                            // baseline; wait for the next probe.
+                            loop_stage.enter(CaptureLoopStage::WarmWait);
+                            tokio::time::sleep(Duration::from_millis(250)).await;
+                            continue;
+                        }
+                        ProbeOutcome::Failed(e) => {
                             debug!("warm visual check failed on monitor {}: {}", monitor_id, e);
+                            loop_stage.enter(CaptureLoopStage::WarmWait);
+                            tokio::time::sleep(Duration::from_millis(250)).await;
+                            continue;
+                        }
+                        ProbeOutcome::TimedOut | ProbeOutcome::Busy => {
+                            loop_stage.enter(CaptureLoopStage::WarmWait);
                             tokio::time::sleep(Duration::from_millis(250)).await;
                             continue;
                         }
@@ -883,6 +942,7 @@ pub async fn event_driven_capture_loop(
                     // to claim a corr_id; if this monitor was Cold but another
                     // captured, the corr_id is already paired and our
                     // TriggerDropped becomes a harmless no-op for it.
+                    loop_stage.enter(CaptureLoopStage::TriggerDrain);
                     let drained = drain_pending_corr_ids(&mut trigger_rx);
                     if !drained.is_empty() {
                         report_triggers_dropped(
@@ -933,6 +993,7 @@ pub async fn event_driven_capture_loop(
                     crate::drm_detector::drm_content_paused(),
                     crate::schedule_monitor::schedule_paused(),
                 );
+                loop_stage.enter(CaptureLoopStage::ReleaseStream);
                 monitor.release_capture_stream();
             }
             was_in_pause_state = true;
@@ -943,6 +1004,7 @@ pub async fn event_driven_capture_loop(
             // drain a multi-minute pause overflows the broadcast buffer
             // and the dropped ids show up as misleading "stale entries"
             // WARNs later.
+            loop_stage.enter(CaptureLoopStage::TriggerDrain);
             let drained = drain_pending_corr_ids(&mut trigger_rx);
             if !drained.is_empty() {
                 report_triggers_dropped(
@@ -951,6 +1013,7 @@ pub async fn event_driven_capture_loop(
                     crate::frame_linker::DropReason::Paused,
                 );
             }
+            loop_stage.enter(CaptureLoopStage::PauseGate);
             tokio::time::sleep(poll_interval).await;
             continue;
         } else if was_in_pause_state {
@@ -968,6 +1031,7 @@ pub async fn event_driven_capture_loop(
         // that can block on system I/O and previously caused deadlocks.
         #[cfg(target_os = "macos")]
         if screenpipe_screen::stream_invalidation::take() {
+            loop_stage.enter(CaptureLoopStage::InvalidateStreams);
             info!(
                 "invalidating persistent streams after unlock/wake for monitor {}",
                 monitor_id
@@ -1199,36 +1263,54 @@ pub async fn event_driven_capture_loop(
             activity_feed.keyboard_idle_ms(),
         ) {
             last_visual_check = Instant::now();
-            let vc_filters = WindowFilters::new(
-                &capture_params.tree_walker_config.ignored_windows,
-                &capture_params.tree_walker_config.included_windows,
-                &capture_params.tree_walker_config.ignored_urls,
-            );
-            let mut fresh_ids = get_excluded_sck_window_ids(&vc_filters);
-            fresh_ids.sort_unstable();
-            fresh_ids.dedup();
-            if fresh_ids != cached_excluded_ids {
-                cached_excluded_ids = fresh_ids;
-            }
             if let Some(ref mut comparer) = frame_comparer {
-                loop_stage.enter(CaptureLoopStage::VisualProbe);
-                match capture_monitor_image(&monitor, &cached_excluded_ids).await {
-                    Ok((image, _dur)) => {
-                        let diff = comparer.compare(&image);
-                        if diff > visual_change_threshold {
-                            debug!(
-                                "visual change detected on monitor {} (diff={:.4}, threshold={:.4})",
-                                monitor_id, diff, visual_change_threshold
-                            );
-                            trigger = Some(CaptureTrigger::VisualChange);
+                // Same window exclusions as the full capture, so the diff
+                // image matches what would be stored and excluded windows
+                // cannot cause phantom changes. Unknown exclusions mean no
+                // pixels: the check is skipped.
+                loop_stage.enter(CaptureLoopStage::ExclusionProbe);
+                let excluded = exclusions
+                    .refresh()
+                    .await
+                    .pixel_exclusions()
+                    .map(<[u32]>::to_vec);
+                if let Some(excluded) = excluded {
+                    loop_stage.enter(CaptureLoopStage::VisualProbe);
+                    match visual_probe.screenshot(&monitor, &excluded).await {
+                        ProbeOutcome::Image(image) => {
+                            let usable =
+                                usable_probe_image(&image, &mut corrupt_streak, monitor_id, || {
+                                    release_stream_marked(
+                                        &monitor,
+                                        &loop_stage,
+                                        CaptureLoopStage::VisualProbe,
+                                    )
+                                });
+                            if usable {
+                                let diff = comparer.compare(&image);
+                                if diff > visual_change_threshold {
+                                    debug!(
+                                        "visual change detected on monitor {} (diff={:.4}, threshold={:.4})",
+                                        monitor_id, diff, visual_change_threshold
+                                    );
+                                    trigger = Some(CaptureTrigger::VisualChange);
+                                }
+                            }
                         }
+                        ProbeOutcome::Failed(e) => {
+                            debug!(
+                                "visual check screenshot failed for monitor {}: {}",
+                                monitor_id, e
+                            );
+                        }
+                        // Logged by the probe; the loop simply moves on.
+                        ProbeOutcome::TimedOut | ProbeOutcome::Busy => {}
                     }
-                    Err(e) => {
-                        debug!(
-                            "visual check screenshot failed for monitor {}: {}",
-                            monitor_id, e
-                        );
-                    }
+                } else {
+                    debug!(
+                        "visual check skipped on monitor {}: window exclusion list unknown",
+                        monitor_id
+                    );
                 }
             }
         }
@@ -1271,6 +1353,7 @@ pub async fn event_driven_capture_loop(
                         );
                         // Release the corr_ids the linker is waiting on so
                         // the ui_events rows don't sit pending for 60s.
+                        loop_stage.enter(CaptureLoopStage::TriggerDrain);
                         if !correlation_ids.is_empty() {
                             report_triggers_dropped(
                                 linker_tx.as_ref(),
@@ -1286,6 +1369,7 @@ pub async fn event_driven_capture_loop(
                 // Heartbeat: record that the loop is alive and attempting a capture.
                 // This keeps health "ok" even if the DB write below times out.
                 vision_metrics.record_capture_attempt();
+                loop_stage.attempt_started();
 
                 // Compute elements_ref for frame-to-frame element dedup.
                 // If the current content_hash matches the previous frame's hash
@@ -1322,13 +1406,29 @@ pub async fn event_driven_capture_loop(
                         &mut walk_budget,
                         screenshot_disabled,
                         hd_active,
+                        &mut exclusions,
+                        &loop_stage,
                     ),
                 )
                 .await;
 
                 match capture_result {
                     Ok(Ok(output)) => {
+                        loop_stage.attempt_finished(AttemptEnd::Answered);
                         state.mark_captured();
+                        track_frame_validity(
+                            &output,
+                            &mut corrupt_streak,
+                            &vision_metrics,
+                            monitor_id,
+                            || {
+                                release_stream_marked(
+                                    &monitor,
+                                    &loop_stage,
+                                    CaptureLoopStage::Capture,
+                                )
+                            },
+                        );
 
                         if consecutive_capture_errors > 0 {
                             info!(
@@ -1340,9 +1440,12 @@ pub async fn event_driven_capture_loop(
 
                         // Feed the captured frame to comparer so we don't
                         // re-trigger on the same visual state (reuses capture
-                        // image — no extra screenshot needed)
-                        if let Some(ref mut comparer) = frame_comparer {
-                            let _ = comparer.compare(&output.image);
+                        // image — no extra screenshot needed). Withheld and
+                        // corrupt frames have no image and leave the baseline.
+                        if let (Some(comparer), Some(image)) =
+                            (frame_comparer.as_mut(), output.image.as_ref())
+                        {
+                            let _ = comparer.compare(image);
                         }
 
                         if let Some(ref result) = output.result {
@@ -1365,6 +1468,7 @@ pub async fn event_driven_capture_loop(
                                 .record_db_write(Duration::from_millis(result.duration_ms));
 
                             if let Some(ref cache) = hot_frame_cache {
+                                loop_stage.enter(CaptureLoopStage::HotCachePush);
                                 push_to_hot_cache(cache, result, &device_name, &trigger).await;
                             }
 
@@ -1398,6 +1502,18 @@ pub async fn event_driven_capture_loop(
                                 output.elements_deduped,
                                 monitor_id
                             );
+                        } else if output.rejected.is_some() {
+                            // The frame held no screen content; the metrics
+                            // got it from track_frame_validity (a black frame
+                            // lands like a dedup skip, decode garbage does
+                            // not). No frame comes of these triggers.
+                            if !correlation_ids.is_empty() {
+                                report_triggers_dropped(
+                                    linker_tx.as_ref(),
+                                    std::mem::take(&mut correlation_ids),
+                                    crate::frame_linker::DropReason::CaptureError,
+                                );
+                            }
                         } else {
                             // Content dedup or window filter — capture skipped.
                             // Tick last_db_write_ts anyway so the health check
@@ -1440,6 +1556,7 @@ pub async fn event_driven_capture_loop(
                         }
                     }
                     Ok(Err(e)) => {
+                        loop_stage.attempt_finished(AttemptEnd::Answered);
                         consecutive_capture_errors += 1;
                         vision_metrics.record_drop_error();
 
@@ -1491,6 +1608,7 @@ pub async fn event_driven_capture_loop(
                         }
                     }
                     Err(_timeout) => {
+                        loop_stage.attempt_finished(AttemptEnd::DeadlineOverrun);
                         consecutive_capture_errors += 1;
                         vision_metrics.record_drop_timeout();
                         state.mark_captured();
@@ -1587,10 +1705,187 @@ struct CaptureOutput {
     /// None when content dedup skipped the capture (identical accessibility text).
     result: Option<PairedCaptureResult>,
     /// The captured image — reused for frame comparer update to avoid taking
-    /// a redundant extra screenshot after each capture.
-    image: image::DynamicImage,
+    /// a redundant extra screenshot after each capture. `None` when no pixels
+    /// were taken (window exclusions unknown) or the frame was corrupt.
+    image: Option<image::DynamicImage>,
     /// Whether elements were deduped (referenced another frame's elements).
     elements_deduped: bool,
+    /// Set when the corruption guard rejected the screenshot.
+    rejected: Option<CorruptFrameKind>,
+}
+
+impl CaptureOutput {
+    /// Nothing stored for this attempt; keep the image for the comparer.
+    fn skipped(image: Option<image::DynamicImage>) -> Self {
+        Self {
+            result: None,
+            image,
+            elements_deduped: false,
+            rejected: None,
+        }
+    }
+}
+
+/// Consecutive corrupt frames after which the monitor's persistent capture
+/// stream is released, so the next capture opens a fresh session.
+const CORRUPT_STREAK_RELEASE: u32 = 3;
+
+/// While the run goes on, the stream is released again after every this many
+/// further corrupt frames. A session that keeps handing out zeroed buffers
+/// (a device left broken by a GPU reset) then recovers without a restart,
+/// and a screen the OS blanks on purpose for a whole film costs one cheap
+/// reopen per this many frames.
+const CORRUPT_STREAK_RELEASE_AGAIN_EVERY: u32 = 30;
+
+/// Run of corrupt frames on one monitor.
+#[derive(Debug, Default)]
+struct CorruptStreak {
+    count: u32,
+}
+
+impl CorruptStreak {
+    /// Count a corrupt frame; true when the run reaches
+    /// [`CORRUPT_STREAK_RELEASE`] and after every
+    /// [`CORRUPT_STREAK_RELEASE_AGAIN_EVERY`] further frames of it.
+    fn on_corrupt(&mut self) -> bool {
+        self.count = self.count.saturating_add(1);
+        self.count >= CORRUPT_STREAK_RELEASE
+            && (self.count - CORRUPT_STREAK_RELEASE) % CORRUPT_STREAK_RELEASE_AGAIN_EVERY == 0
+    }
+
+    fn on_valid(&mut self) {
+        self.count = 0;
+    }
+}
+
+/// Count a frame the corruption guard rejected (it is not stored and not used
+/// as the change baseline) and release the capture stream when the run of
+/// corrupt frames calls for it (see [`CorruptStreak::on_corrupt`]). A frame
+/// with real pixels ends the run.
+fn track_frame_validity(
+    output: &CaptureOutput,
+    streak: &mut CorruptStreak,
+    metrics: &screenpipe_screen::PipelineMetrics,
+    monitor_id: u32,
+    release_stream: impl FnOnce(),
+) {
+    match output.rejected {
+        Some(kind) => {
+            metrics.record_corrupt_frame(kind);
+            extend_corrupt_streak(streak, kind, monitor_id, release_stream);
+        }
+        None if output.image.is_some() => streak.on_valid(),
+        None => {}
+    }
+}
+
+/// Add a corrupt frame to the monitor's run, releasing the capture stream
+/// when the run reaches [`CORRUPT_STREAK_RELEASE`] and again after every
+/// [`CORRUPT_STREAK_RELEASE_AGAIN_EVERY`] further frames.
+fn extend_corrupt_streak(
+    streak: &mut CorruptStreak,
+    kind: CorruptFrameKind,
+    monitor_id: u32,
+    release_stream: impl FnOnce(),
+) {
+    if streak.on_corrupt() {
+        info!(
+            monitor_id,
+            "monitor {}: {} corrupt frames in a row (last: {:?}); releasing the \
+             capture stream so the next capture opens a fresh one",
+            monitor_id,
+            streak.count,
+            kind
+        );
+        release_stream();
+    }
+}
+
+/// True when a change-probe screenshot may be diffed. A corrupt one is
+/// neither a change nor a baseline; it extends the run of corrupt frames
+/// (so a stream stuck on garbage is released even while only probes run)
+/// but is not counted in the frame metrics, which count capture attempts.
+fn usable_probe_image(
+    image: &image::DynamicImage,
+    streak: &mut CorruptStreak,
+    monitor_id: u32,
+    release_stream: impl FnOnce(),
+) -> bool {
+    match detect_corrupt_frame(image) {
+        Some(kind) => {
+            debug!(
+                "change probe on monitor {} got a corrupt frame ({:?}); ignored",
+                monitor_id, kind
+            );
+            extend_corrupt_streak(streak, kind, monitor_id, release_stream);
+            false
+        }
+        None => {
+            streak.on_valid();
+            true
+        }
+    }
+}
+
+/// Release `monitor`'s persistent capture stream, marking the stage, then
+/// return the loop to `resume`.
+fn release_stream_marked(
+    monitor: &SafeMonitor,
+    loop_stage: &LoopStageGuard,
+    resume: CaptureLoopStage,
+) {
+    loop_stage.enter(CaptureLoopStage::ReleaseStream);
+    monitor.release_capture_stream();
+    loop_stage.enter(resume);
+}
+
+/// Refresh the window-exclusion list under its deadline, then take the
+/// frame's screenshot with `grab` (given the ids to exclude) when the list is
+/// known. Returns `None`, without calling `grab`, while the list is unknown:
+/// fail closed, the frame's pixels are withheld.
+async fn take_frame_pixels<F, Fut>(
+    exclusions: &mut ExclusionProbe,
+    stage: &LoopStageGuard,
+    grab: F,
+) -> Result<Option<image::DynamicImage>>
+where
+    F: FnOnce(Vec<u32>) -> Fut,
+    Fut: std::future::Future<Output = Result<(image::DynamicImage, Duration)>>,
+{
+    stage.enter(CaptureLoopStage::ExclusionProbe);
+    let excluded = exclusions
+        .refresh()
+        .await
+        .pixel_exclusions()
+        .map(<[u32]>::to_vec);
+    stage.enter(CaptureLoopStage::Capture);
+    match excluded {
+        Some(excluded) => Ok(Some(grab(excluded).await?.0)),
+        None => Ok(None),
+    }
+}
+
+/// The corruption guard: real screen content (or no pixels at all) passes;
+/// a corrupt screenshot becomes the output of a rejected attempt.
+fn guard_frame_pixels(
+    image: Option<image::DynamicImage>,
+    monitor_id: u32,
+) -> std::result::Result<Option<image::DynamicImage>, CaptureOutput> {
+    match image.as_ref().and_then(detect_corrupt_frame) {
+        Some(kind) => {
+            debug!(
+                "captured frame on monitor {} is corrupt ({:?}); not storing it",
+                monitor_id, kind
+            );
+            Err(CaptureOutput {
+                result: None,
+                image: None,
+                elements_deduped: false,
+                rejected: Some(kind),
+            })
+        }
+        None => Ok(image),
+    }
 }
 
 fn resolve_capture_metadata(
@@ -1771,47 +2066,43 @@ async fn do_capture(
     walk_budget: &mut screenpipe_a11y::budget::AppWalkBudget,
     screenshot_disabled: bool,
     hd_active: bool,
+    exclusions: &mut ExclusionProbe,
+    stage: &LoopStageGuard,
 ) -> Result<CaptureOutput> {
     let captured_at = Utc::now();
     let bypass_capture_throttles = bypasses_capture_throttles(trigger);
 
-    // Resolve ignored windows to SCK window IDs so ScreenCaptureKit
-    // excludes them from the capture buffer (zero overhead, pixel-perfect).
-    // Sort + dedup so the persistent stream isn't needlessly recreated when
-    // transient windows (tooltips, popups) cause ordering changes.
-    let window_filters = WindowFilters::new(
-        &params.tree_walker_config.ignored_windows,
-        &params.tree_walker_config.included_windows,
-        &params.tree_walker_config.ignored_urls,
-    );
-    let mut excluded_ids = get_excluded_sck_window_ids(&window_filters);
-    excluded_ids.sort_unstable();
-    excluded_ids.dedup();
-
-    // Take screenshot (with ignored windows excluded at the OS level)
-    let (image, capture_dur) = capture_monitor_image(params.monitor, &excluded_ids).await?;
-    debug!(
-        "screenshot captured in {:?} for monitor {}",
-        capture_dur, params.monitor_id
-    );
-
-    // When an ignored window covers most of a monitor, SCK replaces its
-    // pixels with black.  The resulting frame is nearly all-black — storing
-    // it wastes the tree walk, OCR, DB write, and produces ugly black frames
-    // in the timeline.  Detect this cheaply by sampling pixels: if >95% are
-    // near-black, skip everything but still return the image so the frame
-    // comparer stays updated (prevents re-triggering on the same black frame).
-    if is_frame_mostly_black(&image) {
+    // Refresh the window-exclusion list (ignored windows resolved to SCK
+    // window ids, so ScreenCaptureKit leaves them out of the buffer) under
+    // its deadline. While the list is unknown no pixels are taken: the
+    // accessibility walk below still runs and the frame is stored without a
+    // snapshot or OCR. A stale list is never reused for pixels.
+    let monitor = params.monitor;
+    let monitor_id = params.monitor_id;
+    let image = take_frame_pixels(exclusions, stage, |excluded| async move {
+        let (image, capture_dur) = capture_monitor_image(monitor, &excluded).await?;
         debug!(
-            "captured frame is mostly black on monitor {} — skipping DB write (likely ignored window covering screen)",
-            params.monitor_id
+            "screenshot captured in {:?} for monitor {}",
+            capture_dur, monitor_id
         );
-        return Ok(CaptureOutput {
-            result: None,
-            image,
-            elements_deduped: false,
-        });
+        Ok((image, capture_dur))
+    })
+    .await?;
+    if image.is_none() {
+        debug!(
+            "monitor {}: window exclusion list unknown, capturing accessibility data only",
+            monitor_id
+        );
     }
+
+    // Frames that hold no screen content (a never-written GPU buffer, which
+    // reads as pure black, or a band of decode-garbage green) are not stored
+    // and do not become the change baseline. The same applies when an
+    // ignored window covers the whole monitor and SCK blanked it out.
+    let image = match guard_frame_pixels(image, monitor_id) {
+        Ok(image) => image,
+        Err(rejected) => return Ok(rejected),
+    };
 
     // Walk accessibility tree on blocking thread (AX APIs are synchronous).
     // Apply adaptive budget overrides: expensive apps (Electron/Discord) get
@@ -1852,11 +2143,7 @@ async fn do_capture(
                     "terminal OCR throttle: skipping {} capture (within 30s of previous)",
                     app
                 );
-                return Ok(CaptureOutput {
-                    result: None,
-                    image,
-                    elements_deduped: false,
-                });
+                return Ok(CaptureOutput::skipped(image));
             }
         }
     }
@@ -1874,11 +2161,7 @@ async fn do_capture(
             // fallback costs ~322ms of Vision CPU, more than the walk we just
             // throttled to save CPU. The next trigger past the budget
             // min_interval will produce a fresh walk with real AX text.
-            return Ok(CaptureOutput {
-                result: None,
-                image,
-                elements_deduped: false,
-            });
+            return Ok(CaptureOutput::skipped(image));
         } else if !decision.walk {
             debug!(
                 "walk budget: allowing checkpoint {} capture for {} despite tier={:?}",
@@ -1922,11 +2205,7 @@ async fn do_capture(
                 "skipping capture: window filtered ({}) on monitor {}",
                 reason, params.monitor_id
             );
-            return Ok(CaptureOutput {
-                result: None,
-                image,
-                elements_deduped: false,
-            });
+            return Ok(CaptureOutput::skipped(image));
         }
         TreeWalkResult::NotFound => None,
     };
@@ -1951,11 +2230,7 @@ async fn do_capture(
                     "skipping capture: focused app '{}' matches ignored window on monitor {} (tree walk was NotFound)",
                     app, params.monitor_id
                 );
-                return Ok(CaptureOutput {
-                    result: None,
-                    image,
-                    elements_deduped: false,
-                });
+                return Ok(CaptureOutput::skipped(image));
             }
         }
     }
@@ -1976,11 +2251,7 @@ async fn do_capture(
                             new_hash,
                             trigger.as_str()
                         );
-                        return Ok(CaptureOutput {
-                            result: None,
-                            image,
-                            elements_deduped: false,
-                        });
+                        return Ok(CaptureOutput::skipped(image));
                     }
                 }
             }
@@ -2006,11 +2277,7 @@ async fn do_capture(
                 app, params.monitor_id
             );
             crate::sleep_monitor::set_screen_locked(true);
-            return Ok(CaptureOutput {
-                result: None,
-                image,
-                elements_deduped: false,
-            });
+            return Ok(CaptureOutput::skipped(image));
         } else if crate::sleep_monitor::screen_is_locked() {
             // Screen was marked locked but now a real app is focused — unlock
             debug!(
@@ -2027,11 +2294,7 @@ async fn do_capture(
             "skipping capture: no app detected and screen is locked on monitor {}",
             params.monitor_id
         );
-        return Ok(CaptureOutput {
-            result: None,
-            image,
-            elements_deduped: false,
-        });
+        return Ok(CaptureOutput::skipped(image));
     }
 
     // Final ignored-window gate: check resolved metadata (app + window) against
@@ -2051,11 +2314,7 @@ async fn do_capture(
                 "skipping capture: resolved app='{}' / window='{}' matches ignored pattern on monitor {}",
                 check_app, check_win, params.monitor_id
             );
-            return Ok(CaptureOutput {
-                result: None,
-                image,
-                elements_deduped: false,
-            });
+            return Ok(CaptureOutput::skipped(image));
         }
     }
 
@@ -2067,17 +2326,16 @@ async fn do_capture(
         app_name_owned.as_deref(),
         browser_url_owned.as_deref(),
     ) {
-        return Ok(CaptureOutput {
-            result: None,
-            image,
-            elements_deduped: false,
-        });
+        return Ok(CaptureOutput::skipped(image));
     }
 
+    // With pixels withheld the context carries an empty placeholder that
+    // paired_capture never reads (no snapshot, no OCR).
+    let pixels_withheld = image.is_none();
     let ctx = CaptureContext {
         db: params.db,
         snapshot_writer: params.snapshot_writer,
-        image: Arc::new(image),
+        image: Arc::new(image.unwrap_or_else(|| image::DynamicImage::new_rgb8(0, 0))),
         captured_at,
         monitor_id: params.monitor_id,
         device_name: params.device_name,
@@ -2091,17 +2349,20 @@ async fn do_capture(
         languages: params.languages.to_vec(),
         elements_ref_frame_id,
         screenshot_disabled,
+        pixels_withheld,
     };
 
     let result = paired_capture(&ctx, tree_snapshot.as_ref()).await?;
     let deduped = elements_ref_frame_id.is_some();
     // Extract image from Arc for comparer reuse. Arc::try_unwrap succeeds
     // because paired_capture no longer retains a clone.
-    let image = Arc::try_unwrap(ctx.image).unwrap_or_else(|arc| (*arc).clone());
+    let image =
+        (!pixels_withheld).then(|| Arc::try_unwrap(ctx.image).unwrap_or_else(|arc| (*arc).clone()));
     Ok(CaptureOutput {
         result: Some(result),
         image,
         elements_deduped: deduped,
+        rejected: None,
     })
 }
 
@@ -2180,49 +2441,6 @@ fn query_frontmost_app_name_uncached() -> Option<String> {
     ns::RunningApp::with_pid(pid)
         .and_then(|app| app.localized_name())
         .map(|s| s.to_string())
-}
-
-/// Cheaply detect if a captured frame is predominantly black.
-///
-/// When ScreenCaptureKit excludes an ignored window, the excluded pixels
-/// become black.  If the window covers most of the monitor the frame is
-/// nearly all-black — we want to skip storing it.
-///
-/// Strategy: sample a grid of pixels (≈200 points) and check if >95% have
-/// an RGB sum below a threshold.  Real content — even dark-mode apps — has
-/// variation (scrollbars, text, status bar).  Pure SCK-excluded regions are
-/// exactly `(0, 0, 0)` or very close to it.
-fn is_frame_mostly_black(image: &image::DynamicImage) -> bool {
-    let rgb = image.to_rgb8();
-    let (w, h) = rgb.dimensions();
-    if w == 0 || h == 0 {
-        return true;
-    }
-
-    // Sample on a ~15×15 grid ≈ 225 points (sub-microsecond)
-    let step_x = (w / 15).max(1);
-    let step_y = (h / 15).max(1);
-    let mut total = 0u32;
-    let mut black = 0u32;
-
-    let mut y = 0;
-    while y < h {
-        let mut x = 0;
-        while x < w {
-            total += 1;
-            let px = rgb.get_pixel(x, y);
-            // Threshold: R+G+B < 15 — catches pure black and near-black
-            // from JPEG compression artifacts but not real dark-mode content.
-            if (px[0] as u16 + px[1] as u16 + px[2] as u16) < 15 {
-                black += 1;
-            }
-            x += step_x;
-        }
-        y += step_y;
-    }
-
-    let ratio = black as f64 / total as f64;
-    ratio > 0.95
 }
 
 #[cfg(test)]
@@ -2644,65 +2862,6 @@ mod tests {
     }
 
     #[test]
-    fn test_all_black_frame_detected() {
-        let img = image::DynamicImage::ImageRgb8(image::RgbImage::new(1920, 1080));
-        assert!(is_frame_mostly_black(&img));
-    }
-
-    #[test]
-    fn test_normal_frame_not_detected() {
-        let mut buf = image::RgbImage::new(1920, 1080);
-        // Fill with typical content colors
-        for px in buf.pixels_mut() {
-            *px = image::Rgb([120, 130, 140]);
-        }
-        let img = image::DynamicImage::ImageRgb8(buf);
-        assert!(!is_frame_mostly_black(&img));
-    }
-
-    #[test]
-    fn test_frame_with_visible_menubar_not_skipped() {
-        // A menu bar at y=0 gets sampled by the grid → enough non-black
-        // pixels to keep the frame (it has real content visible).
-        let mut buf = image::RgbImage::new(1920, 1080);
-        for y in 0..22 {
-            for x in 0..1920 {
-                buf.put_pixel(x, y, image::Rgb([200, 200, 200]));
-            }
-        }
-        let img = image::DynamicImage::ImageRgb8(buf);
-        // Menu bar is ~2% of pixels but hits a full grid row (~7% of samples)
-        // so the frame is NOT detected as mostly black — correct, it has content.
-        assert!(!is_frame_mostly_black(&img));
-    }
-
-    #[test]
-    fn test_pure_black_with_single_bright_pixel_still_black() {
-        // A single bright pixel shouldn't prevent detection
-        let mut buf = image::RgbImage::new(1920, 1080);
-        buf.put_pixel(960, 540, image::Rgb([255, 255, 255]));
-        let img = image::DynamicImage::ImageRgb8(buf);
-        assert!(is_frame_mostly_black(&img));
-    }
-
-    #[test]
-    fn test_dark_mode_app_not_falsely_detected() {
-        // Dark mode: dark grey background (30, 30, 30) — NOT pure black
-        let mut buf = image::RgbImage::new(1920, 1080);
-        for px in buf.pixels_mut() {
-            *px = image::Rgb([30, 30, 30]);
-        }
-        let img = image::DynamicImage::ImageRgb8(buf);
-        assert!(!is_frame_mostly_black(&img));
-    }
-
-    #[test]
-    fn test_empty_image_detected() {
-        let img = image::DynamicImage::ImageRgb8(image::RgbImage::new(0, 0));
-        assert!(is_frame_mostly_black(&img));
-    }
-
-    #[test]
     fn should_release_only_on_pause_entry_edge() {
         // Truth table for the pause-state gate. Locked here because if it
         // regresses to "release every loop iteration while paused" we churn
@@ -2809,5 +2968,327 @@ mod tests {
         assert_eq!(o.on_controller_state(Some(33), 100), Some(33));
         // Exit override — restore the saver baseline.
         assert_eq!(o.on_controller_state(None, 33), Some(1000));
+    }
+
+    // --- Fail-closed window exclusions --------------------------------------
+
+    /// A window server that never answers: the enumeration blocks until the
+    /// test lets it go.
+    fn hung_enumeration() -> (
+        impl Fn() -> std::result::Result<Vec<u32>, String> + Send + Sync + 'static,
+        std::sync::mpsc::Sender<()>,
+    ) {
+        let (tx, rx) = std::sync::mpsc::channel::<()>();
+        let rx = Mutex::new(rx);
+        let source = move || {
+            let _ = rx.lock().unwrap().recv_timeout(Duration::from_secs(30));
+            Ok(vec![1])
+        };
+        (source, tx)
+    }
+
+    fn tree_with_text(text: &str) -> screenpipe_a11y::tree::TreeSnapshot {
+        screenpipe_a11y::tree::TreeSnapshot {
+            app_name: "Notes".to_string(),
+            window_name: "Shopping list".to_string(),
+            text_content: text.to_string(),
+            nodes: vec![screenpipe_a11y::tree::AccessibilityTreeNode {
+                role: "AXStaticText".to_string(),
+                text: text.to_string(),
+                depth: 0,
+                bounds: None,
+                ..Default::default()
+            }],
+            browser_url: None,
+            document_path: None,
+            timestamp: Utc::now(),
+            node_count: 1,
+            walk_duration: Duration::from_millis(2),
+            content_hash: 4242,
+            simhash: 99,
+            truncated: false,
+            truncation_reason: screenpipe_a11y::tree::TruncationReason::None,
+            max_depth_reached: 0,
+        }
+    }
+
+    #[tokio::test]
+    async fn exclusion_refresh_timeout_stores_an_accessibility_only_frame() {
+        let metrics = Arc::new(screenpipe_screen::PipelineMetrics::new());
+        let stage = metrics.track_capture_loop(1);
+        let (source, release) = hung_enumeration();
+        let mut exclusions = ExclusionProbe::with_source(1, source, Duration::from_millis(100));
+
+        // The refresh overruns its deadline: no screenshot may be taken.
+        let started = Instant::now();
+        let image = take_frame_pixels(&mut exclusions, &stage, |_| async {
+            panic!("pixels were grabbed while the exclusion list was unknown")
+        })
+        .await
+        .unwrap();
+        assert!(image.is_none());
+        assert!(started.elapsed() < Duration::from_secs(5));
+        assert!(exclusions.state().pixel_exclusions().is_none());
+        // Still hanging: the next capture withholds pixels as well.
+        let image = take_frame_pixels(&mut exclusions, &stage, |_| async {
+            panic!("pixels were grabbed while the exclusion list was unknown")
+        })
+        .await
+        .unwrap();
+        assert!(image.is_none());
+        let image = guard_frame_pixels(image, 1)
+            .ok()
+            .expect("nothing to reject");
+
+        // The frame is still stored, from accessibility data alone.
+        let tmp = tempfile::tempdir().unwrap();
+        let snapshot_writer = SnapshotWriter::new(tmp.path(), 80, 1920);
+        let db = DatabaseManager::new("sqlite::memory:", Default::default())
+            .await
+            .unwrap();
+        let pixels_withheld = image.is_none();
+        let ctx = CaptureContext {
+            db: &db,
+            snapshot_writer: &snapshot_writer,
+            image: Arc::new(image.unwrap_or_else(|| image::DynamicImage::new_rgb8(0, 0))),
+            captured_at: Utc::now(),
+            monitor_id: 1,
+            device_name: "monitor_1",
+            app_name: Some("Notes"),
+            window_name: Some("Shopping list"),
+            browser_url: None,
+            document_path: None,
+            focused: true,
+            capture_trigger: "click",
+            use_pii_removal: false,
+            languages: vec![],
+            elements_ref_frame_id: None,
+            screenshot_disabled: false,
+            pixels_withheld,
+        };
+        let tree = tree_with_text("eggs, milk, bread");
+        let result = paired_capture(&ctx, Some(&tree)).await.unwrap();
+        assert!(result.frame_id > 0);
+        assert_eq!(result.snapshot_path, "");
+        assert_eq!(result.text_source.as_deref(), Some("accessibility"));
+        assert_eq!(
+            result.accessibility_text.as_deref(),
+            Some("eggs, milk, bread")
+        );
+
+        let (stored_path,): (Option<String>,) =
+            sqlx::query_as("SELECT snapshot_path FROM frames WHERE id = ?1")
+                .bind(result.frame_id)
+                .fetch_one(&db.pool)
+                .await
+                .unwrap();
+        assert_eq!(stored_path.as_deref().unwrap_or(""), "");
+        let written: Vec<_> = walk_files(tmp.path());
+        assert!(
+            written.is_empty(),
+            "no snapshot file may be written: {written:?}"
+        );
+
+        // Once the window server answers again, pixels come back.
+        drop(release);
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        let mut grabbed = None;
+        for _ in 0..100 {
+            let image = take_frame_pixels(&mut exclusions, &stage, |ids| async move {
+                Ok((
+                    image::DynamicImage::new_rgb8(2, 2),
+                    Duration::from_millis(ids.len() as u64),
+                ))
+            })
+            .await
+            .unwrap();
+            if image.is_some() {
+                grabbed = image;
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        assert!(grabbed.is_some(), "pixels resume after a good refresh");
+        assert_eq!(exclusions.state().pixel_exclusions(), Some(&[1u32][..]));
+    }
+
+    #[tokio::test]
+    async fn a_known_exclusion_list_is_passed_to_the_screenshot() {
+        let metrics = Arc::new(screenpipe_screen::PipelineMetrics::new());
+        let stage = metrics.track_capture_loop(2);
+        let mut exclusions =
+            ExclusionProbe::with_source(2, || Ok(vec![30, 10]), Duration::from_secs(2));
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        let record = seen.clone();
+        let image = take_frame_pixels(&mut exclusions, &stage, |ids| async move {
+            *record.lock().unwrap() = ids;
+            Ok((image::DynamicImage::new_rgb8(2, 2), Duration::ZERO))
+        })
+        .await
+        .unwrap();
+        assert!(image.is_some());
+        assert_eq!(*seen.lock().unwrap(), vec![10, 30]);
+        // The loop is back in the capture stage afterwards.
+        assert_eq!(
+            metrics.loop_stages.most_stuck().unwrap().stage,
+            CaptureLoopStage::Capture
+        );
+    }
+
+    fn walk_files(dir: &std::path::Path) -> Vec<std::path::PathBuf> {
+        let mut out = Vec::new();
+        if let Ok(entries) = std::fs::read_dir(dir) {
+            for entry in entries.flatten() {
+                let path = entry.path();
+                if path.is_dir() {
+                    out.extend(walk_files(&path));
+                } else {
+                    out.push(path);
+                }
+            }
+        }
+        out
+    }
+
+    // --- Corrupt frame guard -------------------------------------------------
+
+    fn green_band_frame() -> image::DynamicImage {
+        let mut img = image::RgbImage::from_pixel(1280, 720, image::Rgb([235, 235, 235]));
+        for y in 480..720 {
+            for x in 0..1280 {
+                img.put_pixel(x, y, image::Rgb([0, 135, 0]));
+            }
+        }
+        image::DynamicImage::ImageRgb8(img)
+    }
+
+    #[test]
+    fn a_green_band_frame_is_rejected_and_counted() {
+        let metrics = screenpipe_screen::PipelineMetrics::new();
+        let mut streak = CorruptStreak::default();
+        let rejected = match guard_frame_pixels(Some(green_band_frame()), 3) {
+            Err(output) => output,
+            Ok(_) => panic!("the green band frame must be rejected"),
+        };
+        assert!(rejected.result.is_none(), "nothing is stored");
+        assert!(rejected.image.is_none(), "not used as the change baseline");
+        assert_eq!(rejected.rejected, Some(CorruptFrameKind::Green));
+
+        track_frame_validity(&rejected, &mut streak, &metrics, 3, || {
+            panic!("one corrupt frame does not release the stream")
+        });
+        let snap = metrics.snapshot();
+        assert_eq!(snap.frames_corrupt_green, 1);
+        assert_eq!(snap.frames_corrupt_black, 0);
+    }
+
+    #[test]
+    fn black_frames_are_counted_but_dark_content_passes() {
+        let metrics = screenpipe_screen::PipelineMetrics::new();
+        let mut streak = CorruptStreak::default();
+        let black = image::DynamicImage::new_rgb8(1920, 1080);
+        let rejected = guard_frame_pixels(Some(black), 1).err().unwrap();
+        track_frame_validity(&rejected, &mut streak, &metrics, 1, || {});
+        assert_eq!(metrics.snapshot().frames_corrupt_black, 1);
+
+        // A dark-theme editor is real content.
+        let dark = image::DynamicImage::ImageRgb8(image::RgbImage::from_pixel(
+            1920,
+            1080,
+            image::Rgb([30, 30, 30]),
+        ));
+        let kept = guard_frame_pixels(Some(dark), 1).ok().unwrap();
+        assert!(kept.is_some());
+        // Withheld pixels are not a corrupt frame.
+        assert!(guard_frame_pixels(None, 1).ok().unwrap().is_none());
+    }
+
+    #[test]
+    fn a_run_of_corrupt_frames_releases_the_stream_on_a_bounded_schedule() {
+        let metrics = screenpipe_screen::PipelineMetrics::new();
+        let mut streak = CorruptStreak::default();
+        let releases = std::cell::Cell::new(0);
+        let corrupt = || {
+            guard_frame_pixels(Some(green_band_frame()), 1)
+                .err()
+                .unwrap()
+        };
+        for _ in 0..6 {
+            track_frame_validity(&corrupt(), &mut streak, &metrics, 1, || {
+                releases.set(releases.get() + 1)
+            });
+        }
+        assert_eq!(releases.get(), 1, "released once early in a run");
+        assert_eq!(metrics.snapshot().frames_corrupt_green, 6);
+
+        // A good frame ends the run; the next run releases again.
+        let good = CaptureOutput::skipped(Some(image::DynamicImage::ImageRgb8(
+            image::RgbImage::from_pixel(8, 8, image::Rgb([90, 90, 90])),
+        )));
+        track_frame_validity(&good, &mut streak, &metrics, 1, || unreachable!());
+        // A capture without pixels neither ends nor extends the run.
+        track_frame_validity(
+            &CaptureOutput::skipped(None),
+            &mut streak,
+            &metrics,
+            1,
+            || unreachable!(),
+        );
+        for _ in 0..3 {
+            track_frame_validity(&corrupt(), &mut streak, &metrics, 1, || {
+                releases.set(releases.get() + 1)
+            });
+        }
+        assert_eq!(releases.get(), 2);
+    }
+
+    #[test]
+    fn a_stream_that_stays_black_is_released_again_every_thirty_frames() {
+        // A session left broken by a GPU reset keeps returning zeroed
+        // buffers after the first release; it gets further fresh starts.
+        let metrics = screenpipe_screen::PipelineMetrics::new();
+        let mut streak = CorruptStreak::default();
+        let mut released_at = Vec::new();
+        for frame in 1..=100u32 {
+            let black = guard_frame_pixels(Some(image::DynamicImage::new_rgb8(64, 64)), 1)
+                .err()
+                .unwrap();
+            track_frame_validity(&black, &mut streak, &metrics, 1, || released_at.push(frame));
+        }
+        assert_eq!(released_at, vec![3, 33, 63, 93]);
+        assert_eq!(metrics.snapshot().frames_corrupt_black, 100);
+    }
+
+    #[test]
+    fn corrupt_probe_images_extend_the_run_without_being_counted() {
+        let metrics = screenpipe_screen::PipelineMetrics::new();
+        let mut streak = CorruptStreak::default();
+        let releases = std::cell::Cell::new(0);
+        let release = || releases.set(releases.get() + 1);
+        let garbage = green_band_frame();
+
+        // Two probes of a stream stuck on garbage are not diffed...
+        assert!(!usable_probe_image(&garbage, &mut streak, 1, release));
+        assert!(!usable_probe_image(&garbage, &mut streak, 1, release));
+        assert_eq!(releases.get(), 0);
+        // ...and the next corrupt frame, probe or capture, releases the stream.
+        let rejected = guard_frame_pixels(Some(green_band_frame()), 1)
+            .err()
+            .unwrap();
+        track_frame_validity(&rejected, &mut streak, &metrics, 1, release);
+        assert_eq!(releases.get(), 1);
+        // Only the captured frame is counted: probes are not capture attempts.
+        assert_eq!(metrics.snapshot().frames_corrupt_green, 1);
+
+        // A probe with real content is diffed and ends the run.
+        let dark_editor = image::DynamicImage::ImageRgb8(image::RgbImage::from_pixel(
+            64,
+            64,
+            image::Rgb([30, 30, 30]),
+        ));
+        assert!(usable_probe_image(&dark_editor, &mut streak, 1, || {
+            unreachable!("a valid probe never releases the stream")
+        }));
+        assert_eq!(streak.count, 0);
     }
 }
