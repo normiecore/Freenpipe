@@ -924,6 +924,261 @@ mod tests {
         assert!(sql.contains("ON julianday(sw_t.captured_at) >="));
     }
 
+    // ── query plans on a database with realistic row counts ─────────────
+
+    /// 30,000 frames (one every 2 s), 30,000 input events, 5,000 audio
+    /// transcriptions, 5,000 live meeting segments and 3,000 parser runs with
+    /// 9,000 items and 50 actors, then `ANALYZE` as the maintenance task does.
+    async fn seeded_db() -> DatabaseManager {
+        let db = DatabaseManager::new("sqlite::memory:", Default::default())
+            .await
+            .unwrap();
+        let seq = |n: u32| {
+            format!("WITH RECURSIVE n(i) AS (SELECT 0 UNION ALL SELECT i + 1 FROM n WHERE i < {n} - 1)")
+        };
+        let at = |step: &str| {
+            format!(
+                "strftime('%Y-%m-%dT%H:%M:%S', '2026-10-01 00:00:00', '+' || ({step}) || ' seconds') \
+                 || '.000+00:00'"
+            )
+        };
+        let statements = vec![
+            format!(
+                "{} INSERT INTO frames (timestamp, app_name, window_name, device_name, full_text) \
+                 SELECT {}, 'App' || (i % 7), 'Window ' || (i % 50), 'monitor_1', 'text ' || i FROM n",
+                seq(30_000),
+                at("i * 2")
+            ),
+            format!(
+                "{} INSERT INTO ui_events (timestamp, event_type, text_content, app_name) \
+                 SELECT {}, 'text', 'typed ' || i, 'App' || (i % 7) FROM n",
+                seq(30_000),
+                at("i * 2")
+            ),
+            format!(
+                "{} INSERT INTO audio_chunks (file_path, timestamp) SELECT 'a' || i || '.mp4', {} FROM n",
+                seq(5_000),
+                at("i * 12")
+            ),
+            format!(
+                "{} INSERT INTO audio_transcriptions (audio_chunk_id, offset_index, timestamp, \
+                 transcription, transcription_engine, device, is_input_device) \
+                 SELECT i + 1, 0, {}, 'spoken ' || i, 'test', 'mic', 1 FROM n",
+                seq(5_000),
+                at("i * 12")
+            ),
+            "INSERT INTO meetings (meeting_start, meeting_end, meeting_app) \
+             VALUES ('2026-10-01T00:00:00Z', '2026-10-01T20:00:00Z', 'zoom')"
+                .to_string(),
+            format!(
+                "{} INSERT INTO meeting_transcript_segments (meeting_id, provider, item_id, \
+                 transcript, captured_at) SELECT 1, 'test', 'item' || i, 'live ' || i, {} FROM n",
+                seq(5_000),
+                at("i * 12")
+            ),
+            format!(
+                "{} INSERT INTO semantic_actors (name) SELECT 'Actor ' || i FROM n",
+                seq(50)
+            ),
+            format!(
+                "{} INSERT INTO semantic_runs (input_fingerprint, parser_id, parser_version, \
+                 schema_version, app_platform, input_content_hash, status, item_count) \
+                 SELECT randomblob(32), 'chat.test', '1', 1, 'windows', randomblob(8), 'handled', 3 \
+                 FROM n",
+                seq(3_000)
+            ),
+            format!(
+                "{} INSERT INTO semantic_items (entity_fingerprint, version_fingerprint, kind, \
+                 item_key, identity_quality, body, actor) \
+                 SELECT randomblob(32), randomblob(32), 'message', 'k' || i, 'derived', \
+                        'body word' || i, 'actor' || (i % 50) FROM n",
+                seq(9_000)
+            ),
+            format!(
+                "{} INSERT INTO semantic_run_items (run_id, local_id, item_id, sort_order) \
+                 SELECT (i / 3) + 1, 'l' || (i % 3), i + 1, i % 3 FROM n",
+                seq(9_000)
+            ),
+            format!(
+                "{} INSERT INTO semantic_item_actors (item_id, actor_id) SELECT i + 1, (i % 50) + 1 FROM n",
+                seq(9_000)
+            ),
+            "UPDATE frames SET semantic_run_id = id / 10 WHERE id % 10 = 0 AND id / 10 <= 3000"
+                .to_string(),
+            "ANALYZE".to_string(),
+        ];
+        for sql in statements {
+            sqlx::query(sqlx::AssertSqlSafe(sql.clone()))
+                .execute(db.write_pool())
+                .await
+                .unwrap_or_else(|e| panic!("{sql}: {e}"));
+        }
+        db
+    }
+
+    async fn plan(db: &DatabaseManager, sql: &str) -> Vec<String> {
+        let rows: Vec<(i64, i64, i64, String)> =
+            sqlx::query_as(sqlx::AssertSqlSafe(format!("EXPLAIN QUERY PLAN {sql}")))
+                .fetch_all(&db.pool)
+                .await
+                .unwrap_or_else(|e| panic!("{sql}: {e}"));
+        rows.into_iter().map(|r| r.3).collect()
+    }
+
+    fn assert_plan(plan: &[String], must_contain: &[&str], must_not_contain: &[&str]) {
+        let text = plan.join("\n");
+        for needle in must_contain {
+            assert!(
+                plan.iter().any(|line| line.contains(needle)),
+                "plan lacks `{needle}`:\n{text}"
+            );
+        }
+        for needle in must_not_contain {
+            assert!(
+                !plan.iter().any(|line| line.contains(needle)),
+                "plan has `{needle}`:\n{text}"
+            );
+        }
+    }
+
+    /// `SCAN <alias>` without `USING` is a full table scan.
+    fn full_scans(plan: &[String]) -> Vec<String> {
+        plan.iter()
+            .filter(|l| {
+                let l = l.trim();
+                l.starts_with("SCAN ") && !l.contains("USING") && !l.contains("VIRTUAL TABLE")
+                    && !l.starts_with("SCAN sw") // json_each over the windows
+                    && !l.starts_with("SCAN json_each")
+                    && !l.contains("CONSTANT ROW")
+            })
+            .cloned()
+            .collect()
+    }
+
+    #[tokio::test]
+    async fn window_filters_range_scan_the_timestamp_indexes() {
+        let db = seeded_db().await;
+        for (table, index, sql) in [
+            (
+                "frames",
+                "idx_frames_timestamp",
+                format!(
+                    "SELECT frames.id FROM frames WHERE frames.timestamp >= ?1 \
+                     AND frames.timestamp <= ?2 AND {} \
+                     ORDER BY frames.timestamp DESC LIMIT 20",
+                    window_filter_sql("frames.id", "frames", "timestamp", "?3")
+                ),
+            ),
+            (
+                "ui_events",
+                "idx_ui_events_timestamp",
+                format!(
+                    "SELECT id FROM ui_events WHERE {} ORDER BY timestamp DESC LIMIT 20",
+                    window_filter_sql("id", "ui_events", "timestamp", "?1")
+                ),
+            ),
+            (
+                "audio_transcriptions",
+                "idx_audio_transcriptions_timestamp",
+                format!(
+                    "SELECT audio_transcriptions.id FROM audio_transcriptions WHERE {} \
+                     ORDER BY audio_transcriptions.timestamp DESC LIMIT 20",
+                    window_filter_sql(
+                        "audio_transcriptions.id",
+                        "audio_transcriptions",
+                        "timestamp",
+                        "?1"
+                    )
+                ),
+            ),
+            (
+                "meeting_transcript_segments",
+                "idx_meeting_transcript_segments_captured_at_julianday",
+                format!(
+                    "SELECT id FROM meeting_transcript_segments WHERE 1=1 {} LIMIT 20",
+                    live_segment_window_condition(
+                        &SearchScope {
+                            windows: Some(SearchWindows::default()),
+                            ..Default::default()
+                        },
+                        "?1"
+                    )
+                ),
+            ),
+        ] {
+            let p = plan(&db, &sql).await;
+            println!("{table}:\n{}", p.join("\n"));
+            assert_plan(&p, &[&format!("SEARCH sw_t USING"), index], &["SCAN sw_t"]);
+            assert!(full_scans(&p).is_empty(), "{table}: {p:?}");
+        }
+    }
+
+    #[tokio::test]
+    async fn parsed_queries_start_from_their_indexes() {
+        let db = seeded_db().await;
+        let scope_none = SearchScope::default();
+        let actor = SearchScope {
+            actor_id: Some(3),
+            ..Default::default()
+        };
+        let windows = SearchScope {
+            windows: Some(SearchWindows::default()),
+            ..Default::default()
+        };
+        let base = |scope| ParsedSearchFilter {
+            query: "",
+            start_time: None,
+            end_time: None,
+            app_name: None,
+            window_name: None,
+            browser_url: None,
+            focused: None,
+            machine_id: None,
+            tags: &[],
+            scope,
+        };
+        let t0 = Utc::now();
+        let cases: Vec<(&str, ParsedSearchFilter<'_>, Vec<&str>)> = vec![
+            (
+                "text",
+                ParsedSearchFilter {
+                    query: "word5",
+                    ..base(&scope_none)
+                },
+                vec!["semantic_items_fts VIRTUAL TABLE", "idx_frames_semantic_run_id"],
+            ),
+            (
+                "actor",
+                base(&actor),
+                vec!["idx_semantic_item_actors_actor", "idx_frames_semantic_run_id"],
+            ),
+            (
+                "time range",
+                ParsedSearchFilter {
+                    start_time: Some(t0),
+                    end_time: Some(t0),
+                    ..base(&scope_none)
+                },
+                vec!["SEARCH f USING"],
+            ),
+            ("windows", base(&windows), vec!["SEARCH sw_t USING"]),
+            ("browse", base(&scope_none), vec!["USING"]),
+        ];
+        for (name, filter, wanted) in cases {
+            let mut binds = Binds::default();
+            let from_where = parsed_from_where(&filter, &mut binds);
+            for sql in [
+                format!("SELECT f.id {from_where} ORDER BY f.timestamp DESC, f.id DESC LIMIT 20"),
+                format!("SELECT COUNT(*) {from_where}"),
+            ] {
+                let p = plan(&db, &sql).await;
+                println!("{name}:\n{}", p.join("\n"));
+                assert_plan(&p, &wanted, &[]);
+                assert!(full_scans(&p).is_empty(), "{name}: {p:?}");
+            }
+        }
+    }
+
     #[test]
     fn pool_timeouts_count_as_busy() {
         assert!(is_search_busy_error(&sqlx::Error::PoolTimedOut));

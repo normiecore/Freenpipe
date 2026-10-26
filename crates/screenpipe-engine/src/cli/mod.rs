@@ -1761,7 +1761,7 @@ pub struct SearchArgs {
     #[arg(value_name = "QUERY")]
     pub q: Option<String>,
 
-    /// Content kind: all | ocr | audio | accessibility | input | memory
+    /// Content kind: all | ocr | audio | accessibility | input | memory | parsed
     #[arg(long, default_value = "all")]
     pub content_type: String,
 
