@@ -187,7 +187,10 @@ async fn a_meeting_that_ends_while_the_pipe_is_busy_still_gets_its_run() {
     assert!(finished(&store, &first_key));
     assert_eq!(store.executions_for_key(&first_key).len(), 1);
     assert_eq!(store.executions_for_key(&second_key).len(), 1);
-    assert_eq!(agent.runs_mentioning(&format!("instance `{second_key}`")), 1);
+    assert_eq!(
+        agent.runs_mentioning(&format!("instance `{second_key}`")),
+        1
+    );
 
     manager.stop_scheduler().await;
 }
