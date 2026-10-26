@@ -142,6 +142,16 @@ pub(crate) fn classify(
     cfg: &WatchdogConfig,
     writer_failing: bool,
 ) -> Option<WedgeFinding> {
+    // A loop held in its pause gate (locked screen, power-profile pause, DRM
+    // content, outside the schedule) or parked while its monitor is out of
+    // focus is idle on purpose and is never judged, whatever happened to its
+    // attempts before it got there.
+    if matches!(
+        l.stage,
+        CaptureLoopStage::PauseGate | CaptureLoopStage::ColdWait
+    ) {
+        return None;
+    }
     let finding = |class| WedgeFinding {
         monitor_id: l.monitor_id,
         class,
@@ -209,6 +219,9 @@ struct MonitorRestarts {
 pub(crate) trait VisionRestartTarget {
     async fn stop_capture(&self) -> anyhow::Result<()>;
     async fn start_capture(&self) -> anyhow::Result<()>;
+    /// Monitors whose capture loop is still registered (its task has not
+    /// unwound yet).
+    fn registered_loops(&self) -> Vec<u32>;
 }
 
 impl VisionRestartTarget for VisionManager {
@@ -219,7 +232,20 @@ impl VisionRestartTarget for VisionManager {
     async fn start_capture(&self) -> anyhow::Result<()> {
         self.start().await
     }
+
+    fn registered_loops(&self) -> Vec<u32> {
+        self.vision_metrics()
+            .loop_stages
+            .liveness()
+            .into_iter()
+            .map(|l| l.monitor_id)
+            .collect()
+    }
 }
+
+/// Longest the restart waits, after stopping capture, for the old capture
+/// loops to unwind before it starts their replacements.
+pub(crate) const RESTART_DRAIN: Duration = Duration::from_secs(5);
 
 /// Watchdog state kept by the monitor watcher across passes.
 #[derive(Debug)]
@@ -460,6 +486,21 @@ pub(crate) async fn restart_vision<T: VisionRestartTarget>(target: &T, finding: 
             e
         );
     }
+    // The stop aborted every capture task. A task stuck in synchronous code
+    // only unwinds at its next await, so give the old loops a moment to
+    // unregister before their replacements start; one that is still there
+    // afterwards can no longer touch its successor's stage cell and is
+    // cancelled the moment it yields.
+    let lingering = wait_for_loops_to_unwind(target, RESTART_DRAIN).await;
+    if !lingering.is_empty() {
+        warn!(
+            monitor_id = finding.monitor_id,
+            "vision capture watchdog: capture loop(s) of monitor(s) {:?} still had not \
+             unwound {}s after the stop; starting their replacements anyway",
+            lingering,
+            RESTART_DRAIN.as_secs()
+        );
+    }
     match target.start_capture().await {
         Ok(()) => info!(
             monitor_id = finding.monitor_id,
@@ -475,6 +516,19 @@ pub(crate) async fn restart_vision<T: VisionRestartTarget>(target: &T, finding: 
             finding.monitor_id,
             e
         ),
+    }
+}
+
+/// Wait up to `limit` for `target` to have no registered capture loop.
+/// Returns the monitors whose loops are still registered at the end.
+async fn wait_for_loops_to_unwind<T: VisionRestartTarget>(target: &T, limit: Duration) -> Vec<u32> {
+    let deadline = Instant::now() + limit;
+    loop {
+        let left = target.registered_loops();
+        if left.is_empty() || Instant::now() >= deadline {
+            return left;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
     }
 }
 
@@ -736,6 +790,89 @@ mod tests {
         assert_eq!(wd.per_monitor[&1].run, 1);
     }
 
+    #[test]
+    fn deliberate_pauses_are_never_judged() {
+        let cfg = WatchdogConfig::default();
+        // Attempts ran into their deadline right up to the pause; the loop now
+        // sits in a deliberate pause and is left alone.
+        for stage in [CaptureLoopStage::PauseGate, CaptureLoopStage::ColdWait] {
+            let l = LoopLiveness {
+                stage,
+                stage_age: S(30),
+                heartbeat_age: S(400),
+                last_attempt_age: Some(S(31)),
+                open_attempt_age: None,
+                last_answer_age: Some(S(500)),
+                ..live(6)
+            };
+            assert_eq!(classify(&l, &cfg, false), None, "{stage}");
+        }
+        // The same history in a working stage is a wedge.
+        let l = LoopLiveness {
+            stage: CaptureLoopStage::TriggerWait,
+            stage_age: S(0),
+            heartbeat_age: S(0),
+            last_attempt_age: Some(S(31)),
+            open_attempt_age: None,
+            last_answer_age: Some(S(500)),
+            ..live(6)
+        };
+        assert_eq!(
+            classify(&l, &cfg, false).map(|f| f.class),
+            Some(WedgeClass::StillAttempting)
+        );
+    }
+
+    /// A target whose loops are registered by guards the test controls.
+    struct Lingering {
+        metrics: Arc<PipelineMetrics>,
+    }
+
+    impl VisionRestartTarget for Lingering {
+        async fn stop_capture(&self) -> anyhow::Result<()> {
+            Ok(())
+        }
+
+        async fn start_capture(&self) -> anyhow::Result<()> {
+            Ok(())
+        }
+
+        fn registered_loops(&self) -> Vec<u32> {
+            self.metrics
+                .loop_stages
+                .liveness()
+                .into_iter()
+                .map(|l| l.monitor_id)
+                .collect()
+        }
+    }
+
+    #[tokio::test]
+    async fn the_restart_waits_for_old_loops_to_unwind() {
+        let target = Lingering {
+            metrics: Arc::new(PipelineMetrics::new()),
+        };
+        // A loop that unwinds a little after the stop.
+        let guard = target.metrics.track_capture_loop(3);
+        let unwinding = std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(150));
+            drop(guard);
+        });
+        let started = Instant::now();
+        let left = wait_for_loops_to_unwind(&target, Duration::from_secs(5)).await;
+        assert!(left.is_empty());
+        assert!(started.elapsed() >= Duration::from_millis(100));
+        unwinding.join().unwrap();
+
+        // A loop stuck in synchronous code never unwinds: the wait is bounded
+        // and names it.
+        let _stuck = target.metrics.track_capture_loop(8);
+        let started = Instant::now();
+        let left = wait_for_loops_to_unwind(&target, Duration::from_millis(200)).await;
+        assert_eq!(left, vec![8]);
+        assert!(started.elapsed() < Duration::from_secs(2));
+    }
+
     // --- Simulated hang through the restart path --------------------------
 
     /// Stands in for the VisionManager: "starting" spawns one capture loop
@@ -809,6 +946,15 @@ mod tests {
             let hang = self.hang_on_next_start.swap(false, Ordering::SeqCst);
             self.spawn_loop(1, hang);
             Ok(())
+        }
+
+        fn registered_loops(&self) -> Vec<u32> {
+            self.metrics
+                .loop_stages
+                .liveness()
+                .into_iter()
+                .map(|l| l.monitor_id)
+                .collect()
         }
     }
 

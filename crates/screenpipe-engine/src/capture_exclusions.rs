@@ -110,11 +110,22 @@ pub struct ExclusionProbe {
 impl ExclusionProbe {
     /// Probe for a capture loop with the given window rules.
     pub fn for_tree_walker_config(monitor_id: u32, config: &TreeWalkerConfig) -> Self {
-        let filters = WindowFilters::new(
+        Self::for_rules(
+            monitor_id,
             &config.ignored_windows,
             &config.included_windows,
             &config.ignored_urls,
-        );
+        )
+    }
+
+    /// Probe for the given ignore, include and URL rules.
+    pub fn for_rules(
+        monitor_id: u32,
+        ignored_windows: &[String],
+        included_windows: &[String],
+        ignored_urls: &[String],
+    ) -> Self {
+        let filters = WindowFilters::new(ignored_windows, included_windows, ignored_urls);
         if !WINDOW_ID_EXCLUSION_SUPPORTED || window_filters_are_empty(&filters) {
             return Self::without_exclusions(monitor_id);
         }

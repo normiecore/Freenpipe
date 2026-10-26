@@ -164,6 +164,15 @@ mod macos {
         controller: Arc<crate::high_fps_controller::HighFpsController>,
     ) {
         info!("hd recorder ready for monitor {monitor_id} (device {device_name})");
+        // Window exclusions for the HD stream, refreshed per chunk under a
+        // deadline. Kept across chunks so a hung window server ties up one
+        // enumeration, not one per retry.
+        let mut exclusions = crate::capture_exclusions::ExclusionProbe::for_rules(
+            monitor_id,
+            &config.ignored_windows,
+            &config.included_windows,
+            &config.ignored_urls,
+        );
 
         loop {
             if stop_signal.load(Ordering::Relaxed) {
@@ -183,6 +192,7 @@ mod macos {
                 &config,
                 &controller,
                 &stop_signal,
+                &mut exclusions,
             )
             .await
             {
@@ -205,25 +215,26 @@ mod macos {
         config: &HdRecorderConfig,
         controller: &Arc<crate::high_fps_controller::HighFpsController>,
         stop_signal: &Arc<AtomicBool>,
+        exclusions: &mut crate::capture_exclusions::ExclusionProbe,
     ) -> Result<()> {
-        use screenpipe_screen::capture_screenshot_by_window::{
-            get_excluded_sck_window_ids, WindowFilters,
-        };
-
         // Read the HD rate live from the controller so tray changes (10↔30fps)
         // take effect on the next chunk. The .mp4 is then encoded CFR at this fps.
         let fps = interval_to_fps(controller.snapshot().interval_ms);
 
         // Privacy: exclude ignored windows and blocked-URL windows at the OS
-        // level (parity with capture).
-        let filters = WindowFilters::new(
-            &config.ignored_windows,
-            &config.included_windows,
-            &config.ignored_urls,
-        );
-        let mut excluded = get_excluded_sck_window_ids(&filters);
-        excluded.sort_unstable();
-        excluded.dedup();
+        // level (parity with capture). Fail closed: while the exclusion list
+        // is unknown (the enumeration failed or overran its deadline) no HD
+        // chunk starts, so an ignored window can never reach the video.
+        let Some(excluded) = exclusions
+            .refresh()
+            .await
+            .pixel_exclusions()
+            .map(<[u32]>::to_vec)
+        else {
+            anyhow::bail!(
+                "window exclusion list unknown; no HD chunk starts until a refresh succeeds"
+            );
+        };
 
         // Open the dedicated high-fps stream. start_hd_capture blocks while SCK
         // starts the stream, so run it on a blocking thread.
