@@ -1252,6 +1252,8 @@ async fn gcal_events_inner(
                 })
                 .unwrap_or_default();
             let meeting_url = google_calendar_meeting_url(&item);
+            let exclude_from_meeting_detection =
+                google_event_excluded_from_meeting_detection(&item);
 
             json!({
                 "id": item["id"].as_str().unwrap_or(""),
@@ -1263,11 +1265,27 @@ async fn gcal_events_inner(
                 "meetingUrl": meeting_url,
                 "calendarName": "primary",
                 "isAllDay": is_all_day,
+                "excludeFromMeetingDetection": exclude_from_meeting_detection,
             })
         })
         .collect();
 
     Ok(events)
+}
+
+/// A Google Calendar entry the user is not attending as a meeting: they
+/// declined it (their own attendee entry, `self: true`, says `declined`), it
+/// is shown as free (`transparency: transparent`), or it was cancelled. The
+/// meeting detector ignores such entries entirely.
+fn google_event_excluded_from_meeting_detection(item: &Value) -> bool {
+    let declined_by_user = item["attendees"].as_array().is_some_and(|attendees| {
+        attendees.iter().any(|a| {
+            a["self"].as_bool() == Some(true) && a["responseStatus"].as_str() == Some("declined")
+        })
+    });
+    declined_by_user
+        || item["transparency"].as_str() == Some("transparent")
+        || item["status"].as_str() == Some("cancelled")
 }
 
 fn google_calendar_meeting_url(item: &Value) -> Option<String> {
@@ -2872,6 +2890,34 @@ mod tests {
         assert!(!serialized.contains("secret.ics"));
         assert_eq!(summaries[0]["name"], "Work");
         assert_eq!(summaries[0]["enabled"], true);
+    }
+
+    #[test]
+    fn google_event_exclusion_follows_the_users_own_response() {
+        let mine_declined = json!({
+            "attendees": [
+                {"email": "me@example.com", "self": true, "responseStatus": "declined"},
+                {"email": "other@example.com", "responseStatus": "accepted"}
+            ]
+        });
+        assert!(google_event_excluded_from_meeting_detection(&mine_declined));
+        let other_declined = json!({
+            "attendees": [
+                {"email": "me@example.com", "self": true, "responseStatus": "accepted"},
+                {"email": "other@example.com", "responseStatus": "declined"}
+            ]
+        });
+        assert!(!google_event_excluded_from_meeting_detection(&other_declined));
+        assert!(google_event_excluded_from_meeting_detection(
+            &json!({"transparency": "transparent"})
+        ));
+        assert!(google_event_excluded_from_meeting_detection(
+            &json!({"status": "cancelled"})
+        ));
+        assert!(!google_event_excluded_from_meeting_detection(
+            &json!({"status": "confirmed", "transparency": "opaque"})
+        ));
+        assert!(!google_event_excluded_from_meeting_detection(&json!({})));
     }
 
     #[test]

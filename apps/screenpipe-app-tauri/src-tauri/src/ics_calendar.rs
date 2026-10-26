@@ -36,6 +36,8 @@ fn map_ics_event(event: IcsCalendarEventItem) -> CalendarEventItem {
         calendar_name: event.calendar_name,
         is_all_day: event.is_all_day,
         source: event.source,
+        // The shared ICS parser does not read STATUS/TRANSP/PARTSTAT yet.
+        exclude_from_meeting_detection: false,
     }
 }
 

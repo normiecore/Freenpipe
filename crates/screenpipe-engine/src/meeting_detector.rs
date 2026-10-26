@@ -24,9 +24,16 @@
 //! accompanied by a leave/hangup signal (see `min_signals_required`).
 
 use crate::meeting_telemetry::{capture_detection_decision, MeetingDetectionScanSummary};
+use crate::meeting_watcher::calendar::{
+    call_conferences, CalendarBook, CalendarEntry, CalendarEventSignal, CalendarMatch,
+    CALENDAR_EVENTS_TOPIC,
+};
+use crate::meeting_watcher::ended_event::emit_meeting_ended;
+use crate::meeting_watcher::lock_pause::{LockGate, LockPause};
 use crate::routes::meetings::{emit_meeting_status_changed, resolve_meeting_status_from};
 use chrono::{DateTime, Utc};
 use futures::{FutureExt, StreamExt};
+use screenpipe_db::ext::meetings_v2::CalendarBinding;
 use screenpipe_db::{DatabaseManager, MEETING_END_REASON_AUTO_END, MEETING_END_REASON_SHUTDOWN};
 use screenpipe_events::subscribe_to_event;
 use serde::{Deserialize, Serialize};
@@ -1650,6 +1657,69 @@ impl MeetingState {
             MeetingState::Ending { .. } => "Ending",
         }
     }
+
+    /// Move the state's timers forward by `by` (capped at `now`), as if that
+    /// time had not passed. Used after a screen lock: the loop scanned nothing
+    /// while locked, so the lock must not count toward the confirm window or
+    /// the end grace period. Identity, start time and counters are untouched.
+    pub fn defer_timers(&mut self, by: Duration, now: Instant) {
+        let shift = |t: &mut Instant| {
+            let moved = t.checked_add(by).unwrap_or(*t);
+            *t = moved.min(now).max(*t);
+        };
+        match self {
+            MeetingState::Idle => {}
+            MeetingState::Confirming { since, .. } | MeetingState::Ending { since, .. } => {
+                shift(since)
+            }
+            MeetingState::Active { last_seen, .. } => shift(last_seen),
+        }
+    }
+}
+
+/// What the detection loop does with one wake-up before any scanning work.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ScanGate {
+    /// Scan running meeting apps and advance the state machine.
+    Scan,
+    /// The screen is locked: skip the iteration, leave the state as it is.
+    SkipLocked,
+    /// A manual meeting holds the slot: the detector stands down.
+    SkipManual,
+}
+
+/// Decide whether this iteration scans (HLI-013).
+///
+/// While `screen_locked` is set nothing is scanned and `state` is left exactly
+/// as it was; a meeting is neither started nor ended because of the lock. On
+/// the first iteration after the unlock, the state's timers move forward by
+/// the time spent locked, so the gap never ends a meeting by itself: the next
+/// scans re-evaluate it from what is on screen, with the grace period it had
+/// left when the lock began.
+pub fn gate_scan_iteration(
+    pause: &mut LockPause,
+    state: &mut MeetingState,
+    screen_locked: bool,
+    manual_active: bool,
+    now: Instant,
+) -> ScanGate {
+    match pause.observe(screen_locked, now) {
+        LockGate::Skip => return ScanGate::SkipLocked,
+        LockGate::Resume { paused_for } => {
+            state.defer_timers(paused_for, now);
+            info!(
+                "meeting v2: screen unlocked after {:?}; resuming scans in state {}",
+                paused_for,
+                state.name()
+            );
+        }
+        LockGate::Run => {}
+    }
+    if manual_active {
+        ScanGate::SkipManual
+    } else {
+        ScanGate::Scan
+    }
 }
 
 /// Timeout for confirming a meeting (how long we wait for a second scan to verify).
@@ -2017,6 +2087,28 @@ pub fn meeting_app_is_ignored(
                 .iter()
                 .any(|n| n.to_lowercase().contains(&term))
     })
+}
+
+/// Drop the running apps the user excluded from meeting detection
+/// (`ignoredMeetingApps`) and return how many were dropped.
+///
+/// Runs before any accessibility scan, so an excluded app is never scanned:
+/// it cannot confirm a meeting, keep one alive or bind a calendar event.
+/// Applies to native apps, browser matches and DB hints alike.
+pub fn drop_ignored_meeting_apps(
+    running_apps: &mut Vec<RunningMeetingApp>,
+    profiles: &[MeetingDetectionProfile],
+    ignored: &[String],
+) -> usize {
+    if ignored.is_empty() {
+        return 0;
+    }
+    let before = running_apps.len();
+    running_apps.retain(|app| match profiles.get(app.profile_index) {
+        Some(profile) => !meeting_app_is_ignored(&app.app_name, profile, ignored),
+        None => true,
+    });
+    before - running_apps.len()
 }
 
 /// Known browser app names (lowercase).
@@ -2497,11 +2589,18 @@ async fn db_find_browser_meetings(
     profiles: &[MeetingDetectionProfile],
 ) -> Result<Vec<RunningMeetingApp>, sqlx::Error> {
     let mut results = Vec::new();
+    // `frames.timestamp` is stored as RFC 3339 text ("...T...+00:00"); the
+    // cutoff is bound in the same form so the comparison is a real 30 s
+    // window. (`datetime('now', ...)` yields "YYYY-MM-DD HH:MM:SS", which
+    // sorts below every RFC 3339 value of the same day and so matched every
+    // frame captured since midnight.)
+    let cutoff = Utc::now() - chrono::Duration::seconds(30);
     let rows: Vec<(String, String, Option<String>)> = sqlx::query_as(
         "SELECT DISTINCT app_name, window_name, browser_url FROM frames \
-         WHERE timestamp > datetime('now', '-30 seconds') \
+         WHERE timestamp > ?1 \
          AND app_name IS NOT NULL AND window_name IS NOT NULL",
     )
+    .bind(cutoff)
     .fetch_all(&db.pool)
     .await?;
 
@@ -2626,10 +2725,14 @@ pub async fn run_meeting_detection_loop(
         sync_meeting_flag(true, &in_meeting_flag, &detector);
     }
 
-    // Calendar enrichment: subscribe to calendar events from the event bus.
-    // If the calendar isn't connected, this stream simply never yields — safe no-op.
-    let mut cal_sub = subscribe_to_event::<Vec<CalendarEventSignal>>("calendar_events");
-    let mut calendar_events: Vec<CalendarEventSignal> = Vec::new();
+    // Calendar binding: subscribe to calendar events from the event bus.
+    // If no calendar is connected, this stream simply never yields — safe no-op.
+    let mut cal_sub = subscribe_to_event::<Vec<CalendarEventSignal>>(CALENDAR_EVENTS_TOPIC);
+    let mut calendar = CalendarBook::new();
+    // Binding state of the meeting being tracked (exact conference URL only).
+    let mut calendar_bind: Option<CalendarBindTracker> = None;
+    // Screen-lock pause of the scan loop (HLI-013).
+    let mut lock_pause = LockPause::new();
 
     // Subscribe to explicit stop signals from the API layer
     let mut stop_sub = subscribe_to_event::<DetectorStopSignal>("detector_stop_tracking");
@@ -2691,11 +2794,13 @@ pub async fn run_meeting_detection_loop(
             }
         }
 
-        // Drain pending calendar events (non-blocking).
-        // Each publish replaces the full list, so we keep only the latest.
+        // Drain pending calendar events (non-blocking). Each publication
+        // replaces the list of the sources it carries; excluded, all-day and
+        // unreadable entries are dropped on the way in.
         while let Some(event) = cal_sub.next().now_or_never().flatten() {
-            calendar_events = event.data.into_iter().filter(|e| !e.is_all_day).collect();
+            calendar.ingest(event.data, Instant::now());
         }
+        calendar.expire(Instant::now());
 
         // Handle explicit stop signals from the API layer
         if let Some(event) = stop_sub.next().now_or_never().flatten() {
@@ -2713,8 +2818,13 @@ pub async fn run_meeting_detection_loop(
                         meeting_id, app
                     );
                     state = MeetingState::Idle;
+                    calendar_bind = None;
                     current_interval = IDLE_APPS_SCAN_INTERVAL;
-                    sync_meeting_flag(false, &in_meeting_flag, &detector);
+                    // A stop that hands the call to a manual meeting (room
+                    // change) leaves the manual slot taken: the audio pipeline
+                    // must keep treating it as a meeting.
+                    let manual_active = manual_meeting.read().await.is_some();
+                    sync_meeting_flag(manual_active, &in_meeting_flag, &detector);
                     last_explicit_stop_id = Some(stop_signal.meeting_id);
                 }
             }
@@ -2755,6 +2865,7 @@ pub async fn run_meeting_detection_loop(
                         }
                         if detector_matches {
                             state = MeetingState::Idle;
+                            calendar_bind = None;
                             current_interval = IDLE_APPS_SCAN_INTERVAL;
                         }
                         sync_meeting_flag(false, &in_meeting_flag, &detector);
@@ -2763,12 +2874,12 @@ pub async fn run_meeting_detection_loop(
                         {
                             emit_meeting_status_changed(&status);
                         }
-                        if let Err(e) = screenpipe_events::send_event(
-                            "meeting_ended",
-                            serde_json::json!({ "meeting_id": request.meeting_id }),
-                        ) {
-                            warn!("meeting v2: failed to emit meeting_ended event: {}", e);
-                        }
+                        emit_meeting_ended(
+                            &db,
+                            request.meeting_id,
+                            Some(MEETING_END_REASON_AUTO_END),
+                        )
+                        .await;
                     }
                     Err(e) => {
                         warn!(
@@ -2780,23 +2891,28 @@ pub async fn run_meeting_detection_loop(
             }
         }
 
-        // Skip if manual meeting is active
-        {
-            let manual = manual_meeting.read().await;
-            if manual.is_some() {
+        // Skip the scan while the screen is locked (HLI-013) or a manual
+        // meeting holds the slot. Locked: AX/UIA queries against meeting apps
+        // return nothing useful when the user is away, and they are the most
+        // expensive step of this loop. The state stays exactly as it is, and
+        // on unlock its timers move forward by the time spent locked, so the
+        // gap itself never ends a meeting; the next scans re-evaluate it from
+        // what is on screen. Explicit stops and auto-end requests above are
+        // still honoured while locked. Linux never sets the lock flag.
+        let manual_active = manual_meeting.read().await.is_some();
+        match gate_scan_iteration(
+            &mut lock_pause,
+            &mut state,
+            crate::sleep_monitor::screen_is_locked(),
+            manual_active,
+            Instant::now(),
+        ) {
+            ScanGate::SkipLocked => continue,
+            ScanGate::SkipManual => {
                 debug!("meeting v2: manual meeting active, skipping scan");
                 continue;
             }
-        }
-
-        // Skip if the screen is locked. AX queries against meeting apps return
-        // nothing useful when the user is away from the keyboard, and they are
-        // the most expensive operation in this loop on macOS. State stays put
-        // — if we were Active, we resume Active on unlock; the next scan
-        // re-evaluates from reality. Linux never sets this flag (only wake is
-        // tracked there), so this is a no-op on Linux.
-        if crate::sleep_monitor::screen_is_locked() {
-            continue;
+            ScanGate::Scan => {}
         }
 
         // Build active tracking from the current state so find_running_meeting_apps
@@ -2806,7 +2922,9 @@ pub async fn run_meeting_detection_loop(
         // 0. Check recent frames in DB for browser meeting URLs.
         // Only run this query if any profile has browser URL patterns configured,
         // to avoid unnecessary DB work when no browser-based meetings are possible.
-        let db_browser_hints = if has_browser_profiles {
+        // The hints only resolve to a process on macOS, so other platforms
+        // skip the query.
+        let db_browser_hints = if has_browser_profiles && cfg!(target_os = "macos") {
             match db_find_browser_meetings(&db, &profiles).await {
                 Ok(hints) => hints,
                 Err(e) => {
@@ -2842,21 +2960,13 @@ pub async fn run_meeting_detection_loop(
         // Drop apps the user excluded from detection (settings: ignoredMeetingApps).
         // Done before the AX scan so an ignored app costs nothing past enumeration,
         // and applied uniformly to native, browser, and DB-hint matches.
-        if !ignored_meeting_apps.is_empty() {
-            let before = running_apps.len();
-            running_apps.retain(|app| match profiles.get(app.profile_index) {
-                Some(profile) => {
-                    !meeting_app_is_ignored(&app.app_name, profile, &ignored_meeting_apps)
-                }
-                None => true,
-            });
-            let removed = before - running_apps.len();
-            if removed > 0 {
-                debug!(
-                    "meeting v2: skipped {} running app(s) per ignoredMeetingApps filter",
-                    removed
-                );
-            }
+        let removed =
+            drop_ignored_meeting_apps(&mut running_apps, &profiles, &ignored_meeting_apps);
+        if removed > 0 {
+            debug!(
+                "meeting v2: skipped {} running app(s) per ignoredMeetingApps filter",
+                removed
+            );
         }
 
         if !running_apps.is_empty() {
@@ -2890,12 +3000,15 @@ pub async fn run_meeting_detection_loop(
                 MeetingState::Active { .. } | MeetingState::Ending { .. }
             ) {
                 db.has_recent_output_audio(30).await.unwrap_or(false)
-                    || has_active_calendar_event(&calendar_events, Utc::now())
+                    || calendar.has_event_in_progress(Utc::now())
             } else {
                 false
             };
             let (new_state, ended_id) = handle_no_apps_running(state, keep_alive);
             state = new_state;
+            if matches!(state, MeetingState::Idle) {
+                calendar_bind = None;
+            }
             if let Some(meeting_id) = ended_id {
                 let now = Utc::now().format("%Y-%m-%dT%H:%M:%S%.3fZ").to_string();
                 match db
@@ -2903,12 +3016,7 @@ pub async fn run_meeting_detection_loop(
                     .await
                 {
                     Ok(()) => {
-                        if let Err(e) = screenpipe_events::send_event(
-                            "meeting_ended",
-                            serde_json::json!({ "meeting_id": meeting_id }),
-                        ) {
-                            warn!("meeting v2: failed to emit meeting_ended event: {}", e);
-                        }
+                        emit_meeting_ended(&db, meeting_id, None).await;
                         if let Ok(status) =
                             resolve_meeting_status_from(db.as_ref(), manual_meeting.as_ref()).await
                         {
@@ -2990,7 +3098,7 @@ pub async fn run_meeting_detection_loop(
         // separate so detection-decision telemetry stays audio-accurate.
         let keep_alive = has_output_audio
             || (matches!(state, MeetingState::Ending { .. })
-                && has_active_calendar_event(&calendar_events, Utc::now()));
+                && calendar.has_event_in_progress(Utc::now()));
 
         // 3. Advance state machine
         let (new_state, action) = advance_state(state, &scan_results, keep_alive);
@@ -3012,10 +3120,22 @@ pub async fn run_meeting_detection_loop(
         if let Some(action) = action {
             match action {
                 StateAction::StartMeeting { app } => {
-                    // Calendar enrichment: find overlapping calendar event
-                    let (cal_title, cal_attendees) =
-                        find_overlapping_calendar_event(&calendar_events);
-                    let attendees_str = cal_attendees.as_ref().map(|a| a.join(", "));
+                    // Which calendar entry, if any, names this call: only an
+                    // exact conference URL match counts (meetings_memory-031).
+                    let profile_index = best_in_call_profile(&scan_results);
+                    let now_utc = Utc::now();
+                    let call_urls = conferences_for_call(
+                        &db,
+                        &calendar,
+                        profile_index.and_then(|i| profiles.get(i)),
+                        &running_apps,
+                        now_utc,
+                    )
+                    .await;
+                    let matched_event_id = calendar
+                        .match_call(&call_urls, now_utc)
+                        .bindable_entry()
+                        .map(|entry| entry.id.clone());
 
                     // Try to merge with recently-ended meeting. The DB query
                     // already filters out explicit_stop rows; the
@@ -3032,6 +3152,23 @@ pub async fn run_meeting_detection_loop(
                         }
                         other => other,
                     };
+                    // A recent meeting bound to a different calendar entry was
+                    // another scheduled call: this one gets its own row.
+                    let merge_candidate = match (merge_candidate, matched_event_id.as_deref()) {
+                        (Ok(Some(recent)), Some(event_id)) => {
+                            match db.get_meeting_calendar_event_id(recent.id).await {
+                                Ok(Some(existing)) if existing != event_id => {
+                                    info!(
+                                        "meeting v2: not reopening meeting {} (app={}): it belongs to calendar entry {}, this call to {}",
+                                        recent.id, app, existing, event_id
+                                    );
+                                    Ok(None)
+                                }
+                                _ => Ok(Some(recent)),
+                            }
+                        }
+                        (other, _) => other,
+                    };
 
                     let (meeting_id, decision_trigger) = match merge_candidate {
                         Ok(Some(recent)) => match db.reopen_meeting(recent.id).await {
@@ -3040,68 +3177,44 @@ pub async fn run_meeting_detection_loop(
                                     "meeting v2: reopened recent meeting (id={}, app={})",
                                     recent.id, app
                                 );
-                                // Enrich reopened meeting with calendar data if it has none
-                                if cal_title.is_some()
-                                    && recent.title.as_ref().is_none_or(|t| t.is_empty())
-                                {
-                                    if let Err(e) = db
-                                        .update_meeting(
-                                            recent.id,
-                                            None,
-                                            None,
-                                            cal_title.as_deref(),
-                                            attendees_str.as_deref(),
-                                            None,
-                                            None,
-                                        )
-                                        .await
-                                    {
-                                        warn!(
-                                            "meeting v2: failed to enrich reopened meeting {}: {}",
-                                            recent.id, e
-                                        );
-                                    }
-                                }
                                 (recent.id, "auto_reopen")
                             }
                             Err(e) => {
                                 warn!("meeting v2: failed to reopen meeting {}: {}", recent.id, e);
-                                (
-                                    insert_new_meeting(
-                                        &db,
-                                        &app,
-                                        cal_title.as_deref(),
-                                        attendees_str.as_deref(),
-                                    )
-                                    .await,
-                                    "auto_start",
-                                )
+                                (insert_new_meeting(&db, &app).await, "auto_start")
                             }
                         },
-                        Ok(None) => (
-                            insert_new_meeting(
-                                &db,
-                                &app,
-                                cal_title.as_deref(),
-                                attendees_str.as_deref(),
-                            )
-                            .await,
-                            "auto_start",
-                        ),
+                        Ok(None) => (insert_new_meeting(&db, &app).await, "auto_start"),
                         Err(e) => {
                             warn!("meeting v2: failed to find recent meeting: {}", e);
-                            (
-                                insert_new_meeting(
-                                    &db,
-                                    &app,
-                                    cal_title.as_deref(),
-                                    attendees_str.as_deref(),
-                                )
-                                .await,
-                                "auto_start",
-                            )
+                            (insert_new_meeting(&db, &app).await, "auto_start")
                         }
                     };
+
+                    // Bind the calendar entry before announcing the meeting,
+                    // so `meeting_started` carries the entry's title.
+                    let mut tracker = CalendarBindTracker::new(meeting_id, profile_index);
+                    let attach = if meeting_id >= 0 {
+                        let attach =
+                            attach_calendar_event(&db, meeting_id, &calendar, &call_urls, now_utc)
+                                .await;
+                        tracker.record(&attach, &app, Instant::now());
+                        Some(attach)
+                    } else {
+                        None
+                    };
+                    calendar_bind = Some(tracker);
+
+                    if decision_trigger == "auto_start" && meeting_id >= 0 {
+                        let (title, event_id) = match &attach {
+                            Some(CalendarAttach::Bound {
+                                event_id,
+                                title_applied,
+                            }) => (title_applied.clone(), Some(event_id.clone())),
+                            _ => (None, None),
+                        };
+                        emit_meeting_started(meeting_id, &app, title.as_deref(), event_id.as_deref());
+                    }
 
                     // Update state with actual meeting ID (replace the placeholder -1)
                     if let MeetingState::Active {
@@ -3137,6 +3250,7 @@ pub async fn run_meeting_detection_loop(
                     }
                 }
                 StateAction::EndMeeting { meeting_id } => {
+                    calendar_bind = None;
                     if meeting_id >= 0 {
                         // Natural grace-timeout end (controls disappeared and
                         // the Ending grace period elapsed). Leave end_reason
@@ -3150,12 +3264,7 @@ pub async fn run_meeting_detection_loop(
                             Ok(()) => {
                                 info!("meeting v2: meeting ended (id={})", meeting_id);
                                 // Emit event so triggered pipes can react
-                                if let Err(e) = screenpipe_events::send_event(
-                                    "meeting_ended",
-                                    serde_json::json!({ "meeting_id": meeting_id }),
-                                ) {
-                                    warn!("meeting v2: failed to emit meeting_ended event: {}", e);
-                                }
+                                emit_meeting_ended(&db, meeting_id, None).await;
                                 if let Ok(status) = resolve_meeting_status_from(
                                     db.as_ref(),
                                     manual_meeting.as_ref(),
@@ -3172,6 +3281,46 @@ pub async fn run_meeting_detection_loop(
                     }
                 }
             }
+        }
+
+        // 4b. A tracked meeting that is not bound yet retries the calendar
+        // match now and then: the calendar may publish after the call was
+        // detected, or the call's URL may reach the screen later.
+        if let MeetingState::Active {
+            meeting_id,
+            ref app,
+            ..
+        } = state
+        {
+            if meeting_id >= 0 {
+                let tracker = match calendar_bind.take() {
+                    Some(t) if t.meeting_id == meeting_id => t,
+                    _ => CalendarBindTracker::new(meeting_id, None),
+                };
+                let mut tracker = tracker;
+                if tracker.profile_index.is_none() {
+                    tracker.profile_index = best_in_call_profile(&scan_results);
+                }
+                let now_instant = Instant::now();
+                if tracker.due(now_instant) {
+                    let now_utc = Utc::now();
+                    let call_urls = conferences_for_call(
+                        &db,
+                        &calendar,
+                        tracker.profile_index.and_then(|i| profiles.get(i)),
+                        &running_apps,
+                        now_utc,
+                    )
+                    .await;
+                    let attach =
+                        attach_calendar_event(&db, meeting_id, &calendar, &call_urls, now_utc)
+                            .await;
+                    tracker.record(&attach, app, now_instant);
+                }
+                calendar_bind = Some(tracker);
+            }
+        } else if matches!(state, MeetingState::Idle) {
+            calendar_bind = None;
         }
 
         // 5. Sync the in_meeting flag
@@ -3340,19 +3489,6 @@ fn sync_meeting_flag(
     }
 }
 
-/// Calendar event signal received from the event bus (published by calendar.rs in src-tauri).
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct CalendarEventSignal {
-    pub title: String,
-    pub start: String,
-    pub end: String,
-    #[serde(default)]
-    pub attendees: Vec<String>,
-    #[serde(default)]
-    pub is_all_day: bool,
-}
-
 #[derive(Debug, Clone, Deserialize)]
 struct MeetingAutoEndRequest {
     meeting_id: i64,
@@ -3366,88 +3502,317 @@ struct DetectorStopSignal {
     pub app: String,
 }
 
-/// Check if any non-all-day calendar event overlaps with the current time.
-/// Returns (title, attendees) of the first matching event, or (None, None).
-fn find_overlapping_calendar_event(
-    events: &[CalendarEventSignal],
-) -> (Option<String>, Option<Vec<String>>) {
-    let now = Utc::now();
-    for cal_event in events {
-        if let (Ok(start), Ok(end)) = (
-            DateTime::parse_from_rfc3339(&cal_event.start),
-            DateTime::parse_from_rfc3339(&cal_event.end),
-        ) {
-            let start_utc = start.with_timezone(&Utc);
-            let end_utc = end.with_timezone(&Utc);
-            if start_utc <= now && end_utc >= now {
-                return (
-                    Some(cal_event.title.clone()),
-                    if cal_event.attendees.is_empty() {
-                        None
-                    } else {
-                        Some(cal_event.attendees.clone())
-                    },
-                );
-            }
+// ============================================================================
+// Calendar binding (meetings_memory-031)
+// ============================================================================
+
+/// How far back the screen is searched for the call's conference URL.
+const CONFERENCE_URL_WINDOW: Duration = Duration::from_secs(120);
+
+/// Upper bound on distinct browser URLs read per lookup.
+const CONFERENCE_URL_LOOKUP_LIMIT: i64 = 64;
+
+/// How often an unbound tracked meeting retries the calendar match.
+const CALENDAR_BIND_RETRY: Duration = Duration::from_secs(30);
+
+/// Profile of the in-call scan result with the most signals (the one the
+/// state machine acts on).
+fn best_in_call_profile(scan_results: &[ScanResult]) -> Option<usize> {
+    scan_results
+        .iter()
+        .filter(|r| r.is_in_call)
+        .max_by_key(|r| r.signals_found)
+        .map(|r| r.profile_index)
+}
+
+/// Distinct browser URLs captured on screen since `since`.
+async fn db_recent_browser_urls(
+    db: &DatabaseManager,
+    since: DateTime<Utc>,
+) -> Result<Vec<String>, sqlx::Error> {
+    // `frames.timestamp` is RFC 3339 text; binding a `DateTime<Utc>` writes
+    // the same form, so the comparison is chronological.
+    sqlx::query_scalar(
+        "SELECT DISTINCT browser_url FROM frames \
+         WHERE timestamp >= ?1 AND browser_url IS NOT NULL AND browser_url != '' \
+         LIMIT ?2",
+    )
+    .bind(since)
+    .bind(CONFERENCE_URL_LOOKUP_LIMIT)
+    .fetch_all(&db.pool)
+    .await
+}
+
+/// Conference identities seen for a call of the service `profile` describes:
+/// browser URLs on screen in the last [`CONFERENCE_URL_WINDOW`] plus what the
+/// process scan found, kept when they belong to that service.
+///
+/// Skips the database entirely when no calendar entry could be bound.
+async fn conferences_for_call(
+    db: &DatabaseManager,
+    calendar: &CalendarBook,
+    profile: Option<&MeetingDetectionProfile>,
+    running_apps: &[RunningMeetingApp],
+    now: DateTime<Utc>,
+) -> Vec<String> {
+    let Some(profile) = profile else {
+        return Vec::new();
+    };
+    let patterns = profile.app_identifiers.browser_url_patterns;
+    if patterns.is_empty() || !calendar.has_bindable_entry(now) {
+        return Vec::new();
+    }
+    let since = now
+        - chrono::Duration::from_std(CONFERENCE_URL_WINDOW)
+            .unwrap_or_else(|_| chrono::Duration::seconds(120));
+    let mut urls = match db_recent_browser_urls(db, since).await {
+        Ok(urls) => urls,
+        Err(e) => {
+            debug!("meeting v2: browser URL lookup for calendar binding failed: {}", e);
+            Vec::new()
+        }
+    };
+    urls.extend(running_apps.iter().filter_map(|a| a.browser_url.clone()));
+    call_conferences(urls.iter().map(String::as_str), patterns)
+}
+
+/// Outcome of trying to tie a detected meeting to a calendar entry.
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) enum CalendarAttach {
+    /// The meeting is now bound to `event_id`. `title_applied` is the entry
+    /// title copied into a meeting that had none.
+    Bound {
+        event_id: String,
+        title_applied: Option<String>,
+    },
+    /// The meeting was already bound to `event_id`.
+    AlreadyBound { event_id: String },
+    /// The exact match was refused by the ownership check: another meeting
+    /// owns the entry, or this meeting carries a different one.
+    Refused {
+        event_id: String,
+        binding: CalendarBinding,
+    },
+    /// Entries are scheduled now but none names the call's conference. A
+    /// time-only overlap never binds.
+    TimeOnly { overlapping: usize },
+    /// Nothing scheduled around now.
+    NoEvent,
+    /// The meeting row no longer exists.
+    MeetingMissing,
+    /// Database error; the next attempt retries.
+    Failed(String),
+}
+
+impl CalendarAttach {
+    /// No further attempt can change the outcome for this meeting.
+    fn settled(&self) -> bool {
+        matches!(
+            self,
+            CalendarAttach::Bound { .. }
+                | CalendarAttach::AlreadyBound { .. }
+                | CalendarAttach::Refused { .. }
+                | CalendarAttach::MeetingMissing
+        )
+    }
+}
+
+/// Tie `meeting_id` to the calendar entry whose conference URL is one of
+/// `call_conferences`, through the conditional `calendar_event_id` update
+/// (`bind_meeting_calendar_event`: fills an empty column only, after checking
+/// that no other meeting owns the entry). On success the entry's title and
+/// attendees fill the meeting's empty fields; nothing the meeting already
+/// carries is overwritten. A time-only overlap changes nothing.
+pub(crate) async fn attach_calendar_event(
+    db: &DatabaseManager,
+    meeting_id: i64,
+    calendar: &CalendarBook,
+    call_conferences: &[String],
+    now: DateTime<Utc>,
+) -> CalendarAttach {
+    let entry: CalendarEntry = match calendar.match_call(call_conferences, now) {
+        CalendarMatch::ExactConferenceUrl(entry) => entry.clone(),
+        CalendarMatch::TimeOnly { overlapping } => return CalendarAttach::TimeOnly { overlapping },
+        CalendarMatch::NoEvent => return CalendarAttach::NoEvent,
+    };
+    match db.bind_meeting_calendar_event(meeting_id, &entry.id).await {
+        Ok(CalendarBinding::Bound) => CalendarAttach::Bound {
+            title_applied: fill_from_calendar_entry(db, meeting_id, &entry).await,
+            event_id: entry.id,
+        },
+        Ok(CalendarBinding::AlreadyBound) => {
+            fill_from_calendar_entry(db, meeting_id, &entry).await;
+            CalendarAttach::AlreadyBound { event_id: entry.id }
+        }
+        Ok(CalendarBinding::MeetingMissing) => CalendarAttach::MeetingMissing,
+        Ok(binding) => CalendarAttach::Refused {
+            event_id: entry.id,
+            binding,
+        },
+        Err(e) => CalendarAttach::Failed(e.to_string()),
+    }
+}
+
+/// Copy the entry's title and attendees into the meeting fields that are
+/// still empty. Returns the title when it was applied.
+async fn fill_from_calendar_entry(
+    db: &DatabaseManager,
+    meeting_id: i64,
+    entry: &CalendarEntry,
+) -> Option<String> {
+    let meeting = match db.get_meeting_by_id(meeting_id).await {
+        Ok(meeting) => meeting,
+        Err(e) => {
+            warn!(
+                "meeting v2: could not read meeting {} to copy calendar details: {}",
+                meeting_id, e
+            );
+            return None;
+        }
+    };
+    let blank = |v: &Option<String>| v.as_deref().is_none_or(|s| s.trim().is_empty());
+    let title = (blank(&meeting.title) && !entry.title.is_empty()).then(|| entry.title.clone());
+    let attendees = (blank(&meeting.attendees) && !entry.attendees.is_empty())
+        .then(|| entry.attendees.join(", "));
+    if title.is_none() && attendees.is_none() {
+        return None;
+    }
+    match db
+        .update_meeting(
+            meeting_id,
+            None,
+            None,
+            title.as_deref(),
+            attendees.as_deref(),
+            None,
+            None,
+        )
+        .await
+    {
+        Ok(()) => title,
+        Err(e) => {
+            warn!(
+                "meeting v2: could not copy calendar details into meeting {}: {}",
+                meeting_id, e
+            );
+            None
         }
     }
-    (None, None)
 }
 
-/// True if a non-all-day calendar event is happening at `now`. Used as a
-/// keep-alive signal so a detected meeting doesn't end while its scheduled event
-/// is still in progress (e.g. UI controls hidden during a screen-share). `now` is
-/// a parameter for deterministic testing. All-day events are excluded because the
-/// upstream stream already filters them, and they'd otherwise pin a meeting open
-/// all day.
-fn has_active_calendar_event(events: &[CalendarEventSignal], now: DateTime<Utc>) -> bool {
-    events.iter().any(|e| {
-        if e.is_all_day {
-            return false;
+/// Calendar binding progress of the meeting the detector tracks.
+#[derive(Debug, Clone)]
+struct CalendarBindTracker {
+    meeting_id: i64,
+    /// Detection profile of the call, which decides the service its URLs
+    /// must belong to. Unknown for a meeting re-attached at startup until a
+    /// scan sees its controls.
+    profile_index: Option<usize>,
+    settled: bool,
+    last_attempt: Option<Instant>,
+    time_only_reported: bool,
+}
+
+impl CalendarBindTracker {
+    fn new(meeting_id: i64, profile_index: Option<usize>) -> Self {
+        Self {
+            meeting_id,
+            profile_index,
+            settled: false,
+            last_attempt: None,
+            time_only_reported: false,
         }
-        matches!(
-            (
-                DateTime::parse_from_rfc3339(&e.start),
-                DateTime::parse_from_rfc3339(&e.end),
+    }
+
+    fn due(&self, now: Instant) -> bool {
+        !self.settled
+            && self
+                .last_attempt
+                .is_none_or(|t| now.saturating_duration_since(t) >= CALENDAR_BIND_RETRY)
+    }
+
+    /// Note an attempt and log its outcome (a time-only overlap once per
+    /// meeting).
+    fn record(&mut self, outcome: &CalendarAttach, app: &str, now: Instant) {
+        self.last_attempt = Some(now);
+        self.settled = outcome.settled();
+        match outcome {
+            CalendarAttach::Bound {
+                event_id,
+                title_applied,
+            } => info!(
+                "meeting v2: calendar entry bound (method={}, meeting={}, app={}, event={}, title={:?})",
+                crate::meeting_watcher::calendar::MATCH_METHOD_EXACT_CONFERENCE_URL,
+                self.meeting_id,
+                app,
+                event_id,
+                title_applied
             ),
-            (Ok(start), Ok(end))
-                if start.with_timezone(&Utc) <= now && end.with_timezone(&Utc) >= now
-        )
-    })
+            CalendarAttach::AlreadyBound { event_id } => debug!(
+                "meeting v2: meeting {} already carries calendar entry {}",
+                self.meeting_id, event_id
+            ),
+            CalendarAttach::Refused { event_id, binding } => info!(
+                "meeting v2: calendar entry {} left off meeting {} by the ownership check: {:?}",
+                event_id, self.meeting_id, binding
+            ),
+            CalendarAttach::TimeOnly { overlapping } => {
+                if !self.time_only_reported {
+                    self.time_only_reported = true;
+                    info!(
+                        "meeting v2: calendar match skipped for meeting {} (method={}, overlapping={}): no entry's conference URL is the call's, so nothing is bound",
+                        self.meeting_id,
+                        crate::meeting_watcher::calendar::MATCH_METHOD_TIME_ONLY,
+                        overlapping
+                    );
+                }
+            }
+            CalendarAttach::NoEvent => {}
+            CalendarAttach::MeetingMissing => debug!(
+                "meeting v2: meeting {} vanished before calendar binding",
+                self.meeting_id
+            ),
+            CalendarAttach::Failed(e) => warn!(
+                "meeting v2: calendar binding of meeting {} failed, will retry: {}",
+                self.meeting_id, e
+            ),
+        }
+    }
 }
 
-/// Insert a new meeting into the database with optional calendar enrichment.
-/// Returns the meeting ID, or -1 on failure.
-async fn insert_new_meeting(
-    db: &DatabaseManager,
-    app: &str,
-    title: Option<&str>,
-    attendees: Option<&str>,
-) -> i64 {
-    match db.insert_meeting(app, "ui_scan", title, attendees).await {
+/// Insert a new detected meeting. Returns the meeting ID, or -1 on failure.
+/// Title and attendees come later, from an exact calendar match only.
+async fn insert_new_meeting(db: &DatabaseManager, app: &str) -> i64 {
+    match db.insert_meeting(app, "ui_scan", None, None).await {
         Ok(id) => {
-            info!(
-                "meeting v2: meeting started (id={}, app={}, title={:?})",
-                id, app, title
-            );
-            // Emit event so triggered pipes can react
-            if let Err(e) = screenpipe_events::send_event(
-                "meeting_started",
-                serde_json::json!({
-                    "meeting_id": id,
-                    "app": app,
-                    "title": title,
-                    "detection_source": "ui_scan",
-                }),
-            ) {
-                warn!("meeting v2: failed to emit meeting_started event: {}", e);
-            }
+            info!("meeting v2: meeting started (id={}, app={})", id, app);
             id
         }
         Err(e) => {
             error!("meeting v2: failed to insert meeting: {}", e);
             -1
         }
+    }
+}
+
+/// Emit `meeting_started` so triggered pipes and the app can react.
+fn emit_meeting_started(
+    meeting_id: i64,
+    app: &str,
+    title: Option<&str>,
+    calendar_event_id: Option<&str>,
+) {
+    let mut payload = serde_json::json!({
+        "meeting_id": meeting_id,
+        "app": app,
+        "title": title,
+        "detection_source": "ui_scan",
+    });
+    if let Some(event_id) = calendar_event_id {
+        payload["calendar_event_id"] = serde_json::json!(event_id);
+    }
+    if let Err(e) = screenpipe_events::send_event("meeting_started", payload) {
+        warn!("meeting v2: failed to emit meeting_started event: {}", e);
     }
 }
 
@@ -3769,43 +4134,52 @@ mod tests {
         let now = Utc::now();
         let rfc = |t: DateTime<Utc>| t.to_rfc3339();
         let ev = |start, end, all_day| CalendarEventSignal {
+            id: "standup".to_string(),
             title: "Standup".to_string(),
             start: rfc(start),
             end: rfc(end),
-            attendees: vec![],
             is_all_day: all_day,
+            ..Default::default()
+        };
+        let book_of = |events: Vec<CalendarEventSignal>| {
+            let mut book = CalendarBook::new();
+            book.ingest(events, Instant::now());
+            book
         };
 
         // Event in progress now → keep the meeting alive.
-        assert!(has_active_calendar_event(
-            &[ev(
-                now - chrono::Duration::minutes(5),
-                now + chrono::Duration::minutes(25),
-                false,
-            )],
-            now,
-        ));
+        assert!(book_of(vec![ev(
+            now - chrono::Duration::minutes(5),
+            now + chrono::Duration::minutes(25),
+            false,
+        )])
+        .has_event_in_progress(now));
 
         // All-day event → must NOT pin a meeting open all day.
-        assert!(!has_active_calendar_event(
-            &[ev(
-                now - chrono::Duration::hours(2),
-                now + chrono::Duration::hours(10),
-                true,
-            )],
-            now,
-        ));
+        assert!(!book_of(vec![ev(
+            now - chrono::Duration::hours(2),
+            now + chrono::Duration::hours(10),
+            true,
+        )])
+        .has_event_in_progress(now));
 
         // Past event and no events → no keep-alive.
-        assert!(!has_active_calendar_event(
-            &[ev(
-                now - chrono::Duration::hours(2),
-                now - chrono::Duration::hours(1),
-                false,
-            )],
-            now,
-        ));
-        assert!(!has_active_calendar_event(&[], now));
+        assert!(!book_of(vec![ev(
+            now - chrono::Duration::hours(2),
+            now - chrono::Duration::hours(1),
+            false,
+        )])
+        .has_event_in_progress(now));
+        assert!(!book_of(vec![]).has_event_in_progress(now));
+
+        // An entry excluded from meeting detection never keeps one alive.
+        let mut declined = ev(
+            now - chrono::Duration::minutes(5),
+            now + chrono::Duration::minutes(25),
+            false,
+        );
+        declined.exclude_from_meeting_detection = true;
+        assert!(!book_of(vec![declined]).has_event_in_progress(now));
     }
 
     // ── Signal matching tests ──────────────────────────────────────────
@@ -5814,6 +6188,427 @@ mod tests {
             None,
             None,
         ));
+    }
+}
+
+/// Calendar binding (meetings_memory-031), excluded apps and the screen-lock
+/// pause (HLI-013). Run with `cargo test -p screenpipe-engine meeting_detector`.
+#[cfg(test)]
+mod w3_08_tests {
+    use super::*;
+    use crate::meeting_watcher::calendar::conference_identity;
+
+    const MEET_URL: &str = "https://meet.google.com/abc-defg-hij";
+
+    async fn setup_db() -> DatabaseManager {
+        let db = DatabaseManager::new("sqlite::memory:", Default::default())
+            .await
+            .unwrap();
+        screenpipe_db::schema_migrations::migrator()
+            .run(db.write_pool())
+            .await
+            .unwrap();
+        db
+    }
+
+    fn entry_signal(id: &str, url: Option<&str>, now: DateTime<Utc>) -> CalendarEventSignal {
+        CalendarEventSignal {
+            id: id.to_string(),
+            title: format!("Planning {id}"),
+            start: (now - chrono::Duration::minutes(5)).to_rfc3339(),
+            end: (now + chrono::Duration::minutes(25)).to_rfc3339(),
+            attendees: vec!["ana@example.com".into(), "bo@example.com".into()],
+            meeting_url: url.map(str::to_string),
+            source: Some("google".into()),
+            ..Default::default()
+        }
+    }
+
+    fn book(events: Vec<CalendarEventSignal>) -> CalendarBook {
+        let mut book = CalendarBook::new();
+        book.ingest(events, Instant::now());
+        book
+    }
+
+    fn meet_profile_index(profiles: &[MeetingDetectionProfile]) -> usize {
+        profiles
+            .iter()
+            .position(|p| p.app_identifiers.browser_url_patterns.contains(&"meet.google.com"))
+            .expect("built-in Google Meet profile")
+    }
+
+    #[tokio::test]
+    async fn exact_conference_url_match_binds_through_the_screen_url() {
+        let db = setup_db().await;
+        let now = Utc::now();
+        // The call's tab was on screen 20 s ago (scheme hidden by the browser);
+        // an older Meet tab and a Zoom tab are not this call.
+        db.insert_video_chunk("chunk.mp4", "monitor_1").await.unwrap();
+        for (url, ago) in [
+            ("meet.google.com/abc-defg-hij?authuser=0", 20),
+            ("https://meet.google.com/old-call-xyz", 900),
+            ("https://zoom.us/j/555", 10),
+        ] {
+            db.insert_frame(
+                "monitor_1",
+                Some(now - chrono::Duration::seconds(ago)),
+                Some(url),
+                Some("Google Chrome"),
+                Some("Meet"),
+                true,
+                None,
+            )
+            .await
+            .unwrap();
+        }
+        let meeting_id = db.insert_meeting("Google Chrome", "ui_scan", None, None).await.unwrap();
+
+        let profiles = load_detection_profiles();
+        let meet = &profiles[meet_profile_index(&profiles)];
+        let calendar = book(vec![
+            entry_signal("evt-meet", Some("http://MEET.google.com/abc-defg-hij/"), now),
+            entry_signal("evt-other", Some("https://meet.google.com/old-call-xyz"), now),
+        ]);
+        let urls = conferences_for_call(&db, &calendar, Some(meet), &[], now).await;
+        assert_eq!(urls, vec![conference_identity(MEET_URL).unwrap()]);
+
+        let outcome = attach_calendar_event(&db, meeting_id, &calendar, &urls, now).await;
+        assert_eq!(
+            outcome,
+            CalendarAttach::Bound {
+                event_id: "evt-meet".into(),
+                title_applied: Some("Planning evt-meet".into()),
+            }
+        );
+        assert!(outcome.settled());
+        assert_eq!(
+            db.get_meeting_calendar_event_id(meeting_id).await.unwrap().as_deref(),
+            Some("evt-meet")
+        );
+        let stored = db.get_meeting_by_id(meeting_id).await.unwrap();
+        assert_eq!(stored.title.as_deref(), Some("Planning evt-meet"));
+        assert_eq!(stored.attendees.as_deref(), Some("ana@example.com, bo@example.com"));
+    }
+
+    #[tokio::test]
+    async fn time_only_match_does_not_bind_or_title() {
+        let db = setup_db().await;
+        let now = Utc::now();
+        let meeting_id = db.insert_meeting("zoom.us", "ui_scan", None, None).await.unwrap();
+        // Scheduled right now, but its link is another conference than the
+        // call's, and a second entry has no link at all.
+        let calendar = book(vec![
+            entry_signal("evt-meet", Some(MEET_URL), now),
+            entry_signal("evt-lunch", None, now),
+        ]);
+        let call = vec![conference_identity("https://zoom.us/j/12345").unwrap()];
+        for urls in [call, Vec::new()] {
+            let outcome = attach_calendar_event(&db, meeting_id, &calendar, &urls, now).await;
+            assert_eq!(outcome, CalendarAttach::TimeOnly { overlapping: 2 });
+            assert!(!outcome.settled());
+        }
+        assert_eq!(db.get_meeting_calendar_event_id(meeting_id).await.unwrap(), None);
+        let stored = db.get_meeting_by_id(meeting_id).await.unwrap();
+        assert_eq!(stored.title, None);
+        assert_eq!(stored.attendees, None);
+
+        // A link that only shares a prefix with the call is not a match.
+        let near_miss = vec![conference_identity("https://meet.google.com/abc-defg-hijk").unwrap()];
+        assert!(matches!(
+            attach_calendar_event(&db, meeting_id, &calendar, &near_miss, now).await,
+            CalendarAttach::TimeOnly { .. }
+        ));
+    }
+
+    #[tokio::test]
+    async fn bound_meetings_are_never_rebound_and_owned_events_are_refused() {
+        let db = setup_db().await;
+        let now = Utc::now();
+        let first = db.insert_meeting("Google Chrome", "ui_scan", Some("My title"), None).await.unwrap();
+        let calendar = book(vec![
+            entry_signal("evt-a", Some(MEET_URL), now),
+            entry_signal("evt-b", Some("https://zoom.us/j/777"), now),
+        ]);
+        let meet_call = vec![conference_identity(MEET_URL).unwrap()];
+        let zoom_call = vec![conference_identity("https://zoom.us/j/777").unwrap()];
+
+        // Bound, without overwriting the title the meeting already had.
+        let outcome = attach_calendar_event(&db, first, &calendar, &meet_call, now).await;
+        assert_eq!(
+            outcome,
+            CalendarAttach::Bound {
+                event_id: "evt-a".into(),
+                title_applied: None
+            }
+        );
+        let stored = db.get_meeting_by_id(first).await.unwrap();
+        assert_eq!(stored.title.as_deref(), Some("My title"));
+        assert_eq!(stored.attendees.as_deref(), Some("ana@example.com, bo@example.com"));
+
+        // Same entry again: nothing changes.
+        assert_eq!(
+            attach_calendar_event(&db, first, &calendar, &meet_call, now).await,
+            CalendarAttach::AlreadyBound { event_id: "evt-a".into() }
+        );
+
+        // Another entry for the same meeting: the existing binding stays.
+        let outcome = attach_calendar_event(&db, first, &calendar, &zoom_call, now).await;
+        assert!(matches!(
+            outcome,
+            CalendarAttach::Refused {
+                ref event_id,
+                binding: CalendarBinding::MeetingHasOtherEvent { ref existing },
+            } if event_id == "evt-b" && existing == "evt-a"
+        ));
+        assert_eq!(
+            db.get_meeting_calendar_event_id(first).await.unwrap().as_deref(),
+            Some("evt-a")
+        );
+
+        // A second meeting on the first one's entry fails the ownership check.
+        let second = db.insert_meeting("Google Chrome", "ui_scan", None, None).await;
+        let second = match second {
+            Ok(id) => id,
+            // The single-open index refuses a second open row; end the first.
+            Err(_) => {
+                db.end_meeting(first, &Utc::now().to_rfc3339(), None).await.unwrap();
+                db.insert_meeting("Google Chrome", "ui_scan", None, None).await.unwrap()
+            }
+        };
+        let outcome = attach_calendar_event(&db, second, &calendar, &meet_call, now).await;
+        assert_eq!(
+            outcome,
+            CalendarAttach::Refused {
+                event_id: "evt-a".into(),
+                binding: CalendarBinding::OwnedElsewhere {
+                    other_meeting_id: Some(first)
+                },
+            }
+        );
+        assert!(outcome.settled());
+        let stored = db.get_meeting_by_id(second).await.unwrap();
+        assert_eq!(stored.title, None);
+        assert_eq!(db.get_meeting_calendar_event_id(second).await.unwrap(), None);
+    }
+
+    #[tokio::test]
+    async fn excluded_calendar_entry_is_ignored_entirely() {
+        let db = setup_db().await;
+        let now = Utc::now();
+        let meeting_id = db.insert_meeting("Google Chrome", "ui_scan", None, None).await.unwrap();
+        let mut declined = entry_signal("evt-declined", Some(MEET_URL), now);
+        declined.exclude_from_meeting_detection = true;
+        let calendar = book(vec![declined]);
+        let call = vec![conference_identity(MEET_URL).unwrap()];
+        assert_eq!(
+            attach_calendar_event(&db, meeting_id, &calendar, &call, now).await,
+            CalendarAttach::NoEvent
+        );
+        assert!(!calendar.has_event_in_progress(now));
+        // Nothing to bind, so the screen is not even searched for URLs.
+        let profiles = load_detection_profiles();
+        let meet = &profiles[meet_profile_index(&profiles)];
+        assert!(conferences_for_call(&db, &calendar, Some(meet), &[], now).await.is_empty());
+        assert_eq!(db.get_meeting_calendar_event_id(meeting_id).await.unwrap(), None);
+    }
+
+    #[test]
+    fn excluded_app_is_ignored_before_any_scan() {
+        let profiles = load_detection_profiles();
+        let meet = meet_profile_index(&profiles);
+        let zoom = profiles
+            .iter()
+            .position(|p| p.app_identifiers.macos_app_names.contains(&"zoom.us"))
+            .unwrap();
+        let mut running = vec![
+            RunningMeetingApp {
+                pid: 10,
+                app_name: "zoom.us".into(),
+                profile_index: zoom,
+                browser_url: None,
+            },
+            RunningMeetingApp {
+                pid: 11,
+                app_name: "Google Chrome".into(),
+                profile_index: meet,
+                browser_url: Some("Meet - abc-defg-hij".into()),
+            },
+        ];
+        // Nothing ignored: both stay.
+        assert_eq!(drop_ignored_meeting_apps(&mut running, &profiles, &[]), 0);
+        assert_eq!(running.len(), 2);
+        // Ignoring Zoom drops it before scanning; Meet in the browser stays.
+        let removed = drop_ignored_meeting_apps(&mut running, &profiles, &["Zoom".to_string()]);
+        assert_eq!(removed, 1);
+        assert_eq!(running.len(), 1);
+        assert_eq!(running[0].app_name, "Google Chrome");
+        // A service-level entry silences the browser meeting too.
+        let removed =
+            drop_ignored_meeting_apps(&mut running, &profiles, &["meet.google.com".to_string()]);
+        assert_eq!(removed, 1);
+        assert!(running.is_empty());
+    }
+
+    #[test]
+    fn calendar_bind_tracker_retries_until_settled() {
+        let t0 = Instant::now();
+        let mut tracker = CalendarBindTracker::new(5, Some(0));
+        assert!(tracker.due(t0));
+        tracker.record(&CalendarAttach::TimeOnly { overlapping: 1 }, "zoom.us", t0);
+        assert!(!tracker.settled);
+        assert!(tracker.time_only_reported);
+        assert!(!tracker.due(t0 + Duration::from_secs(5)));
+        assert!(tracker.due(t0 + CALENDAR_BIND_RETRY));
+        tracker.record(
+            &CalendarAttach::Bound {
+                event_id: "e".into(),
+                title_applied: None,
+            },
+            "zoom.us",
+            t0 + CALENDAR_BIND_RETRY,
+        );
+        assert!(tracker.settled);
+        assert!(!tracker.due(t0 + CALENDAR_BIND_RETRY * 10));
+    }
+
+    #[test]
+    fn best_in_call_profile_follows_the_strongest_in_call_result() {
+        let mk = |profile_index, in_call, signals| ScanResult {
+            app_name: "x".into(),
+            profile_index,
+            signals_found: signals,
+            is_in_call: in_call,
+            matched_signals: vec![],
+        };
+        assert_eq!(best_in_call_profile(&[]), None);
+        assert_eq!(best_in_call_profile(&[mk(1, false, 9)]), None);
+        assert_eq!(
+            best_in_call_profile(&[mk(1, false, 9), mk(2, true, 1), mk(3, true, 3)]),
+            Some(3)
+        );
+    }
+
+    // ── Screen lock (HLI-013) ─────────────────────────────────────────────
+
+    fn ending_since(ago: Duration) -> MeetingState {
+        MeetingState::Ending {
+            meeting_id: 42,
+            app: "zoom.us".into(),
+            started_at: Utc::now(),
+            since: Instant::now().checked_sub(ago).expect("monotonic clock has run long enough"),
+            is_browser: false,
+            controls_seen_in_ending: 1,
+        }
+    }
+
+    #[test]
+    fn scan_iteration_is_skipped_while_screen_locked_without_state_change() {
+        // SCREEN_IS_LOCKED as the loop reads it; passed in so this test does
+        // not flip the process-wide flag under other tests.
+        let screen_locked = true;
+        let mut pause = LockPause::new();
+        for mut state in [
+            MeetingState::Idle,
+            MeetingState::Confirming {
+                since: Instant::now(),
+                app: "zoom.us".into(),
+                profile_index: 0,
+            },
+            MeetingState::Active {
+                meeting_id: 42,
+                app: "zoom.us".into(),
+                started_at: Utc::now(),
+                last_seen: Instant::now(),
+                is_browser: true,
+            },
+            ending_since(Duration::from_secs(10)),
+        ] {
+            let before = format!("{:?}", state);
+            for step in 0..3u64 {
+                let gate = gate_scan_iteration(
+                    &mut pause,
+                    &mut state,
+                    screen_locked,
+                    false,
+                    Instant::now() + Duration::from_secs(step * 30),
+                );
+                assert_eq!(gate, ScanGate::SkipLocked);
+                assert_eq!(format!("{:?}", state), before, "state changed while locked");
+            }
+        }
+        // A manual meeting does not change that: locked means skipped.
+        let mut idle = MeetingState::Idle;
+        assert_eq!(
+            gate_scan_iteration(&mut pause, &mut idle, true, true, Instant::now()),
+            ScanGate::SkipLocked
+        );
+    }
+
+    #[test]
+    fn unlock_after_long_lock_does_not_end_the_meeting() {
+        // 20 s into the 30 s end grace when the screen locked, unlocked 35 s
+        // later. Without the pause the first scan would end the meeting.
+        let mut state = ending_since(Duration::from_secs(55));
+        let mut pause = LockPause::new();
+        let now = Instant::now();
+        let locked_at = now.checked_sub(Duration::from_secs(35)).unwrap();
+        assert_eq!(
+            gate_scan_iteration(&mut pause, &mut state, true, false, locked_at),
+            ScanGate::SkipLocked
+        );
+        assert_eq!(
+            gate_scan_iteration(&mut pause, &mut state, false, false, now),
+            ScanGate::Scan
+        );
+        let MeetingState::Ending { since, meeting_id, controls_seen_in_ending, .. } = &state else {
+            panic!("state changed kind on unlock: {:?}", state);
+        };
+        assert_eq!((*meeting_id, *controls_seen_in_ending), (42, 1));
+        let elapsed = since.elapsed();
+        assert!(
+            elapsed >= Duration::from_secs(19) && elapsed < Duration::from_secs(25),
+            "grace clock should resume near 20 s, got {:?}",
+            elapsed
+        );
+        // The first scan after unlock sees no controls and no audio: still
+        // Ending, nothing ended.
+        let (next, action) = advance_state(state, &[], false);
+        assert!(matches!(next, MeetingState::Ending { .. }));
+        assert!(action.is_none());
+
+        // Without the pause, the same scan would have ended it.
+        let (_, action) = advance_state(ending_since(Duration::from_secs(55)), &[], false);
+        assert!(matches!(action, Some(StateAction::EndMeeting { meeting_id: 42 })));
+    }
+
+    #[test]
+    fn unlocked_scans_run_and_manual_meetings_still_stand_down() {
+        let mut pause = LockPause::new();
+        let mut state = MeetingState::Idle;
+        assert_eq!(
+            gate_scan_iteration(&mut pause, &mut state, false, false, Instant::now()),
+            ScanGate::Scan
+        );
+        assert_eq!(
+            gate_scan_iteration(&mut pause, &mut state, false, true, Instant::now()),
+            ScanGate::SkipManual
+        );
+    }
+
+    #[test]
+    fn deferred_timers_never_move_past_now() {
+        let now = Instant::now();
+        let mut state = MeetingState::Confirming {
+            since: now.checked_sub(Duration::from_secs(10)).unwrap(),
+            app: "zoom.us".into(),
+            profile_index: 0,
+        };
+        state.defer_timers(Duration::from_secs(3600), now);
+        let MeetingState::Confirming { since, .. } = state else {
+            unreachable!()
+        };
+        assert!(since <= now);
+        assert!(since >= now.checked_sub(Duration::from_secs(1)).unwrap());
     }
 }
 
