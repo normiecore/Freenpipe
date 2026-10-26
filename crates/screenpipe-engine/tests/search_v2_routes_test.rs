@@ -261,6 +261,19 @@ async fn fixture() -> Fixture {
 }
 
 impl Fixture {
+    async fn api_text(&self, uri: &str) -> (StatusCode, String) {
+        let request = Request::builder()
+            .method("GET")
+            .uri(uri)
+            .header("authorization", format!("Bearer {KEY}"))
+            .body(Body::empty())
+            .unwrap();
+        let response = self.router.clone().oneshot(request).await.unwrap();
+        let status = response.status();
+        let bytes = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        (status, String::from_utf8_lossy(&bytes).into_owned())
+    }
+
     async fn api(&self, uri: &str) -> (StatusCode, Value) {
         let request = Request::builder()
             .method("GET")
@@ -514,7 +527,44 @@ async fn plain_search_keeps_its_envelope() {
     assert_eq!(status, StatusCode::OK);
     let keys: Vec<&String> = body.as_object().unwrap().keys().collect();
     assert_eq!(keys, vec!["data", "pagination"]);
+    // `serde_json::Value` keeps keys sorted.
     let hit = body["data"][0].as_object().unwrap();
     let keys: Vec<&String> = hit.keys().collect();
-    assert_eq!(keys, vec!["type", "content", "starred"]);
+    assert_eq!(keys, vec!["content", "starred", "type"]);
+
+    // `fields` and `format` treat the flag like any other field. Frames at
+    // 09:09, 09:08 and 09:07 come back; only 09:07 is starred.
+    let (status, body) = fx
+        .api("/search?q=alpha&content_type=ocr&limit=3&fields=type,content.frame_id,starred")
+        .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let rows: Vec<(String, i64, bool)> = body["data"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|row| {
+            (
+                row["type"].as_str().unwrap().to_string(),
+                row["content.frame_id"].as_i64().unwrap(),
+                row["starred"].as_bool().unwrap(),
+            )
+        })
+        .collect();
+    assert_eq!(
+        rows,
+        vec![
+            ("OCR".to_string(), fx.frames[9], false),
+            ("OCR".to_string(), fx.frames[8], false),
+            ("OCR".to_string(), fx.frames[7], true),
+        ]
+    );
+    let (status, csv) = fx
+        .api_text(
+            "/search?q=alpha&content_type=ocr&limit=3&format=csv&fields=content.frame_id,starred",
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{csv}");
+    let lines: Vec<&str> = csv.lines().collect();
+    assert_eq!(lines[0], "content.frame_id,starred");
+    assert_eq!(lines[3], format!("{},true", fx.frames[7]));
 }
