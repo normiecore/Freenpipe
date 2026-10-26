@@ -26,7 +26,9 @@ use super::meeting_summary::{
     SummaryRefreshRequest, SummarySave, MEETING_SUMMARY_PIPE, SUMMARY_REFRESH_EVENT,
 };
 use super::outcome::ERROR_NO_FINAL_RESULT;
-use super::test_support::{finished_answer, write_event_pipe, MemoryPipeStore, ScriptedAgent};
+use super::test_support::{
+    finished_answer, write_event_pipe, MemoryPipeStore, SchedulerReady, ScriptedAgent,
+};
 use super::{PipeManager, PipeRunLog, PipeStore};
 use crate::agents::AgentExecutor;
 
@@ -68,10 +70,15 @@ async fn scheduler(
     let mut manager = PipeManager::new(pipes_dir, executors, Some(store), 3035);
     manager.scheduler_tick = Duration::from_millis(40);
     configure(&mut manager);
+    let ready = Arc::new(SchedulerReady::default());
+    manager.add_run_hook(ready.clone());
     manager.load_pipes().await.unwrap();
     manager.start_scheduler().await.unwrap();
-    // Let the scheduler task subscribe before events are sent.
-    tokio::time::sleep(Duration::from_millis(150)).await;
+    // Events sent before the scheduler task subscribes are not delivered.
+    assert!(
+        wait_until(Duration::from_secs(20), || ready.ready.load(Ordering::SeqCst)).await,
+        "scheduler never subscribed"
+    );
     manager
 }
 

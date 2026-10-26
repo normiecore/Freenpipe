@@ -4501,6 +4501,10 @@ impl PipeManager {
                         .await;
 
                         let finished_at = Utc::now();
+                        // Stopped while it ran: `stop_pipe` already recorded the
+                        // row as cancelled, and this worker must not overwrite it.
+                        let cancelled = slot.is_cancelled();
+                        let finish_row = |id: Option<i64>| id.filter(|_| !cancelled);
 
                         // Remove from running + clean up PID file
                         let _removed_handle = {
@@ -4529,7 +4533,7 @@ impl PipeManager {
                                 let run_ok = verdict.success;
                                 let session_path = find_latest_pi_session(&pipe_dir)
                                     .map(|p| p.to_string_lossy().to_string());
-                                if let (Some(ref store), Some(id)) = (&store_ref, exec_id) {
+                                if let (Some(ref store), Some(id)) = (&store_ref, finish_row(exec_id)) {
                                     let _ = store
                                         .finish_execution(
                                             id,
@@ -4599,7 +4603,7 @@ impl PipeManager {
                                         .await;
                                     }
                                 }
-                                if let (Some(ref store), Some(id)) = (&store_ref, exec_id) {
+                                if let (Some(ref store), Some(id)) = (&store_ref, finish_row(exec_id)) {
                                     let _ = store
                                         .finish_execution(
                                             id,
@@ -4635,7 +4639,7 @@ impl PipeManager {
                                 if real_pid != 0 {
                                     let _ = crate::agents::pi::kill_process_group(real_pid);
                                 }
-                                if let (Some(ref store), Some(id)) = (&store_ref, exec_id) {
+                                if let (Some(ref store), Some(id)) = (&store_ref, finish_row(exec_id)) {
                                     let _ = store
                                         .finish_execution(
                                             id,

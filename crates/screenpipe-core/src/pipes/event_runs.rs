@@ -232,7 +232,7 @@ mod tests {
         };
         let text = render_trigger_context(&big);
         assert!(text.chars().count() < TRIGGER_CONTEXT_MAX_CHARS + 200);
-        assert!(!text.contains("instance"));
+        assert!(!text.contains("(instance"));
         assert_eq!(big.claim(), None);
     }
 

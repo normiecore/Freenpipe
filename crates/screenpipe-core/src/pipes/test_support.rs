@@ -418,6 +418,24 @@ impl AgentExecutor for ScriptedAgent {
     }
 }
 
+/// A hook that reports when the scheduler has subscribed to events (its
+/// `on_scheduler_start` runs right after the subscriptions exist).
+#[derive(Default)]
+pub(crate) struct SchedulerReady {
+    pub ready: std::sync::atomic::AtomicBool,
+}
+
+#[async_trait::async_trait]
+impl super::hooks::PipeRunHook for SchedulerReady {
+    fn name(&self) -> &str {
+        "test-scheduler-ready"
+    }
+
+    async fn on_scheduler_start(&self) {
+        self.ready.store(true, Ordering::SeqCst);
+    }
+}
+
 /// A finished Pi-style answer, as one JSON line.
 pub(crate) fn finished_answer(text: &str) -> String {
     serde_json::json!({

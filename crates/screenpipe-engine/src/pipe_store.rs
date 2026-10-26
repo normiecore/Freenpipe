@@ -1218,4 +1218,318 @@ mod tests {
         let all = store.get_all_executions(5).await.unwrap();
         assert!(all.is_empty());
     }
+
+    // -- W3-06: event claims, trigger records, paging -------------------------
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn executions_record_their_trigger_event_and_key() {
+        let (store, _tmp) = setup_test_store().await;
+        let id = store
+            .create_execution(
+                "meeting-summary",
+                "event",
+                "m",
+                None,
+                Some("meeting_ended"),
+                Some("42"),
+            )
+            .await
+            .unwrap();
+        // The same check as the sqlq acceptance query, on the raw table.
+        let row: (Option<String>, Option<String>) = sqlx::query_as(
+            "SELECT trigger_event, trigger_key FROM pipe_executions WHERE id = ?",
+        )
+        .bind(id)
+        .fetch_one(&store.db.pool)
+        .await
+        .unwrap();
+        assert_eq!(
+            row,
+            (Some("meeting_ended".to_string()), Some("42".to_string()))
+        );
+
+        let exec = store.get_execution(id).await.unwrap().unwrap();
+        assert_eq!(exec.trigger_event.as_deref(), Some("meeting_ended"));
+        assert_eq!(exec.trigger_key.as_deref(), Some("42"));
+        store.set_conversation_id(id, "chat-9").await.unwrap();
+        let listed = store.get_executions("meeting-summary", 5).await.unwrap();
+        assert_eq!(listed[0].conversation_id.as_deref(), Some("chat-9"));
+        let all = store.get_all_executions(5).await.unwrap();
+        assert_eq!(all["meeting-summary"][0].trigger_key.as_deref(), Some("42"));
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn claims_are_granted_once_and_can_be_released() {
+        let (store, _tmp) = setup_test_store().await;
+        assert!(store.claim_event_run("p", "meeting_ended", "7").await.unwrap());
+        assert!(!store.claim_event_run("p", "meeting_ended", "7").await.unwrap());
+        store.release_event_run("p", "meeting_ended", "7").await.unwrap();
+        assert!(store.claim_event_run("p", "meeting_ended", "7").await.unwrap());
+        assert_eq!(
+            store
+                .prune_event_runs(Utc::now() + chrono::Duration::seconds(5))
+                .await
+                .unwrap(),
+            1
+        );
+        assert!(store.claim_event_run("p", "meeting_ended", "7").await.unwrap());
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn cancelled_rows_are_not_reopened() {
+        let (store, _tmp) = setup_test_store().await;
+        let id = store
+            .create_execution("p", "event", "m", None, Some("meeting_ended"), Some("1"))
+            .await
+            .unwrap();
+        assert!(store.cancel_queued_execution(id).await.unwrap());
+        assert!(!store.set_execution_running(id, Some(10)).await.unwrap());
+        let exec = store.get_execution(id).await.unwrap().unwrap();
+        assert_eq!(exec.status, "cancelled");
+        assert_eq!(exec.pid, None);
+
+        // A finished run is not reopened either.
+        let done = store
+            .create_execution("p", "manual", "m", None, None, None)
+            .await
+            .unwrap();
+        assert!(store.set_execution_running(done, None).await.unwrap());
+        store
+            .finish_execution(done, "completed", "ok", "", Some(0), None, None, None)
+            .await
+            .unwrap();
+        assert!(!store.set_execution_running(done, Some(3)).await.unwrap());
+        assert_eq!(
+            store.get_execution(done).await.unwrap().unwrap().status,
+            "completed"
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn executions_page_by_id_and_skip_output_when_asked() {
+        let (store, _tmp) = setup_test_store().await;
+        let mut ids = Vec::new();
+        for _ in 0..5 {
+            let id = store
+                .create_execution("pager", "manual", "m", None, None, None)
+                .await
+                .unwrap();
+            store
+                .finish_execution(id, "completed", "big output", "", Some(0), None, None, None)
+                .await
+                .unwrap();
+            ids.push(id);
+        }
+        let first = store
+            .get_executions_page("pager", 2, None, false)
+            .await
+            .unwrap();
+        assert_eq!(
+            first.iter().map(|e| e.id).collect::<Vec<_>>(),
+            vec![ids[4], ids[3]]
+        );
+        assert!(first.iter().all(|e| e.stdout.is_empty()));
+        let next = store
+            .get_executions_page("pager", 2, Some(first[1].id), true)
+            .await
+            .unwrap();
+        assert_eq!(
+            next.iter().map(|e| e.id).collect::<Vec<_>>(),
+            vec![ids[2], ids[1]]
+        );
+        assert_eq!(next[0].stdout, "big output");
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn activity_lists_each_pipe_by_its_newest_finished_run() {
+        let (store, _tmp) = setup_test_store().await;
+        let a1 = store
+            .create_execution("alpha", "manual", "m", None, None, None)
+            .await
+            .unwrap();
+        store
+            .finish_execution(a1, "completed", "", "", None, None, None, None)
+            .await
+            .unwrap();
+        let b1 = store
+            .create_execution("beta", "manual", "m", None, None, None)
+            .await
+            .unwrap();
+        store
+            .finish_execution(b1, "failed", "", "", None, Some("crash"), None, None)
+            .await
+            .unwrap();
+        let a2 = store
+            .create_execution("alpha", "manual", "m", None, None, None)
+            .await
+            .unwrap();
+        store
+            .finish_execution(a2, "completed", "", "", None, None, None, None)
+            .await
+            .unwrap();
+        // Still queued: not counted.
+        store
+            .create_execution("alpha", "manual", "m", None, None, None)
+            .await
+            .unwrap();
+
+        let page = store.pipe_activity(10, None).await.unwrap();
+        assert_eq!(page.len(), 2);
+        assert_eq!(page[0].pipe_name, "alpha");
+        assert_eq!(page[0].execution_count, 2);
+        assert_eq!(page[0].latest_execution_id, a2);
+        assert_eq!(page[0].status, "completed");
+        assert!(page[0].last_run_at.is_some());
+        assert_eq!(page[1].pipe_name, "beta");
+        assert_eq!(page[1].status, "failed");
+
+        let rest = store.pipe_activity(10, Some(a2)).await.unwrap();
+        assert_eq!(rest.len(), 1);
+        assert_eq!(rest[0].pipe_name, "beta");
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn interrupted_runs_and_attempts_follow_the_meeting_key_family() {
+        let (store, _tmp) = setup_test_store().await;
+        let since = Utc::now() - chrono::Duration::minutes(5);
+        // Meeting 5: interrupted, nothing newer.
+        store
+            .create_execution("meeting-summary", "event", "m", None, Some("meeting_ended"), Some("5"))
+            .await
+            .unwrap();
+        // Meeting 6: interrupted, then a recovery run followed.
+        store
+            .create_execution("meeting-summary", "event", "m", None, Some("meeting_ended"), Some("6"))
+            .await
+            .unwrap();
+        store.mark_orphaned_running().await.unwrap();
+        store
+            .create_execution(
+                "meeting-summary",
+                "event",
+                "m",
+                None,
+                Some("meeting_ended"),
+                Some("6:summary-recovery-1"),
+            )
+            .await
+            .unwrap();
+        // Meeting 56 must not be read as part of meeting 5's family.
+        store
+            .create_execution("meeting-summary", "event", "m", None, Some("meeting_ended"), Some("56"))
+            .await
+            .unwrap();
+
+        let interrupted = store
+            .interrupted_event_runs("meeting-summary", "meeting_ended", since, 20)
+            .await
+            .unwrap();
+        assert_eq!(
+            interrupted
+                .iter()
+                .map(|e| e.trigger_key.clone().unwrap())
+                .collect::<Vec<_>>(),
+            vec!["5".to_string()]
+        );
+        assert_eq!(
+            store
+                .count_event_runs("meeting-summary", "meeting_ended", "6", since)
+                .await
+                .unwrap(),
+            2
+        );
+        assert_eq!(
+            store
+                .count_event_runs("meeting-summary", "meeting_ended", "5", since)
+                .await
+                .unwrap(),
+            1
+        );
+    }
+
+    // -- Meeting-summary support ----------------------------------------------
+
+    async fn ended_meeting(db: &DatabaseManager, secs: i64) -> i64 {
+        let id = db.insert_meeting("zoom", "manual", None, None).await.unwrap();
+        let start = Utc::now() - chrono::Duration::seconds(secs);
+        sqlx::query("UPDATE meetings SET meeting_start = ?1, meeting_end = ?2 WHERE id = ?3")
+            .bind(start.to_rfc3339())
+            .bind(Utc::now().to_rfc3339())
+            .bind(id)
+            .execute(db.write_pool())
+            .await
+            .unwrap();
+        id
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn trivial_meetings_are_gated_and_real_ones_are_not() {
+        let (store, _tmp) = setup_test_store().await;
+        let db = store.db.clone();
+        let short = ended_meeting(&db, 40).await;
+        let long = ended_meeting(&db, 1800).await;
+        let gate = meeting_event_gate(db.clone());
+
+        let reason = gate("meeting_ended".into(), serde_json::json!({ "meeting_id": short })).await;
+        assert!(reason.unwrap().contains("trivial meeting (0 transcript segments"));
+        assert_eq!(
+            gate("meeting_ended".into(), serde_json::json!({ "meeting_id": long })).await,
+            None
+        );
+        // Counts sent by the emitter are used as given.
+        assert_eq!(
+            gate(
+                "meeting_ended".into(),
+                serde_json::json!({ "meeting_id": short, "transcript_segments": 8 })
+            )
+            .await,
+            None
+        );
+        // Other events and unknown meetings pass.
+        assert_eq!(
+            gate("meeting_started".into(), serde_json::json!({ "meeting_id": short })).await,
+            None
+        );
+        assert_eq!(
+            gate("meeting_ended".into(), serde_json::json!({ "meeting_id": 999_999 })).await,
+            None
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn summary_notes_save_through_the_note_merge() {
+        let (store, _tmp) = setup_test_store().await;
+        let db = store.db.clone();
+        let id = ended_meeting(&db, 600).await;
+        sqlx::query("UPDATE meetings SET note = 'my own notes' WHERE id = ?1")
+            .bind(id)
+            .execute(db.write_pool())
+            .await
+            .unwrap();
+        let notes = SqliteMeetingSummaryNotes::new(db.clone());
+
+        assert_eq!(notes.transcript_segment_count(id).await.unwrap(), 0);
+        assert!(matches!(
+            notes.save_summary(id, "N/A").await.unwrap(),
+            SummarySave::Rejected(_)
+        ));
+        assert_eq!(
+            notes
+                .save_summary(id, "## Summary\nThe team picked a launch date.")
+                .await
+                .unwrap(),
+            SummarySave::Saved
+        );
+        let meeting = notes.meeting(id).await.unwrap().unwrap();
+        assert_eq!(
+            meeting.note.as_deref(),
+            Some("my own notes\n\n## Summary\nThe team picked a launch date.")
+        );
+        assert!(meeting.meeting_end.is_some());
+        assert_eq!(notes.meeting(999_999).await.unwrap(), None);
+        assert_eq!(
+            notes.save_summary(999_999, "A real summary.").await.unwrap(),
+            SummarySave::MeetingMissing
+        );
+    }
 }
