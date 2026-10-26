@@ -751,8 +751,8 @@ impl DatabaseManager {
                      HAVING COUNT(DISTINCT t2.name) = json_array_length({p})) \
                  SELECT t.name, COUNT(DISTINCT hit.id) FROM hit \
                  JOIN audio_chunks c ON c.id = hit.id \
-                 JOIN audio_tags at ON at.audio_chunk_id = hit.id \
-                 JOIN tags t ON t.id = at.tag_id \
+                 JOIN audio_tags atg ON atg.audio_chunk_id = hit.id \
+                 JOIN tags t ON t.id = atg.tag_id \
                  WHERE {} GROUP BY t.name",
                 conditions.join(" AND ")
             );
