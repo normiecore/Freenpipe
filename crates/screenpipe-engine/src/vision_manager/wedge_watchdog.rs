@@ -16,22 +16,30 @@
 //!   count. A running capture task whose loop never registered counts too.
 //! - **still-attempting wedge**: the loop keeps turning and keeps starting
 //!   capture attempts, but none of them has come back with an answer (a frame
-//!   written or skipped, or an error) for longer than the wedge threshold;
-//!   they all run into their deadline. A failing database writer explains
-//!   that on its own, so it never triggers a restart.
+//!   written or skipped, or an error) since the first unanswered one, longer
+//!   ago than the wedge threshold; they all run into their deadline. A
+//!   failing database writer explains that on its own, so it never triggers
+//!   a restart.
 //!
-//! On a finding the watchdog logs one diagnostic line and restarts the
-//! VisionManager (stop, then start), which builds fresh capture sessions for
-//! every monitor. Restarts are bounded: a per-monitor cooldown that doubles
-//! with each repeat (5 minutes up to an hour), and at most three restarts in
-//! any hour across all monitors. Everything stays in the local log; nothing
-//! is sent anywhere.
+//! A finding must still hold on a later pass, a few seconds after it was
+//! first seen, so the pass that runs right after the computer wakes (when
+//! every age can look huge) never restarts anything. A confirmed finding is
+//! logged in one diagnostic line and the VisionManager is restarted (stop
+//! every capture task, then start), which builds fresh capture sessions for
+//! every monitor; the focus tracker keeps running. Restarts are bounded: a
+//! per-monitor cooldown that doubles with each repeat (5 minutes up to an
+//! hour), and at most three restarts in any hour across all monitors.
+//! Everything stays in the local log; nothing is sent anywhere.
 //!
-//! Monitors the user paused, monitors without a capture task, and the time
-//! the whole pipeline is paused (screen locked, DRM content, outside the
-//! work-hours schedule) are never judged. The restart goes through
-//! `VisionManager::stop`/`start`, which serialise with per-monitor pause and
-//! resume and wait for the old capture tasks before new ones start.
+//! Monitors the user paused, monitors without a capture task, loops parked
+//! in their pause gate (which is where a power-profile pause holds them) or
+//! in the cold focus wait, and the time the whole pipeline is paused (screen
+//! locked, DRM content, outside the work-hours schedule) are never judged.
+//! The watchdog only runs while the manager is running, so capture stopped
+//! from outside (the tray, the low-disk guard) is never undone by it. The
+//! restart goes through `VisionManager::stop_for_restart`/`start`, which
+//! serialise with per-monitor pause and resume and wait for the old capture
+//! tasks before new ones start.
 
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::time::{Duration, Instant};
@@ -41,8 +49,9 @@ use tracing::{debug, info, warn};
 
 use super::manager::{VisionManager, VisionManagerStatus};
 
-/// No answered capture attempt for this long, while attempts keep starting,
-/// is a still-attempting wedge.
+/// Attempts going unanswered for this long (counted from the first one after
+/// the last answer), while attempts keep starting, is a still-attempting
+/// wedge.
 pub(crate) const WEDGE_AFTER: Duration = Duration::from_secs(120);
 /// A loop heartbeat this old, outside an expected wait, is a gone-silent
 /// stall.
@@ -54,6 +63,11 @@ pub(crate) const RESTART_COOLDOWN_MAX: Duration = Duration::from_secs(60 * 60);
 /// Most restarts in any [`RESTART_BUDGET_WINDOW`], over all monitors.
 pub(crate) const RESTART_BUDGET: usize = 3;
 pub(crate) const RESTART_BUDGET_WINDOW: Duration = Duration::from_secs(60 * 60);
+/// A finding must still hold on a later pass at least this long after it was
+/// first seen. Rules out the pass that runs right after the computer wakes
+/// from sleep, before the loops had a chance to move (on platforms whose
+/// monotonic clock counts suspended time every age looks huge then).
+pub(crate) const CONFIRM_AFTER: Duration = Duration::from_secs(3);
 
 /// Thresholds and limits of the watchdog.
 #[derive(Debug, Clone, Copy)]
@@ -64,6 +78,7 @@ pub(crate) struct WatchdogConfig {
     pub cooldown_max: Duration,
     pub budget: usize,
     pub budget_window: Duration,
+    pub confirm_after: Duration,
 }
 
 impl Default for WatchdogConfig {
@@ -75,6 +90,7 @@ impl Default for WatchdogConfig {
             cooldown_max: RESTART_COOLDOWN_MAX,
             budget: RESTART_BUDGET,
             budget_window: RESTART_BUDGET_WINDOW,
+            confirm_after: CONFIRM_AFTER,
         }
     }
 }
@@ -104,7 +120,9 @@ pub(crate) struct WedgeFinding {
     pub stage: Option<(CaptureLoopStage, Duration)>,
     pub heartbeat_age: Option<Duration>,
     pub last_attempt_age: Option<Duration>,
-    /// Time without an answered capture attempt.
+    /// Time without an answered capture attempt: since the first unanswered
+    /// one when attempts are going unanswered, otherwise since the last
+    /// answer (or since the loop or task appeared, when there never was one).
     pub unanswered_for: Duration,
 }
 
@@ -158,7 +176,9 @@ pub(crate) fn classify(
         stage: Some((l.stage, l.stage_age)),
         heartbeat_age: Some(l.heartbeat_age),
         last_attempt_age: l.last_attempt_age,
-        unanswered_for: l.unanswered_for(),
+        unanswered_for: l
+            .unanswered_attempt_age
+            .unwrap_or_else(|| l.since_last_answer()),
     };
     if l.heartbeat_age >= cfg.stall_after && !l.stage.is_expected_wait() {
         return Some(finding(WedgeClass::GoneSilent));
@@ -201,6 +221,8 @@ impl std::fmt::Display for Deferral {
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) enum Verdict {
     Healthy,
+    /// Seen stuck on this pass for the first time; a later pass confirms it.
+    Pending(WedgeFinding),
     Restart(WedgeFinding),
     Deferred(WedgeFinding, Deferral),
 }
@@ -226,7 +248,7 @@ pub(crate) trait VisionRestartTarget {
 
 impl VisionRestartTarget for VisionManager {
     async fn stop_capture(&self) -> anyhow::Result<()> {
-        self.stop().await
+        self.stop_for_restart().await
     }
 
     async fn start_capture(&self) -> anyhow::Result<()> {
@@ -256,6 +278,8 @@ pub(crate) struct WedgeWatchdog {
     untracked_since: HashMap<u32, Instant>,
     per_monitor: HashMap<u32, MonitorRestarts>,
     recent_restarts: VecDeque<Instant>,
+    /// Monitors found stuck on every pass since the instant given.
+    suspects: HashMap<u32, Instant>,
     /// Monitors whose deferred finding was already logged at info.
     deferral_logged: HashSet<u32>,
     /// Restarts performed by this watchdog.
@@ -277,6 +301,7 @@ impl WedgeWatchdog {
             untracked_since: HashMap::new(),
             per_monitor: HashMap::new(),
             recent_restarts: VecDeque::new(),
+            suspects: HashMap::new(),
             deferral_logged: HashSet::new(),
             restarts: 0,
             paused_globally: capture_paused_globally,
@@ -336,7 +361,10 @@ impl WedgeWatchdog {
 
     /// Judge the loops of the monitors in `active` (those with a running
     /// capture task that the user has not paused). Loops of other monitors
-    /// are ignored. At most one restart is asked for per pass.
+    /// are ignored. A finding asks for a restart only when the same monitor
+    /// was already found stuck on an earlier pass, at least
+    /// [`WatchdogConfig::confirm_after`] ago, and on every pass since. At most
+    /// one restart is asked for per pass.
     pub(crate) fn assess(
         &mut self,
         now: Instant,
@@ -387,9 +415,25 @@ impl WedgeWatchdog {
 
         let stuck: HashSet<u32> = findings.iter().map(|f| f.monitor_id).collect();
         self.deferral_logged.retain(|id| stuck.contains(id));
+        self.suspects.retain(|id, _| stuck.contains(id));
+
+        let mut confirmed = Vec::new();
+        let mut pending = None;
+        for finding in findings {
+            let mut first_sighting = false;
+            let since = *self.suspects.entry(finding.monitor_id).or_insert_with(|| {
+                first_sighting = true;
+                now
+            });
+            if !first_sighting && now.saturating_duration_since(since) >= self.cfg.confirm_after {
+                confirmed.push(finding);
+            } else if pending.is_none() {
+                pending = Some(finding);
+            }
+        }
 
         let mut deferred = None;
-        for finding in findings {
+        for finding in confirmed {
             match self.deferral(now, finding.monitor_id) {
                 None => return Verdict::Restart(finding),
                 Some(d) => {
@@ -411,7 +455,16 @@ impl WedgeWatchdog {
                 }
                 Verdict::Deferred(finding, d)
             }
-            None => Verdict::Healthy,
+            None => match pending {
+                Some(finding) => {
+                    debug!(
+                        "vision capture watchdog: {}; checking again on the next pass",
+                        finding
+                    );
+                    Verdict::Pending(finding)
+                }
+                None => Verdict::Healthy,
+            },
         }
     }
 
@@ -428,6 +481,7 @@ impl WedgeWatchdog {
             .insert(monitor_id, MonitorRestarts { last: now, run });
         self.recent_restarts.push_back(now);
         self.untracked_since.clear();
+        self.suspects.clear();
         self.deferral_logged.remove(&monitor_id);
         self.restarts += 1;
     }
@@ -437,11 +491,13 @@ impl WedgeWatchdog {
     pub(crate) async fn run_pass(&mut self, vm: &VisionManager) -> bool {
         if vm.status().await != VisionManagerStatus::Running {
             self.untracked_since.clear();
+            self.suspects.clear();
             return false;
         }
         if (self.paused_globally)() {
             // Paused loops sit in the pause gate; nothing to judge.
             self.untracked_since.clear();
+            self.suspects.clear();
             return false;
         }
         let active: Vec<u32> = vm
@@ -458,7 +514,7 @@ impl WedgeWatchdog {
                 self.record_restart(Instant::now(), finding.monitor_id);
                 true
             }
-            Verdict::Healthy | Verdict::Deferred(..) => false,
+            Verdict::Healthy | Verdict::Pending(_) | Verdict::Deferred(..) => false,
         }
     }
 }
@@ -552,6 +608,33 @@ mod tests {
             last_attempt_age: Some(S(5)),
             open_attempt_age: None,
             last_answer_age: Some(S(5)),
+            unanswered_attempt_age: None,
+        }
+    }
+
+    /// Assess twice at `t` (the second pass confirms what the first saw) and
+    /// book a restart when one is asked for.
+    fn judge(
+        wd: &mut WedgeWatchdog,
+        t: Instant,
+        liveness: &[LoopLiveness],
+        active: &[u32],
+    ) -> Verdict {
+        let mut verdict = wd.assess(t, liveness, active, false);
+        if matches!(verdict, Verdict::Pending(_)) {
+            verdict = wd.assess(t, liveness, active, false);
+        }
+        if let Verdict::Restart(ref f) = verdict {
+            wd.record_restart(t, f.monitor_id);
+        }
+        verdict
+    }
+
+    /// Default thresholds, with confirmation allowed on the same instant.
+    fn instant_confirm() -> WatchdogConfig {
+        WatchdogConfig {
+            confirm_after: Duration::ZERO,
+            ..WatchdogConfig::default()
         }
     }
 
@@ -630,26 +713,56 @@ mod tests {
             last_attempt_age: Some(S(3)),
             open_attempt_age: Some(S(3)),
             last_answer_age: Some(S(150)),
+            unanswered_attempt_age: Some(S(140)),
             ..live(3)
         };
         let f = classify(&l, &cfg, false).expect("wedge");
         assert_eq!(f.class, WedgeClass::StillAttempting);
-        assert_eq!(f.unanswered_for, S(150));
+        assert_eq!(f.unanswered_for, S(140));
         // A failing database writer explains it: no restart.
         assert_eq!(classify(&l, &cfg, true), None);
-        // A loop that never got an answer counts from its start.
+        // A loop that never got an answer counts from its first attempt.
         let fresh = LoopLiveness {
-            loop_age: S(60),
+            loop_age: S(600),
             last_answer_age: None,
+            unanswered_attempt_age: Some(S(60)),
             ..l
         };
         assert_eq!(classify(&fresh, &cfg, false), None);
         let old = LoopLiveness {
-            loop_age: S(130),
             last_answer_age: None,
-            ..l
+            unanswered_attempt_age: Some(S(130)),
+            ..fresh
         };
         assert!(classify(&old, &cfg, false).is_some());
+    }
+
+    #[test]
+    fn the_first_attempt_after_a_long_idle_is_not_a_wedge() {
+        let cfg = WatchdogConfig::default();
+        // Out of focus for an hour; focus returns and the first capture is in
+        // flight. The last answer is an hour old, but nothing has gone
+        // unanswered for long.
+        let l = LoopLiveness {
+            stage: CaptureLoopStage::Capture,
+            stage_age: S(1),
+            heartbeat_age: S(1),
+            last_attempt_age: Some(S(1)),
+            open_attempt_age: Some(S(1)),
+            last_answer_age: Some(S(3600)),
+            unanswered_attempt_age: Some(S(1)),
+            ..live(3)
+        };
+        assert_eq!(classify(&l, &cfg, false), None);
+        // Attempts cut off at their deadline for two minutes since then are.
+        let l = LoopLiveness {
+            unanswered_attempt_age: Some(S(125)),
+            ..l
+        };
+        assert_eq!(
+            classify(&l, &cfg, false).map(|f| f.class),
+            Some(WedgeClass::StillAttempting)
+        );
     }
 
     #[test]
@@ -695,19 +808,65 @@ mod tests {
         };
         // Monitor 4 has no running task (paused by the user, or stopped).
         assert_eq!(wd.assess(now, &[stuck], &[], false), Verdict::Healthy);
+        assert_eq!(
+            wd.assess(now + S(5), &[stuck], &[], false),
+            Verdict::Healthy
+        );
+        // With a task, the first sighting waits for confirmation...
         assert!(matches!(
-            wd.assess(now, &[stuck], &[4], false),
+            wd.assess(now + S(10), &[stuck], &[4], false),
+            Verdict::Pending(f) if f.monitor_id == 4
+        ));
+        // ...and a pass too soon after it does not confirm it.
+        assert!(matches!(
+            wd.assess(now + S(11), &[stuck], &[4], false),
+            Verdict::Pending(_)
+        ));
+        assert!(matches!(
+            wd.assess(now + S(15), &[stuck], &[4], false),
             Verdict::Restart(f) if f.monitor_id == 4
         ));
     }
 
     #[test]
-    fn a_task_whose_loop_never_registered_is_reported_after_the_stall_threshold() {
+    fn a_finding_gone_by_the_next_pass_never_restarts() {
+        // Right after the computer wakes, every age can look huge until the
+        // loops move again; the next pass sees them turning.
         let mut wd = WedgeWatchdog::default();
+        let t0 = Instant::now();
+        let after_wake = LoopLiveness {
+            stage: CaptureLoopStage::Capture,
+            heartbeat_age: S(7200),
+            stage_age: S(7200),
+            last_attempt_age: Some(S(7200)),
+            open_attempt_age: Some(S(7200)),
+            last_answer_age: Some(S(7205)),
+            unanswered_attempt_age: Some(S(7200)),
+            ..live(5)
+        };
+        assert!(matches!(
+            wd.assess(t0, &[after_wake], &[5], false),
+            Verdict::Pending(_)
+        ));
+        assert_eq!(
+            wd.assess(t0 + S(5), &[live(5)], &[5], false),
+            Verdict::Healthy
+        );
+        // A later stall starts its confirmation from scratch.
+        assert!(matches!(
+            wd.assess(t0 + S(10), &[after_wake], &[5], false),
+            Verdict::Pending(_)
+        ));
+        assert_eq!(wd.restarts(), 0);
+    }
+
+    #[test]
+    fn a_task_whose_loop_never_registered_is_reported_after_the_stall_threshold() {
+        let mut wd = WedgeWatchdog::new(instant_confirm());
         let t0 = Instant::now();
         assert_eq!(wd.assess(t0, &[], &[9], false), Verdict::Healthy);
         assert_eq!(wd.assess(t0 + S(60), &[], &[9], false), Verdict::Healthy);
-        match wd.assess(t0 + S(91), &[], &[9], false) {
+        match judge(&mut wd, t0 + S(91), &[], &[9]) {
             Verdict::Restart(f) => {
                 assert_eq!(f.class, WedgeClass::GoneSilent);
                 assert_eq!(f.stage, None);
@@ -724,7 +883,7 @@ mod tests {
 
     #[test]
     fn restarts_back_off_per_monitor_and_respect_the_hourly_budget() {
-        let mut wd = WedgeWatchdog::default();
+        let mut wd = WedgeWatchdog::new(instant_confirm());
         let stuck = |id| LoopLiveness {
             stage: CaptureLoopStage::Capture,
             heartbeat_age: S(100),
@@ -732,11 +891,7 @@ mod tests {
         };
         let t0 = Instant::now();
         let restart_at = |wd: &mut WedgeWatchdog, t: Instant, id: u32| -> Verdict {
-            let v = wd.assess(t, &[stuck(id)], &[id], false);
-            if let Verdict::Restart(ref f) = v {
-                wd.record_restart(t, f.monitor_id);
-            }
-            v
+            judge(wd, t, &[stuck(id)], &[id])
         };
 
         assert!(matches!(restart_at(&mut wd, t0, 1), Verdict::Restart(_)));
@@ -803,6 +958,7 @@ mod tests {
                 last_attempt_age: Some(S(31)),
                 open_attempt_age: None,
                 last_answer_age: Some(S(500)),
+                unanswered_attempt_age: Some(S(400)),
                 ..live(6)
             };
             assert_eq!(classify(&l, &cfg, false), None, "{stage}");
@@ -815,6 +971,7 @@ mod tests {
             last_attempt_age: Some(S(31)),
             open_attempt_age: None,
             last_answer_age: Some(S(500)),
+            unanswered_attempt_age: Some(S(400)),
             ..live(6)
         };
         assert_eq!(
@@ -963,6 +1120,7 @@ mod tests {
             wedge_after: Duration::from_millis(400),
             stall_after: Duration::from_millis(150),
             cooldown: Duration::from_secs(60),
+            confirm_after: Duration::from_millis(40),
             ..WatchdogConfig::default()
         }
     }
@@ -979,7 +1137,9 @@ mod tests {
             let liveness = vision.metrics.loop_stages.liveness();
             match wd.assess(Instant::now(), &liveness, &vision.active(), false) {
                 Verdict::Restart(f) => break f,
-                Verdict::Healthy => tokio::time::sleep(Duration::from_millis(20)).await,
+                Verdict::Healthy | Verdict::Pending(_) => {
+                    tokio::time::sleep(Duration::from_millis(20)).await
+                }
                 Verdict::Deferred(f, d) => panic!("unexpected deferral {f}: {d}"),
             }
         };
@@ -1098,6 +1258,11 @@ mod tests {
         tokio::time::sleep(Duration::from_millis(50)).await;
         assert!(!wd.run_pass(&vm).await, "too early to call it a stall");
         tokio::time::sleep(Duration::from_millis(200)).await;
+        assert!(
+            !wd.run_pass(&vm).await,
+            "the first sighting waits for a second pass"
+        );
+        tokio::time::sleep(Duration::from_millis(60)).await;
         assert!(wd.run_pass(&vm).await, "the hung task triggers a restart");
         assert_eq!(wd.restarts(), 1);
 

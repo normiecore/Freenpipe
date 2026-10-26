@@ -348,14 +348,12 @@ fn every_pixel_black(image: &DynamicImage) -> bool {
     use image::GenericImageView;
     let dark = |r: u8, g: u8, b: u8| r.max(g).max(b) <= BLACK_CHANNEL_MAX;
     match image {
-        DynamicImage::ImageRgba8(buf) => buf
-            .as_raw()
-            .chunks_exact(4)
-            .all(|p| dark(p[0], p[1], p[2])),
-        DynamicImage::ImageRgb8(buf) => buf
-            .as_raw()
-            .chunks_exact(3)
-            .all(|p| dark(p[0], p[1], p[2])),
+        DynamicImage::ImageRgba8(buf) => {
+            buf.as_raw().chunks_exact(4).all(|p| dark(p[0], p[1], p[2]))
+        }
+        DynamicImage::ImageRgb8(buf) => {
+            buf.as_raw().chunks_exact(3).all(|p| dark(p[0], p[1], p[2]))
+        }
         other => other.pixels().all(|(_, _, p)| dark(p[0], p[1], p[2])),
     }
 }

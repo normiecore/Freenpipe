@@ -942,8 +942,7 @@ pub fn try_get_excluded_sck_window_ids(window_filters: &WindowFilters) -> Result
         return Ok(Vec::new());
     }
 
-    let windows =
-        SckWindow::all().map_err(|e| format!("failed to enumerate windows: {}", e))?;
+    let windows = SckWindow::all().map_err(|e| format!("failed to enumerate windows: {}", e))?;
 
     let mut excluded = Vec::new();
     for w in &windows {
@@ -977,7 +976,9 @@ pub fn try_get_excluded_sck_window_ids(window_filters: &WindowFilters) -> Result
 /// private windows are kept out by the accessibility-based window gate
 /// instead.
 #[cfg(not(target_os = "macos"))]
-pub fn try_get_excluded_sck_window_ids(_window_filters: &WindowFilters) -> Result<Vec<u32>, String> {
+pub fn try_get_excluded_sck_window_ids(
+    _window_filters: &WindowFilters,
+) -> Result<Vec<u32>, String> {
     Ok(Vec::new())
 }
 

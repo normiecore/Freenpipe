@@ -56,10 +56,24 @@ async fn health_reports_the_most_stuck_capture_loop_stage() {
 
     let router = server.create_router().await;
     let response = router
-        .oneshot(Request::builder().uri("/health").body(Body::empty()).unwrap())
+        .oneshot(
+            Request::builder()
+                .uri("/health")
+                .body(Body::empty())
+                .unwrap(),
+        )
         .await
         .unwrap();
-    assert_eq!(response.status(), StatusCode::OK);
+    // A test process records nothing, so the status itself may be degraded;
+    // the body is the full health document either way.
+    assert!(
+        matches!(
+            response.status(),
+            StatusCode::OK | StatusCode::SERVICE_UNAVAILABLE
+        ),
+        "{}",
+        response.status()
+    );
     let bytes = to_bytes(response.into_body(), usize::MAX).await.unwrap();
     let value: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
 

@@ -179,8 +179,10 @@ pub async fn paired_capture(
             .map(|s| a11y_content_is_thin(s, ctx.window_name, ctx.browser_url, ctx.app_name))
             .unwrap_or(false);
 
-    // Run OCR when: no a11y text, app prefers OCR, OR a11y text is thin (hybrid)
-    let (ocr_text, ocr_text_json) = if !ctx.pixels_withheld && (!has_accessibility_text || a11y_is_thin) {
+    // Run OCR when: no a11y text, app prefers OCR, OR a11y text is thin (hybrid).
+    // Never on withheld pixels: `image` is then only a placeholder.
+    let run_ocr = !ctx.pixels_withheld && (!has_accessibility_text || a11y_is_thin);
+    let (ocr_text, ocr_text_json) = if run_ocr {
         // Windows native OCR is async, so call it directly (not inside spawn_blocking)
         #[cfg(target_os = "windows")]
         let raw = {

@@ -131,9 +131,10 @@ pub struct PipelineMetrics {
     pub last_capture_loop_heartbeat_ts: AtomicU64,
 
     // --- Frame validity ---
-    /// Frames rejected because they were (almost) entirely black.
+    /// Frames rejected because every pixel was black (a never-written buffer).
     pub frames_corrupt_black: AtomicU64,
-    /// Frames rejected because they were the solid green of an empty GPU buffer.
+    /// Frames rejected because of a band of decode-garbage green (an unfilled
+    /// buffer converted from zeroed YUV).
     pub frames_corrupt_green: AtomicU64,
 
     /// Which stage each monitor's capture loop is in, and since when.
@@ -328,7 +329,10 @@ impl PipelineMetrics {
         self.ocr_gate_crop_ocr.fetch_add(1, Ordering::Relaxed);
     }
 
-    /// Record a frame rejected as corrupt (not stored, not compared).
+    /// Record a frame rejected as corrupt (not stored, not compared). This is
+    /// an attempt's outcome, but not a landing: a monitor that only delivers
+    /// corrupt frames is stalled, and `/health` says the backend is rejecting
+    /// frames.
     pub fn record_corrupt_frame(&self, kind: CorruptFrameKind) {
         match kind {
             CorruptFrameKind::Black => self.frames_corrupt_black.fetch_add(1, Ordering::Relaxed),
@@ -345,7 +349,15 @@ impl PipelineMetrics {
             frames_dropped_timeout: self.frames_dropped_timeout.load(Ordering::Relaxed),
             frames_dropped_error: self.frames_dropped_error.load(Ordering::Relaxed),
             frames_skipped: self.frames_skipped.load(Ordering::Relaxed),
+            frames_corrupt: self.corrupt_frames_total(),
         }
+    }
+
+    /// Frames rejected as corrupt, black and green together.
+    fn corrupt_frames_total(&self) -> u64 {
+        self.frames_corrupt_black
+            .load(Ordering::Relaxed)
+            .saturating_add(self.frames_corrupt_green.load(Ordering::Relaxed))
     }
 
     /// What capture attempts have ended in since a frame last landed (was
@@ -389,6 +401,7 @@ impl PipelineMetrics {
             frames_dropped_timeout,
             frames_dropped_error,
             frames_skipped,
+            frames_corrupt: self.corrupt_frames_total(),
         });
 
         MetricsSnapshot {
@@ -541,7 +554,7 @@ pub struct MetricsSnapshot {
     pub dedup_skips: u64,
     /// Frames rejected as all black.
     pub frames_corrupt_black: u64,
-    /// Frames rejected as the solid green of an empty GPU buffer.
+    /// Frames rejected for a band of decode-garbage green.
     pub frames_corrupt_green: u64,
 }
 
@@ -554,11 +567,13 @@ pub struct AttemptOutcomes {
     pub frames_dropped_timeout: u64,
     pub frames_dropped_error: u64,
     pub frames_skipped: u64,
+    /// Frames rejected by the corrupt-frame guard (black and green).
+    pub frames_corrupt: u64,
 }
 
 /// Capture attempts that never reached any recorded outcome: not written, not
 /// deduplicated, not dropped by timeout or error, not skipped by the
-/// similarity check. Anything left over was lost somewhere between the attempt
+/// similarity check, not rejected as corrupt. Anything left over was lost somewhere between the attempt
 /// and the writer without a trace, which is the number to watch when frames
 /// go missing. Clamped at zero, because the startup capture and the legacy
 /// pipeline can record outcomes without a matching attempt.
@@ -568,7 +583,8 @@ pub fn silent_loss(outcomes: &AttemptOutcomes) -> u64 {
         .saturating_add(outcomes.dedup_skips)
         .saturating_add(outcomes.frames_dropped_timeout)
         .saturating_add(outcomes.frames_dropped_error)
-        .saturating_add(outcomes.frames_skipped);
+        .saturating_add(outcomes.frames_skipped)
+        .saturating_add(outcomes.frames_corrupt);
     outcomes.capture_attempts.saturating_sub(accounted)
 }
 
@@ -590,11 +606,12 @@ impl AttemptOutcomes {
                 .frames_dropped_error
                 .saturating_sub(earlier.frames_dropped_error),
             frames_skipped: self.frames_skipped.saturating_sub(earlier.frames_skipped),
+            frames_corrupt: self.frames_corrupt.saturating_sub(earlier.frames_corrupt),
         }
     }
 }
 
-/// [`AttemptOutcomes`] frozen at the last landing. Plain atomics: the six
+/// [`AttemptOutcomes`] frozen at the last landing. Plain atomics: the
 /// stores are not one transaction, which is fine for a diagnostic.
 #[derive(Debug, Default)]
 struct LandingMark {
@@ -604,6 +621,7 @@ struct LandingMark {
     frames_dropped_timeout: AtomicU64,
     frames_dropped_error: AtomicU64,
     frames_skipped: AtomicU64,
+    frames_corrupt: AtomicU64,
 }
 
 impl LandingMark {
@@ -619,6 +637,8 @@ impl LandingMark {
             .store(o.frames_dropped_error, Ordering::Relaxed);
         self.frames_skipped
             .store(o.frames_skipped, Ordering::Relaxed);
+        self.frames_corrupt
+            .store(o.frames_corrupt, Ordering::Relaxed);
     }
 
     fn load(&self) -> AttemptOutcomes {
@@ -629,6 +649,7 @@ impl LandingMark {
             frames_dropped_timeout: self.frames_dropped_timeout.load(Ordering::Relaxed),
             frames_dropped_error: self.frames_dropped_error.load(Ordering::Relaxed),
             frames_skipped: self.frames_skipped.load(Ordering::Relaxed),
+            frames_corrupt: self.frames_corrupt.load(Ordering::Relaxed),
         }
     }
 }
@@ -743,7 +764,8 @@ pub enum VisionStallCause {
     /// the frames vanish before they reach the database writer.
     LostBeforeWriter,
     /// Attempts fail inside the capture backend (screenshot, accessibility
-    /// or OCR errors) or are rejected by the similarity check.
+    /// or OCR errors), deliver corrupt frames, or are rejected by the
+    /// similarity check.
     BackendRejecting,
     /// Frames are handed to the writer but the write never completes: the
     /// attempt runs into its deadline, or database write batches fail.
@@ -804,9 +826,9 @@ pub struct StallEvidence {
 /// No recent attempt means the loop is not attempting. Otherwise a failing
 /// database writer wins, and after that the outcome with the most attempts
 /// since the last landed frame decides: deadline overruns point at the
-/// writer, errors and similarity rejections at the capture backend, and
-/// attempts with no outcome at all at a loss before the writer. Ties go in
-/// that same order.
+/// writer, errors, corrupt frames and similarity rejections at the capture
+/// backend, and attempts with no outcome at all at a loss before the writer.
+/// Ties go in that same order.
 pub fn classify_vision_stall(e: &StallEvidence) -> VisionStallCause {
     let current = |age: Option<u64>| age.is_some_and(|a| a < e.stale_after_secs);
     let s = &e.since_landing;
@@ -819,7 +841,10 @@ pub fn classify_vision_stall(e: &StallEvidence) -> VisionStallCause {
         return VisionStallCause::WriterNotCommitting;
     }
     let timed_out = s.frames_dropped_timeout;
-    let rejected = s.frames_dropped_error.saturating_add(s.frames_skipped);
+    let rejected = s
+        .frames_dropped_error
+        .saturating_add(s.frames_skipped)
+        .saturating_add(s.frames_corrupt);
     let unaccounted = silent_loss(s);
     if timed_out > 0 && timed_out >= rejected && timed_out >= unaccounted {
         VisionStallCause::WriterNotCommitting
@@ -965,12 +990,24 @@ pub struct LoopLiveness {
     /// Time since an attempt last ended with an answer
     /// ([`AttemptEnd::Answered`]).
     pub last_answer_age: Option<Duration>,
+    /// Age of the oldest attempt that has not been answered: the first one
+    /// started after the last answer. `None` when every attempt so far was
+    /// answered (or none was made).
+    pub unanswered_attempt_age: Option<Duration>,
 }
 
 impl LoopLiveness {
-    /// Time without an answered attempt: since the last answer, or since the
-    /// loop started when it never had one.
+    /// How long attempts have gone unanswered: since the first attempt that
+    /// started after the last answer. Zero when nothing is unanswered, so a
+    /// loop that idled for an hour and has just started an attempt is not
+    /// mistaken for one whose attempts never come back.
     pub fn unanswered_for(&self) -> Duration {
+        self.unanswered_attempt_age.unwrap_or(Duration::ZERO)
+    }
+
+    /// Time without an answered attempt, for diagnostics: since the last
+    /// answer, or since the loop started when it never had one.
+    pub fn since_last_answer(&self) -> Duration {
         self.last_answer_age.unwrap_or(self.loop_age)
     }
 }
@@ -989,6 +1026,8 @@ struct LoopCell {
     last_attempt: Option<Instant>,
     open_attempt: Option<Instant>,
     last_answer: Option<Instant>,
+    /// Start of the first attempt after the last answer.
+    unanswered_since: Option<Instant>,
 }
 
 impl LoopCell {
@@ -1002,6 +1041,7 @@ impl LoopCell {
             last_attempt: None,
             open_attempt: None,
             last_answer: None,
+            unanswered_since: None,
         }
     }
 
@@ -1135,6 +1175,7 @@ impl LoopStageTracker {
                     last_attempt_age: c.last_attempt.map(age),
                     open_attempt_age: c.open_attempt.map(age),
                     last_answer_age: c.last_answer.map(age),
+                    unanswered_attempt_age: c.unanswered_since.map(age),
                 })
                 .collect(),
             Err(_) => Vec::new(),
@@ -1215,6 +1256,7 @@ impl LoopStageGuard {
             .update_owned(self.monitor_id, self.token, |cell| {
                 cell.last_attempt = Some(at);
                 cell.open_attempt = Some(at);
+                cell.unanswered_since.get_or_insert(at);
             });
     }
 
@@ -1231,6 +1273,7 @@ impl LoopStageGuard {
                 cell.open_attempt = None;
                 if end == AttemptEnd::Answered {
                     cell.last_answer = Some(at);
+                    cell.unanswered_since = None;
                 }
             });
     }
@@ -1356,8 +1399,9 @@ mod tests {
             frames_dropped_timeout: 5,
             frames_dropped_error: 3,
             frames_skipped: 2,
+            frames_corrupt: 4,
         };
-        assert_eq!(silent_loss(&outcomes), 10);
+        assert_eq!(silent_loss(&outcomes), 6);
     }
 
     #[test]
@@ -1374,7 +1418,7 @@ mod tests {
     #[test]
     fn snapshot_reports_loss_rate_and_new_counters() {
         let m = PipelineMetrics::new();
-        for _ in 0..10 {
+        for _ in 0..13 {
             m.record_capture_attempt();
         }
         for _ in 0..4 {
@@ -1397,14 +1441,15 @@ mod tests {
         m.record_corrupt_frame(CorruptFrameKind::Green);
 
         let s = m.snapshot();
-        assert_eq!(s.capture_attempts, 10);
+        assert_eq!(s.capture_attempts, 13);
         assert_eq!(s.frames_db_written, 4);
         assert_eq!(s.dedup_skips, 1);
         assert_eq!(s.frames_dropped_timeout, 1);
         assert_eq!(s.frames_dropped_error, 2);
-        // 10 attempts - (4 written + 1 dedup + 1 timeout + 2 errors) = 2 lost
+        // 13 attempts - (4 written + 1 dedup + 1 timeout + 2 errors
+        // + 3 corrupt) = 2 lost
         assert_eq!(s.silent_loss, 2);
-        assert!((s.silent_loss_rate - 0.2).abs() < 1e-9);
+        assert!((s.silent_loss_rate - 2.0 / 13.0).abs() < 1e-9);
         assert_eq!(s.capture_loop_heartbeats, 2);
         assert!(s.last_capture_loop_heartbeat_ts > 0);
         assert_eq!(s.ocr_empty, 1);
@@ -1508,7 +1553,8 @@ mod tests {
         assert_eq!(l.stage, CaptureLoopStage::Heartbeat);
         assert!(l.loop_age >= Duration::from_secs(300));
         assert_eq!(l.last_attempt_age, None);
-        assert_eq!(l.unanswered_for(), l.loop_age);
+        assert_eq!(l.unanswered_for(), Duration::ZERO);
+        assert_eq!(l.since_last_answer(), l.loop_age);
 
         guard.enter_at(CaptureLoopStage::Heartbeat, ago(200));
         guard.attempt_started_at(ago(190));
@@ -1523,9 +1569,22 @@ mod tests {
         assert_eq!(l.heartbeat_age.as_secs(), 200);
         assert_eq!(l.last_attempt_age.unwrap().as_secs(), 10);
         assert_eq!(l.open_attempt_age.unwrap().as_secs(), 10);
-        // A deadline overrun is not an answer.
+        // A deadline overrun is not an answer: attempts have gone unanswered
+        // since the one started 100 s ago.
         assert_eq!(l.last_answer_age.unwrap().as_secs(), 180);
-        assert_eq!(l.unanswered_for().as_secs(), 180);
+        assert_eq!(l.since_last_answer().as_secs(), 180);
+        assert_eq!(l.unanswered_for().as_secs(), 100);
+
+        // An answer clears it; a loop that then idles and starts a new
+        // attempt much later has only that attempt's age unanswered.
+        guard.attempt_finished_at(AttemptEnd::Answered, ago(9));
+        guard.attempt_started_at(ago(2));
+        let l = metrics.loop_stages.liveness_at(now)[0];
+        assert_eq!(l.unanswered_for().as_secs(), 2);
+        guard.attempt_finished_at(AttemptEnd::Answered, ago(1));
+        let l = metrics.loop_stages.liveness_at(now)[0];
+        assert_eq!(l.unanswered_attempt_age, None);
+        assert_eq!(l.unanswered_for(), Duration::ZERO);
     }
 
     #[test]
@@ -1689,6 +1748,32 @@ mod tests {
             classify_vision_stall(&evidence(tie)),
             VisionStallCause::BackendRejecting
         );
+    }
+
+    #[test]
+    fn corrupt_frames_are_an_outcome_but_not_a_landing() {
+        let m = PipelineMetrics::new();
+        for _ in 0..4 {
+            m.record_capture_attempt();
+        }
+        m.record_corrupt_frame(CorruptFrameKind::Black);
+        m.record_corrupt_frame(CorruptFrameKind::Green);
+        m.record_corrupt_frame(CorruptFrameKind::Green);
+        let snap = m.snapshot();
+        assert_eq!(snap.frames_corrupt_black, 1);
+        assert_eq!(snap.frames_corrupt_green, 2);
+        // Three attempts ended as corrupt frames; one has no outcome yet.
+        assert_eq!(snap.silent_loss, 1);
+        assert_eq!(snap.last_db_write_ts, 0, "a corrupt frame is not a landing");
+        let since = m.outcomes_since_last_landing();
+        assert_eq!(since.frames_corrupt, 3);
+        assert_eq!(
+            classify_vision_stall(&evidence(since)),
+            VisionStallCause::BackendRejecting
+        );
+        // A landing resets the count.
+        m.record_dedup_skip();
+        assert_eq!(m.outcomes_since_last_landing().frames_corrupt, 0);
     }
 
     #[test]
