@@ -1615,6 +1615,41 @@ async fn remove_run_slot(
     }
 }
 
+/// An event run for `name` cannot start this pass (a run of the pipe is
+/// already queued or running, the agent is not ready, setup mode, ...).
+///
+/// A directed run, or a run for a keyed event instance, is kept and tried
+/// again on later passes (as a directed run, for up to
+/// [`event_runs::DEFERRED_REQUEST_TTL`]); the claim taken when it finally
+/// starts keeps a duplicate delivery from running twice. An event without an
+/// instance key is dropped, as before. Either way the schedule clock the
+/// event cleared is put back, so a skipped event does not also cause an
+/// early scheduled run.
+fn skip_event_run(
+    name: &str,
+    run: Option<&event_runs::EventRun>,
+    to_defer: &mut Vec<event_runs::EventRun>,
+    last_run: &mut HashMap<String, DateTime<Utc>>,
+    cleared_last_run: &mut HashMap<String, Option<DateTime<Utc>>>,
+) {
+    let Some(run) = run else {
+        return;
+    };
+    if let Some(Some(previous)) = cleared_last_run.remove(name) {
+        last_run.insert(name.to_string(), previous);
+    }
+    if run.directed || run.key.is_some() {
+        let mut kept = run.clone();
+        kept.directed = true;
+        to_defer.push(kept);
+    } else {
+        debug!(
+            "scheduler: event '{}' skipped pipe '{}' (it cannot start now)",
+            run.event, name
+        );
+    }
+}
+
 /// Note that the agent of `name`'s current run is being launched.
 async fn mark_run_slot_started(
     slots: &Mutex<HashMap<String, event_runs::RunSlot>>,
@@ -4087,13 +4122,6 @@ impl PipeManager {
 
                     let event_run = event_triggered.get(name);
                     let triggered_by_event = event_run.is_some();
-                    // A directed run that cannot start now is tried again on a
-                    // later pass instead of being lost.
-                    let defer_directed = |to_defer: &mut Vec<event_runs::EventRun>| {
-                        if let Some(run) = event_run.filter(|r| r.directed) {
-                            to_defer.push(run.clone());
-                        }
-                    };
                     let last = last_run.get(name).copied().unwrap_or(DateTime::UNIX_EPOCH);
                     if !triggered_by_event && !pipe_should_run(config, last, Utc::now()) {
                         // A structured schedule that has run its course turns
@@ -4108,7 +4136,13 @@ impl PipeManager {
                     {
                         let qr = queued_or_running.lock().await;
                         if qr.contains(name) {
-                            defer_directed(&mut to_defer);
+                            skip_event_run(
+                                name,
+                                event_run,
+                                &mut to_defer,
+                                &mut last_run,
+                                &mut cleared_last_run,
+                            );
                             continue;
                         }
                     }
@@ -4127,7 +4161,13 @@ impl PipeManager {
                                     "scheduler: pipe '{}' in setup mode (missing connections: {:?}), skipping",
                                     name, missing
                                 );
-                                defer_directed(&mut to_defer);
+                                skip_event_run(
+                                    name,
+                                    event_run,
+                                    &mut to_defer,
+                                    &mut last_run,
+                                    &mut cleared_last_run,
+                                );
                                 continue;
                             }
                         }
@@ -4140,7 +4180,13 @@ impl PipeManager {
                                 "scheduler: pipe '{}' has live process {} (PID file), skipping",
                                 name, existing_pid
                             );
-                            defer_directed(&mut to_defer);
+                            skip_event_run(
+                                name,
+                                event_run,
+                                &mut to_defer,
+                                &mut last_run,
+                                &mut cleared_last_run,
+                            );
                             continue;
                         } else {
                             info!(
@@ -4164,7 +4210,13 @@ impl PipeManager {
                             "pipe '{}': agent '{}' not available yet",
                             name, config.agent
                         );
-                        defer_directed(&mut to_defer);
+                        skip_event_run(
+                            name,
+                            event_run,
+                            &mut to_defer,
+                            &mut last_run,
+                            &mut cleared_last_run,
+                        );
                         continue;
                     }
 
@@ -6975,6 +7027,53 @@ mod tests {
     }
 
     // -- PipeExecution / SchedulerState serde roundtrip ----------------------
+
+    #[test]
+    fn skipped_event_runs_are_kept_only_when_keyed() {
+        let earlier = Utc::now() - chrono::Duration::hours(1);
+        let run = |key: Option<&str>| event_runs::EventRun {
+            pipe: "digest".to_string(),
+            event: "meeting_ended".to_string(),
+            key: key.map(str::to_string),
+            data: serde_json::json!({}),
+            directed: false,
+        };
+        let mut to_defer = Vec::new();
+        let mut last_run: HashMap<String, DateTime<Utc>> = HashMap::new();
+        let mut cleared: HashMap<String, Option<DateTime<Utc>>> = HashMap::new();
+
+        // A keyed event is kept as a directed run, and the schedule clock
+        // the event cleared comes back.
+        cleared.insert("digest".to_string(), Some(earlier));
+        let keyed = run(Some("12"));
+        skip_event_run(
+            "digest",
+            Some(&keyed),
+            &mut to_defer,
+            &mut last_run,
+            &mut cleared,
+        );
+        assert_eq!(to_defer.len(), 1);
+        assert!(to_defer[0].directed);
+        assert_eq!(to_defer[0].key.as_deref(), Some("12"));
+        assert_eq!(last_run.get("digest"), Some(&earlier));
+        assert!(cleared.is_empty());
+
+        // An event without an instance key is dropped, as before.
+        let plain = run(None);
+        skip_event_run(
+            "digest",
+            Some(&plain),
+            &mut to_defer,
+            &mut last_run,
+            &mut cleared,
+        );
+        assert_eq!(to_defer.len(), 1);
+
+        // No event run: nothing happens.
+        skip_event_run("digest", None, &mut to_defer, &mut last_run, &mut cleared);
+        assert_eq!(to_defer.len(), 1);
+    }
 
     #[test]
     fn pi_session_files_give_a_stable_conversation_id() {

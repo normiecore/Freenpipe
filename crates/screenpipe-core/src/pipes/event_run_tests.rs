@@ -196,6 +196,45 @@ async fn a_meeting_that_ends_while_the_pipe_is_busy_still_gets_its_run() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_meeting_that_ends_before_the_agent_is_ready_runs_once_it_is() {
+    let dir = tempfile::tempdir().unwrap();
+    let pipe = format!("w306-notready-{}", unique_id());
+    let store = Arc::new(MemoryPipeStore::default());
+    let agent = Arc::new(ScriptedAgent::new(&finished_answer("Saved."), true));
+    // The agent is still being installed (e.g. right after a restart).
+    agent.available.store(false, Ordering::SeqCst);
+    let meeting = unique_id();
+    let key = meeting.to_string();
+    let needle = format!("instance `{key}`");
+    let mut manager = scheduler(
+        dir.path(),
+        &pipe,
+        store.clone(),
+        agent.clone(),
+        &[meeting],
+        |_| {},
+    )
+    .await;
+
+    meeting_ended(meeting);
+    // Several scheduler passes go by without a run and without a claim.
+    tokio::time::sleep(Duration::from_millis(400)).await;
+    assert!(store.executions_for_key(&key).is_empty());
+    assert!(!store.is_claimed(&pipe, "meeting_ended", &key));
+
+    // Once the agent is ready, the kept event runs, once.
+    agent.available.store(true, Ordering::SeqCst);
+    assert!(wait_until(Duration::from_secs(10), || finished(&store, &key)).await);
+    meeting_ended(meeting);
+    tokio::time::sleep(Duration::from_millis(400)).await;
+    assert_eq!(store.executions_for_key(&key).len(), 1);
+    assert_eq!(agent.runs_mentioning(&needle), 1);
+    assert!(store.is_claimed(&pipe, "meeting_ended", &key));
+
+    manager.stop_scheduler().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn two_schedulers_racing_on_one_store_run_the_pipe_once() {
     let dir_a = tempfile::tempdir().unwrap();
     let dir_b = tempfile::tempdir().unwrap();

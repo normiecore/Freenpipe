@@ -5,7 +5,7 @@
 
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::Mutex as StdMutex;
 
 use anyhow::Result;
@@ -356,6 +356,9 @@ pub(crate) struct ScriptedAgent {
     pub output: AgentOutput,
     pub prompts: StdMutex<Vec<String>>,
     pub delay: std::time::Duration,
+    /// What `is_available` reports; a test clears it to stand for an agent
+    /// that is still being installed.
+    pub available: AtomicBool,
 }
 
 impl ScriptedAgent {
@@ -369,6 +372,7 @@ impl ScriptedAgent {
             },
             prompts: StdMutex::new(Vec::new()),
             delay: std::time::Duration::from_millis(20),
+            available: AtomicBool::new(true),
         }
     }
 
@@ -406,7 +410,7 @@ impl AgentExecutor for ScriptedAgent {
     }
 
     fn is_available(&self) -> bool {
-        true
+        self.available.load(Ordering::SeqCst)
     }
 
     async fn ensure_installed(&self) -> Result<()> {
