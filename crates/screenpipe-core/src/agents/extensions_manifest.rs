@@ -28,8 +28,9 @@ use tracing::{debug, info};
 pub enum ExtensionGate {
     /// Written on every sync.
     Always,
-    /// Only for runs on the gateway-backed provider when an AI gateway is
-    /// configured; the extension sends searches to that gateway.
+    /// Only when a web search provider is configured
+    /// ([`crate::web_search`]). The extension's `sp_web_search` tool calls
+    /// the engine's `/v1/web-search` route, which talks to that provider.
     WebSearch,
     /// Only for pipes that declare data-permission restrictions.
     PipePermissions,
@@ -224,14 +225,11 @@ pub fn first_error(errors: Vec<ExtensionSyncError>) -> Result<()> {
     }
 }
 
-/// Whether the web-search extension belongs in a run: only the gateway-backed
-/// provider uses it, and only when a gateway is configured.
-pub fn web_search_wanted(provider: Option<&str>, gateway_configured: bool) -> bool {
-    let gateway_provider = matches!(
-        provider,
-        None | Some("screenpipe") | Some("screenpipe-cloud") | Some("pi")
-    );
-    gateway_provider && gateway_configured
+/// Whether the web-search extension belongs in a run. The tool goes through
+/// the local engine, so every model provider may use it; it is offered only
+/// when a web search provider is configured.
+pub fn web_search_wanted() -> bool {
+    crate::web_search::is_configured()
 }
 
 #[cfg(test)]
@@ -383,11 +381,26 @@ mod tests {
     }
 
     #[test]
-    fn web_search_only_for_the_gateway_provider_with_a_gateway() {
-        assert!(web_search_wanted(None, true));
-        assert!(web_search_wanted(Some("screenpipe"), true));
-        assert!(web_search_wanted(Some("pi"), true));
-        assert!(!web_search_wanted(Some("screenpipe"), false));
-        assert!(!web_search_wanted(Some("ollama"), true));
+    fn web_search_extension_calls_the_local_route_only() {
+        let source = find("web-search").unwrap().source;
+        assert!(source.contains("\"sp_web_search\""));
+        assert!(source.contains("/v1/web-search"));
+        assert!(source.contains("SCREENPIPE_LOCAL_API_KEY"));
+        // The search provider's credentials stay in the engine.
+        assert!(!source.contains("SCREENPIPE_AI_GATEWAY_URL"));
+        assert!(!source.contains("SCREENPIPE_WEB_SEARCH_API_KEY"));
+        assert!(!source.contains("process.env.SCREENPIPE_API_KEY"));
+    }
+
+    #[test]
+    fn app_copy_of_the_web_search_extension_matches() {
+        // The desktop app ships its own copy for chat sessions
+        // (src-tauri/assets/extensions). Both copies are the same file so
+        // pipes and chat get the same tool.
+        let app_copy = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../apps/screenpipe-app-tauri/src-tauri/assets/extensions/web-search.ts");
+        if let Ok(app_source) = std::fs::read_to_string(&app_copy) {
+            assert_eq!(app_source, find("web-search").unwrap().source);
+        }
     }
 }
