@@ -1225,6 +1225,7 @@ mod tests {
             ignored_windows: vec![],
             included_windows: vec![],
             ignored_urls: vec![],
+            url_policy: Default::default(),
             vision_metrics: Arc::new(PipelineMetrics::default()),
             use_pii_removal: false,
             monitor_ids: vec![],
