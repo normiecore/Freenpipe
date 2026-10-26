@@ -30,6 +30,7 @@ pub mod hd_recorder;
 pub mod high_fps_controller;
 pub mod history_access;
 pub mod hot_frame_cache;
+pub mod local_chat;
 pub mod logging;
 pub mod mcp_servers_api;
 pub mod meeting_detector;
