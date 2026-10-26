@@ -19,6 +19,8 @@
 //! explicit.
 
 mod audio_device;
+mod audio_health;
+mod notice;
 mod permission;
 mod power;
 
@@ -121,9 +123,8 @@ fn dispatch(app: &AppHandle, text: &str) {
         "permission_lost" | "permission_restored" | "permission_needed" => {
             permission::handle(app, name, &data)
         }
-        "audio_device_fallback_engaged" | "audio_device_fallback_cleared" => {
-            audio_device::handle(app, name, &data)
-        }
+        n if audio_device::EVENT_NAMES.contains(&n) => audio_device::handle(app, name, &data),
+        n if audio_health::EVENT_NAMES.contains(&n) => audio_health::handle(app, name, &data),
         "power_profile_changed" => power::handle(app, name, &data),
         _ => { /* unrelated event — ignore */ }
     }

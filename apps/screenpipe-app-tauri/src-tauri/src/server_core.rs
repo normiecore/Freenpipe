@@ -463,7 +463,8 @@ impl ServerCore {
             screenpipe_core::agents::pi::PiExecutor::with_shared_user_token(
                 cloud_token_handle.clone(),
             )
-            .with_api_auth_key(config.api_auth_key.clone()),
+            .with_api_auth_key(config.api_auth_key.clone())
+            .with_local_api_port(config.port),
         );
         let mut agent_executors: std::collections::HashMap<
             String,

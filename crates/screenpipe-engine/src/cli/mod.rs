@@ -15,7 +15,7 @@ pub mod pipe;
 pub mod presets;
 pub mod search;
 pub mod status;
-mod store_file;
+pub(crate) mod store_file;
 pub mod survey;
 pub mod sync;
 pub mod vault;

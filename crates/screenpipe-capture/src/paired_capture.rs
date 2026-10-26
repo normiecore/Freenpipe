@@ -51,6 +51,23 @@ fn ocr_semaphore() -> &'static Semaphore {
     OCR_SEMAPHORE.get_or_init(|| Semaphore::new(1))
 }
 
+/// Logs a live OCR that produced no text. Requests shed by the Windows OCR
+/// worker (queue full, no engine installed, image refused, slow answer) are
+/// expected under load or on machines without an OCR language: the frame is
+/// still stored, so they are not capture failures and stay at debug level.
+#[cfg(target_os = "windows")]
+fn log_live_ocr_failure(e: &anyhow::Error) {
+    match screenpipe_screen::ocr_worker::worker_error_of(e) {
+        Some(shed) if shed.is_skip() => {
+            debug!(
+                "windows OCR skipped; storing the frame without OCR text: {}",
+                shed
+            )
+        }
+        _ => warn!("windows OCR failed: {}", e),
+    }
+}
+
 /// Context for a paired capture operation — replaces positional arguments.
 pub struct CaptureContext<'a> {
     pub db: &'a DatabaseManager,
@@ -77,6 +94,11 @@ pub struct CaptureContext<'a> {
     /// The accessibility tree walk still runs — metadata row is still written.
     /// Set by AudioPaused and FullPause power profiles.
     pub screenshot_disabled: bool,
+    /// When true the frame's pixels must not be used at all: no snapshot is
+    /// written and no OCR reads `image` (which may be a placeholder). Set
+    /// while the window-exclusion list is unknown, so an excluded window can
+    /// never reach storage; the accessibility text is still stored.
+    pub pixels_withheld: bool,
 }
 
 /// Result of a paired capture operation.
@@ -119,10 +141,10 @@ pub async fn paired_capture(
     // Write JPEG snapshot to disk — skipped when screenshot_disabled (AudioPaused / FullPause).
     // The accessibility tree walk still runs so metadata rows keep timestamp,
     // app_name, window_name, and full_text for search/timeline queries.
-    let snapshot_path_str = if ctx.screenshot_disabled {
+    let snapshot_path_str = if ctx.screenshot_disabled || ctx.pixels_withheld {
         debug!(
-            "paired_capture: screenshot skipped (screenshot_disabled, trigger={})",
-            ctx.capture_trigger
+            "paired_capture: screenshot skipped (screenshot_disabled={}, pixels_withheld={}, trigger={})",
+            ctx.screenshot_disabled, ctx.pixels_withheld, ctx.capture_trigger
         );
         String::new()
     } else {
@@ -174,15 +196,21 @@ pub async fn paired_capture(
             .map(|s| a11y_content_is_thin(s, ctx.window_name, ctx.browser_url, ctx.app_name))
             .unwrap_or(false);
 
-    // Run OCR when: no a11y text, app prefers OCR, OR a11y text is thin (hybrid)
-    let (ocr_text, ocr_text_json) = if !has_accessibility_text || a11y_is_thin {
-        // Windows native OCR is async, so call it directly (not inside spawn_blocking)
+    // Run OCR when: no a11y text, app prefers OCR, OR a11y text is thin (hybrid).
+    // Never on withheld pixels: `image` is then only a placeholder.
+    let run_ocr = !ctx.pixels_withheld && (!has_accessibility_text || a11y_is_thin);
+    let (ocr_text, ocr_text_json) = if run_ocr {
+        // Windows OCR runs on the dedicated screenpipe-windows-ocr thread.
+        // The request is queued without blocking: a full queue, a missing
+        // OCR language or a refused image comes back at once as an error and
+        // the frame is stored without OCR text (accessibility text, when
+        // present, is kept either way).
         #[cfg(target_os = "windows")]
         let raw = {
             match screenpipe_screen::perform_ocr_windows(&ctx.image, &ctx.languages).await {
                 Ok((text, json, _confidence)) => (text, json),
                 Err(e) => {
-                    warn!("windows OCR failed: {}", e);
+                    log_live_ocr_failure(&e);
                     (String::new(), "[]".to_string())
                 }
             }
@@ -190,26 +218,35 @@ pub async fn paired_capture(
         // Apple and Tesseract OCR are sync, use spawn_blocking with semaphore
         // to limit concurrent OCR and avoid CPU spikes on multi-monitor setups.
         #[cfg(not(target_os = "windows"))]
-        let raw = {
-            let _permit = ocr_semaphore().acquire().await.unwrap();
-            let image_for_ocr = ctx.image.clone();
-            let languages = ctx.languages.clone();
-            tokio::task::spawn_blocking(move || {
-                #[cfg(target_os = "macos")]
-                {
-                    let (text, json, _confidence) =
-                        screenpipe_screen::perform_ocr_apple(&image_for_ocr, &languages);
-                    (text, json)
-                }
-                #[cfg(not(target_os = "macos"))]
-                {
-                    let (text, json, _confidence) =
-                        screenpipe_screen::perform_ocr_tesseract(&image_for_ocr, languages);
-                    (text, json)
-                }
-            })
-            .await
-            .unwrap_or_else(|_| (String::new(), "[]".to_string()))
+        let raw = match ocr_semaphore().acquire().await {
+            Ok(_permit) => {
+                let image_for_ocr = ctx.image.clone();
+                let languages = ctx.languages.clone();
+                tokio::task::spawn_blocking(move || {
+                    #[cfg(target_os = "macos")]
+                    {
+                        let (text, json, _confidence) =
+                            screenpipe_screen::perform_ocr_apple(&image_for_ocr, &languages);
+                        (text, json)
+                    }
+                    #[cfg(not(target_os = "macos"))]
+                    {
+                        let (text, json, _confidence) =
+                            screenpipe_screen::perform_ocr_tesseract(&image_for_ocr, languages);
+                        (text, json)
+                    }
+                })
+                .await
+                .unwrap_or_else(|e| {
+                    warn!("OCR task failed; storing the frame without OCR text: {}", e);
+                    (String::new(), "[]".to_string())
+                })
+            }
+            Err(_closed) => {
+                // Only happens while shutting down; keep the frame.
+                debug!("OCR semaphore closed; storing the frame without OCR text");
+                (String::new(), "[]".to_string())
+            }
         };
 
         // Strip editor gutter noise (see strip_gutter_noise doc). Applied to
@@ -630,6 +667,7 @@ mod tests {
             languages: vec![],
             elements_ref_frame_id: None,
             screenshot_disabled: false,
+            pixels_withheld: false,
         };
 
         let result = paired_capture(&ctx, None).await.unwrap();
@@ -669,6 +707,7 @@ mod tests {
             languages: vec![],
             elements_ref_frame_id: None,
             screenshot_disabled: false,
+            pixels_withheld: false,
         };
 
         let snap = TreeSnapshot {
@@ -732,6 +771,7 @@ mod tests {
             languages: vec![],
             elements_ref_frame_id: None,
             screenshot_disabled: false,
+            pixels_withheld: false,
         };
 
         // Empty accessibility text should be treated as no text

@@ -86,6 +86,14 @@ mod tests {
     }
 
     #[test]
+    fn web_search_matches_the_pipe_copy() {
+        // Chat and pipes offer the same `sp_web_search` tool.
+        let app = extensions_manifest::find_in(APP_EXTENSIONS, "web-search").unwrap();
+        let core = extensions_manifest::find("web-search").unwrap();
+        assert_eq!(app.source, core.source);
+    }
+
+    #[test]
     fn chat_sync_writes_mcp_bridge_and_gates_web_search() {
         let dir = tempfile::tempdir().unwrap();
         let ext_dir = dir.path().join(".pi").join("extensions");

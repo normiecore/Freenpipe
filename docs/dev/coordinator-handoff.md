@@ -1,19 +1,22 @@
 # Coordinator handoff
 
-Updated 2026-10-26 17:45 UTC. Git, PR heads and CI are the source of truth; this file is a snapshot.
+Updated 2026-10-26 22:45 UTC. Git, PR heads and CI are the source of truth; this file is a snapshot.
 
 ## State
 
 - Waves 0 and 1 are merged (18 WPs). Wave 1 integration (runbook 4.7) has not been recorded yet: it needs a
   full Linux build of main and was held for disk.
 - Wave 2 core is complete: W2-01, W2-04, W2-05, W2-08, W2-09, W2-10, W2-11, W2-12, W2-13, W2-16, W2-17,
-  W2-18, W2-19, W2-22, W2-23, W2-26, W2-27. Wave 3 core merged: W3-30 (36/155 overall). Since W2-01 the read
-  pool is `query_only`: writes go through `write_pool()` or the write queue.
-- The account's weekly spend limit stopped all agents from 2026-10-21 04:40 to 2026-10-26 17:00 UTC.
-- Building (relaunched 2026-10-26 on main df61031): W3-11 (from checkpoint 1975c92) + W3-12 (from f9cf9da),
-  W3-25 + W3-14 (third attempts; nothing was committed before the earlier stops).
-- Core set still to start (decision 6), all ready: W3-02, W3-06, W3-08, W3-13, W4-05; then W4-02 (after
-  W3-06).
+  W2-18, W2-19, W2-22, W2-23, W2-26, W2-27. Wave 3 core merged: W3-30, W3-11, W3-12, W3-14, W3-25 (40/155
+  overall). Since W2-01 the read pool is `query_only`: writes go through `write_pool()` or the write queue.
+- The account's weekly spend limit stopped all agents from 2026-10-21 04:40 to 2026-10-26 17:00 UTC; the
+  session limit stopped them again 21:00-22:30.
+- Building (relaunched 2026-10-26 22:40 on main 6fb2c91, workflow wh1kzvm8s): W3-13 (from 22279a1), W3-06
+  (from 829b53c), W3-02 (from 7c121ef), W3-08 (from abd3937). All four resume their pushed commits.
+- Core set still to start (decision 6): W4-05; then W4-02 (after W3-06).
+- 2026-10-26 19:30: a reviewer ran `fp_disk_check` at 7.5 GB free and it deleted the whole shared target
+  (15 GB). Fixed in b300609: while worktrees exist it only prunes dead builds, and the reviewer prompt now
+  forbids it too.
 
 ## How work runs
 
@@ -63,3 +66,14 @@ Updated 2026-10-26 17:45 UTC. Git, PR heads and CI are the source of truth; this
 - Provider keys (`aiGatewayApiKey` and others) sit in plain `store.bin` unless store encryption is on.
 - The MCP server's last API-key fallback runs whatever `screenpipe` is on PATH.
 - `packages/ai-gateway` still contains vendor hosts the vendor guard reports as informational.
+
+## Follow-ups
+
+- W3-25: the upstream error excerpt is cut to 200 characters before `redact()` runs, so a provider that
+  echoes the key right at the cut can leak the start of it (routes/web_search.rs). Redact before cutting.
+  Owner decisions open in open-questions/W3-25.md #1/#9 (gateway web search now needs
+  SCREENPIPE_WEB_SEARCH_PROVIDER=gateway; no settings keys yet) and #6 (default OpenAI/Anthropic URLs).
+  Merge commit ae97d57 on the branch has no trailer (not rewritten).
+- W3-14: no automated test of the device monitor's wake/take/open sequence (smoke SMK-W3-14-2/-7).
+- W3-11: re-releasing the stream every 30 corrupt frames can flash the WGC border on Windows 10 builds
+  without borderless capture (smoke SMK-W3-11-6).
