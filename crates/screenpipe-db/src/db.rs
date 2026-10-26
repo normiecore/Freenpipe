@@ -27,14 +27,15 @@ use zerocopy::AsBytes;
 
 use futures::future::try_join_all;
 
+use crate::ext::search_parsed::{frames_window_condition, push_ui_event_scope_conditions};
 use crate::{
     text_similarity::is_similar_transcription, AudioChunkProcessingSnapshot, AudioChunksResponse,
     AudioDevice, AudioEntry, AudioResult, AudioResultRaw, ChunkOutcome, ContentType, DeviceType,
     Element, ElementRow, ElementSource, FrameData, FrameRow, FrameRowLight, FrameWindowData,
     InsertUiEvent, MeetingRecord, MeetingTranscriptSegment, MemoryRecord, MemorySyncRow,
     NewDiarizationSegment, OCREntry, OCRResult, OCRResultRaw, OcrTextBlock, Order,
-    ReplacementAudioTranscription, SearchMatch, SearchMatchGroup, SearchResult, Speaker,
-    TagContentType, TextBounds, TextPosition, TimeSeriesChunk, UiContent, UiEventRecord,
+    ReplacementAudioTranscription, SearchMatch, SearchMatchGroup, SearchResult, SearchScope,
+    Speaker, TagContentType, TextBounds, TextPosition, TimeSeriesChunk, UiContent, UiEventRecord,
     UiEventRow, VideoMetadata, MAX_TRANSCRIPTION_ATTEMPTS,
 };
 
@@ -3518,7 +3519,7 @@ impl DatabaseManager {
     pub async fn search_with_tags(
         &self,
         query: &str,
-        mut content_type: ContentType,
+        content_type: ContentType,
         limit: u32,
         offset: u32,
         start_time: Option<DateTime<Utc>>,
@@ -3541,7 +3542,85 @@ impl DatabaseManager {
         on_screen: Option<bool>,
         tags: &[String],
     ) -> Result<Vec<SearchResult>, sqlx::Error> {
+        self.search_with_scope(
+            query,
+            content_type,
+            limit,
+            offset,
+            start_time,
+            end_time,
+            app_name,
+            window_name,
+            min_length,
+            max_length,
+            speaker_ids,
+            frame_name,
+            browser_url,
+            focused,
+            speaker_name,
+            device_name,
+            machine_id,
+            on_screen,
+            tags,
+            &SearchScope::default(),
+        )
+        .await
+    }
+
+    /// Like [`search_with_tags`](Self::search_with_tags) with the `/search`
+    /// v2 restrictions in `scope`: time windows (starred sessions), the
+    /// input-context filter and the parsed-content filters. A default scope
+    /// runs exactly the queries `search_with_tags` always ran.
+    ///
+    /// `content_type=parsed` returns [`SearchResult::Parsed`] hits; it honours
+    /// `query`, the time range, `app_name`, `window_name`, `browser_url`,
+    /// `focused`, `machine_id` and `tags`, and is never part of `all`.
+    #[allow(clippy::too_many_arguments)]
+    pub async fn search_with_scope(
+        &self,
+        query: &str,
+        mut content_type: ContentType,
+        limit: u32,
+        offset: u32,
+        start_time: Option<DateTime<Utc>>,
+        end_time: Option<DateTime<Utc>>,
+        app_name: Option<&str>,
+        window_name: Option<&str>,
+        min_length: Option<usize>,
+        max_length: Option<usize>,
+        speaker_ids: Option<Vec<i64>>,
+        frame_name: Option<&str>,
+        browser_url: Option<&str>,
+        focused: Option<bool>,
+        speaker_name: Option<&str>,
+        device_name: Option<&str>,
+        machine_id: Option<&str>,
+        on_screen: Option<bool>,
+        tags: &[String],
+        scope: &SearchScope,
+    ) -> Result<Vec<SearchResult>, sqlx::Error> {
         let mut results = Vec::new();
+
+        if scope.matches_nothing() {
+            return Ok(results);
+        }
+
+        if content_type == ContentType::Parsed {
+            let filter = crate::ext::search_parsed::ParsedSearchFilter {
+                query,
+                start_time,
+                end_time,
+                app_name,
+                window_name,
+                browser_url,
+                focused,
+                machine_id,
+                tags,
+                scope,
+            };
+            let parsed = self.search_parsed(&filter, limit, offset).await?;
+            return Ok(parsed.into_iter().map(SearchResult::Parsed).collect());
+        }
 
         // if focused or browser_url is present, we run only on OCR
         if focused.is_some() || browser_url.is_some() {
@@ -3557,6 +3636,12 @@ impl DatabaseManager {
                 ContentType::Input | ContentType::Accessibility
             )
         {
+            return Ok(results);
+        }
+
+        // Memories have no capture time, so a window restriction (starred
+        // sessions) never matches them.
+        if scope.windows.is_some() && content_type == ContentType::Memory {
             return Ok(results);
         }
 
@@ -3587,8 +3672,9 @@ impl DatabaseManager {
                                 device_name,
                                 machine_id,
                                 tags,
+                                scope,
                             ),
-                            self.search_audio(
+                            self.search_audio_scoped(
                                 query,
                                 fetch_limit,
                                 0,
@@ -3601,6 +3687,7 @@ impl DatabaseManager {
                                 device_name,
                                 machine_id,
                                 tags,
+                                scope,
                             ),
                             // Issue #2436: branch the accessibility plan
                             // on the on_screen filter — see the dispatch
@@ -3613,7 +3700,7 @@ impl DatabaseManager {
                                 }
                                 match on_screen {
                                     Some(v) => {
-                                        self.search_accessibility_visible(
+                                        self.search_accessibility_visible_scoped(
                                             query,
                                             v,
                                             app_name,
@@ -3622,11 +3709,12 @@ impl DatabaseManager {
                                             end_time,
                                             fetch_limit,
                                             0,
+                                            scope,
                                         )
                                         .await
                                     }
                                     None => {
-                                        self.search_accessibility(
+                                        self.search_accessibility_scoped(
                                             query,
                                             app_name,
                                             window_name,
@@ -3634,6 +3722,7 @@ impl DatabaseManager {
                                             end_time,
                                             fetch_limit,
                                             0,
+                                            scope,
                                         )
                                         .await
                                     }
@@ -3660,6 +3749,7 @@ impl DatabaseManager {
                                 device_name,
                                 machine_id,
                                 tags,
+                                scope,
                             ),
                             async {
                                 if !tags.is_empty() {
@@ -3667,7 +3757,7 @@ impl DatabaseManager {
                                 }
                                 match on_screen {
                                     Some(v) => {
-                                        self.search_accessibility_visible(
+                                        self.search_accessibility_visible_scoped(
                                             query,
                                             v,
                                             app_name,
@@ -3676,11 +3766,12 @@ impl DatabaseManager {
                                             end_time,
                                             fetch_limit,
                                             0,
+                                            scope,
                                         )
                                         .await
                                     }
                                     None => {
-                                        self.search_accessibility(
+                                        self.search_accessibility_scoped(
                                             query,
                                             app_name,
                                             window_name,
@@ -3688,6 +3779,7 @@ impl DatabaseManager {
                                             end_time,
                                             fetch_limit,
                                             0,
+                                            scope,
                                         )
                                         .await
                                     }
@@ -3721,6 +3813,7 @@ impl DatabaseManager {
                         device_name,
                         machine_id,
                         tags,
+                        scope,
                     )
                     .await?;
                 results.extend(ocr_results.into_iter().map(SearchResult::OCR));
@@ -3728,7 +3821,7 @@ impl DatabaseManager {
             ContentType::Audio => {
                 if app_name.is_none() && window_name.is_none() {
                     let audio_results = self
-                        .search_audio(
+                        .search_audio_scoped(
                             query,
                             limit,
                             offset,
@@ -3741,6 +3834,7 @@ impl DatabaseManager {
                             device_name,
                             machine_id,
                             tags,
+                            scope,
                         )
                         .await?;
                     results.extend(audio_results.into_iter().map(SearchResult::Audio));
@@ -3753,7 +3847,7 @@ impl DatabaseManager {
                 // existing per-frame plan (faster, broader recall).
                 let ui_results = match on_screen {
                     Some(visible) => {
-                        self.search_accessibility_visible(
+                        self.search_accessibility_visible_scoped(
                             query,
                             visible,
                             app_name,
@@ -3762,11 +3856,12 @@ impl DatabaseManager {
                             end_time,
                             limit,
                             offset,
+                            scope,
                         )
                         .await?
                     }
                     None => {
-                        self.search_accessibility(
+                        self.search_accessibility_scoped(
                             query,
                             app_name,
                             window_name,
@@ -3774,6 +3869,7 @@ impl DatabaseManager {
                             end_time,
                             limit,
                             offset,
+                            scope,
                         )
                         .await?
                     }
@@ -3782,7 +3878,7 @@ impl DatabaseManager {
             }
             ContentType::Input => {
                 let input_results = self
-                    .search_ui_events(
+                    .search_ui_events_scoped(
                         Some(query),
                         None,
                         app_name,
@@ -3791,6 +3887,7 @@ impl DatabaseManager {
                         end_time,
                         limit,
                         offset,
+                        scope,
                     )
                     .await?;
                 results.extend(input_results.into_iter().map(SearchResult::Input));
@@ -3815,30 +3912,12 @@ impl DatabaseManager {
                     .await?;
                 results.extend(memory_results.into_iter().map(SearchResult::Memory));
             }
+            // Answered before the base content types above.
+            ContentType::Parsed => {}
         }
 
         // Sort results by timestamp in descending order
-        results.sort_by(|a, b| {
-            let timestamp_a = match a {
-                SearchResult::OCR(ocr) => ocr.timestamp,
-                SearchResult::Audio(audio) => audio.timestamp,
-                SearchResult::UI(ui) => ui.timestamp,
-                SearchResult::Input(input) => input.timestamp,
-                SearchResult::Memory(m) => {
-                    m.created_at.parse::<DateTime<Utc>>().unwrap_or_default()
-                }
-            };
-            let timestamp_b = match b {
-                SearchResult::OCR(ocr) => ocr.timestamp,
-                SearchResult::Audio(audio) => audio.timestamp,
-                SearchResult::UI(ui) => ui.timestamp,
-                SearchResult::Input(input) => input.timestamp,
-                SearchResult::Memory(m) => {
-                    m.created_at.parse::<DateTime<Utc>>().unwrap_or_default()
-                }
-            };
-            timestamp_b.cmp(&timestamp_a)
-        });
+        results.sort_by(|a, b| b.sort_timestamp().cmp(&a.sort_timestamp()));
 
         // For ContentType::All, sub-functions each fetched limit+offset rows
         // with offset=0. Now apply pagination once on the globally-sorted set.
@@ -3873,6 +3952,8 @@ impl DatabaseManager {
         // Match only frames carrying ALL of these tags (vision_tags join).
         // Empty slice = no tag filter. See `search_with_tags`.
         tags: &[String],
+        // Time windows (starred sessions); see `search_with_scope`.
+        scope: &SearchScope,
     ) -> Result<Vec<OCRResult>, sqlx::Error> {
         // Acquire a heavy-read permit (max 2 concurrent). OCR searches can
         // return massive text blobs and hold connections for seconds, starving
@@ -3962,6 +4043,7 @@ impl DatabaseManager {
                 GROUP BY vt.vision_id
                 HAVING COUNT(DISTINCT t.name) = json_array_length(?12)
             ))
+            {window_condition}
         GROUP BY frames.id
         ORDER BY frames.timestamp DESC
         LIMIT ?10 OFFSET ?11
@@ -3976,6 +4058,18 @@ impl DatabaseManager {
             } else {
                 ""
             },
+            window_condition = match &scope.windows {
+                Some(_) => format!(
+                    "AND {}",
+                    crate::ext::search_parsed::window_filter_sql(
+                        "frames.id",
+                        "frames",
+                        "timestamp",
+                        "?13"
+                    )
+                ),
+                None => String::new(),
+            },
         );
 
         // Serialize the tag filter to a JSON array so the SQL can use
@@ -3985,9 +4079,7 @@ impl DatabaseManager {
 
         let query_builder = sqlx::query_as(sqlx::AssertSqlSafe(sql));
 
-        // Interrupted if the request that wants these results goes away.
-        let mut reader = self.cancellable_read().await?;
-        let raw_results: Vec<OCRResultRaw> = query_builder
+        let mut query_builder = query_builder
             .bind(if has_fts { Some(&fts_query) } else { None })
             .bind(start_time)
             .bind(end_time)
@@ -3999,9 +4091,13 @@ impl DatabaseManager {
             .bind(frame_name)
             .bind(limit)
             .bind(offset)
-            .bind(&tags_json)
-            .fetch_all(reader.conn())
-            .await?;
+            .bind(&tags_json);
+        if let Some(windows) = &scope.windows {
+            query_builder = query_builder.bind(windows.to_sql_json());
+        }
+        // Interrupted if the request that wants these results goes away.
+        let mut reader = self.cancellable_read().await?;
+        let raw_results: Vec<OCRResultRaw> = query_builder.fetch_all(reader.conn()).await?;
         reader.finish();
 
         Ok(raw_results
@@ -4047,6 +4143,43 @@ impl DatabaseManager {
         // join). Empty slice = no tag filter. See `search_with_tags`.
         tags: &[String],
     ) -> Result<Vec<AudioResult>, sqlx::Error> {
+        self.search_audio_scoped(
+            query,
+            limit,
+            offset,
+            start_time,
+            end_time,
+            min_length,
+            max_length,
+            speaker_ids,
+            speaker_name,
+            device_name,
+            machine_id,
+            tags,
+            &SearchScope::default(),
+        )
+        .await
+    }
+
+    /// [`search_audio`](Self::search_audio) restricted by `scope`'s time
+    /// windows.
+    #[allow(clippy::too_many_arguments)]
+    async fn search_audio_scoped(
+        &self,
+        query: &str,
+        limit: u32,
+        offset: u32,
+        start_time: Option<DateTime<Utc>>,
+        end_time: Option<DateTime<Utc>>,
+        min_length: Option<usize>,
+        max_length: Option<usize>,
+        speaker_ids: Option<Vec<i64>>,
+        speaker_name: Option<&str>,
+        device_name: Option<&str>,
+        machine_id: Option<&str>,
+        tags: &[String],
+        scope: &SearchScope,
+    ) -> Result<Vec<AudioResult>, sqlx::Error> {
         let fetch_limit = limit.saturating_add(offset);
         let (mut background_results, mut live_results) = tokio::try_join!(
             self.search_background_audio(
@@ -4062,6 +4195,7 @@ impl DatabaseManager {
                 device_name,
                 machine_id,
                 tags,
+                scope,
             ),
             self.search_live_meeting_transcripts(
                 query,
@@ -4076,6 +4210,7 @@ impl DatabaseManager {
                 device_name,
                 machine_id,
                 tags,
+                scope,
             )
         )?;
 
@@ -4103,6 +4238,7 @@ impl DatabaseManager {
         device_name: Option<&str>,
         machine_id: Option<&str>,
         tags: &[String],
+        scope: &SearchScope,
     ) -> Result<Vec<AudioResult>, sqlx::Error> {
         // base query for audio search
         let base_sql = String::from(
@@ -4240,6 +4376,17 @@ impl DatabaseManager {
                 )",
             );
         }
+        let window_condition = scope.windows.as_ref().map(|_| {
+            crate::ext::search_parsed::window_filter_sql(
+                "audio_transcriptions.id",
+                "audio_transcriptions",
+                "timestamp",
+                "?",
+            )
+        });
+        if let Some(condition) = &window_condition {
+            conditions.push(condition.as_str());
+        }
 
         let where_clause = if conditions.is_empty() {
             "WHERE 1=1".to_owned()
@@ -4294,6 +4441,9 @@ impl DatabaseManager {
         let tags_json = serde_json::to_string(tags).unwrap_or_else(|_| "[]".to_string());
         if !tags.is_empty() {
             query_builder = query_builder.bind(&tags_json).bind(&tags_json);
+        }
+        if let Some(windows) = &scope.windows {
+            query_builder = query_builder.bind(windows.to_sql_json());
         }
         query_builder = query_builder.bind(limit as i64).bind(offset as i64);
 
@@ -4378,6 +4528,7 @@ impl DatabaseManager {
         device_name: Option<&str>,
         machine_id: Option<&str>,
         tags: &[String],
+        scope: &SearchScope,
     ) -> Result<Vec<AudioResult>, sqlx::Error> {
         // Live meeting transcripts live in `meeting_transcript_segments`, which
         // has no `audio_tags` join — their tags are display-only placeholders.
@@ -4402,7 +4553,7 @@ impl DatabaseManager {
             speaker_name: Option<String>,
         }
 
-        let rows = sqlx::query_as::<_, LiveAudioResultRaw>(
+        let sql = format!(
             r#"
             SELECT
                 id,
@@ -4422,21 +4573,26 @@ impl DatabaseManager {
               AND (?5 IS NULL OR LENGTH(transcript) <= ?5)
               AND (?6 IS NULL OR speaker_name LIKE '%' || ?6 || '%' COLLATE NOCASE)
               AND (?7 IS NULL OR device_name LIKE '%' || ?7 || '%' COLLATE NOCASE)
+              {window_condition}
             ORDER BY julianday(captured_at) DESC, id DESC
             LIMIT ?8 OFFSET ?9
             "#,
-        )
-        .bind(query)
-        .bind(start_time)
-        .bind(end_time)
-        .bind(min_length.map(|v| v as i64))
-        .bind(max_length.map(|v| v as i64))
-        .bind(speaker_name)
-        .bind(device_name)
-        .bind(limit as i64)
-        .bind(offset as i64)
-        .fetch_all(&self.pool)
-        .await?;
+            window_condition = crate::ext::search_parsed::live_segment_window_condition(scope, "?10"),
+        );
+        let mut live_query = sqlx::query_as::<_, LiveAudioResultRaw>(sqlx::AssertSqlSafe(sql))
+            .bind(query)
+            .bind(start_time)
+            .bind(end_time)
+            .bind(min_length.map(|v| v as i64))
+            .bind(max_length.map(|v| v as i64))
+            .bind(speaker_name)
+            .bind(device_name)
+            .bind(limit as i64)
+            .bind(offset as i64);
+        if let Some(windows) = &scope.windows {
+            live_query = live_query.bind(windows.to_sql_json());
+        }
+        let rows = live_query.fetch_all(&self.pool).await?;
 
         Ok(rows
             .into_iter()
@@ -4492,6 +4648,7 @@ impl DatabaseManager {
         has_speaker_id_filter: bool,
         speaker_name: Option<&str>,
         tags: &[String],
+        scope: &SearchScope,
     ) -> Result<i64, sqlx::Error> {
         // Live meeting segments aren't in `audio_tags` (see
         // `search_live_meeting_transcripts`), so a tag filter excludes them.
@@ -4499,7 +4656,7 @@ impl DatabaseManager {
             return Ok(0);
         }
 
-        sqlx::query_scalar::<_, i64>(
+        let sql = format!(
             r#"
             SELECT COUNT(*)
             FROM meeting_transcript_segments
@@ -4509,16 +4666,21 @@ impl DatabaseManager {
               AND (?4 IS NULL OR LENGTH(transcript) >= ?4)
               AND (?5 IS NULL OR LENGTH(transcript) <= ?5)
               AND (?6 IS NULL OR speaker_name LIKE '%' || ?6 || '%' COLLATE NOCASE)
+              {window_condition}
             "#,
-        )
-        .bind(query)
-        .bind(start_time)
-        .bind(end_time)
-        .bind(min_length.map(|v| v as i64))
-        .bind(max_length.map(|v| v as i64))
-        .bind(speaker_name)
-        .fetch_one(&self.pool)
-        .await
+            window_condition = crate::ext::search_parsed::live_segment_window_condition(scope, "?7"),
+        );
+        let mut count_query = sqlx::query_scalar::<_, i64>(sqlx::AssertSqlSafe(sql))
+            .bind(query)
+            .bind(start_time)
+            .bind(end_time)
+            .bind(min_length.map(|v| v as i64))
+            .bind(max_length.map(|v| v as i64))
+            .bind(speaker_name);
+        if let Some(windows) = &scope.windows {
+            count_query = count_query.bind(windows.to_sql_json());
+        }
+        count_query.fetch_one(&self.pool).await
     }
 
     /// Get frame location for serving.
@@ -4770,7 +4932,7 @@ impl DatabaseManager {
     pub async fn count_search_results_with_tags(
         &self,
         query: &str,
-        mut content_type: ContentType,
+        content_type: ContentType,
         start_time: Option<DateTime<Utc>>,
         end_time: Option<DateTime<Utc>>,
         app_name: Option<&str>,
@@ -4787,9 +4949,81 @@ impl DatabaseManager {
         on_screen: Option<bool>,
         tags: &[String],
     ) -> Result<usize, sqlx::Error> {
+        self.count_search_results_with_scope(
+            query,
+            content_type,
+            start_time,
+            end_time,
+            app_name,
+            window_name,
+            min_length,
+            max_length,
+            speaker_ids,
+            frame_name,
+            browser_url,
+            focused,
+            speaker_name,
+            on_screen,
+            tags,
+            &SearchScope::default(),
+            None,
+        )
+        .await
+    }
+
+    /// Counterpart to [`search_with_scope`](Self::search_with_scope): the
+    /// total for the same filters and scope. `machine_id` only matters for
+    /// `content_type=parsed`; the other content types keep the count they
+    /// always reported.
+    #[allow(clippy::too_many_arguments)]
+    pub async fn count_search_results_with_scope(
+        &self,
+        query: &str,
+        mut content_type: ContentType,
+        start_time: Option<DateTime<Utc>>,
+        end_time: Option<DateTime<Utc>>,
+        app_name: Option<&str>,
+        window_name: Option<&str>,
+        min_length: Option<usize>,
+        max_length: Option<usize>,
+        speaker_ids: Option<Vec<i64>>,
+        frame_name: Option<&str>,
+        browser_url: Option<&str>,
+        focused: Option<bool>,
+        speaker_name: Option<&str>,
+        on_screen: Option<bool>,
+        tags: &[String],
+        scope: &SearchScope,
+        machine_id: Option<&str>,
+    ) -> Result<usize, sqlx::Error> {
+        if scope.matches_nothing() {
+            return Ok(0);
+        }
+
+        if content_type == ContentType::Parsed {
+            let filter = crate::ext::search_parsed::ParsedSearchFilter {
+                query,
+                start_time,
+                end_time,
+                app_name,
+                window_name,
+                browser_url,
+                focused,
+                machine_id,
+                tags,
+                scope,
+            };
+            return self.count_parsed(&filter).await;
+        }
+
         // if focused or browser_url is present, we run only on OCR
         if focused.is_some() || browser_url.is_some() {
             content_type = ContentType::OCR;
+        }
+
+        // Memories have no capture time: a window restriction leaves none.
+        if scope.windows.is_some() && content_type == ContentType::Memory {
+            return Ok(0);
         }
 
         // Mirror `search_with_tags`: input and accessibility have no tag
@@ -4814,27 +5048,29 @@ impl DatabaseManager {
             match content_type {
                 ContentType::Accessibility => {
                     return self
-                        .count_accessibility_visible(
+                        .count_accessibility_visible_scoped(
                             query,
                             visible,
                             app_name,
                             window_name,
                             start_time,
                             end_time,
+                            scope,
                         )
                         .await;
                 }
                 ContentType::All => {
-                    let ax_fut = self.count_accessibility_visible(
+                    let ax_fut = self.count_accessibility_visible_scoped(
                         query,
                         visible,
                         app_name,
                         window_name,
                         start_time,
                         end_time,
+                        scope,
                     );
                     if app_name.is_none() && window_name.is_none() {
-                        let audio_future = Box::pin(self.count_search_results_with_tags(
+                        let audio_future = Box::pin(self.count_search_results_with_scope(
                             query,
                             ContentType::Audio,
                             start_time,
@@ -4850,6 +5086,8 @@ impl DatabaseManager {
                             speaker_name,
                             None,
                             tags,
+                            scope,
+                            None,
                         ));
                         if !tags.is_empty() {
                             // accessibility frames carry no tags → audio only
@@ -4872,7 +5110,7 @@ impl DatabaseManager {
         if content_type == ContentType::All {
             // Since OCR and Accessibility now both query frames_fts,
             // count frames once (not separately) to avoid double-counting
-            let frames_future = Box::pin(self.count_search_results_with_tags(
+            let frames_future = Box::pin(self.count_search_results_with_scope(
                 query,
                 ContentType::OCR, // OCR branch now counts all frames via frames_fts
                 start_time,
@@ -4888,10 +5126,12 @@ impl DatabaseManager {
                 None,
                 None,
                 tags,
+                scope,
+                None,
             ));
 
             if app_name.is_none() && window_name.is_none() {
-                let audio_future = Box::pin(self.count_search_results_with_tags(
+                let audio_future = Box::pin(self.count_search_results_with_scope(
                     query,
                     ContentType::Audio,
                     start_time,
@@ -4907,6 +5147,8 @@ impl DatabaseManager {
                     speaker_name,
                     None,
                     tags,
+                    scope,
+                    None,
                 ));
 
                 let (frames_count, audio_count) = tokio::try_join!(frames_future, audio_future)?;
@@ -4981,7 +5223,8 @@ impl DatabaseManager {
                            GROUP BY vt.vision_id
                            HAVING COUNT(DISTINCT t.name) = json_array_length(?8)
                        ))
-                       {a11y_filter}"#,
+                       {a11y_filter}
+                       {window_condition}"#,
                 fts_join = if has_fts {
                     "JOIN frames_fts ON frames.id = frames_fts.rowid"
                 } else {
@@ -4996,7 +5239,8 @@ impl DatabaseManager {
                     "AND frames.accessibility_text IS NOT NULL AND frames.accessibility_text != ''"
                 } else {
                     ""
-                }
+                },
+                window_condition = frames_window_condition(scope, "frames.id", "?9"),
             ),
             ContentType::Audio => format!(
                 r#"SELECT COUNT(DISTINCT audio_transcriptions.id)
@@ -5010,6 +5254,7 @@ impl DatabaseManager {
                        AND (json_array_length(?6) = 0 OR audio_transcriptions.speaker_id IN (SELECT value FROM json_each(?6)))
                        {speaker_name_condition}
                        {tag_filter}
+                       {window_condition}
                 "#,
                 table = if query.is_empty() {
                     "audio_transcriptions"
@@ -5048,7 +5293,26 @@ impl DatabaseManager {
                     "1=1"
                 } else {
                     "audio_transcriptions_fts MATCH ?1"
-                }
+                },
+                // Numbered after the optional speaker-name and tag
+                // parameters, which bind before it.
+                window_condition = match &scope.windows {
+                    Some(_) => {
+                        let n = 7
+                            + usize::from(speaker_name.is_some())
+                            + usize::from(!tags.is_empty());
+                        format!(
+                            "AND {}",
+                            crate::ext::search_parsed::window_filter_sql(
+                                "audio_transcriptions.id",
+                                "audio_transcriptions",
+                                "timestamp",
+                                &format!("?{n}"),
+                            )
+                        )
+                    }
+                    None => String::new(),
+                },
             ),
             ContentType::Memory => {
                 let start_str = start_time.map(|t| t.format("%Y-%m-%dT%H:%M:%S%.3fZ").to_string());
@@ -5070,6 +5334,7 @@ impl DatabaseManager {
                 // Count ui_events using parameterized LIKE queries
                 let mut conditions = Vec::new();
                 let mut bind_values: Vec<String> = Vec::new();
+                push_ui_event_scope_conditions(scope, &mut conditions, &mut bind_values);
 
                 if !query.is_empty() {
                     conditions.push(
@@ -5125,7 +5390,7 @@ impl DatabaseManager {
 
         let count: i64 = match content_type {
             ContentType::OCR | ContentType::Accessibility => {
-                sqlx::query_scalar(sqlx::AssertSqlSafe(sql))
+                let mut query_builder = sqlx::query_scalar(sqlx::AssertSqlSafe(sql))
                     .bind(if has_fts { fts_query } else { "*".to_owned() })
                     .bind(start_time)
                     .bind(end_time)
@@ -5133,9 +5398,11 @@ impl DatabaseManager {
                     .bind(max_length.map(|l| l as i64))
                     .bind(frame_name)
                     .bind(focused)
-                    .bind(&tags_json)
-                    .fetch_one(&self.pool)
-                    .await?
+                    .bind(&tags_json);
+                if let Some(windows) = &scope.windows {
+                    query_builder = query_builder.bind(windows.to_sql_json());
+                }
+                query_builder.fetch_one(&self.pool).await?
             }
             ContentType::Audio => {
                 let sanitized_audio = if query.is_empty() {
@@ -5156,6 +5423,9 @@ impl DatabaseManager {
                 if !tags.is_empty() {
                     query_builder = query_builder.bind(&tags_json);
                 }
+                if let Some(windows) = &scope.windows {
+                    query_builder = query_builder.bind(windows.to_sql_json());
+                }
                 let background_count: i64 = query_builder.fetch_one(&self.pool).await?;
                 let live_count = self
                     .count_live_meeting_transcript_results(
@@ -5167,6 +5437,7 @@ impl DatabaseManager {
                         has_speaker_id_filter,
                         speaker_name,
                         tags,
+                        scope,
                     )
                     .await?;
                 background_count + live_count
@@ -5792,6 +6063,33 @@ impl DatabaseManager {
         limit: u32,
         offset: u32,
     ) -> Result<Vec<UiContent>, sqlx::Error> {
+        self.search_accessibility_scoped(
+            query,
+            app_name,
+            window_name,
+            start_time,
+            end_time,
+            limit,
+            offset,
+            &SearchScope::default(),
+        )
+        .await
+    }
+
+    /// [`search_accessibility`](Self::search_accessibility) restricted by
+    /// `scope`'s time windows.
+    #[allow(clippy::too_many_arguments)]
+    async fn search_accessibility_scoped(
+        &self,
+        query: &str,
+        app_name: Option<&str>,
+        window_name: Option<&str>,
+        start_time: Option<DateTime<Utc>>,
+        end_time: Option<DateTime<Utc>>,
+        limit: u32,
+        offset: u32,
+        scope: &SearchScope,
+    ) -> Result<Vec<UiContent>, sqlx::Error> {
         // Now queries frames_fts (consolidated) instead of accessibility_fts
         let mut fts_parts = Vec::new();
         if !query.is_empty() {
@@ -5827,7 +6125,8 @@ impl DatabaseManager {
                 COALESCE(vc.file_path, '') as file_path,
                 COALESCE(f.offset_index, 0) as offset_index,
                 f.name as frame_name,
-                f.browser_url
+                f.browser_url,
+                f.capture_trigger AS event_source
             FROM frames f
             LEFT JOIN video_chunks vc ON f.video_chunk_id = vc.id
             {fts_join}
@@ -5836,6 +6135,7 @@ impl DatabaseManager {
                 AND (?2 IS NULL OR f.timestamp >= ?2)
                 AND (?3 IS NULL OR f.timestamp <= ?3)
                 AND f.accessibility_text IS NOT NULL AND f.accessibility_text != ''
+                {window_condition}
             ORDER BY f.timestamp DESC
             LIMIT ?4 OFFSET ?5
             "#,
@@ -5849,9 +6149,10 @@ impl DatabaseManager {
             } else {
                 ""
             },
+            window_condition = frames_window_condition(scope, "f.id", "?6"),
         );
 
-        sqlx::query_as(sqlx::AssertSqlSafe(sql))
+        let mut q = sqlx::query_as(sqlx::AssertSqlSafe(sql))
             .bind(if has_fts {
                 combined_query
             } else {
@@ -5860,9 +6161,11 @@ impl DatabaseManager {
             .bind(start_time)
             .bind(end_time)
             .bind(limit)
-            .bind(offset)
-            .fetch_all(&self.pool)
-            .await
+            .bind(offset);
+        if let Some(windows) = &scope.windows {
+            q = q.bind(windows.to_sql_json());
+        }
+        q.fetch_all(&self.pool).await
     }
 
     /// Search accessibility text restricted to elements visually present on
@@ -5894,6 +6197,35 @@ impl DatabaseManager {
         limit: u32,
         offset: u32,
     ) -> Result<Vec<UiContent>, sqlx::Error> {
+        self.search_accessibility_visible_scoped(
+            query,
+            on_screen,
+            app_name,
+            window_name,
+            start_time,
+            end_time,
+            limit,
+            offset,
+            &SearchScope::default(),
+        )
+        .await
+    }
+
+    /// [`search_accessibility_visible`](Self::search_accessibility_visible)
+    /// restricted by `scope`'s time windows.
+    #[allow(clippy::too_many_arguments)]
+    async fn search_accessibility_visible_scoped(
+        &self,
+        query: &str,
+        on_screen: bool,
+        app_name: Option<&str>,
+        window_name: Option<&str>,
+        start_time: Option<DateTime<Utc>>,
+        end_time: Option<DateTime<Utc>>,
+        limit: u32,
+        offset: u32,
+        scope: &SearchScope,
+    ) -> Result<Vec<UiContent>, sqlx::Error> {
         let has_query = !query.trim().is_empty();
         // Empty query is supported — drops the FTS join entirely so the
         // filter is purely "show me on-screen accessibility elements in
@@ -5911,7 +6243,8 @@ impl DatabaseManager {
                 COALESCE(vc.file_path, '') as file_path,
                 COALESCE(f.offset_index, 0) as offset_index,
                 f.name as frame_name,
-                f.browser_url
+                f.browser_url,
+                f.capture_trigger AS event_source
             FROM elements e
             {fts_join}
             JOIN frames f ON f.id = e.frame_id
@@ -5923,6 +6256,7 @@ impl DatabaseManager {
               AND (?3 IS NULL OR f.timestamp <= ?3)
               AND (?4 IS NULL OR f.app_name = ?4)
               AND (?5 IS NULL OR f.window_name LIKE '%' || ?5 || '%')
+              {window_condition}
             GROUP BY f.id
             ORDER BY f.timestamp DESC
             LIMIT ?6 OFFSET ?7
@@ -5937,6 +6271,10 @@ impl DatabaseManager {
             } else {
                 ""
             },
+            // Numbered after the optional query parameter so every number
+            // up to the last one is bound.
+            window_condition =
+                frames_window_condition(scope, "f.id", if has_query { "?9" } else { "?8" }),
         );
 
         let on_screen_int: i64 = if on_screen { 1 } else { 0 };
@@ -5950,6 +6288,9 @@ impl DatabaseManager {
             .bind(offset);
         if has_query {
             q = q.bind(crate::text_normalizer::sanitize_fts5_query(query));
+        }
+        if let Some(windows) = &scope.windows {
+            q = q.bind(windows.to_sql_json());
         }
         q.fetch_all(&self.pool).await
     }
@@ -5966,6 +6307,31 @@ impl DatabaseManager {
         start_time: Option<DateTime<Utc>>,
         end_time: Option<DateTime<Utc>>,
     ) -> Result<usize, sqlx::Error> {
+        self.count_accessibility_visible_scoped(
+            query,
+            on_screen,
+            app_name,
+            window_name,
+            start_time,
+            end_time,
+            &SearchScope::default(),
+        )
+        .await
+    }
+
+    /// [`count_accessibility_visible`](Self::count_accessibility_visible)
+    /// restricted by `scope`'s time windows.
+    #[allow(clippy::too_many_arguments)]
+    async fn count_accessibility_visible_scoped(
+        &self,
+        query: &str,
+        on_screen: bool,
+        app_name: Option<&str>,
+        window_name: Option<&str>,
+        start_time: Option<DateTime<Utc>>,
+        end_time: Option<DateTime<Utc>>,
+        scope: &SearchScope,
+    ) -> Result<usize, sqlx::Error> {
         let has_query = !query.trim().is_empty();
         let sql = format!(
             r#"
@@ -5979,6 +6345,7 @@ impl DatabaseManager {
               AND (?3 IS NULL OR f.timestamp <= ?3)
               AND (?4 IS NULL OR f.app_name = ?4)
               AND (?5 IS NULL OR f.window_name LIKE '%' || ?5 || '%')
+              {window_condition}
             "#,
             fts_join = if has_query {
                 "JOIN elements_fts ef ON ef.rowid = e.id"
@@ -5990,6 +6357,8 @@ impl DatabaseManager {
             } else {
                 ""
             },
+            window_condition =
+                frames_window_condition(scope, "f.id", if has_query { "?7" } else { "?6" }),
         );
 
         let on_screen_int: i64 = if on_screen { 1 } else { 0 };
@@ -6001,6 +6370,9 @@ impl DatabaseManager {
             .bind(window_name);
         if has_query {
             q = q.bind(crate::text_normalizer::sanitize_fts5_query(query));
+        }
+        if let Some(windows) = &scope.windows {
+            q = q.bind(windows.to_sql_json());
         }
         let n: i64 = q.fetch_one(&self.pool).await?;
         Ok(n.max(0) as usize)
@@ -6019,8 +6391,38 @@ impl DatabaseManager {
         limit: u32,
         offset: u32,
     ) -> Result<Vec<UiEventRecord>, sqlx::Error> {
+        self.search_ui_events_scoped(
+            query,
+            event_type,
+            app_name,
+            window_name,
+            start_time,
+            end_time,
+            limit,
+            offset,
+            &SearchScope::default(),
+        )
+        .await
+    }
+
+    /// [`search_ui_events`](Self::search_ui_events) restricted by `scope`:
+    /// time windows and the input-context filter.
+    #[allow(clippy::too_many_arguments)]
+    async fn search_ui_events_scoped(
+        &self,
+        query: Option<&str>,
+        event_type: Option<&str>,
+        app_name: Option<&str>,
+        window_name: Option<&str>,
+        start_time: Option<DateTime<Utc>>,
+        end_time: Option<DateTime<Utc>>,
+        limit: u32,
+        offset: u32,
+        scope: &SearchScope,
+    ) -> Result<Vec<UiEventRecord>, sqlx::Error> {
         let mut conditions = vec!["1=1".to_string()];
         let mut bind_values: Vec<String> = Vec::new();
+        push_ui_event_scope_conditions(scope, &mut conditions, &mut bind_values);
 
         if let Some(q) = query {
             if !q.is_empty() {
