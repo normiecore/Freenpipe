@@ -124,8 +124,15 @@ fp_disk_check() {
   rm -rf "$HOME/.bun/install/cache" "$HOME/.cargo/registry/cache" 2>/dev/null
   avail=$(df -Pk "$dir" | awk "NR==2 {print int(\$4/1048576)}")
   if [ "$avail" -lt "$min" ] && [ -n "${CARGO_TARGET_DIR:-}" ]; then
-    echo "disk: still ${avail} GB, removing the whole target dir $CARGO_TARGET_DIR"
-    rm -rf "$CARGO_TARGET_DIR"
+    if [ -n "$(ls -A "${FP_STATE:-$HOME/.cache/freenpipe}/wt" 2>/dev/null)" ]; then
+      # WP worktrees share this target dir; removing it breaks their running builds
+      # and forces every one of them to rebuild from scratch. Prune dead builds only.
+      echo "disk: still ${avail} GB; WP worktrees are active, so pruning dead builds instead of removing the target dir"
+      python3 "${FP_ROOT:-.}/tools/cloud/prune-target.py" --delete 2>&1 | tail -n 2
+    else
+      echo "disk: still ${avail} GB, removing the whole target dir $CARGO_TARGET_DIR"
+      rm -rf "$CARGO_TARGET_DIR"
+    fi
   fi
   echo "disk: now $(df -Pk "$dir" | awk "NR==2 {print int(\$4/1048576)}") GB free"
 }

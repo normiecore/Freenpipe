@@ -20,6 +20,7 @@ use screenpipe_events::PermissionKind;
 use screenpipe_screen::monitor::{list_monitors_detailed, MonitorListError, SafeMonitor};
 
 use super::manager::{VisionManager, VisionManagerStatus};
+use super::wedge_watchdog::WedgeWatchdog;
 use crate::drm_detector;
 use crate::permission_monitor;
 
@@ -69,6 +70,9 @@ pub async fn start_monitor_watcher(
         let mut paused_skip_logged: HashSet<u32> = HashSet::new();
         // Persists the display arrangement (startup row, then one per change).
         let mut layout_recorder = DisplayLayoutRecorder::new();
+        // Restarts the VisionManager when a capture loop is stuck (bounded,
+        // backed off, local log only).
+        let mut wedge_watchdog = WedgeWatchdog::default();
 
         // Initialize with current monitors
         match list_monitors_detailed().await {
@@ -240,6 +244,15 @@ pub async fn start_monitor_watcher(
                         }
                     }
                 }
+                continue;
+            }
+
+            // ── Capture-loop wedge watchdog ─────────────────────────────────
+            // A loop frozen inside a stage, or one whose attempts never come
+            // back, gets the VisionManager restarted. The next pass then
+            // re-reads the monitors as usual.
+            if wedge_watchdog.run_pass(&vision_manager).await {
+                tokio::time::sleep(Duration::from_secs(2)).await;
                 continue;
             }
 
