@@ -134,12 +134,7 @@ impl PipeHooks {
 
     pub async fn on_scheduler_start(&self) {
         for hook in &self.hooks {
-            guard(
-                hook.name(),
-                "on_scheduler_start",
-                hook.on_scheduler_start(),
-            )
-            .await;
+            guard(hook.name(), "on_scheduler_start", hook.on_scheduler_start()).await;
         }
     }
 }

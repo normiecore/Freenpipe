@@ -85,10 +85,7 @@ impl SummaryRefreshRequest {
             .filter(|k| !k.is_empty())
         {
             Some(k) => k.to_string(),
-            None => refresh_trigger_key(
-                self.meeting_id,
-                chrono::Utc::now().timestamp_millis(),
-            ),
+            None => refresh_trigger_key(self.meeting_id, chrono::Utc::now().timestamp_millis()),
         }
     }
 }

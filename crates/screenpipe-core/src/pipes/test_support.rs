@@ -39,10 +39,11 @@ impl MemoryPipeStore {
     }
 
     pub fn is_claimed(&self, pipe: &str, event: &str, key: &str) -> bool {
-        self.claims
-            .lock()
-            .unwrap()
-            .contains(&(pipe.to_string(), event.to_string(), key.to_string()))
+        self.claims.lock().unwrap().contains(&(
+            pipe.to_string(),
+            event.to_string(),
+            key.to_string(),
+        ))
     }
 
     /// Add a finished row directly (fixtures).
@@ -135,7 +136,8 @@ impl PipeStore for MemoryPipeStore {
         let _wait = self.running_gate.read().await;
         Ok(self
             .with_row(id, |r| {
-                let open = matches!(r.status.as_str(), "queued" | "running") && r.finished_at.is_none();
+                let open =
+                    matches!(r.status.as_str(), "queued" | "running") && r.finished_at.is_none();
                 if open {
                     r.status = "running".to_string();
                     if pid.is_some() {
@@ -302,8 +304,7 @@ impl PipeStore for MemoryPipeStore {
                 r.pipe_name == pipe_name
                     && r.trigger_event.as_deref() == Some(event)
                     && r.error_type.as_deref() == Some("interrupted")
-                    && r
-                        .finished_at
+                    && r.finished_at
                         .as_deref()
                         .and_then(|t| DateTime::parse_from_rfc3339(t).ok())
                         .is_some_and(|t| t >= since)
@@ -340,8 +341,7 @@ impl PipeStore for MemoryPipeStore {
                 r.pipe_name == pipe_name
                     && r.trigger_event.as_deref() == Some(event)
                     && in_family(r.trigger_key.as_deref(), key)
-                    && r
-                        .started_at
+                    && r.started_at
                         .as_deref()
                         .and_then(|t| DateTime::parse_from_rfc3339(t).ok())
                         .is_some_and(|t| t >= since)

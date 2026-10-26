@@ -35,8 +35,8 @@ use tracing::{debug, info, warn};
 
 use super::extract::{summary_from_run_output, summary_section};
 use super::{
-    meeting_id_from_trigger_key, recovery_trigger_key, SummaryRefreshRequest,
-    MEETING_ENDED_EVENT, MEETING_SUMMARY_PIPE, REFRESH_REASON_INTERRUPTED, SUMMARY_REFRESH_EVENT,
+    meeting_id_from_trigger_key, recovery_trigger_key, SummaryRefreshRequest, MEETING_ENDED_EVENT,
+    MEETING_SUMMARY_PIPE, REFRESH_REASON_INTERRUPTED, SUMMARY_REFRESH_EVENT,
 };
 use crate::pipes::hooks::{PipeRunHook, RunEnd, RunStart};
 use crate::pipes::PipeStore;
@@ -208,7 +208,12 @@ impl MeetingSummaryFinalizer {
         let since = Utc::now() - Duration::hours(RECOVERY_LOOKBACK_HOURS);
         let runs = self
             .store
-            .interrupted_event_runs(&self.pipe_name, MEETING_ENDED_EVENT, since, RECOVERY_SCAN_LIMIT)
+            .interrupted_event_runs(
+                &self.pipe_name,
+                MEETING_ENDED_EVENT,
+                since,
+                RECOVERY_SCAN_LIMIT,
+            )
             .await?;
         let mut sent = Vec::new();
         for run in runs {

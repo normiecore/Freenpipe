@@ -37,6 +37,8 @@ pub const ERROR_CONTENT_FILTER: &str = "content_filter";
 pub const ERROR_REFUSAL: &str = "refusal";
 /// `error_type` for a run whose AI provider is not configured.
 pub const ERROR_AI_PRESET_UNAVAILABLE: &str = "ai_preset_unavailable";
+/// `error_type` (from the base) for a context that outgrew the model.
+pub const ERROR_CONTEXT_OVERFLOW: &str = "context_overflow";
 
 /// Stop reasons that mean the model finished its answer on its own.
 const NORMAL_STOPS: &[&str] = &["stop", "end_turn", "endturn", "stop_sequence"];
@@ -248,7 +250,9 @@ fn note_message(
     if let Some(reason) = &stop_reason {
         let lower = reason.to_ascii_lowercase();
         if !NORMAL_STOPS.contains(&lower.as_str()) && lower != "tooluse" && lower != "tool_use" {
-            digest.provider_errors.push(format!("stop reason: {reason}"));
+            digest
+                .provider_errors
+                .push(format!("stop reason: {reason}"));
         }
     }
     digest.final_message = Some(FinalMessage {
@@ -280,6 +284,14 @@ pub fn assess_run(exit_ok: bool, stdout: &str, stderr: &str) -> RunOutcome {
     }
 
     if let Some(failure) = digest.compaction_failure.as_deref() {
+        // Pi reports a failed overflow recovery through the same event; it
+        // keeps the older class, which also starts the next run fresh.
+        if failure.to_lowercase().contains("overflow") {
+            return RunOutcome::failed(
+                Some(ERROR_CONTEXT_OVERFLOW),
+                format!("the context overflowed and could not be recovered: {failure}"),
+            );
+        }
         return RunOutcome::failed(
             Some(ERROR_CONTEXT_COMPACTION),
             format!("context compaction failed before a final answer: {failure}"),
@@ -370,7 +382,8 @@ fn refusal_kind(texts: &[&str]) -> Option<Refusal> {
         let reason_refusal = ["stop_reason", "stopreason", "finish_reason", "finishreason"]
             .iter()
             .any(|k| {
-                compact.contains(&format!("{k}:refusal")) || compact.contains(&format!("{k}=refusal"))
+                compact.contains(&format!("{k}:refusal"))
+                    || compact.contains(&format!("{k}=refusal"))
             })
             || compact.contains("stopreason:refus");
         let safety_refusal = lower.contains("safety")
@@ -392,7 +405,9 @@ fn refusal_kind(texts: &[&str]) -> Option<Refusal> {
 fn mentions_compaction_failure(text: &str) -> bool {
     let lower = text.to_lowercase();
     lower.contains("compaction")
-        && (lower.contains("failed") || lower.contains("rejected") || lower.contains("stayed above"))
+        && (lower.contains("failed")
+            || lower.contains("rejected")
+            || lower.contains("stayed above"))
 }
 
 fn mentions_missing_provider(text: &str) -> bool {
@@ -533,6 +548,31 @@ mod tests {
     }
 
     #[test]
+    fn pi_compaction_end_events_are_read() {
+        // Pi 0.84 names the event `compaction_end`; a skipped compaction has
+        // no result and no error and is not a failure.
+        let skipped = [
+            r#"{"type":"compaction_end","reason":"threshold","aborted":false,"willRetry":false}"#
+                .to_string(),
+            assistant_end("Done.", "stop"),
+        ]
+        .join("\n");
+        assert!(assess_run(true, &skipped, "").success);
+
+        let failed = r#"{"type":"compaction_end","reason":"threshold","aborted":false,"willRetry":false,"errorMessage":"Compaction failed: summary too short"}"#;
+        assert_eq!(
+            assess_run(true, failed, "").error_type.as_deref(),
+            Some(ERROR_CONTEXT_COMPACTION)
+        );
+
+        let overflow = r#"{"type":"compaction_end","reason":"overflow","aborted":false,"willRetry":false,"errorMessage":"Context overflow recovery failed after one compact-and-retry attempt."}"#;
+        assert_eq!(
+            assess_run(false, overflow, "").error_type.as_deref(),
+            Some(ERROR_CONTEXT_OVERFLOW)
+        );
+    }
+
+    #[test]
     fn a_successful_compaction_does_not_fail_the_run() {
         let stdout = [
             r#"{"type":"auto_compaction_end","aborted":false,"willRetry":false,"result":{"summary":"x"}}"#.to_string(),
@@ -550,7 +590,11 @@ mod tests {
                 "errorMessage": "Provider finish_reason: content_filter"}
         })
         .to_string();
-        let outcome = assess_run(false, &filtered, "LLM error: Provider finish_reason: content_filter");
+        let outcome = assess_run(
+            false,
+            &filtered,
+            "LLM error: Provider finish_reason: content_filter",
+        );
         assert_eq!(outcome.error_type.as_deref(), Some(ERROR_CONTENT_FILTER));
 
         let refused = serde_json::json!({

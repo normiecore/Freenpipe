@@ -169,7 +169,11 @@ impl DatabaseManager {
 
     /// Finish a run that never started: a `queued` row with no
     /// `finished_at` becomes `cancelled`. Returns whether it changed.
-    pub async fn cancel_queued_pipe_execution(&self, id: i64, now: &str) -> Result<bool, SqlxError> {
+    pub async fn cancel_queued_pipe_execution(
+        &self,
+        id: i64,
+        now: &str,
+    ) -> Result<bool, SqlxError> {
         let mut tx = self.begin_immediate_with_retry().await?;
         let changed = sqlx::query(
             "UPDATE pipe_executions \
@@ -327,7 +331,9 @@ mod tests {
             .format("%Y-%m-%dT%H:%M:%S%.3fZ")
             .to_string();
         let fresh = Utc::now().to_rfc3339();
-        db.claim_pipe_event_run("p", "e", "old", &old).await.unwrap();
+        db.claim_pipe_event_run("p", "e", "old", &old)
+            .await
+            .unwrap();
         db.claim_pipe_event_run("p", "e", "old-z", &old_z)
             .await
             .unwrap();
@@ -383,7 +389,10 @@ mod tests {
         assert_eq!(pid.0, Some(41));
 
         // A cancelled queued row is never reopened by a stale worker.
-        let queued = db.insert_pipe_execution(new_exec(None, &now)).await.unwrap();
+        let queued = db
+            .insert_pipe_execution(new_exec(None, &now))
+            .await
+            .unwrap();
         assert!(db.cancel_queued_pipe_execution(queued, &now).await.unwrap());
         assert!(!db.cancel_queued_pipe_execution(queued, &now).await.unwrap());
         assert!(!db

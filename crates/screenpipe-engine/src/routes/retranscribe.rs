@@ -999,10 +999,9 @@ mod tests {
             transcript: "we agreed to ship on friday".to_string(),
             captured_at: Utc::now(),
         };
-        let replaced =
-            replace_meeting_transcript_and_request_summary(&db, meeting_id, &[segment])
-                .await
-                .unwrap();
+        let replaced = replace_meeting_transcript_and_request_summary(&db, meeting_id, &[segment])
+            .await
+            .unwrap();
         assert_eq!(replaced.inserted, 1);
         assert!(replaced.summary_refresh_event_emitted);
         assert!(DateTime::parse_from_rfc3339(&replaced.transcript_updated_at).is_ok());

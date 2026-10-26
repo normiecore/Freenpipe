@@ -21,11 +21,11 @@ pub mod hooks;
 
 // Event-run idempotency, run outcome checks and the meeting-summary
 // finalizer (W3-06).
+#[cfg(test)]
+mod event_run_tests;
 pub mod event_runs;
 pub mod meeting_summary;
 pub mod outcome;
-#[cfg(test)]
-mod event_run_tests;
 #[cfg(test)]
 mod test_support;
 
@@ -1562,7 +1562,11 @@ fn cleanup_pipe_token(
 
 /// Give an event claim back so a later delivery of the same event instance
 /// may run the pipe.
-async fn release_claim(store: Option<&Arc<dyn PipeStore>>, claim: &event_runs::EventClaim, why: &str) {
+async fn release_claim(
+    store: Option<&Arc<dyn PipeStore>>,
+    claim: &event_runs::EventClaim,
+    why: &str,
+) {
     let Some(store) = store else {
         return;
     };
@@ -1585,7 +1589,11 @@ async fn release_claim(store: Option<&Arc<dyn PipeStore>>, claim: &event_runs::E
 async fn prune_event_claims(store: &dyn PipeStore) {
     let cutoff = Utc::now() - chrono::Duration::days(event_runs::CLAIM_RETENTION_DAYS);
     match store.prune_event_runs(cutoff).await {
-        Ok(n) if n > 0 => info!("pipe event claims: pruned {} older than {} days", n, event_runs::CLAIM_RETENTION_DAYS),
+        Ok(n) if n > 0 => info!(
+            "pipe event claims: pruned {} older than {} days",
+            n,
+            event_runs::CLAIM_RETENTION_DAYS
+        ),
         Ok(_) => {}
         Err(e) => warn!("pipe event claims: pruning failed: {}", e),
     }
@@ -2383,7 +2391,14 @@ impl PipeManager {
         // Create DB execution row
         let exec_id = if let Some(ref store) = self.store {
             match store
-                .create_execution(name, "manual", &run_model, run_provider.as_deref(), None, None)
+                .create_execution(
+                    name,
+                    "manual",
+                    &run_model,
+                    run_provider.as_deref(),
+                    None,
+                    None,
+                )
                 .await
             {
                 Ok(id) => {
@@ -2573,6 +2588,13 @@ impl PipeManager {
                             )
                             .await;
                     }
+                    record_conversation_id(
+                        store_ref.as_ref(),
+                        exec_id,
+                        history_enabled,
+                        session_path.as_deref(),
+                    )
+                    .await;
                     if let Some(ref store) = store_ref {
                         let _ = store.upsert_scheduler_state(&pipe_name, run_ok).await;
                     }
@@ -2900,7 +2922,14 @@ impl PipeManager {
             // Create DB execution row
             let exec_id = if let Some(ref store) = self.store {
                 match store
-                    .create_execution(name, trigger, &run_model, run_provider.as_deref(), None, None)
+                    .create_execution(
+                        name,
+                        trigger,
+                        &run_model,
+                        run_provider.as_deref(),
+                        None,
+                        None,
+                    )
                     .await
                 {
                     Ok(id) => {
@@ -3095,6 +3124,13 @@ impl PipeManager {
                             )
                             .await;
                     }
+                    record_conversation_id(
+                        self.store.as_ref(),
+                        exec_id,
+                        history_enabled,
+                        session_path.as_deref(),
+                    )
+                    .await;
                     if let Some(ref store) = self.store {
                         let _ = store.upsert_scheduler_state(name, run_ok).await;
                     }
@@ -3884,10 +3920,9 @@ impl PipeManager {
                                 data: e.data.clone(),
                                 directed: true,
                             }),
-                            Err(err) => warn!(
-                                "scheduler: ignoring malformed '{}' event: {}",
-                                e.name, err
-                            ),
+                            Err(err) => {
+                                warn!("scheduler: ignoring malformed '{}' event: {}", e.name, err)
+                            }
                         }
                         pending_events.push((e.name, e.data));
                     }
@@ -4356,7 +4391,10 @@ impl PipeManager {
                         // Stopped while queued: `stop_pipe` already cancelled the
                         // row and gave the claim back.
                         if slot.is_cancelled() {
-                            info!("scheduler: queued run of pipe '{}' was cancelled", pipe_name);
+                            info!(
+                                "scheduler: queued run of pipe '{}' was cancelled",
+                                pipe_name
+                            );
                             queued_ref.lock().await.remove(&pipe_name);
                             remove_run_slot(&run_slots_ref, &pipe_name, &slot).await;
                             if let Some(ref token) = pipe_token {
@@ -4387,13 +4425,15 @@ impl PipeManager {
                         // row that is still queued; one cancelled or finished
                         // meanwhile keeps its state and this run does not start.
                         let may_start = match (&store_ref, exec_id) {
-                            (Some(store), Some(id)) => match store.set_execution_running(id, None).await {
-                                Ok(moved) => moved,
-                                Err(e) => {
-                                    warn!("failed to mark execution {} running: {}", id, e);
-                                    true
+                            (Some(store), Some(id)) => {
+                                match store.set_execution_running(id, None).await {
+                                    Ok(moved) => moved,
+                                    Err(e) => {
+                                        warn!("failed to mark execution {} running: {}", id, e);
+                                        true
+                                    }
                                 }
-                            },
+                            }
                             _ => true,
                         };
                         if !may_start || slot.is_cancelled() {
@@ -4533,7 +4573,9 @@ impl PipeManager {
                                 let run_ok = verdict.success;
                                 let session_path = find_latest_pi_session(&pipe_dir)
                                     .map(|p| p.to_string_lossy().to_string());
-                                if let (Some(ref store), Some(id)) = (&store_ref, finish_row(exec_id)) {
+                                if let (Some(ref store), Some(id)) =
+                                    (&store_ref, finish_row(exec_id))
+                                {
                                     let _ = store
                                         .finish_execution(
                                             id,
@@ -4546,6 +4588,15 @@ impl PipeManager {
                                             session_path.as_deref(),
                                         )
                                         .await;
+                                }
+                                if !cancelled {
+                                    record_conversation_id(
+                                        store_ref.as_ref(),
+                                        exec_id,
+                                        history_enabled,
+                                        session_path.as_deref(),
+                                    )
+                                    .await;
                                 }
                                 if let Some(ref store) = store_ref {
                                     let _ = store.upsert_scheduler_state(&pipe_name, run_ok).await;
@@ -4603,7 +4654,9 @@ impl PipeManager {
                                         .await;
                                     }
                                 }
-                                if let (Some(ref store), Some(id)) = (&store_ref, finish_row(exec_id)) {
+                                if let (Some(ref store), Some(id)) =
+                                    (&store_ref, finish_row(exec_id))
+                                {
                                     let _ = store
                                         .finish_execution(
                                             id,
@@ -4639,7 +4692,9 @@ impl PipeManager {
                                 if real_pid != 0 {
                                     let _ = crate::agents::pi::kill_process_group(real_pid);
                                 }
-                                if let (Some(ref store), Some(id)) = (&store_ref, finish_row(exec_id)) {
+                                if let (Some(ref store), Some(id)) =
+                                    (&store_ref, finish_row(exec_id))
+                                {
                                     let _ = store
                                         .finish_execution(
                                             id,
@@ -5983,6 +6038,43 @@ pub fn find_latest_pi_session(pipe_dir: &Path) -> Option<PathBuf> {
         .map(|e| e.path())
 }
 
+/// Stable chat id of a Pi session file: the session id Pi puts after the
+/// last `_` of the file name (`<timestamp>_<id>.jsonl`), or the whole stem.
+/// Runs that continue the same session (`history: true`) share it, so it is
+/// recorded as their `conversation_id`.
+pub fn pi_session_conversation_id(session_path: &str) -> Option<String> {
+    let stem = Path::new(session_path).file_stem()?.to_str()?;
+    let id = stem.rsplit('_').next().unwrap_or(stem).trim();
+    let id = if id.is_empty() { stem.trim() } else { id };
+    (!id.is_empty()).then(|| id.to_string())
+}
+
+/// Record the session a `history: true` run continued as its
+/// `conversation_id`.
+async fn record_conversation_id(
+    store: Option<&Arc<dyn PipeStore>>,
+    execution_id: Option<i64>,
+    history_enabled: bool,
+    session_path: Option<&str>,
+) {
+    if !history_enabled {
+        return;
+    }
+    let (Some(store), Some(id), Some(conversation)) = (
+        store,
+        execution_id,
+        session_path.and_then(pi_session_conversation_id),
+    ) else {
+        return;
+    };
+    if let Err(e) = store.set_conversation_id(id, &conversation).await {
+        warn!(
+            "failed to record conversation id for execution {}: {}",
+            id, e
+        );
+    }
+}
+
 /// Delete all Pi session files for a pipe's working directory.
 pub fn delete_pi_sessions(pipe_dir: &Path) -> Result<()> {
     let session_dir = encode_pi_session_dir(pipe_dir)
@@ -6865,6 +6957,24 @@ mod tests {
     }
 
     // -- PipeExecution / SchedulerState serde roundtrip ----------------------
+
+    #[test]
+    fn pi_session_files_give_a_stable_conversation_id() {
+        assert_eq!(
+            pi_session_conversation_id(
+                "/home/u/.pi/agent/sessions/--pipes-digest--/2026-10-26T10-00-00-000Z_4f1c2a.jsonl"
+            )
+            .as_deref(),
+            Some("4f1c2a")
+        );
+        assert_eq!(
+            pi_session_conversation_id("C:\\sessions\\plain.jsonl")
+                .as_deref()
+                .map(|s| s.ends_with("plain")),
+            Some(true)
+        );
+        assert_eq!(pi_session_conversation_id(""), None);
+    }
 
     #[test]
     fn test_pipe_execution_serde() {

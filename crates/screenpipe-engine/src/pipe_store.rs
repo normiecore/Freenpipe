@@ -271,10 +271,10 @@ impl PipeStore for SqlitePipeStore {
                  WHERE pipe_name = ? ORDER BY id DESC LIMIT ?"
             );
             let rows = sqlx::query_as::<_, PipeExecutionRow>(sqlx::AssertSqlSafe(sql))
-            .bind(&name)
-            .bind(limit_per_pipe)
-            .fetch_all(pool)
-            .await?;
+                .bind(&name)
+                .bind(limit_per_pipe)
+                .fetch_all(pool)
+                .await?;
             Ok::<_, anyhow::Error>((name, rows))
         }))
         .await?;
@@ -296,7 +296,9 @@ impl PipeStore for SqlitePipeStore {
     }
 
     async fn release_event_run(&self, pipe_name: &str, event: &str, key: &str) -> Result<()> {
-        self.db.release_pipe_event_run(pipe_name, event, key).await?;
+        self.db
+            .release_pipe_event_run(pipe_name, event, key)
+            .await?;
         Ok(())
     }
 
@@ -1236,13 +1238,12 @@ mod tests {
             .await
             .unwrap();
         // The same check as the sqlq acceptance query, on the raw table.
-        let row: (Option<String>, Option<String>) = sqlx::query_as(
-            "SELECT trigger_event, trigger_key FROM pipe_executions WHERE id = ?",
-        )
-        .bind(id)
-        .fetch_one(&store.db.pool)
-        .await
-        .unwrap();
+        let row: (Option<String>, Option<String>) =
+            sqlx::query_as("SELECT trigger_event, trigger_key FROM pipe_executions WHERE id = ?")
+                .bind(id)
+                .fetch_one(&store.db.pool)
+                .await
+                .unwrap();
         assert_eq!(
             row,
             (Some("meeting_ended".to_string()), Some("42".to_string()))
@@ -1261,10 +1262,22 @@ mod tests {
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn claims_are_granted_once_and_can_be_released() {
         let (store, _tmp) = setup_test_store().await;
-        assert!(store.claim_event_run("p", "meeting_ended", "7").await.unwrap());
-        assert!(!store.claim_event_run("p", "meeting_ended", "7").await.unwrap());
-        store.release_event_run("p", "meeting_ended", "7").await.unwrap();
-        assert!(store.claim_event_run("p", "meeting_ended", "7").await.unwrap());
+        assert!(store
+            .claim_event_run("p", "meeting_ended", "7")
+            .await
+            .unwrap());
+        assert!(!store
+            .claim_event_run("p", "meeting_ended", "7")
+            .await
+            .unwrap());
+        store
+            .release_event_run("p", "meeting_ended", "7")
+            .await
+            .unwrap();
+        assert!(store
+            .claim_event_run("p", "meeting_ended", "7")
+            .await
+            .unwrap());
         assert_eq!(
             store
                 .prune_event_runs(Utc::now() + chrono::Duration::seconds(5))
@@ -1272,7 +1285,10 @@ mod tests {
                 .unwrap(),
             1
         );
-        assert!(store.claim_event_run("p", "meeting_ended", "7").await.unwrap());
+        assert!(store
+            .claim_event_run("p", "meeting_ended", "7")
+            .await
+            .unwrap());
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -1394,12 +1410,26 @@ mod tests {
         let since = Utc::now() - chrono::Duration::minutes(5);
         // Meeting 5: interrupted, nothing newer.
         store
-            .create_execution("meeting-summary", "event", "m", None, Some("meeting_ended"), Some("5"))
+            .create_execution(
+                "meeting-summary",
+                "event",
+                "m",
+                None,
+                Some("meeting_ended"),
+                Some("5"),
+            )
             .await
             .unwrap();
         // Meeting 6: interrupted, then a recovery run followed.
         store
-            .create_execution("meeting-summary", "event", "m", None, Some("meeting_ended"), Some("6"))
+            .create_execution(
+                "meeting-summary",
+                "event",
+                "m",
+                None,
+                Some("meeting_ended"),
+                Some("6"),
+            )
             .await
             .unwrap();
         store.mark_orphaned_running().await.unwrap();
@@ -1416,7 +1446,14 @@ mod tests {
             .unwrap();
         // Meeting 56 must not be read as part of meeting 5's family.
         store
-            .create_execution("meeting-summary", "event", "m", None, Some("meeting_ended"), Some("56"))
+            .create_execution(
+                "meeting-summary",
+                "event",
+                "m",
+                None,
+                Some("meeting_ended"),
+                Some("56"),
+            )
             .await
             .unwrap();
 
@@ -1450,7 +1487,10 @@ mod tests {
     // -- Meeting-summary support ----------------------------------------------
 
     async fn ended_meeting(db: &DatabaseManager, secs: i64) -> i64 {
-        let id = db.insert_meeting("zoom", "manual", None, None).await.unwrap();
+        let id = db
+            .insert_meeting("zoom", "manual", None, None)
+            .await
+            .unwrap();
         let start = Utc::now() - chrono::Duration::seconds(secs);
         sqlx::query("UPDATE meetings SET meeting_start = ?1, meeting_end = ?2 WHERE id = ?3")
             .bind(start.to_rfc3339())
@@ -1470,10 +1510,20 @@ mod tests {
         let long = ended_meeting(&db, 1800).await;
         let gate = meeting_event_gate(db.clone());
 
-        let reason = gate("meeting_ended".into(), serde_json::json!({ "meeting_id": short })).await;
-        assert!(reason.unwrap().contains("trivial meeting (0 transcript segments"));
+        let reason = gate(
+            "meeting_ended".into(),
+            serde_json::json!({ "meeting_id": short }),
+        )
+        .await;
+        assert!(reason
+            .unwrap()
+            .contains("trivial meeting (0 transcript segments"));
         assert_eq!(
-            gate("meeting_ended".into(), serde_json::json!({ "meeting_id": long })).await,
+            gate(
+                "meeting_ended".into(),
+                serde_json::json!({ "meeting_id": long })
+            )
+            .await,
             None
         );
         // Counts sent by the emitter are used as given.
@@ -1487,11 +1537,19 @@ mod tests {
         );
         // Other events and unknown meetings pass.
         assert_eq!(
-            gate("meeting_started".into(), serde_json::json!({ "meeting_id": short })).await,
+            gate(
+                "meeting_started".into(),
+                serde_json::json!({ "meeting_id": short })
+            )
+            .await,
             None
         );
         assert_eq!(
-            gate("meeting_ended".into(), serde_json::json!({ "meeting_id": 999_999 })).await,
+            gate(
+                "meeting_ended".into(),
+                serde_json::json!({ "meeting_id": 999_999 })
+            )
+            .await,
             None
         );
     }
@@ -1528,7 +1586,10 @@ mod tests {
         assert!(meeting.meeting_end.is_some());
         assert_eq!(notes.meeting(999_999).await.unwrap(), None);
         assert_eq!(
-            notes.save_summary(999_999, "A real summary.").await.unwrap(),
+            notes
+                .save_summary(999_999, "A real summary.")
+                .await
+                .unwrap(),
             SummarySave::MeetingMissing
         );
     }

@@ -190,7 +190,10 @@ mod tests {
             Some("w-3".to_string())
         );
         assert_eq!(
-            event_instance_key("debugging_session", &json!({"event_type": "debugging_session"})),
+            event_instance_key(
+                "debugging_session",
+                &json!({"event_type": "debugging_session"})
+            ),
             None
         );
         // Pipe chains and other meeting events are not claimed.

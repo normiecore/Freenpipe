@@ -76,7 +76,10 @@ async fn scheduler(
     manager.start_scheduler().await.unwrap();
     // Events sent before the scheduler task subscribes are not delivered.
     assert!(
-        wait_until(Duration::from_secs(20), || ready.ready.load(Ordering::SeqCst)).await,
+        wait_until(Duration::from_secs(20), || ready
+            .ready
+            .load(Ordering::SeqCst))
+        .await,
         "scheduler never subscribed"
     );
     manager
@@ -212,7 +215,10 @@ async fn stopping_a_slot_that_has_not_started_cancels_its_row() {
     let manager = PipeManager::new(pipes_dir, HashMap::new(), Some(store.clone()), 3035);
     manager.load_pipes().await.unwrap();
 
-    assert!(store.claim_event_run(&pipe, "meeting_ended", "5").await.unwrap());
+    assert!(store
+        .claim_event_run(&pipe, "meeting_ended", "5")
+        .await
+        .unwrap());
     let id = store
         .create_execution(&pipe, "event", "m", None, Some("meeting_ended"), Some("5"))
         .await
@@ -234,7 +240,10 @@ async fn stopping_a_slot_that_has_not_started_cancels_its_row() {
     manager.stop_pipe(&pipe).await.unwrap();
     assert!(slot.is_cancelled());
     assert!(!store.is_claimed(&pipe, "meeting_ended", "5"));
-    assert_eq!(store.get_execution(id).await.unwrap().unwrap().status, "cancelled");
+    assert_eq!(
+        store.get_execution(id).await.unwrap().unwrap().status,
+        "cancelled"
+    );
     // A stale worker cannot reopen it.
     assert!(!store.set_execution_running(id, Some(9)).await.unwrap());
 }
@@ -406,7 +415,13 @@ fn printed_summary_stdout() -> String {
 }
 
 fn completed_run(store: &MemoryPipeStore, key: &str) -> i64 {
-    store.insert_finished(MEETING_SUMMARY_PIPE, "completed", None, Some(key), Utc::now())
+    store.insert_finished(
+        MEETING_SUMMARY_PIPE,
+        "completed",
+        None,
+        Some(key),
+        Utc::now(),
+    )
 }
 
 fn finalizer(store: &Arc<MemoryPipeStore>, notes: &Arc<FakeNotes>) -> MeetingSummaryFinalizer {
@@ -431,7 +446,10 @@ async fn finalizer_saves_a_summary_the_run_printed_but_did_not_store() {
     assert!(note.starts_with("my own notes"));
     assert!(note.contains("## Summary\nThe group chose the March launch date."));
     assert!(note.contains("- Lee: draft the announcement"));
-    assert_eq!(store.get_execution(id).await.unwrap().unwrap().status, "completed");
+    assert_eq!(
+        store.get_execution(id).await.unwrap().unwrap().status,
+        "completed"
+    );
 }
 
 #[tokio::test]
@@ -516,7 +534,10 @@ async fn finalizer_leaves_saved_summaries_and_failed_runs_alone() {
             error_type: None,
         })
         .await;
-    assert_eq!(store.get_execution(id).await.unwrap().unwrap().status, "completed");
+    assert_eq!(
+        store.get_execution(id).await.unwrap().unwrap().status,
+        "completed"
+    );
 
     // Same section before and after, nothing printed: not saved.
     let id2 = completed_run(&store, &key);
@@ -533,7 +554,13 @@ async fn finalizer_leaves_saved_summaries_and_failed_runs_alone() {
         })
         .await;
     assert_eq!(
-        store.get_execution(id2).await.unwrap().unwrap().error_type.as_deref(),
+        store
+            .get_execution(id2)
+            .await
+            .unwrap()
+            .unwrap()
+            .error_type
+            .as_deref(),
         Some(ERROR_SUMMARY_NOT_SAVED)
     );
 
@@ -562,7 +589,13 @@ async fn finalizer_leaves_saved_summaries_and_failed_runs_alone() {
         })
         .await;
     assert_eq!(
-        store.get_execution(id3).await.unwrap().unwrap().error_type.as_deref(),
+        store
+            .get_execution(id3)
+            .await
+            .unwrap()
+            .unwrap()
+            .error_type
+            .as_deref(),
         Some("rate_limited")
     );
 
@@ -581,7 +614,10 @@ async fn finalizer_leaves_saved_summaries_and_failed_runs_alone() {
             error_type: None,
         })
         .await;
-    assert_eq!(store.get_execution(other).await.unwrap().unwrap().status, "completed");
+    assert_eq!(
+        store.get_execution(other).await.unwrap().unwrap().status,
+        "completed"
+    );
 }
 
 #[tokio::test]
@@ -639,11 +675,17 @@ async fn interrupted_summary_runs_are_asked_for_again_a_bounded_number_of_times(
         );
     }
 
-    let sent = finalizer(&store, &notes).requeue_interrupted().await.unwrap();
+    let sent = finalizer(&store, &notes)
+        .requeue_interrupted()
+        .await
+        .unwrap();
     assert_eq!(sent.len(), 1, "{sent:?}");
     assert_eq!(sent[0].meeting_id, a);
     assert_eq!(sent[0].reason, "interrupted_by_restart");
-    assert_eq!(sent[0].trigger_key.as_deref(), Some(recovery_trigger_key(a, 1).as_str()));
+    assert_eq!(
+        sent[0].trigger_key.as_deref(),
+        Some(recovery_trigger_key(a, 1).as_str())
+    );
 
     let event = loop {
         let event = tokio::time::timeout(Duration::from_secs(5), refresh_rx.next())
