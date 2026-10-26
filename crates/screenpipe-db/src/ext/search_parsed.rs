@@ -476,8 +476,14 @@ fn parsed_from_where(filter: &ParsedSearchFilter<'_>, binds: &mut Binds) -> Stri
         conditions.push(window_filter_sql("f.id", "frames", "timestamp", &p));
     }
 
+    // CROSS JOIN keeps `frames` as the outer loop (SQLite never reorders
+    // it), so every plan starts from a frames index: the time range, the
+    // window ids, the run ids the item filters select, or, when browsing
+    // without filters, the non-null part of `idx_frames_semantic_run_id`.
+    // Left to itself the planner prefers a full scan of `semantic_runs` for
+    // that last case.
     format!(
-        "FROM frames f JOIN semantic_runs r ON r.id = f.semantic_run_id WHERE {}",
+        "FROM frames f CROSS JOIN semantic_runs r ON r.id = f.semantic_run_id WHERE {}",
         conditions.join(" AND ")
     )
 }
@@ -1175,10 +1181,14 @@ mod tests {
                     end_time: Some(t0),
                     ..base(&scope_none)
                 },
-                vec!["SEARCH f USING"],
+                vec!["SEARCH f USING INDEX idx_frames_timestamp"],
             ),
             ("windows", base(&windows), vec!["SEARCH sw_t USING"]),
-            ("browse", base(&scope_none), vec!["USING"]),
+            (
+                "browse",
+                base(&scope_none),
+                vec!["SEARCH f USING", "idx_frames_semantic_run_id"],
+            ),
         ];
         for (name, filter, wanted) in cases {
             let mut binds = Binds::default();
