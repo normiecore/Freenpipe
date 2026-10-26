@@ -1,18 +1,19 @@
 # Coordinator handoff
 
-Updated 2026-10-20 evening. Git, PR heads and CI are the source of truth; this file is a snapshot.
+Updated 2026-10-26 17:45 UTC. Git, PR heads and CI are the source of truth; this file is a snapshot.
 
 ## State
 
 - Waves 0 and 1 are merged (18 WPs). Wave 1 integration (runbook 4.7) has not been recorded yet: it needs a
   full Linux build of main and was held for disk.
-- Wave 2 core merged: W2-01, W2-05, W2-08, W2-10, W2-11, W2-12, W2-13, W2-16, W2-17, W2-18, W2-19, W2-22,
-  W2-23, W2-26, W2-27. Wave 3 core merged: W3-30 (34/155 overall). Since W2-01 the read pool is
-  `query_only`: writes go through `write_pool()` or the write queue.
-- Open: W2-09 (PR #33) and W2-04 (PR #34), both approved; the coordinator merged main (with W2-01) into each
-  and moved their test writes to `write_pool()`; CI. Building: W3-11 + W3-12, W3-25 + W3-14.
-- Core set still to start (decision 6), all ready: W3-06, W3-08, W3-13, W4-05; then W3-02 (after W2-04 and
-  W2-09) and W4-02 (after W3-06).
+- Wave 2 core is complete: W2-01, W2-04, W2-05, W2-08, W2-09, W2-10, W2-11, W2-12, W2-13, W2-16, W2-17,
+  W2-18, W2-19, W2-22, W2-23, W2-26, W2-27. Wave 3 core merged: W3-30 (36/155 overall). Since W2-01 the read
+  pool is `query_only`: writes go through `write_pool()` or the write queue.
+- The account's weekly spend limit stopped all agents from 2026-10-21 04:40 to 2026-10-26 17:00 UTC.
+- Building (relaunched 2026-10-26 on main df61031): W3-11 (from checkpoint 1975c92) + W3-12 (from f9cf9da),
+  W3-25 + W3-14 (third attempts; nothing was committed before the earlier stops).
+- Core set still to start (decision 6), all ready: W3-02, W3-06, W3-08, W3-13, W4-05; then W4-02 (after
+  W3-06).
 
 ## How work runs
 
@@ -23,7 +24,8 @@ Updated 2026-10-20 evening. Git, PR heads and CI are the source of truth; this f
   can link another worktree's build of the same crate.
 - Disk is the limit (about 40 GB per session). After each merge: `git worktree remove`, then
   `python3 tools/cloud/prune-target.py --delete`; delete idle worktrees' `.next` folders.
-- The account's spend limit stops every agent mid-task about every 2-3 hours of four parallel workers.
+- The account's spend limit stops every agent mid-task about every 2-3 hours of four parallel workers, and
+  a weekly limit can stop work for days.
   After the reset, re-launch each WP with a resume note naming its pushed checkpoint and uncommitted files;
   WPs whose implementation was pushed only need `mode: "review"`.
 - Before merging an approved PR whose base is behind main, merge main locally in its worktree and run a
