@@ -220,6 +220,15 @@ pub const SCREENPIPE_REMOTE_PATH: &str = "SCREENPIPE_REMOTE_PATH";
 pub const SCREENPIPE_AI_GATEWAY_URL: &str = "SCREENPIPE_AI_GATEWAY_URL";
 /// Key for the user's AI gateway.
 pub const SCREENPIPE_AI_GATEWAY_KEY: &str = "SCREENPIPE_AI_GATEWAY_KEY";
+/// Web search provider for `/v1/web-search`: `searxng`, `brave`, `tavily`,
+/// `gateway` or `off` (bring your own; unset means none unless a URL or an
+/// AI gateway is configured).
+pub const SCREENPIPE_WEB_SEARCH_PROVIDER: &str = "SCREENPIPE_WEB_SEARCH_PROVIDER";
+/// Base URL of the user's SearXNG instance, or another endpoint for the
+/// named web search provider.
+pub const SCREENPIPE_WEB_SEARCH_URL: &str = "SCREENPIPE_WEB_SEARCH_URL";
+/// The user's own key for the web search provider.
+pub const SCREENPIPE_WEB_SEARCH_API_KEY: &str = "SCREENPIPE_WEB_SEARCH_API_KEY";
 
 // ---------------------------------------------------------------------------
 // Pipes and agents (given to agent child processes)
@@ -419,6 +428,9 @@ pub const ALL: &[&str] = &[
     SCREENPIPE_REMOTE_PATH,
     SCREENPIPE_AI_GATEWAY_URL,
     SCREENPIPE_AI_GATEWAY_KEY,
+    SCREENPIPE_WEB_SEARCH_PROVIDER,
+    SCREENPIPE_WEB_SEARCH_URL,
+    SCREENPIPE_WEB_SEARCH_API_KEY,
     SCREENPIPE_TRAJECTORIES_DIR,
     SCREENPIPE_TRAJECTORIES_MAX_RUNS,
     SCREENPIPE_TOOLS_HTTP_PORT,

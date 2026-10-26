@@ -564,15 +564,12 @@ impl PiExecutor {
     }
 
     /// Install the extensions every executor run needs: the always-on
-    /// manifest entries plus web-search when the run qualifies for it.
-    /// Permission and sub-agent extensions are pipe setup's business and are
-    /// left as they are.
-    pub fn ensure_run_extensions(project_dir: &Path, provider: Option<&str>) -> Result<()> {
+    /// manifest entries plus web-search when a search provider is
+    /// configured. Permission and sub-agent extensions are pipe setup's
+    /// business and are left as they are.
+    pub fn ensure_run_extensions(project_dir: &Path) -> Result<()> {
         let conditions = ExtensionConditions {
-            web_search: Some(extensions_manifest::web_search_wanted(
-                provider,
-                crate::ai_gateway::is_configured(),
-            )),
+            web_search: Some(extensions_manifest::web_search_wanted()),
             ..Default::default()
         };
         extensions_manifest::first_error(extensions_manifest::sync_bundled_extensions(
@@ -683,32 +680,20 @@ impl PiExecutor {
         )
     }
 
-    /// Install or remove the web-search extension. The extension sends
-    /// queries to the user's AI gateway (`{gateway}/web-search`), so it is
-    /// installed only for the gateway-backed provider and only when a
-    /// gateway is configured; otherwise it is removed and no search tool is
-    /// offered.
-    pub fn ensure_web_search_extension(project_dir: &Path, provider: Option<&str>) -> Result<()> {
-        Self::ensure_web_search_extension_with(
-            project_dir,
-            provider,
-            crate::ai_gateway::is_configured(),
-        )
+    /// Install or remove the web-search extension. Its `sp_web_search` tool
+    /// calls the engine's `/v1/web-search` route, which forwards to the
+    /// user's search provider, so it is installed only when one is
+    /// configured; otherwise it is removed and no search tool is offered.
+    pub fn ensure_web_search_extension(project_dir: &Path) -> Result<()> {
+        Self::ensure_web_search_extension_with(project_dir, extensions_manifest::web_search_wanted())
     }
 
-    fn ensure_web_search_extension_with(
-        project_dir: &Path,
-        provider: Option<&str>,
-        gateway_configured: bool,
-    ) -> Result<()> {
+    fn ensure_web_search_extension_with(project_dir: &Path, search_configured: bool) -> Result<()> {
         Self::apply_bundled_extension(
             project_dir,
             "web-search",
             &ExtensionConditions {
-                web_search: Some(extensions_manifest::web_search_wanted(
-                    provider,
-                    gateway_configured,
-                )),
+                web_search: Some(search_configured),
                 ..Default::default()
             },
         )
@@ -1071,7 +1056,7 @@ impl PiExecutor {
         if let Some(ref token) = cloud_token {
             cmd.env("SCREENPIPE_API_KEY", token);
         }
-        // The web-search extension reads the gateway base from here.
+        // Agents that talk to the gateway directly read its base from here.
         match self.gateway_base() {
             Some(base) => {
                 cmd.env(crate::ai_gateway::URL_ENV, base);
@@ -1228,7 +1213,7 @@ impl PiExecutor {
         if let Some(ref token) = cloud_token {
             cmd.env("SCREENPIPE_API_KEY", token);
         }
-        // The web-search extension reads the gateway base from here.
+        // Agents that talk to the gateway directly read its base from here.
         match self.gateway_base() {
             Some(base) => {
                 cmd.env(crate::ai_gateway::URL_ENV, base);
@@ -1452,7 +1437,7 @@ impl AgentExecutor for PiExecutor {
         // Use filtered skills if permissions are configured, unfiltered otherwise
         Self::ensure_screenpipe_skill_auto(working_dir)?;
 
-        Self::ensure_run_extensions(working_dir, Some(&resolved_provider))?;
+        Self::ensure_run_extensions(working_dir)?;
 
         let pi_path = find_pi_executable().ok_or_else(|| {
             anyhow!(
@@ -1564,7 +1549,7 @@ impl AgentExecutor for PiExecutor {
         .await?;
         // Use filtered skills if permissions are configured, unfiltered otherwise
         Self::ensure_screenpipe_skill_auto(working_dir)?;
-        Self::ensure_run_extensions(working_dir, Some(&resolved_provider))?;
+        Self::ensure_run_extensions(working_dir)?;
 
         let pi_path = find_pi_executable().ok_or_else(|| {
             anyhow!(
@@ -2846,7 +2831,7 @@ mod tests {
     }
 
     #[test]
-    fn web_search_extension_needs_the_gateway_provider_and_a_gateway() {
+    fn web_search_extension_follows_the_search_configuration() {
         let dir = tempfile::tempdir().unwrap();
         let ext = dir
             .path()
@@ -2854,17 +2839,16 @@ mod tests {
             .join("extensions")
             .join("web-search.ts");
 
-        PiExecutor::ensure_web_search_extension_with(dir.path(), Some("screenpipe"), false)
-            .unwrap();
-        assert!(!ext.exists(), "no gateway, no search tool");
+        PiExecutor::ensure_web_search_extension_with(dir.path(), false).unwrap();
+        assert!(!ext.exists(), "no search provider, no search tool");
 
-        PiExecutor::ensure_web_search_extension_with(dir.path(), Some("screenpipe"), true).unwrap();
+        PiExecutor::ensure_web_search_extension_with(dir.path(), true).unwrap();
         assert!(ext.exists());
         let body = std::fs::read_to_string(&ext).unwrap();
-        assert!(body.contains("SCREENPIPE_AI_GATEWAY_URL"));
+        assert!(body.contains("/v1/web-search"));
 
-        PiExecutor::ensure_web_search_extension_with(dir.path(), Some("ollama"), true).unwrap();
-        assert!(!ext.exists(), "other providers never get the gateway tool");
+        PiExecutor::ensure_web_search_extension_with(dir.path(), false).unwrap();
+        assert!(!ext.exists(), "turning search off removes the tool again");
     }
 
     #[test]

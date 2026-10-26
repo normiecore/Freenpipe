@@ -118,6 +118,9 @@ services used are left out.
 | `SCREENPIPE_REMOTE_PATH` | Remote path for LAN sync. |
 | `SCREENPIPE_AI_GATEWAY_URL` | Base URL of the user's AI gateway (bring your own). |
 | `SCREENPIPE_AI_GATEWAY_KEY` | Key for the user's AI gateway. |
+| `SCREENPIPE_WEB_SEARCH_PROVIDER` | Web search provider behind `/v1/web-search` and the agents' `sp_web_search` tool: `searxng`, `brave`, `tavily`, `gateway` (the AI gateway's `/web-search`) or `off`. Unset: `searxng` when `SCREENPIPE_WEB_SEARCH_URL` is set, else the AI gateway when one is configured, else web search is off. |
+| `SCREENPIPE_WEB_SEARCH_URL` | Base URL of your SearXNG instance (its JSON output must be enabled), or a replacement endpoint for `brave`/`tavily`. |
+| `SCREENPIPE_WEB_SEARCH_API_KEY` | Your own key for `brave` or `tavily`; sent as a bearer token to a SearXNG instance when set. |
 
 ## Pipes and agents (given to agent child processes)
 
