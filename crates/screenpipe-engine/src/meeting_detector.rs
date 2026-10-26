@@ -3193,8 +3193,9 @@ pub async fn run_meeting_detection_loop(
 
                     // Bind the calendar entry before announcing the meeting,
                     // so `meeting_started` carries the entry's title.
-                    let mut tracker = CalendarBindTracker::new(meeting_id, profile_index);
-                    let attach = if meeting_id >= 0 {
+                    let mut tracker =
+                        CalendarBindTracker::for_meeting(&db, meeting_id, profile_index).await;
+                    let attach = if meeting_id >= 0 && !tracker.settled {
                         let attach =
                             attach_calendar_event(&db, meeting_id, &calendar, &call_urls, now_utc)
                                 .await;
@@ -3300,7 +3301,7 @@ pub async fn run_meeting_detection_loop(
             if meeting_id >= 0 {
                 let mut tracker = match calendar_bind.take() {
                     Some(t) if t.meeting_id == meeting_id => t,
-                    _ => CalendarBindTracker::new(meeting_id, None),
+                    _ => CalendarBindTracker::for_meeting(&db, meeting_id, None).await,
                 };
                 if tracker.profile_index.is_none() {
                     tracker.profile_index = best_in_call_profile(&scan_results);
@@ -3729,6 +3730,37 @@ impl CalendarBindTracker {
             last_attempt: None,
             time_only_reported: false,
         }
+    }
+
+    /// Tracker for a meeting row the detector starts tracking. A row that
+    /// already carries a `calendar_event_id` (a reopened or re-attached
+    /// meeting, or one started manually with an entry) is settled from the
+    /// start: it is never rebound, so there is nothing to try or report.
+    async fn for_meeting(
+        db: &DatabaseManager,
+        meeting_id: i64,
+        profile_index: Option<usize>,
+    ) -> Self {
+        let mut tracker = Self::new(meeting_id, profile_index);
+        if meeting_id < 0 {
+            return tracker;
+        }
+        match db.get_meeting_calendar_event_id(meeting_id).await {
+            Ok(Some(existing)) => {
+                debug!(
+                    "meeting v2: meeting {} already carries calendar entry {}",
+                    meeting_id, existing
+                );
+                tracker.settled = true;
+            }
+            Ok(None) => {}
+            // Unknown: let the first attempt find out.
+            Err(e) => debug!(
+                "meeting v2: could not read the calendar entry of meeting {}: {}",
+                meeting_id, e
+            ),
+        }
+        tracker
     }
 
     fn due(&self, now: Instant) -> bool {
@@ -6533,6 +6565,35 @@ mod w3_08_tests {
         );
         assert!(tracker.settled);
         assert!(!tracker.due(t0 + CALENDAR_BIND_RETRY * 10));
+    }
+
+    #[tokio::test]
+    async fn tracker_for_an_already_bound_meeting_starts_settled() {
+        let db = setup_db().await;
+        let id = db
+            .insert_meeting("Google Chrome", "ui_scan", None, None)
+            .await
+            .unwrap();
+        let fresh = CalendarBindTracker::for_meeting(&db, id, Some(0)).await;
+        assert!(!fresh.settled);
+        assert!(fresh.due(Instant::now()));
+
+        // Reopened or re-attached with an entry already on the row: nothing
+        // to try, so no retries and no time-only report.
+        assert_eq!(
+            db.bind_meeting_calendar_event(id, "evt-a").await.unwrap(),
+            CalendarBinding::Bound
+        );
+        let bound = CalendarBindTracker::for_meeting(&db, id, Some(0)).await;
+        assert!(bound.settled);
+        assert!(!bound.due(Instant::now()));
+
+        // A failed insert (-1) is not looked up.
+        assert!(
+            !CalendarBindTracker::for_meeting(&db, -1, None)
+                .await
+                .settled
+        );
     }
 
     #[test]
