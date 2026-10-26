@@ -1515,7 +1515,10 @@ mod tests {
     fn a_worker_with_image_jobs_can_live_in_a_static() {
         #[allow(dead_code)]
         enum ImageJob {
-            Recognize { image: BgraImage, languages: Vec<String> },
+            Recognize {
+                image: BgraImage,
+                languages: Vec<String>,
+            },
             Probe,
         }
         #[allow(dead_code)]

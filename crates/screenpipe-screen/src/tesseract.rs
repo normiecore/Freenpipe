@@ -489,12 +489,8 @@ mod tests {
         let exe_dir = tmp.path().join("app");
         let home = tmp.path().join("home");
         let path_var = std::env::join_paths([&on_path]).unwrap();
-        let candidates = standard_binary_candidates(
-            Some(&path_var),
-            Some(&cwd),
-            Some(&exe_dir),
-            Some(&home),
-        );
+        let candidates =
+            standard_binary_candidates(Some(&path_var), Some(&cwd), Some(&exe_dir), Some(&home));
         assert_eq!(candidates[0], (on_path.join(TESSERACT_EXE), true));
         assert_eq!(candidates[1], (cwd.join(TESSERACT_EXE), false));
         assert_eq!(candidates[2], (exe_dir.join(TESSERACT_EXE), false));
@@ -515,7 +511,8 @@ mod tests {
 
     #[test]
     fn empty_path_entries_are_ignored() {
-        let candidates = standard_binary_candidates(Some(std::ffi::OsStr::new("")), None, None, None);
+        let candidates =
+            standard_binary_candidates(Some(std::ffi::OsStr::new("")), None, None, None);
         assert!(candidates.is_empty());
     }
 

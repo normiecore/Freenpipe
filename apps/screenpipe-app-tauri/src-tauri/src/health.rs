@@ -415,6 +415,13 @@ impl OcrUnavailableNotice {
         }
         false
     }
+
+    /// The notice was due but could not be shown right now (the overlay was
+    /// open): count a fresh streak and try again after it.
+    fn defer(&mut self) {
+        self.shown = false;
+        self.streak = 0;
+    }
 }
 
 /// Decide recording status based on health check result and time since startup.
@@ -1410,9 +1417,12 @@ pub async fn start_health_check(app: tauri::AppHandle) -> Result<()> {
             // screenshots are still recorded but carry no searchable text.
             if let Ok(ref health) = health_result {
                 if ocr_notice.observe(health.vision_reason.as_deref()) {
-                    info!("screen text recognition (OCR) is unavailable; showing the OCR notice");
-                    if let Err(e) = show_ocr_unavailable_notification(&app).await {
-                        warn!("could not show the OCR notice: {}", e);
+                    match show_ocr_unavailable_notification(&app).await {
+                        Ok(true) => info!(
+                            "screen text recognition (OCR) is unavailable; showing the OCR notice"
+                        ),
+                        Ok(false) => ocr_notice.defer(),
+                        Err(e) => warn!("could not show the OCR notice: {}", e),
                     }
                 }
             }
@@ -1581,8 +1591,17 @@ async fn show_capture_stall_notification(app: &tauri::AppHandle, system: &str) -
 }
 
 /// Tells the user once per session that screen text recognition is missing
-/// and how to add it.
-async fn show_ocr_unavailable_notification(app: &tauri::AppHandle) -> Result<()> {
+/// and how to add it. Returns false without showing anything while the macOS
+/// overlay is open (the panel would steal its focus, as with the stall
+/// notice); the caller tries again later.
+async fn show_ocr_unavailable_notification(app: &tauri::AppHandle) -> Result<bool> {
+    #[cfg(target_os = "macos")]
+    {
+        if crate::window::MAIN_PANEL_SHOWN.load(std::sync::atomic::Ordering::SeqCst) {
+            tracing::debug!("deferring the OCR notice: the overlay is visible");
+            return Ok(false);
+        }
+    }
     let hint = if cfg!(target_os = "windows") {
         "To fix it, add a language that includes optical character recognition in Windows Settings > Time & language > Language & region, then restart recording."
     } else if cfg!(target_os = "macos") {
@@ -1603,6 +1622,7 @@ async fn show_ocr_unavailable_notification(app: &tauri::AppHandle) -> Result<()>
     });
     crate::commands::show_notification_panel(app.clone(), payload.to_string())
         .await
+        .map(|()| true)
         .map_err(|e| anyhow::anyhow!(e))
 }
 
@@ -1666,6 +1686,22 @@ mod tests {
         for _ in 0..20 {
             assert!(!notice.observe(Some("ocr_unavailable")));
         }
+    }
+
+    #[test]
+    fn a_deferred_ocr_notice_fires_after_a_new_streak() {
+        let mut notice = OcrUnavailableNotice::default();
+        for _ in 0..OCR_NOTICE_CONFIRM_CHECKS - 1 {
+            assert!(!notice.observe(Some("ocr_unavailable")));
+        }
+        assert!(notice.observe(Some("ocr_unavailable")));
+        // The overlay was open, so nothing was shown.
+        notice.defer();
+        for _ in 0..OCR_NOTICE_CONFIRM_CHECKS - 1 {
+            assert!(!notice.observe(Some("ocr_unavailable")));
+        }
+        assert!(notice.observe(Some("ocr_unavailable")));
+        assert!(!notice.observe(Some("ocr_unavailable")));
     }
 
     #[test]
