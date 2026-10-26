@@ -562,7 +562,13 @@ function HomeContent() {
     };
     fetchDevices();
     const interval = setInterval(fetchDevices, 10000);
-    return () => { cancelled = true; clearInterval(interval); };
+    // Refresh at once when a device starts, stops, pauses or resumes.
+    const unlistenStatus = listen("audio-device-status-changed", () => fetchDevices());
+    return () => {
+      cancelled = true;
+      clearInterval(interval);
+      unlistenStatus.then((fn) => fn()).catch(() => {});
+    };
   }, [settings.monitorIds, settings.useAllMonitors]);
 
   // Active meeting state — lights up the phone icon for ANY active meeting

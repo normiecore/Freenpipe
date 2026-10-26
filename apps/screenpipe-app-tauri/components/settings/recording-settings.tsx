@@ -216,6 +216,10 @@ const SERVER_RESTART_SETTINGS = new Set<keyof SettingsStore>([
   "piiBackend",
   "useChineseMirror",
   "enableWorkflowEvents",
+  // The audio mode decides which audio routes answer and whether meeting
+  // detection runs; it applies only on a full restart, all at once.
+  "disableAudio",
+  "audioCaptureMode",
 ]);
 
 type AudioPipelineSnapshot = {
