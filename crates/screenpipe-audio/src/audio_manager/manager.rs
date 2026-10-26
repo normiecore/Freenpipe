@@ -22,12 +22,21 @@ use tokio::{
 use tracing::{debug, error, info, warn};
 use whisper_rs::WhisperContext;
 
+use screenpipe_config::AudioCaptureMode;
 use screenpipe_db::DatabaseManager;
+use screenpipe_events::{
+    AudioCaptureHealthEvent, AudioCaptureHealthState, AudioDeviceStatusChangedEvent,
+    AudioDeviceStatusReason,
+};
 
+use super::capture_gate::{
+    meeting_signal, CaptureGate, ChunkVerdict, GateTransition, MeetingSignal, StartGate,
+    SESSION_RELEASE_GRACE_SECS,
+};
 use super::{start_device_monitor, stop_device_monitor, AudioManagerOptions, TranscriptionMode};
 use crate::{
     core::{
-        device::{parse_audio_device, AudioDevice},
+        device::{parse_audio_device, AudioDevice, DeviceType},
         engine::AudioTranscriptionEngine,
         record_and_transcribe_with_live_tap,
     },
@@ -138,6 +147,72 @@ pub struct AudioManager {
     /// The device monitor must never auto-start devices in this set.
     /// Cleared on global start/stop but preserved across reconnects.
     user_disabled_devices: Arc<RwLock<HashSet<String>>>,
+    /// `audioCaptureMode` state: which devices may open and which chunks
+    /// are kept (inert in `always` mode).
+    capture_gate: Arc<CaptureGate>,
+    /// Task following meeting announcements in `meetings-only` mode.
+    meetings_only_handle: Arc<RwLock<Option<JoinHandle<()>>>>,
+    /// Chunks dropped by `meetings-only` capture (for rate-limited logging).
+    dropped_unattributed_chunks: Arc<AtomicU64>,
+}
+
+/// What [`AudioManager::try_start_device`] did.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DeviceStart {
+    /// A stream was opened.
+    Started,
+    /// The device was already recording.
+    AlreadyRunning,
+    /// The device was deliberately not opened.
+    Skipped(DeviceStartSkip),
+}
+
+/// Why a device start was skipped.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DeviceStartSkip {
+    /// Audio capture is off (`disableAudio` or `audioCaptureMode=disabled`).
+    CaptureDisabled,
+    /// Output capture is paused for DRM-protected playback.
+    DrmPaused,
+    /// The user paused the device.
+    UserDisabled,
+    /// `meetings-only` capture and no meeting is in progress.
+    WaitingForMeeting,
+    /// The meeting ended while the device was opening; it was closed again.
+    MeetingEndedDuringOpen,
+}
+
+impl DeviceStart {
+    /// True when the device is recording after the call.
+    pub fn is_running(self) -> bool {
+        matches!(self, DeviceStart::Started | DeviceStart::AlreadyRunning)
+    }
+}
+
+/// How long a graceful stop waits for a recording task to flush its last
+/// partial chunk before the task is aborted.
+const GRACEFUL_STOP_WAIT: Duration = Duration::from_secs(3);
+/// Delay before `meetings-only` capture looks for a meeting that was already
+/// open when capture started. Gives the startup sweep of orphaned meetings
+/// time to close rows left behind by a crash.
+const MEETING_SEED_DELAY: Duration = Duration::from_secs(10);
+/// How often `meetings-only` capture checks that the confirmed meeting is
+/// still open, in case its end announcement was missed.
+const MEETING_VERIFY_INTERVAL: Duration = Duration::from_secs(15);
+
+/// Publish `audio_device_status_changed`. Failures are logged and ignored:
+/// a missing subscriber must never affect capture.
+fn publish_device_status(
+    device_name: &str,
+    is_running: bool,
+    is_user_disabled: bool,
+    reason: AudioDeviceStatusReason,
+) {
+    let event =
+        AudioDeviceStatusChangedEvent::new(device_name, is_running, is_user_disabled, reason);
+    if let Err(e) = screenpipe_events::send_event(event.event_name(), event) {
+        debug!("failed to publish audio device status change: {}", e);
+    }
 }
 
 /// Result of checking / restarting the two central handler tasks.
@@ -191,6 +266,7 @@ impl AudioManager {
         let recording_handles = DashMap::new();
 
         let meeting_detector = options.meeting_detector.clone();
+        let capture_gate = Arc::new(CaptureGate::new(options.capture_mode));
         let (meeting_audio_tx, _) = broadcast::channel(MEETING_AUDIO_FRAME_BUFFER);
         let meeting_audio_tap =
             MeetingAudioTap::new(meeting_audio_tx, Arc::new(AtomicBool::new(false)));
@@ -219,6 +295,9 @@ impl AudioManager {
             reconciliation_handle: Arc::new(RwLock::new(None)),
             drm_stopped_devices: Arc::new(RwLock::new(Vec::new())),
             user_disabled_devices: Arc::new(RwLock::new(HashSet::new())),
+            capture_gate,
+            meetings_only_handle: Arc::new(RwLock::new(None)),
+            dropped_unattributed_chunks: Arc::new(AtomicU64::new(0)),
         };
 
         Ok(manager)
@@ -266,8 +345,14 @@ impl AudioManager {
 
         let user_disabled = self.user_disabled_devices.read().await.clone();
         let mut options = options;
+        if options.capture_mode == AudioCaptureMode::Disabled {
+            options.is_disabled = true;
+        }
         super::builder::ensure_system_default_device_types(&mut options, &user_disabled).await;
 
+        // The new mode applies as a whole: capture is stopped here, and the
+        // gate starts over (a meeting in progress is found again on start).
+        self.capture_gate.reset(options.capture_mode);
         *self.options.write().await = options;
         *self.engine.write().await = None;
         Ok(())
@@ -394,6 +479,22 @@ impl AudioManager {
 
         start_device_monitor(self_arc.clone(), self.device_manager.clone()).await?;
 
+        // `meetings-only`: follow meeting announcements and open the
+        // configured devices only while a meeting runs.
+        {
+            let mut guard = self.meetings_only_handle.write().await;
+            if let Some(previous) = guard.take() {
+                previous.abort();
+            }
+            if self.capture_gate.mode() == AudioCaptureMode::MeetingsOnly {
+                info!("audio capture waits for an active meeting (meetings-only mode)");
+                let manager = self.clone();
+                *guard = Some(tokio::spawn(async move {
+                    run_meetings_only_loop(manager).await;
+                }));
+            }
+        }
+
         // Seed known speakers from DB on startup
         seed_speakers_from_db(&self.db, &self.segmentation_manager).await;
 
@@ -422,16 +523,32 @@ impl AudioManager {
         *self.status.write().await = AudioManagerStatus::Stopped;
 
         stop_device_monitor().await?;
+        if let Some(handle) = self.meetings_only_handle.write().await.take() {
+            handle.abort();
+        }
 
         // Stop producers FIRST: abort per-device recording tasks and the OS audio streams.
         // This must happen before killing the consumer so any audio already queued in the
         // crossbeam channel (including the final 30s flush) can still be drained.
+        let stopped_devices = self.current_devices();
         for pair in self.recording_handles.iter() {
             let handle = pair.value();
             handle.lock().await.abort();
         }
         self.recording_handles.clear();
         self.device_manager.stop_all_devices().await?;
+        if !stopped_devices.is_empty() {
+            let user_disabled = self.user_disabled_devices.read().await.clone();
+            for device in &stopped_devices {
+                let name = device.to_string();
+                publish_device_status(
+                    &name,
+                    false,
+                    user_disabled.contains(&name),
+                    AudioDeviceStatusReason::Stopped,
+                );
+            }
+        }
 
         // Drain the channel: wait until the pipeline handler has consumed all queued chunks
         // (or a hard timeout expires). The early persist — file write + DB insert — happens
@@ -501,10 +618,53 @@ impl AudioManager {
     /// Idempotent — safe to call on already-stopped devices.
     /// Used by device monitor for force-cycling devices after sleep/wake.
     pub async fn stop_device_recording(&self, device: &AudioDevice) -> Result<()> {
+        self.stop_device_recording_with(device, AudioDeviceStatusReason::Stopped, false)
+            .await
+    }
+
+    /// [`Self::stop_device_recording`] that publishes `reason` when the
+    /// device was recording. A `graceful` stop first lets the recording task
+    /// flush its last partial chunk (up to [`GRACEFUL_STOP_WAIT`]).
+    async fn stop_device_recording_with(
+        &self,
+        device: &AudioDevice,
+        reason: AudioDeviceStatusReason,
+        graceful: bool,
+    ) -> Result<()> {
+        let was_running = self.stop_device_recording_quiet(device, graceful).await?;
+        if was_running {
+            let name = device.to_string();
+            let user_disabled = self.user_disabled_devices.read().await.contains(&name);
+            publish_device_status(&name, false, user_disabled, reason);
+        }
+        Ok(())
+    }
+
+    /// Stop a device's recording without publishing anything. Returns
+    /// whether a recording task was running.
+    async fn stop_device_recording_quiet(
+        &self,
+        device: &AudioDevice,
+        graceful: bool,
+    ) -> Result<bool> {
+        let was_running = self.recording_handles.contains_key(device);
+
         // Signal the recording loop to stop BEFORE aborting the handle,
         // so it exits cleanly without triggering "stream dead" warnings.
         if let Some(is_running) = self.device_manager.is_running_mut(device) {
             is_running.store(false, std::sync::atomic::Ordering::Relaxed);
+        }
+
+        if graceful {
+            if let Some(handle) = self.recording_handles.get(device).map(|p| p.value().clone()) {
+                let started = std::time::Instant::now();
+                while started.elapsed() < GRACEFUL_STOP_WAIT {
+                    if handle.lock().await.is_finished() {
+                        break;
+                    }
+                    tokio::time::sleep(Duration::from_millis(100)).await;
+                }
+            }
         }
 
         // Ignore "already stopped" errors
@@ -522,7 +682,7 @@ impl AudioManager {
 
         self.recording_handles.remove(device);
 
-        Ok(())
+        Ok(was_running)
     }
 
     pub async fn status(&self) -> AudioManagerStatus {
@@ -540,24 +700,61 @@ impl AudioManager {
 
         // Best-effort stop — ignore all errors (already stopped, not found, etc.)
         if let Ok(device) = parse_audio_device(device_name) {
-            let _ = self.stop_device_recording(&device).await;
+            let _ = self.stop_device_recording_quiet(&device, false).await;
         }
         info!("user paused audio device: {}", device_name);
+        publish_device_status(
+            device_name,
+            false,
+            true,
+            AudioDeviceStatusReason::UserPaused,
+        );
         Ok(())
     }
 
     /// Resume a previously paused device. Idempotent — safe to call if already running.
-    pub async fn resume_device(&self, device_name: &str) -> Result<()> {
-        // Remove from disabled FIRST so start_device gate allows it
-        self.user_disabled_devices.write().await.remove(device_name);
-
+    ///
+    /// When the audio pipeline is stopped (for example after `POST /audio/stop`)
+    /// it is restarted first. The result says whether the device is now
+    /// recording or why it is not (audio off, waiting for a meeting).
+    pub async fn resume_device(&self, device_name: &str) -> Result<DeviceStart> {
         let device = match parse_audio_device(device_name) {
             Ok(device) => device,
             Err(_) => return Err(anyhow!("Device {} not found", device_name)),
         };
-        self.start_device(&device).await?;
+        if self.options.read().await.is_disabled {
+            return Ok(DeviceStart::Skipped(DeviceStartSkip::CaptureDisabled));
+        }
+
+        // Remove from disabled FIRST so start_device gate allows it
+        self.user_disabled_devices.write().await.remove(device_name);
+
+        if self.status().await != AudioManagerStatus::Running {
+            info!(
+                "audio pipeline is stopped; restarting it to resume device {}",
+                device_name
+            );
+            self.start().await?;
+        }
+
+        let outcome = self.try_start_device(&device).await?;
         info!("user resumed audio device: {}", device_name);
-        Ok(())
+        // A start already announced itself; otherwise say the pause is lifted.
+        if outcome != DeviceStart::Started {
+            publish_device_status(
+                device_name,
+                outcome.is_running(),
+                false,
+                AudioDeviceStatusReason::UserResumed,
+            );
+        }
+        if outcome == DeviceStart::Skipped(DeviceStartSkip::WaitingForMeeting) {
+            info!(
+                "audio device {} did not start: capture is gated until a meeting starts (meetings-only mode)",
+                device_name
+            );
+        }
+        Ok(outcome)
     }
 
     /// Mark a device as user-disabled. The device monitor will not auto-start it.
@@ -580,7 +777,18 @@ impl AudioManager {
         self.user_disabled_devices.read().await.clone()
     }
 
+    /// Start a device unless it is paused, gated or already running.
+    /// Errors only when opening the stream fails; deliberate skips are `Ok`.
     pub async fn start_device(&self, device: &AudioDevice) -> Result<()> {
+        self.try_start_device(device).await.map(|_| ())
+    }
+
+    /// [`Self::start_device`] that reports what happened.
+    pub async fn try_start_device(&self, device: &AudioDevice) -> Result<DeviceStart> {
+        if self.options.read().await.is_disabled {
+            return Ok(DeviceStart::Skipped(DeviceStartSkip::CaptureDisabled));
+        }
+
         // Don't restart devices that are paused due to DRM content detection.
         // The monitor watcher will call start_output_devices() when DRM clears.
         if self
@@ -590,27 +798,45 @@ impl AudioManager {
             .iter()
             .any(|d| d == device)
         {
-            return Ok(());
+            return Ok(DeviceStart::Skipped(DeviceStartSkip::DrmPaused));
         }
 
+        let name = device.to_string();
+
         // Don't restart devices the user explicitly disabled via API/UI.
-        if self
-            .user_disabled_devices
-            .read()
-            .await
-            .contains(&device.to_string())
-        {
+        if self.user_disabled_devices.read().await.contains(&name) {
             debug!("skipping auto-start of user-disabled device: {}", device);
-            return Ok(());
+            return Ok(DeviceStart::Skipped(DeviceStartSkip::UserDisabled));
         }
+
+        let session = match self.capture_gate.start_gate() {
+            StartGate::WaitingForMeeting => {
+                debug!(
+                    "skipping start of audio device {}: meetings-only capture is waiting for a meeting",
+                    device
+                );
+                return Ok(DeviceStart::Skipped(DeviceStartSkip::WaitingForMeeting));
+            }
+            StartGate::Open { session } => session,
+        };
+
+        let was_running = self.recording_handles.contains_key(device);
 
         if let Err(e) = self.device_manager.start_device(device).await {
             let err_str = e.to_string();
 
-            if err_str.contains("Failed to build input stream") {
-                return Err(anyhow!("Device {device} not found"));
+            let failure = if err_str.contains("Failed to build input stream") {
+                Some(anyhow!("Device {device} not found"))
             } else if !err_str.contains("already running") {
-                return Err(e);
+                Some(e)
+            } else {
+                None
+            };
+            if let Some(failure) = failure {
+                if session && device.device_type == DeviceType::Input {
+                    self.report_session_input_failure(device, &failure.to_string());
+                }
+                return Err(failure);
             }
         }
 
@@ -623,15 +849,230 @@ impl AudioManager {
                 .insert(device.clone(), Arc::new(Mutex::new(handle)));
         }
 
-        if !self.enabled_devices().await.contains(&device.to_string()) {
+        if !self.enabled_devices().await.contains(&name) {
             self.options
                 .write()
                 .await
                 .enabled_devices
-                .insert(device.to_string());
+                .insert(name.clone());
         }
 
-        Ok(())
+        if session {
+            if !self.capture_gate.mark_session_device(&name) {
+                info!(
+                    "stopping just-opened meeting-session audio device {}: the meeting ended while it was opening",
+                    device
+                );
+                let _ = self.stop_device_recording_quiet(device, false).await;
+                return Ok(DeviceStart::Skipped(DeviceStartSkip::MeetingEndedDuringOpen));
+            }
+            if device.device_type == DeviceType::Input
+                && self.capture_gate.note_session_input_opened(&name)
+            {
+                info!("meeting microphone {} is recording again", device);
+                self.publish_capture_health(
+                    AudioCaptureHealthState::Recovered,
+                    Some(&name),
+                    Some("microphone opened"),
+                );
+            }
+        }
+
+        if was_running {
+            Ok(DeviceStart::AlreadyRunning)
+        } else {
+            publish_device_status(&name, true, false, AudioDeviceStatusReason::Started);
+            Ok(DeviceStart::Started)
+        }
+    }
+
+    /// Report a meeting microphone that would not open (once per meeting).
+    fn report_session_input_failure(&self, device: &AudioDevice, reason: &str) {
+        let name = device.to_string();
+        if self.capture_gate.note_session_input_failed(&name) {
+            warn!(
+                "meeting microphone {} could not be opened: {} (retrying)",
+                device, reason
+            );
+            self.publish_capture_health(
+                AudioCaptureHealthState::MicCaptureFailed,
+                Some(&name),
+                Some(reason),
+            );
+        }
+    }
+
+    /// Publish an `audio_capture_health_*` event with the current streams.
+    fn publish_capture_health(
+        &self,
+        state: AudioCaptureHealthState,
+        device: Option<&str>,
+        reason: Option<&str>,
+    ) {
+        let (mut outputs, mut inputs) = (Vec::new(), Vec::new());
+        for running in self.current_devices() {
+            match running.device_type {
+                DeviceType::Output => outputs.push(running.to_string()),
+                DeviceType::Input => inputs.push(running.to_string()),
+            }
+        }
+        outputs.sort();
+        inputs.sort();
+        let mut event = AudioCaptureHealthEvent::new(state)
+            .with_streams(outputs, inputs)
+            .with_meeting(self.capture_gate.confirmed_meeting().and_then(|m| m.id));
+        if let Some(device) = device {
+            event = event.with_device(device);
+        }
+        if let Some(reason) = reason {
+            event = event.with_reason(reason);
+        }
+        if let Err(e) = screenpipe_events::send_event(event.event_name(), event) {
+            debug!("failed to publish audio capture health event: {}", e);
+        }
+    }
+
+    /// The `audioCaptureMode` the manager runs with.
+    pub fn capture_mode(&self) -> AudioCaptureMode {
+        self.capture_gate.mode()
+    }
+
+    /// True in `meetings-only` mode while no meeting is confirmed (including
+    /// the grace period after a meeting, before the streams are released).
+    pub fn capture_waiting_for_meeting(&self) -> bool {
+        self.capture_gate.waiting_for_meeting()
+    }
+
+    /// True when `meetings-only` streams should be closed now.
+    pub fn capture_release_due(&self) -> bool {
+        self.capture_gate.release_due()
+    }
+
+    /// The meeting `meetings-only` capture is recording for, if any.
+    pub fn capture_meeting_id(&self) -> Option<i64> {
+        self.capture_gate.confirmed_meeting().and_then(|m| m.id)
+    }
+
+    /// True when audio capture is turned off (`disableAudio` or
+    /// `audioCaptureMode=disabled`) in the options the manager runs with.
+    pub async fn is_disabled(&self) -> bool {
+        self.options.read().await.is_disabled
+    }
+
+    /// Close every open stream because `meetings-only` capture has no
+    /// meeting. Each recording task gets to flush its last partial chunk.
+    /// Returns how many streams were closed.
+    pub async fn release_session_streams(&self) -> usize {
+        let _ = self.capture_gate.take_session_devices();
+        let running = self.current_devices();
+        let mut released = 0;
+        for device in &running {
+            match self
+                .stop_device_recording_with(device, AudioDeviceStatusReason::MeetingEnded, true)
+                .await
+            {
+                Ok(()) => released += 1,
+                Err(e) => warn!(
+                    "meetings-only: failed to release audio stream {}: {} (will retry)",
+                    device, e
+                ),
+            }
+        }
+        released
+    }
+
+    /// Open the configured devices for a meeting that just started.
+    async fn open_meeting_session_devices(&self) {
+        let enabled = self.enabled_devices().await;
+        let user_disabled = self.user_disabled_devices.read().await.clone();
+        let mut targets: Vec<AudioDevice> = enabled
+            .iter()
+            .filter(|name| !user_disabled.contains(*name))
+            .filter_map(|name| parse_audio_device(name).ok())
+            .collect();
+        // Microphones first: they carry the user's side of the call.
+        targets.sort_by_key(|d| (d.device_type != DeviceType::Input, d.to_string()));
+        let meeting = self.capture_meeting_id();
+        info!(
+            "meetings-only: meeting {:?} confirmed, opening {} configured audio device(s)",
+            meeting,
+            targets.len()
+        );
+        for device in &targets {
+            match self.try_start_device(device).await {
+                Ok(DeviceStart::Skipped(
+                    DeviceStartSkip::WaitingForMeeting | DeviceStartSkip::MeetingEndedDuringOpen,
+                )) => {
+                    info!("meetings-only: meeting ended while its audio devices were opening");
+                    break;
+                }
+                Ok(_) => {}
+                Err(e) => warn!(
+                    "meetings-only: failed to open audio device {} for the meeting: {} (the device monitor retries)",
+                    device, e
+                ),
+            }
+        }
+    }
+
+    /// Apply a meeting announcement to the gate and act on the transition.
+    async fn handle_meeting_signal(&self, signal: MeetingSignal) {
+        match signal.apply(&self.capture_gate) {
+            GateTransition::MeetingStarted => {
+                // Open on a separate task so a quick end is applied at once
+                // (a device that finishes opening afterwards is closed).
+                let manager = self.clone();
+                tokio::spawn(async move {
+                    manager.open_meeting_session_devices().await;
+                });
+            }
+            GateTransition::MeetingEnded => {
+                info!(
+                    "meetings-only: meeting ended; audio streams close in {}s unless another meeting starts",
+                    SESSION_RELEASE_GRACE_SECS
+                );
+            }
+            GateTransition::Unchanged => {}
+        }
+    }
+
+    /// Adopt a meeting that was already open when capture started.
+    async fn seed_meeting_from_db(&self) {
+        if !self.capture_gate.waiting_for_meeting() {
+            return;
+        }
+        match self.db.get_most_recent_active_meeting_id().await {
+            Ok(Some(id)) => {
+                info!(
+                    "meetings-only: meeting {} is already in progress; opening audio devices",
+                    id
+                );
+                self.handle_meeting_signal(MeetingSignal::Started(Some(id)))
+                    .await;
+            }
+            Ok(None) => {}
+            Err(e) => debug!("meetings-only: could not look up an open meeting: {}", e),
+        }
+    }
+
+    /// End the confirmed meeting if the database says it is over (its end
+    /// announcement was missed).
+    async fn verify_confirmed_meeting(&self) {
+        let Some(id) = self.capture_meeting_id() else {
+            return;
+        };
+        match self.db.get_active_meeting_by_id(id).await {
+            Ok(None) => {
+                info!(
+                    "meetings-only: meeting {} is closed in the database; ending its audio capture",
+                    id
+                );
+                self.handle_meeting_signal(MeetingSignal::Ended(Some(id)))
+                    .await;
+            }
+            Ok(Some(_)) => {}
+            Err(e) => debug!("meetings-only: could not check meeting {}: {}", id, e),
+        }
     }
 
     pub async fn use_all_devices(&self) -> bool {
@@ -731,6 +1172,8 @@ impl AudioManager {
         let db = self.db.clone();
         let shared_engine = self.engine.clone();
         let on_insert_session = self.on_transcription_insert.clone();
+        let capture_gate = self.capture_gate.clone();
+        let dropped_chunks = self.dropped_unattributed_chunks.clone();
 
         // Build unified transcription engine — only loads the needed model
         let engine = TranscriptionEngine::new(
@@ -774,6 +1217,27 @@ impl AudioManager {
             while let Ok(audio) = whisper_receiver.recv() {
                 metrics.record_chunk_received();
                 debug!("received audio from device: {:?}", audio.device.name);
+
+                // `meetings-only`: audio recorded while no meeting was
+                // confirmed is dropped here, before it is written anywhere.
+                let chunk_end = audio.capture_timestamp + chunk_duration_secs(&audio);
+                if capture_gate.chunk_verdict(audio.capture_timestamp, chunk_end)
+                    == ChunkVerdict::Drop
+                {
+                    let dropped = dropped_chunks.fetch_add(1, Ordering::Relaxed) + 1;
+                    if dropped == 1 || dropped.is_multiple_of(50) {
+                        info!(
+                            "meetings-only: dropping audio chunk from {} recorded while no meeting was confirmed ({} dropped so far)",
+                            audio.device, dropped
+                        );
+                    } else {
+                        debug!(
+                            "meetings-only: dropping audio chunk from {} (no confirmed meeting)",
+                            audio.device
+                        );
+                    }
+                    continue;
+                }
 
                 // Audio-based call detection: update meeting detector with speech activity.
                 // Output devices (SCK on macOS) produce much quieter audio than mic input,
@@ -1122,6 +1586,12 @@ impl AudioManager {
                 pair.value().lock().await.abort();
             }
             self.recording_handles.remove(device);
+            publish_device_status(
+                &device.to_string(),
+                false,
+                false,
+                AudioDeviceStatusReason::DrmPaused,
+            );
         }
 
         // Store stopped devices for later restart
@@ -1472,17 +1942,87 @@ impl AudioManager {
         };
 
         // Remove from recording handles
-        if let Some((_, handle)) = self.recording_handles.remove(&device) {
+        let had_handle = if let Some((_, handle)) = self.recording_handles.remove(&device) {
             // Abort the handle if somehow still running
             handle.lock().await.abort();
-        }
+            true
+        } else {
+            false
+        };
 
         // Stop the device in device manager (clears streams and states)
         let _ = self.device_manager.stop_device(&device).await;
 
+        // A meeting-session mark stays: only the meetings-only release path
+        // clears it, so a stream the monitor reopens still counts as one.
+        if self.capture_gate.is_session_device(device_name) {
+            debug!(
+                "cleanup_stale_device({}): kept its meeting-session mark",
+                device_name
+            );
+        }
+
+        if had_handle {
+            let user_disabled = self.user_disabled_devices.read().await.contains(device_name);
+            publish_device_status(
+                device_name,
+                false,
+                user_disabled,
+                AudioDeviceStatusReason::StreamLost,
+            );
+        }
+
         debug!("cleaned up stale device {} for restart", device_name);
 
         Ok(())
+    }
+}
+
+/// Length of a recorded chunk in whole seconds (rounded up).
+fn chunk_duration_secs(audio: &AudioInput) -> u64 {
+    let frames_per_sec = audio.sample_rate as u64 * u64::from(audio.channels.max(1));
+    if frames_per_sec == 0 {
+        return 0;
+    }
+    (audio.data.len() as u64).div_ceil(frames_per_sec)
+}
+
+/// Follow meeting announcements for `meetings-only` capture: open the
+/// configured devices when a meeting is confirmed, note its end (the device
+/// monitor releases the streams after the grace period), adopt a meeting
+/// that was already open at startup, and catch a missed end.
+async fn run_meetings_only_loop(manager: AudioManager) {
+    use futures::StreamExt;
+
+    let mut started = screenpipe_events::subscribe_to_event::<serde_json::Value>("meeting_started");
+    let mut ended = screenpipe_events::subscribe_to_event::<serde_json::Value>("meeting_ended");
+    let mut status =
+        screenpipe_events::subscribe_to_event::<serde_json::Value>("meeting_status_changed");
+
+    let seed = tokio::time::sleep(MEETING_SEED_DELAY);
+    tokio::pin!(seed);
+    let mut seeded = false;
+    let mut verify = tokio::time::interval(MEETING_VERIFY_INTERVAL);
+    verify.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+
+    loop {
+        let signal = tokio::select! {
+            Some(event) = started.next() => meeting_signal("meeting_started", &event.data),
+            Some(event) = ended.next() => meeting_signal("meeting_ended", &event.data),
+            Some(event) = status.next() => meeting_signal("meeting_status_changed", &event.data),
+            _ = &mut seed, if !seeded => {
+                seeded = true;
+                manager.seed_meeting_from_db().await;
+                None
+            }
+            _ = verify.tick() => {
+                manager.verify_confirmed_meeting().await;
+                None
+            }
+        };
+        if let Some(signal) = signal {
+            manager.handle_meeting_signal(signal).await;
+        }
     }
 }
 
@@ -1577,8 +2117,12 @@ impl Drop for AudioManager {
         let transcript = self.transcription_receiver_handle.clone();
         let reconciliation = self.reconciliation_handle.clone();
         let device_manager = self.device_manager.clone();
+        let meetings_only = self.meetings_only_handle.clone();
 
         tokio::spawn(async move {
+            if let Some(handle) = meetings_only.write().await.take() {
+                handle.abort();
+            }
             // Abort reconciliation first to stop MLX usage before engine is dropped
             if let Some(handle) = reconciliation.write().await.take() {
                 handle.abort();

@@ -10,6 +10,7 @@ use axum::{
 };
 use oasgen::{oasgen, OaSchema};
 
+use screenpipe_audio::audio_manager::{DeviceStart, DeviceStartSkip};
 use screenpipe_audio::core::device::{
     default_input_device, default_output_device, list_audio_devices,
 };
@@ -36,6 +37,50 @@ pub struct AudioDeviceControlResponse {
 #[serde(rename_all = "snake_case")]
 pub(crate) struct AudioDeviceControlRequest {
     device_name: String,
+}
+
+/// Client-visible message when audio is off in settings (`disableAudio` or
+/// `audioCaptureMode=disabled`). Clients match this text exactly.
+pub(crate) const AUDIO_CAPTURE_DISABLED_MESSAGE: &str = "Audio capture is disabled in settings";
+
+/// The 409 returned by the start routes while audio is off in settings.
+fn capture_disabled_error() -> (StatusCode, JsonResponse<Value>) {
+    (
+        StatusCode::CONFLICT,
+        JsonResponse(json!({
+            "success": false,
+            "message": AUDIO_CAPTURE_DISABLED_MESSAGE,
+        })),
+    )
+}
+
+/// True when audio is off, either for the whole server run or in the options
+/// the audio manager currently runs with.
+async fn audio_capture_disabled(state: &AppState) -> bool {
+    state.audio_disabled || state.audio_manager.is_disabled().await
+}
+
+/// Response text for a device start, or `None` when audio is off.
+fn device_start_message(device_name: &str, outcome: DeviceStart) -> Option<String> {
+    Some(match outcome {
+        DeviceStart::Started | DeviceStart::AlreadyRunning => {
+            format!("started device: {}", device_name)
+        }
+        DeviceStart::Skipped(DeviceStartSkip::CaptureDisabled) => return None,
+        DeviceStart::Skipped(
+            DeviceStartSkip::WaitingForMeeting | DeviceStartSkip::MeetingEndedDuringOpen,
+        ) => format!(
+            "capture is gated: {} is resumed and records when a meeting starts (meetings-only mode)",
+            device_name
+        ),
+        DeviceStart::Skipped(DeviceStartSkip::DrmPaused) => format!(
+            "capture is gated: {} is resumed and records once protected playback stops",
+            device_name
+        ),
+        DeviceStart::Skipped(DeviceStartSkip::UserDisabled) => {
+            format!("device {} is paused", device_name)
+        }
+    })
 }
 
 #[oasgen]
@@ -91,20 +136,30 @@ pub(crate) async fn start_audio_device(
 ) -> Result<Json<AudioDeviceControlResponse>, (StatusCode, JsonResponse<Value>)> {
     let device_name = payload.device_name.clone();
 
-    if let Err(e) = state.audio_manager.resume_device(&device_name).await {
-        return Err((
-            StatusCode::INTERNAL_SERVER_ERROR,
-            JsonResponse(json!({
-                "success": false,
-                "message": format!("Failed to start recording device {}: {}", device_name, e)
-            })),
-        ));
+    if audio_capture_disabled(&state).await {
+        return Err(capture_disabled_error());
     }
 
-    Ok(Json(AudioDeviceControlResponse {
-        success: true,
-        message: format!("started device: {}", device_name),
-    }))
+    let outcome = match state.audio_manager.resume_device(&device_name).await {
+        Ok(outcome) => outcome,
+        Err(e) => {
+            return Err((
+                StatusCode::INTERNAL_SERVER_ERROR,
+                JsonResponse(json!({
+                    "success": false,
+                    "message": format!("Failed to start recording device {}: {}", device_name, e)
+                })),
+            ));
+        }
+    };
+
+    match device_start_message(&device_name, outcome) {
+        Some(message) => Ok(Json(AudioDeviceControlResponse {
+            success: true,
+            message,
+        })),
+        None => Err(capture_disabled_error()),
+    }
 }
 
 #[oasgen]
@@ -175,6 +230,9 @@ pub(crate) async fn audio_device_status(
 pub(crate) async fn start_audio(
     State(state): State<Arc<AppState>>,
 ) -> Result<Response, (StatusCode, JsonResponse<Value>)> {
+    if audio_capture_disabled(&state).await {
+        return Err(capture_disabled_error());
+    }
     match state.audio_manager.start().await {
         Ok(_) => Ok(Response::builder().status(200).body(Body::empty()).unwrap()),
         Err(e) => Err((
@@ -197,8 +255,53 @@ pub(crate) async fn stop_audio(
             StatusCode::INTERNAL_SERVER_ERROR,
             JsonResponse(json!({
                 "success": false,
-                "message": format!("Failed to start audio processing: {}", e),
+                "message": format!("Failed to stop audio processing: {}", e),
             })),
         )),
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn disabled_message_is_exact() {
+        assert_eq!(
+            AUDIO_CAPTURE_DISABLED_MESSAGE,
+            "Audio capture is disabled in settings"
+        );
+        let (status, body) = capture_disabled_error();
+        assert_eq!(status, StatusCode::CONFLICT);
+        assert_eq!(
+            body.0,
+            json!({"success": false, "message": "Audio capture is disabled in settings"})
+        );
+    }
+
+    #[test]
+    fn device_start_messages() {
+        assert_eq!(
+            device_start_message("Mic (input)", DeviceStart::Started).as_deref(),
+            Some("started device: Mic (input)")
+        );
+        assert_eq!(
+            device_start_message("Mic (input)", DeviceStart::AlreadyRunning).as_deref(),
+            Some("started device: Mic (input)")
+        );
+        let gated = device_start_message(
+            "Mic (input)",
+            DeviceStart::Skipped(DeviceStartSkip::WaitingForMeeting),
+        )
+        .unwrap();
+        assert!(gated.starts_with("capture is gated"), "{gated}");
+        assert_eq!(
+            device_start_message(
+                "Mic (input)",
+                DeviceStart::Skipped(DeviceStartSkip::CaptureDisabled)
+            ),
+            None
+        );
+    }
+}
+

@@ -232,14 +232,7 @@ pub(crate) fn decide_pinned_input_fallback(inputs: PinnedFallbackInputs<'_>) -> 
     // Find a pinned input that's been missing past the grace window. Prefer
     // the one that's been missing longest — gives a stable choice when
     // multiple pinned inputs are dead.
-    let longest_missing = inputs
-        .missing_since
-        .iter()
-        .filter(|(name, _)| inputs.pinned_inputs.contains(*name))
-        .filter(|(_, t)| inputs.now.saturating_duration_since(**t) >= inputs.grace)
-        .max_by_key(|(_, t)| inputs.now.saturating_duration_since(**t))
-        .map(|(name, _)| name.clone());
-    let Some(pinned) = longest_missing else {
+    let Some(pinned) = longest_missing_pinned(&inputs) else {
         return FallbackDecision::Idle;
     };
 
@@ -264,6 +257,138 @@ pub(crate) fn decide_pinned_input_fallback(inputs: PinnedFallbackInputs<'_>) -> 
         pinned,
         fallback_name: default_name.to_string(),
         start_fallback,
+    }
+}
+
+/// The pinned input that has been missing past the grace window the
+/// longest, if any.
+fn longest_missing_pinned(inputs: &PinnedFallbackInputs<'_>) -> Option<String> {
+    inputs
+        .missing_since
+        .iter()
+        .filter(|(name, _)| inputs.pinned_inputs.contains(*name))
+        .filter(|(_, t)| inputs.now.saturating_duration_since(**t) >= inputs.grace)
+        .max_by_key(|(_, t)| inputs.now.saturating_duration_since(**t))
+        .map(|(name, _)| name.clone())
+}
+
+/// `audio_device_fallback_unavailable` bookkeeping for pinned inputs.
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) enum UnavailableDecision {
+    Idle,
+    /// `pinned` is gone past the grace window and nothing can stand in.
+    Announce { pinned: String },
+    /// The announced device records again: say capture is back.
+    Restored { pinned: String },
+    /// Drop the announcement quietly (unpinned, a fallback took over, or the
+    /// mode changed).
+    Forget,
+}
+
+/// Decide whether to announce that a pinned input has no fallback, or that
+/// an announced one is back. Runs after [`decide_pinned_input_fallback`] with
+/// the same inputs and its result; `announced` is the pinned device already
+/// announced as unavailable. Pure, like the fallback decider.
+pub(crate) fn decide_pinned_input_unavailable(
+    inputs: &PinnedFallbackInputs<'_>,
+    fallback: &FallbackDecision,
+    announced: Option<&str>,
+) -> UnavailableDecision {
+    if inputs.use_system_default {
+        return if announced.is_some() {
+            UnavailableDecision::Forget
+        } else {
+            UnavailableDecision::Idle
+        };
+    }
+    if let Some(pinned) = announced {
+        if inputs.running.contains(pinned) {
+            return UnavailableDecision::Restored {
+                pinned: pinned.to_string(),
+            };
+        }
+        if !inputs.pinned_inputs.contains(pinned)
+            || matches!(fallback, FallbackDecision::Engage { .. })
+            || inputs.active.is_some()
+        {
+            return UnavailableDecision::Forget;
+        }
+        return UnavailableDecision::Idle;
+    }
+    if *fallback != FallbackDecision::Idle || inputs.active.is_some() {
+        return UnavailableDecision::Idle;
+    }
+    let any_input_running = inputs.running.iter().any(|name| {
+        crate::core::device::parse_audio_device(name)
+            .map(|d| d.device_type == DeviceType::Input)
+            .unwrap_or(false)
+    });
+    if any_input_running {
+        return UnavailableDecision::Idle;
+    }
+    let Some(pinned) = longest_missing_pinned(inputs) else {
+        return UnavailableDecision::Idle;
+    };
+    let usable_default = inputs
+        .default_input
+        .is_some_and(|d| d != pinned && !inputs.user_disabled.contains(d));
+    if usable_default {
+        // The fallback decider would engage it; nothing to announce.
+        return UnavailableDecision::Idle;
+    }
+    UnavailableDecision::Announce { pinned }
+}
+
+/// Follow-system-default mode: notices the total loss of microphones (the
+/// last input disappeared and the system reports no default input at all)
+/// and its end. A machine that never had a microphone in this session is
+/// not reported.
+#[derive(Debug, Default)]
+pub(crate) struct NoInputWatch {
+    had_input: bool,
+    missing_since: Option<Instant>,
+    announced: bool,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) enum NoInputEvent {
+    None,
+    Announce,
+    Restored,
+}
+
+impl NoInputWatch {
+    pub(crate) fn observe(
+        &mut self,
+        has_input: bool,
+        no_input_exists: bool,
+        now: Instant,
+        grace: Duration,
+    ) -> NoInputEvent {
+        if has_input {
+            self.had_input = true;
+            self.missing_since = None;
+            if self.announced {
+                self.announced = false;
+                return NoInputEvent::Restored;
+            }
+            return NoInputEvent::None;
+        }
+        if !no_input_exists || !self.had_input {
+            self.missing_since = None;
+            return NoInputEvent::None;
+        }
+        let since = *self.missing_since.get_or_insert(now);
+        if !self.announced && now.saturating_duration_since(since) >= grace {
+            self.announced = true;
+            return NoInputEvent::Announce;
+        }
+        NoInputEvent::None
+    }
+
+    /// Streams are closed on purpose (meetings-only idle): stop timing.
+    pub(crate) fn pause(&mut self) {
+        self.missing_since = None;
     }
 }
 
@@ -363,6 +488,10 @@ pub async fn start_device_monitor(
         let mut pinned_missing_since: HashMap<String, Instant> = HashMap::new();
         let mut active_pinned_fallback: Option<ActivePinnedFallback> = None;
         let mut logged_pinned_fallback_default_disabled: HashSet<String> = HashSet::new();
+        // Pinned input announced as unavailable (no fallback possible).
+        let mut announced_unavailable: Option<String> = None;
+        // Follow-default mode: total loss of microphones.
+        let mut no_input_watch = NoInputWatch::default();
 
         // Initialize tracker with current defaults
         let _ = default_tracker.check_input_changed();
@@ -382,7 +511,52 @@ pub async fn start_device_monitor(
         // (output)" names to "System Audio (output)" (macOS only).
         let mut legacy_migrated = false;
 
+        // `meetings-only` session-device state: whether the streams of the
+        // current idle period were already released once (later releases
+        // are stragglers that opened late).
+        let mut released_this_idle_period = false;
+
         loop {
+            if audio_manager.status().await == AudioManagerStatus::Running
+                && audio_manager.capture_waiting_for_meeting()
+            {
+                // `meetings-only` with no meeting: no stream should be open,
+                // so none of the recovery below applies. Close the streams
+                // once the post-meeting grace has passed, and forget recovery
+                // state so the next meeting starts from a clean slate.
+                let _ = crate::stream_invalidation::take();
+                if audio_manager.capture_release_due() && !audio_manager.current_devices().is_empty()
+                {
+                    let released = audio_manager.release_session_streams().await;
+                    if released > 0 {
+                        if released_this_idle_period {
+                            info!(
+                                "meetings-only idle cleanup: released {} late audio stream(s)",
+                                released
+                            );
+                        } else {
+                            info!(
+                                "meetings-only: released {} audio stream(s) while waiting for a meeting",
+                                released
+                            );
+                        }
+                    }
+                    released_this_idle_period = true;
+                }
+                needs_initial_sync = true;
+                disconnected_devices.clear();
+                failed_devices.clear();
+                no_input_retry_count = 0;
+                output_recovery_backoff.reset();
+                pinned_missing_since.clear();
+                active_pinned_fallback = None;
+                logged_pinned_fallback_default_disabled.clear();
+                no_input_watch.pause();
+                sleep(Duration::from_secs(2)).await;
+                continue;
+            }
+            released_this_idle_period = false;
+
             if audio_manager.status().await == AudioManagerStatus::Running {
                 // Check if sleep/wake or display reconfiguration requested
                 // audio stream invalidation. Force-cycle all running devices
@@ -771,12 +945,55 @@ pub async fn start_device_monitor(
                             DeviceType::Input,
                         );
                         // Don't try to recover if user explicitly disabled all inputs
-                        let all_inputs_user_disabled = !has_input && {
-                            match default_input_device() {
-                                Ok(d) => user_disabled.contains(&d.to_string()),
-                                Err(_) => false,
-                            }
+                        let default_input_now = if has_input {
+                            None
+                        } else {
+                            Some(default_input_device())
                         };
+                        let all_inputs_user_disabled = match &default_input_now {
+                            Some(Ok(d)) => user_disabled.contains(&d.to_string()),
+                            _ => false,
+                        };
+                        let no_input_exists = matches!(default_input_now, Some(Err(_)));
+                        match no_input_watch.observe(
+                            has_input,
+                            no_input_exists,
+                            Instant::now(),
+                            Duration::from_secs(PINNED_INPUT_FALLBACK_GRACE_SECS),
+                        ) {
+                            NoInputEvent::Announce => {
+                                warn!(
+                                    "[DEVICE_RECOVERY] no microphone is available any more; no microphone audio is recorded until one returns"
+                                );
+                                let event = screenpipe_events::AudioDeviceFallbackEvent::unavailable(
+                                    screenpipe_events::NO_INPUT_PLACEHOLDER,
+                                );
+                                let _ = screenpipe_events::send_event(event.event_name(), event);
+                            }
+                            NoInputEvent::Restored => {
+                                let restored_input = current_enabled
+                                    .iter()
+                                    .filter(|name| {
+                                        parse_audio_device(name).is_ok_and(|d| {
+                                            d.device_type == DeviceType::Input
+                                                && is_device_actively_streaming(&device_manager, &d)
+                                        })
+                                    })
+                                    .min()
+                                    .cloned()
+                                    .unwrap_or_default();
+                                info!(
+                                    "[DEVICE_RECOVERY] a microphone is recording again ({})",
+                                    restored_input
+                                );
+                                let event = screenpipe_events::AudioDeviceFallbackEvent::cleared(
+                                    screenpipe_events::NO_INPUT_PLACEHOLDER,
+                                    restored_input,
+                                );
+                                let _ = screenpipe_events::send_event(event.event_name(), event);
+                            }
+                            NoInputEvent::None => {}
+                        }
 
                         if !has_input && !all_inputs_user_disabled {
                             no_input_retry_count += 1;
@@ -1211,6 +1428,7 @@ pub async fn start_device_monitor(
                     &mut pinned_missing_since,
                     &mut active_pinned_fallback,
                     &mut logged_pinned_fallback_default_disabled,
+                    &mut announced_unavailable,
                 )
                 .await;
             }
@@ -1229,6 +1447,7 @@ async fn run_pinned_input_fallback_sweep(
     missing_since: &mut HashMap<String, Instant>,
     active: &mut Option<ActivePinnedFallback>,
     logged_default_disabled: &mut HashSet<String>,
+    announced_unavailable: &mut Option<String>,
 ) {
     use screenpipe_events::AudioDeviceFallbackEvent;
 
@@ -1243,6 +1462,7 @@ async fn run_pinned_input_fallback_sweep(
         }
         missing_since.clear();
         logged_default_disabled.clear();
+        *announced_unavailable = None;
         return;
     }
 
@@ -1280,7 +1500,7 @@ async fn run_pinned_input_fallback_sweep(
 
     let default_name = default_input_device().ok().map(|d| d.to_string());
 
-    let decision = decide_pinned_input_fallback(PinnedFallbackInputs {
+    let fallback_inputs = PinnedFallbackInputs {
         use_system_default: false,
         pinned_inputs: &pinned_inputs,
         running: &running,
@@ -1290,7 +1510,35 @@ async fn run_pinned_input_fallback_sweep(
         active: active.as_ref(),
         grace: Duration::from_secs(PINNED_INPUT_FALLBACK_GRACE_SECS),
         now,
-    });
+    };
+    let decision = decide_pinned_input_fallback(PinnedFallbackInputs { ..fallback_inputs });
+    let unavailable = decide_pinned_input_unavailable(
+        &fallback_inputs,
+        &decision,
+        announced_unavailable.as_deref(),
+    );
+    match unavailable {
+        UnavailableDecision::Announce { pinned } => {
+            warn!(
+                "[PINNED_FALLBACK] pinned input '{}' missing > {}s and no other microphone can stand in; no microphone audio until it returns",
+                pinned, PINNED_INPUT_FALLBACK_GRACE_SECS
+            );
+            let event = AudioDeviceFallbackEvent::unavailable(&pinned);
+            let _ = screenpipe_events::send_event(event.event_name(), event);
+            *announced_unavailable = Some(pinned);
+        }
+        UnavailableDecision::Restored { pinned } => {
+            info!(
+                "[PINNED_FALLBACK] pinned input '{}' is recording again",
+                pinned
+            );
+            let event = AudioDeviceFallbackEvent::cleared(&pinned, "");
+            let _ = screenpipe_events::send_event(event.event_name(), event);
+            *announced_unavailable = None;
+        }
+        UnavailableDecision::Forget => *announced_unavailable = None,
+        UnavailableDecision::Idle => {}
+    }
 
     match decision {
         FallbackDecision::Idle => {
@@ -1961,6 +2209,242 @@ mod tests {
                 fallback_name: "MacBook Pro Microphone (input)".to_string(),
                 start_fallback: true,
             }
+        );
+    }
+
+    // --- Fallback-unavailable decider tests ---
+
+    fn missing_for(name: &str, secs: u64, now: Instant) -> HashMap<String, Instant> {
+        [(name.to_string(), now.checked_sub(Duration::from_secs(secs)).unwrap())]
+            .into_iter()
+            .collect()
+    }
+
+    fn unavailable_for(
+        inputs: &PinnedFallbackInputs<'_>,
+        announced: Option<&str>,
+    ) -> UnavailableDecision {
+        let fallback = decide_pinned_input_fallback(PinnedFallbackInputs { ..*inputs });
+        decide_pinned_input_unavailable(inputs, &fallback, announced)
+    }
+
+    #[test]
+    fn unavailable_announced_when_no_default_exists() {
+        let pinned = set(&["AirPods (input)"]);
+        let running = HashSet::new();
+        let disabled = HashSet::new();
+        let now = Instant::now();
+        let missing = missing_for("AirPods (input)", 60, now);
+        let inputs = build_inputs(&pinned, &running, &disabled, None, &missing, None, now);
+        assert_eq!(
+            unavailable_for(&inputs, None),
+            UnavailableDecision::Announce {
+                pinned: "AirPods (input)".to_string()
+            }
+        );
+        // Announced once: later passes stay quiet while it is still gone.
+        assert_eq!(
+            unavailable_for(&inputs, Some("AirPods (input)")),
+            UnavailableDecision::Idle
+        );
+    }
+
+    #[test]
+    fn unavailable_announced_when_default_is_user_disabled_or_the_pinned_device() {
+        let pinned = set(&["AirPods (input)"]);
+        let running = HashSet::new();
+        let disabled = set(&["MacBook Pro Microphone (input)"]);
+        let now = Instant::now();
+        let missing = missing_for("AirPods (input)", 60, now);
+        let inputs = build_inputs(
+            &pinned,
+            &running,
+            &disabled,
+            Some("MacBook Pro Microphone (input)"),
+            &missing,
+            None,
+            now,
+        );
+        assert!(matches!(
+            unavailable_for(&inputs, None),
+            UnavailableDecision::Announce { .. }
+        ));
+        let no_disabled = HashSet::new();
+        let inputs = build_inputs(
+            &pinned,
+            &running,
+            &no_disabled,
+            Some("AirPods (input)"),
+            &missing,
+            None,
+            now,
+        );
+        assert!(matches!(
+            unavailable_for(&inputs, None),
+            UnavailableDecision::Announce { .. }
+        ));
+    }
+
+    #[test]
+    fn unavailable_not_announced_within_grace_or_with_a_usable_default() {
+        let pinned = set(&["AirPods (input)"]);
+        let running = HashSet::new();
+        let disabled = HashSet::new();
+        let now = Instant::now();
+        let fresh = missing_for("AirPods (input)", 5, now);
+        let inputs = build_inputs(&pinned, &running, &disabled, None, &fresh, None, now);
+        assert_eq!(unavailable_for(&inputs, None), UnavailableDecision::Idle);
+
+        let old = missing_for("AirPods (input)", 60, now);
+        let inputs = build_inputs(
+            &pinned,
+            &running,
+            &disabled,
+            Some("MacBook Pro Microphone (input)"),
+            &old,
+            None,
+            now,
+        );
+        // The fallback decider engages the default instead.
+        assert_eq!(unavailable_for(&inputs, None), UnavailableDecision::Idle);
+    }
+
+    #[test]
+    fn unavailable_not_announced_while_another_input_records() {
+        let pinned = set(&["AirPods (input)", "USB Mic (input)"]);
+        let running = set(&["USB Mic (input)"]);
+        let disabled = HashSet::new();
+        let now = Instant::now();
+        let missing = missing_for("AirPods (input)", 60, now);
+        let inputs = build_inputs(&pinned, &running, &disabled, None, &missing, None, now);
+        assert_eq!(unavailable_for(&inputs, None), UnavailableDecision::Idle);
+    }
+
+    #[test]
+    fn unavailable_restored_forgotten_or_superseded() {
+        let pinned = set(&["AirPods (input)"]);
+        let disabled = HashSet::new();
+        let now = Instant::now();
+        let none_missing = HashMap::new();
+
+        // The device records again.
+        let running = set(&["AirPods (input)"]);
+        let inputs = build_inputs(&pinned, &running, &disabled, None, &none_missing, None, now);
+        assert_eq!(
+            unavailable_for(&inputs, Some("AirPods (input)")),
+            UnavailableDecision::Restored {
+                pinned: "AirPods (input)".to_string()
+            }
+        );
+
+        // The user unpinned it.
+        let no_pinned = HashSet::new();
+        let nothing_running = HashSet::new();
+        let inputs = build_inputs(
+            &no_pinned,
+            &nothing_running,
+            &disabled,
+            None,
+            &none_missing,
+            None,
+            now,
+        );
+        assert_eq!(
+            unavailable_for(&inputs, Some("AirPods (input)")),
+            UnavailableDecision::Forget
+        );
+
+        // A default appeared and the fallback engages: its own event says so.
+        let missing = missing_for("AirPods (input)", 60, now);
+        let inputs = build_inputs(
+            &pinned,
+            &nothing_running,
+            &disabled,
+            Some("MacBook Pro Microphone (input)"),
+            &missing,
+            None,
+            now,
+        );
+        assert_eq!(
+            unavailable_for(&inputs, Some("AirPods (input)")),
+            UnavailableDecision::Forget
+        );
+
+        // Follow-default mode never keeps a pinned announcement.
+        let mut inputs = build_inputs(&pinned, &nothing_running, &disabled, None, &missing, None, now);
+        inputs.use_system_default = true;
+        assert_eq!(
+            unavailable_for(&inputs, Some("AirPods (input)")),
+            UnavailableDecision::Forget
+        );
+        assert_eq!(unavailable_for(&inputs, None), UnavailableDecision::Idle);
+    }
+
+    #[test]
+    fn no_input_watch_ignores_machines_without_a_microphone() {
+        let mut w = NoInputWatch::default();
+        let t0 = Instant::now();
+        let grace = Duration::from_secs(20);
+        assert_eq!(w.observe(false, true, t0, grace), NoInputEvent::None);
+        assert_eq!(
+            w.observe(false, true, t0 + Duration::from_secs(120), grace),
+            NoInputEvent::None
+        );
+    }
+
+    #[test]
+    fn no_input_watch_announces_total_loss_once_and_restores() {
+        let mut w = NoInputWatch::default();
+        let t0 = Instant::now();
+        let grace = Duration::from_secs(20);
+        assert_eq!(w.observe(true, false, t0, grace), NoInputEvent::None);
+        // Lost, but a default input still exists: the monitor is reopening it.
+        assert_eq!(
+            w.observe(false, false, t0 + Duration::from_secs(1), grace),
+            NoInputEvent::None
+        );
+        // No input exists at all.
+        assert_eq!(
+            w.observe(false, true, t0 + Duration::from_secs(2), grace),
+            NoInputEvent::None
+        );
+        assert_eq!(
+            w.observe(false, true, t0 + Duration::from_secs(21), grace),
+            NoInputEvent::None
+        );
+        assert_eq!(
+            w.observe(false, true, t0 + Duration::from_secs(22), grace),
+            NoInputEvent::Announce
+        );
+        assert_eq!(
+            w.observe(false, true, t0 + Duration::from_secs(60), grace),
+            NoInputEvent::None
+        );
+        assert_eq!(
+            w.observe(true, false, t0 + Duration::from_secs(61), grace),
+            NoInputEvent::Restored
+        );
+        assert_eq!(
+            w.observe(true, false, t0 + Duration::from_secs(62), grace),
+            NoInputEvent::None
+        );
+    }
+
+    #[test]
+    fn no_input_watch_pause_restarts_the_timer() {
+        let mut w = NoInputWatch::default();
+        let t0 = Instant::now();
+        let grace = Duration::from_secs(20);
+        w.observe(true, false, t0, grace);
+        w.observe(false, true, t0 + Duration::from_secs(1), grace);
+        w.pause();
+        assert_eq!(
+            w.observe(false, true, t0 + Duration::from_secs(25), grace),
+            NoInputEvent::None
+        );
+        assert_eq!(
+            w.observe(false, true, t0 + Duration::from_secs(45), grace),
+            NoInputEvent::Announce
         );
     }
 }
