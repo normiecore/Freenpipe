@@ -1059,15 +1059,26 @@ static ON_DEMAND_OCR_GATE: screenpipe_screen::ocr_worker::InflightGate =
         screenpipe_screen::ocr_worker::ON_DEMAND_OCR_MAX_INFLIGHT,
     );
 
-/// HTTP answer for an on-demand OCR that produced no result. Load, a missing
-/// OCR engine and a slow answer are 503 (nothing is cached, so the client
-/// may try again later); anything else is 500.
-fn on_demand_ocr_error(frame_id: i64, e: &anyhow::Error) -> (StatusCode, JsonResponse<Value>) {
-    let shed = screenpipe_screen::ocr_worker::worker_error_of(e);
-    let status = match shed {
-        Some(err) if err.is_skip() || err.is_retryable() => StatusCode::SERVICE_UNAVAILABLE,
+/// HTTP status for an on-demand OCR that produced no result. Load, a missing
+/// OCR engine, a slow answer and an OCR thread being replaced are 503
+/// (nothing is cached, so the client may try again later); a refused image
+/// and engine errors are 500.
+fn on_demand_ocr_status(err: Option<&screenpipe_screen::OcrWorkerError>) -> StatusCode {
+    match err {
+        Some(err)
+            if err.is_retryable()
+                || matches!(err, screenpipe_screen::OcrWorkerError::Unavailable(_)) =>
+        {
+            StatusCode::SERVICE_UNAVAILABLE
+        }
         _ => StatusCode::INTERNAL_SERVER_ERROR,
-    };
+    }
+}
+
+/// HTTP answer for an on-demand OCR that produced no result (see
+/// [`on_demand_ocr_status`]).
+fn on_demand_ocr_error(frame_id: i64, e: &anyhow::Error) -> (StatusCode, JsonResponse<Value>) {
+    let status = on_demand_ocr_status(screenpipe_screen::ocr_worker::worker_error_of(e));
     (
         status,
         JsonResponse(json!({
@@ -2568,5 +2579,56 @@ mod media_tests {
         assert_eq!(parse("flag=").unwrap(), None);
         assert_eq!(parse("").unwrap(), None);
         assert!(parse("flag=maybe").is_err());
+    }
+}
+
+#[cfg(test)]
+mod on_demand_ocr_tests {
+    use super::*;
+    use screenpipe_screen::{OcrImageError, OcrWorkerError};
+
+    #[test]
+    fn shed_and_restarting_ocr_is_503_and_real_failures_are_500() {
+        for err in [
+            OcrWorkerError::QueueFull { capacity: 4 },
+            OcrWorkerError::Busy { limit: 2 },
+            OcrWorkerError::TimedOut { after_ms: 30_000 },
+            OcrWorkerError::Stuck { busy_secs: 61 },
+            OcrWorkerError::ExitedBeforeTaking,
+            OcrWorkerError::Panicked("boom".into()),
+            OcrWorkerError::StartFailed("no thread".into()),
+            OcrWorkerError::Unavailable("no language".into()),
+        ] {
+            assert_eq!(
+                on_demand_ocr_status(Some(&err)),
+                StatusCode::SERVICE_UNAVAILABLE,
+                "{err}"
+            );
+        }
+        for err in [
+            OcrWorkerError::InvalidImage(OcrImageError::EmptyBuffer),
+            OcrWorkerError::Engine("0x80004005".into()),
+        ] {
+            assert_eq!(
+                on_demand_ocr_status(Some(&err)),
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "{err}"
+            );
+        }
+        assert_eq!(
+            on_demand_ocr_status(None),
+            StatusCode::INTERNAL_SERVER_ERROR
+        );
+    }
+
+    #[test]
+    fn the_error_body_names_the_frame() {
+        let e = anyhow::Error::new(OcrWorkerError::Busy { limit: 2 });
+        let (status, JsonResponse(body)) = on_demand_ocr_error(42, &e);
+        assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
+        assert_eq!(body["frame_id"], 42);
+        assert!(body["error"]
+            .as_str()
+            .is_some_and(|s| s.contains("on-demand OCR")));
     }
 }
