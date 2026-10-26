@@ -410,7 +410,7 @@ async fn actor_and_frame_filters_narrow_parsed_results() {
 #[tokio::test]
 async fn starred_only_returns_full_pages_of_starred_hits() {
     let fx = fixture().await;
-    let inside = vec![fx.frames[7], fx.frames[3], fx.frames[2]];
+    let inside = [fx.frames[7], fx.frames[3], fx.frames[2]];
 
     let (status, page1) = fx
         .api("/search?q=alpha&content_type=ocr&starred_only=true&limit=2&offset=0")
