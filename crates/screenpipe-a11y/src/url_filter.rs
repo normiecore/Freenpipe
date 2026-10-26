@@ -15,7 +15,8 @@
 //!   allow list; and with an allow list in place, a browser tab whose URL
 //!   cannot be read is not recorded ([`UrlDecision::Pending`]).
 
-use screenpipe_config::{DomainRule, UrlRule};
+/// The stored rule shapes, re-exported for crates that build policies.
+pub use screenpipe_config::{DomainRule, UrlRule};
 use std::fmt;
 use std::sync::Arc;
 use url::Url;
@@ -649,6 +650,25 @@ impl UrlPolicy {
         self.has_allow_list() && is_policy_browser(app_name)
     }
 
+    /// [`UrlPolicy::decide`] for a capture whose app may be unknown. With an
+    /// allow list, an unknown app could be a browser showing a site that is
+    /// not allowed, so it is treated like a browser whose URL is unknown.
+    pub fn decide_for_capture(&self, app_name: Option<&str>, url: Option<&str>) -> UrlDecision {
+        match app_name.map(str::trim).filter(|a| !a.is_empty()) {
+            Some(app) => self.decide(app, url),
+            None => {
+                let url = url.map(str::trim).filter(|u| !u.is_empty());
+                if url.is_some_and(|u| self.is_blocked(u)) {
+                    UrlDecision::Blocked
+                } else if self.has_allow_list() {
+                    UrlDecision::Pending
+                } else {
+                    UrlDecision::Allowed
+                }
+            }
+        }
+    }
+
     /// Decide whether a window with this app and (browser) URL may be
     /// recorded. The block list applies to every window that reports a URL
     /// and wins over the allow list; the allow list applies to browsers only.
@@ -886,6 +906,26 @@ mod tests {
         );
         assert!(p.needs_verified_url("Microsoft Edge"));
         assert!(!p.needs_verified_url("Code.exe"));
+    }
+
+    #[test]
+    fn unknown_app_under_an_allow_list_is_not_recorded() {
+        let p = UrlPolicy::new(&[], &[rule("example.org", false, &[])]);
+        assert_eq!(p.decide_for_capture(None, None), UrlDecision::Pending);
+        assert_eq!(p.decide_for_capture(Some(" "), None), UrlDecision::Pending);
+        assert!(p.decide_for_capture(Some("Code.exe"), None).is_allowed());
+        assert_eq!(
+            p.decide_for_capture(Some("chrome.exe"), None),
+            UrlDecision::Pending
+        );
+        // Without an allow list an unknown app is recorded unless its URL
+        // is blocked.
+        let block = block_policy(vec![rule("bank.com", false, &[]).into()]);
+        assert!(block.decide_for_capture(None, None).is_allowed());
+        assert_eq!(
+            block.decide_for_capture(None, Some("https://bank.com")),
+            UrlDecision::Blocked
+        );
     }
 
     #[test]

@@ -1916,6 +1916,22 @@ pub(crate) fn get_effective_app_name(hwnd: HWND, pid: u32) -> String {
     effective
 }
 
+/// App owning the foreground window, named like frames and app switches
+/// name it (see [`get_effective_app_name`]). `None` when there is no
+/// foreground window or it is a transient shell window.
+pub(crate) fn foreground_app_name() -> Option<String> {
+    let hwnd = unsafe { GetForegroundWindow() };
+    if hwnd == HWND::default() || is_transient_shell_window(hwnd) {
+        return None;
+    }
+    let mut pid: u32 = 0;
+    unsafe { GetWindowThreadProcessId(hwnd, Some(&mut pid)) };
+    if pid == 0 {
+        return None;
+    }
+    Some(get_effective_app_name(hwnd, pid))
+}
+
 /// Class name of a window (empty when it cannot be read).
 fn window_class_name(hwnd: HWND) -> String {
     unsafe {

@@ -1888,6 +1888,31 @@ fn guard_frame_pixels(
     }
 }
 
+/// Skip reason from the website policy for a capture with this resolved app
+/// and browser URL, or `None` to store it. When the app is unknown and the
+/// policy needs it (an allow list is set), the foreground window's app is
+/// looked up (Windows); an app that still cannot be named is treated as a
+/// browser whose URL is unknown.
+fn url_policy_skip(
+    config: &screenpipe_a11y::tree::TreeWalkerConfig,
+    app_name: Option<&str>,
+    browser_url: Option<&str>,
+) -> Option<screenpipe_a11y::tree::SkipReason> {
+    let policy = config.effective_url_policy();
+    if policy.is_empty() {
+        return None;
+    }
+    let known_app = app_name.map(str::trim).filter(|a| !a.is_empty());
+    let looked_up = if known_app.is_none() && policy.has_allow_list() {
+        screenpipe_a11y::platform::foreground_app_name()
+    } else {
+        None
+    };
+    policy
+        .decide_for_capture(known_app.or(looked_up.as_deref()), browser_url)
+        .skip_reason()
+}
+
 fn resolve_capture_metadata(
     tree_snapshot: Option<&screenpipe_a11y::tree::TreeSnapshot>,
     trigger: &CaptureTrigger,
@@ -2316,6 +2341,24 @@ async fn do_capture(
             );
             return Ok(CaptureOutput::skipped(image));
         }
+    }
+
+    // Website policy on the resolved identity (block list, allow list). The
+    // tree walker already applied it to its own snapshot, but the resolved
+    // app can come from the trigger instead, and a walk that found nothing
+    // carries no URL at all. With an allow list, a browser (or an app that
+    // cannot be identified) whose URL is not confirmed is not stored: no
+    // pixels, no OCR, no text.
+    if let Some(reason) = url_policy_skip(
+        &params.tree_walker_config,
+        app_name_owned.as_deref(),
+        browser_url_owned.as_deref(),
+    ) {
+        debug!(
+            "skipping capture: {} (app={:?}) on monitor {}",
+            reason, app_name_owned, params.monitor_id
+        );
+        return Ok(CaptureOutput::skipped(image));
     }
 
     // DRM content detection: check if the focused app/URL is a streaming service.
@@ -3290,5 +3333,70 @@ mod tests {
             unreachable!("a valid probe never releases the stream")
         }));
         assert_eq!(streak.count, 0);
+    }
+
+    // ---- website policy gate (W3-13) ----
+
+    fn allow_list_config(domain: &str) -> TreeWalkerConfig {
+        TreeWalkerConfig {
+            url_policy: screenpipe_a11y::url_filter::UrlPolicy::new(
+                &[],
+                &[screenpipe_a11y::url_filter::DomainRule {
+                    domain: domain.to_string(),
+                    include_subdomains: true,
+                    excluded_subdomains: vec![],
+                }],
+            ),
+            ..TreeWalkerConfig::default()
+        }
+    }
+
+    #[test]
+    fn url_policy_gate_skips_unverified_browsers_under_an_allow_list() {
+        use screenpipe_a11y::tree::SkipReason;
+        let config = allow_list_config("example.org");
+        assert_eq!(
+            url_policy_skip(&config, Some("chrome.exe"), None),
+            Some(SkipReason::UrlValidationPending)
+        );
+        assert_eq!(
+            url_policy_skip(&config, Some("chrome.exe"), Some("https://other.net")),
+            Some(SkipReason::BlockedUrl)
+        );
+        assert_eq!(
+            url_policy_skip(&config, Some("chrome.exe"), Some("https://www.example.org")),
+            None
+        );
+        // Native apps are left to the window rules.
+        assert_eq!(url_policy_skip(&config, Some("Code.exe"), None), None);
+        // Off Windows the foreground app cannot be looked up, so an
+        // unidentified app is treated as an unverified browser.
+        #[cfg(not(target_os = "windows"))]
+        assert_eq!(
+            url_policy_skip(&config, None, None),
+            Some(SkipReason::UrlValidationPending)
+        );
+    }
+
+    #[test]
+    fn url_policy_gate_with_only_legacy_patterns() {
+        use screenpipe_a11y::tree::SkipReason;
+        let config = TreeWalkerConfig {
+            ignored_urls: vec!["bank.example".to_string()],
+            ..TreeWalkerConfig::default()
+        };
+        assert_eq!(
+            url_policy_skip(
+                &config,
+                Some("chrome.exe"),
+                Some("https://online.bank.example")
+            ),
+            Some(SkipReason::BlockedUrl)
+        );
+        assert_eq!(url_policy_skip(&config, None, None), None);
+        assert_eq!(
+            url_policy_skip(&TreeWalkerConfig::default(), Some("chrome.exe"), None),
+            None
+        );
     }
 }
