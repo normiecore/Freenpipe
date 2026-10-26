@@ -255,8 +255,9 @@ impl CalendarBook {
 
     /// Forget the lists of sources that stopped publishing.
     pub fn expire(&mut self, now: Instant) {
-        self.sources
-            .retain(|_, snapshot| now.saturating_duration_since(snapshot.refreshed) < SOURCE_SNAPSHOT_TTL);
+        self.sources.retain(|_, snapshot| {
+            now.saturating_duration_since(snapshot.refreshed) < SOURCE_SNAPSHOT_TTL
+        });
     }
 
     /// Every usable entry, all sources together.
@@ -422,7 +423,12 @@ pub fn call_conferences<'a>(
 mod tests {
     use super::*;
 
-    fn signal(id: &str, url: Option<&str>, start: DateTime<Utc>, end: DateTime<Utc>) -> CalendarEventSignal {
+    fn signal(
+        id: &str,
+        url: Option<&str>,
+        start: DateTime<Utc>,
+        end: DateTime<Utc>,
+    ) -> CalendarEventSignal {
         CalendarEventSignal {
             id: id.to_string(),
             title: format!("event {id}"),
@@ -437,15 +443,30 @@ mod tests {
     #[test]
     fn identity_normalises_scheme_host_case_and_trailing_slashes() {
         let expected = Some("meet.google.com/abc-defg-hij".to_string());
-        assert_eq!(conference_identity("https://meet.google.com/abc-defg-hij"), expected);
-        assert_eq!(conference_identity("http://MEET.Google.com/abc-defg-hij/"), expected);
-        assert_eq!(conference_identity("meet.google.com/abc-defg-hij//"), expected);
-        assert_eq!(conference_identity("https://www.meet.google.com/abc-defg-hij"), expected);
+        assert_eq!(
+            conference_identity("https://meet.google.com/abc-defg-hij"),
+            expected
+        );
+        assert_eq!(
+            conference_identity("http://MEET.Google.com/abc-defg-hij/"),
+            expected
+        );
+        assert_eq!(
+            conference_identity("meet.google.com/abc-defg-hij//"),
+            expected
+        );
+        assert_eq!(
+            conference_identity("https://www.meet.google.com/abc-defg-hij"),
+            expected
+        );
         assert_eq!(
             conference_identity("https://meet.google.com:443/abc-defg-hij?authuser=1#x"),
             expected
         );
-        assert_eq!(conference_identity(" <https://meet.google.com/abc-defg-hij> "), expected);
+        assert_eq!(
+            conference_identity(" <https://meet.google.com/abc-defg-hij> "),
+            expected
+        );
     }
 
     #[test]
@@ -459,17 +480,30 @@ mod tests {
         assert_eq!(conference_identity("not a url"), None);
         assert_eq!(conference_identity(""), None);
         assert_eq!(
-            conference_identity("https://teams.microsoft.com/l/meetup-join/19%3ameeting_x%40thread.v2/0"),
-            conference_identity("https://teams.microsoft.com/l/meetup-join/19%3Ameeting_x%40thread.v2/0/")
+            conference_identity(
+                "https://teams.microsoft.com/l/meetup-join/19%3ameeting_x%40thread.v2/0"
+            ),
+            conference_identity(
+                "https://teams.microsoft.com/l/meetup-join/19%3Ameeting_x%40thread.v2/0/"
+            )
         );
     }
 
     #[test]
     fn identity_is_never_a_substring_match() {
         let call = conference_identity("https://zoom.us/j/12345").unwrap();
-        assert_ne!(Some(call.clone()), conference_identity("https://zoom.us/j/123456"));
-        assert_ne!(Some(call.clone()), conference_identity("https://zoom.us/j/1234"));
-        assert_ne!(Some(call), conference_identity("https://us02web.zoom.us/j/12345"));
+        assert_ne!(
+            Some(call.clone()),
+            conference_identity("https://zoom.us/j/123456")
+        );
+        assert_ne!(
+            Some(call.clone()),
+            conference_identity("https://zoom.us/j/1234")
+        );
+        assert_ne!(
+            Some(call),
+            conference_identity("https://us02web.zoom.us/j/12345")
+        );
     }
 
     #[test]
@@ -506,7 +540,10 @@ mod tests {
             "source": "google"
         }]);
         let parsed: Vec<CalendarEventSignal> = serde_json::from_value(raw).unwrap();
-        assert_eq!(parsed[0].meeting_url.as_deref(), Some("https://meet.google.com/abc-defg-hij"));
+        assert_eq!(
+            parsed[0].meeting_url.as_deref(),
+            Some("https://meet.google.com/abc-defg-hij")
+        );
         assert!(parsed[0].exclude_from_meeting_detection);
         assert_eq!(parsed[0].source.as_deref(), Some("google"));
 
@@ -524,10 +561,20 @@ mod tests {
         let now = Utc::now();
         let t = Instant::now();
         let mut book = CalendarBook::new();
-        let mut google = signal("g1", None, now - chrono::Duration::minutes(5), now + chrono::Duration::minutes(25));
+        let mut google = signal(
+            "g1",
+            None,
+            now - chrono::Duration::minutes(5),
+            now + chrono::Duration::minutes(25),
+        );
         google.source = Some("google".into());
         book.ingest(vec![google], t);
-        let native = signal("n1", None, now - chrono::Duration::minutes(5), now + chrono::Duration::minutes(25));
+        let native = signal(
+            "n1",
+            None,
+            now - chrono::Duration::minutes(5),
+            now + chrono::Duration::minutes(25),
+        );
         book.ingest(vec![native], t);
         assert_eq!(book.entries().count(), 2);
 
@@ -553,7 +600,12 @@ mod tests {
                     now - chrono::Duration::minutes(5),
                     now + chrono::Duration::minutes(25),
                 ),
-                signal("lunch", None, now - chrono::Duration::minutes(5), now + chrono::Duration::minutes(55)),
+                signal(
+                    "lunch",
+                    None,
+                    now - chrono::Duration::minutes(5),
+                    now + chrono::Duration::minutes(55),
+                ),
             ],
             Instant::now(),
         );
@@ -580,23 +632,37 @@ mod tests {
         let now = Utc::now();
         let url = "https://zoom.us/j/999";
         let mut book = CalendarBook::new();
-        let mut google_copy = signal("g-next", Some(url), now + chrono::Duration::minutes(10), now + chrono::Duration::minutes(40));
+        let mut google_copy = signal(
+            "g-next",
+            Some(url),
+            now + chrono::Duration::minutes(10),
+            now + chrono::Duration::minutes(40),
+        );
         google_copy.source = Some("google".into());
         book.ingest(vec![google_copy], Instant::now());
         let call = vec![conference_identity(url).unwrap()];
         // Joined ten minutes early.
         assert_eq!(
-            book.match_call(&call, now).bindable_entry().map(|e| e.id.as_str()),
+            book.match_call(&call, now)
+                .bindable_entry()
+                .map(|e| e.id.as_str()),
             Some("g-next")
         );
 
         // A current entry with the same recurring link wins over the next one.
         book.ingest(
-            vec![signal("n-now", Some(url), now - chrono::Duration::minutes(20), now + chrono::Duration::minutes(5))],
+            vec![signal(
+                "n-now",
+                Some(url),
+                now - chrono::Duration::minutes(20),
+                now + chrono::Duration::minutes(5),
+            )],
             Instant::now(),
         );
         assert_eq!(
-            book.match_call(&call, now).bindable_entry().map(|e| e.id.as_str()),
+            book.match_call(&call, now)
+                .bindable_entry()
+                .map(|e| e.id.as_str()),
             Some("n-now")
         );
 

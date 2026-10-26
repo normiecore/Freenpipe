@@ -72,9 +72,15 @@ mod tests {
         let t0 = Instant::now();
         let mut pause = LockPause::new();
         assert_eq!(pause.observe(false, t0), LockGate::Run);
-        assert_eq!(pause.observe(true, t0 + Duration::from_secs(5)), LockGate::Skip);
+        assert_eq!(
+            pause.observe(true, t0 + Duration::from_secs(5)),
+            LockGate::Skip
+        );
         assert!(pause.is_paused());
-        assert_eq!(pause.observe(true, t0 + Duration::from_secs(600)), LockGate::Skip);
+        assert_eq!(
+            pause.observe(true, t0 + Duration::from_secs(600)),
+            LockGate::Skip
+        );
         assert_eq!(
             pause.observe(false, t0 + Duration::from_secs(905)),
             LockGate::Resume {
@@ -82,6 +88,9 @@ mod tests {
             }
         );
         assert!(!pause.is_paused());
-        assert_eq!(pause.observe(false, t0 + Duration::from_secs(910)), LockGate::Run);
+        assert_eq!(
+            pause.observe(false, t0 + Duration::from_secs(910)),
+            LockGate::Run
+        );
     }
 }

@@ -185,7 +185,10 @@ mod tests {
         let dto: GoogleCalendarEventDto = serde_json::from_value(raw).unwrap();
         let item = into_calendar_event_item(dto);
         assert_eq!(item.id, "evt-1");
-        assert_eq!(item.meeting_url.as_deref(), Some("https://meet.google.com/abc-defg-hij"));
+        assert_eq!(
+            item.meeting_url.as_deref(),
+            Some("https://meet.google.com/abc-defg-hij")
+        );
         assert!(item.exclude_from_meeting_detection);
         assert_eq!(item.source, "google");
 

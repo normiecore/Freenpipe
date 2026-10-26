@@ -32,7 +32,10 @@ pub fn meeting_ended_payload(
     transcript_segments: Option<usize>,
     end_reason: Option<&str>,
 ) -> Value {
-    let duration_secs = match (meeting_start.and_then(parse_ts), meeting_end.and_then(parse_ts)) {
+    let duration_secs = match (
+        meeting_start.and_then(parse_ts),
+        meeting_end.and_then(parse_ts),
+    ) {
         (Some(start), Some(end)) => Some((end - start).num_seconds().max(0)),
         _ => None,
     };
@@ -138,5 +141,55 @@ mod tests {
         );
         assert_eq!(p["duration_secs"], 0);
         assert!(p.get("end_reason").is_none());
+    }
+
+    #[tokio::test]
+    async fn loaded_payload_counts_the_meeting_transcript() {
+        let db = DatabaseManager::new("sqlite::memory:", Default::default())
+            .await
+            .unwrap();
+        screenpipe_db::schema_migrations::migrator()
+            .run(db.write_pool())
+            .await
+            .unwrap();
+        let id = db
+            .insert_meeting("zoom.us", "ui_scan", None, None)
+            .await
+            .unwrap();
+        for (i, text) in ["hello there", "next item"].iter().enumerate() {
+            db.insert_meeting_transcript_segment(
+                id,
+                "deepgram",
+                None,
+                &format!("item-{i}"),
+                "mic",
+                "input",
+                None,
+                text,
+                Utc::now(),
+            )
+            .await
+            .unwrap();
+        }
+        let end = (Utc::now() + chrono::Duration::seconds(90))
+            .format("%Y-%m-%dT%H:%M:%S%.3fZ")
+            .to_string();
+        db.end_meeting(id, &end, Some("explicit_stop"))
+            .await
+            .unwrap();
+
+        let p = load_meeting_ended_payload(&db, id, Some("explicit_stop")).await;
+        assert_eq!(p["meeting_id"], id);
+        assert_eq!(p["meeting_end"], end.as_str());
+        assert_eq!(p["transcript_segments"], 2);
+        let secs = p["duration_secs"].as_i64().unwrap();
+        assert!((89..=91).contains(&secs), "duration {secs}");
+        assert_eq!(p["end_reason"], "explicit_stop");
+
+        // An unknown meeting still yields an event to send.
+        let p = load_meeting_ended_payload(&db, id + 100, None).await;
+        assert_eq!(p["meeting_id"], id + 100);
+        assert!(p["meeting_end"].is_null());
+        assert!(p["duration_secs"].is_null());
     }
 }

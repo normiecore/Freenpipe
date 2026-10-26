@@ -3213,7 +3213,12 @@ pub async fn run_meeting_detection_loop(
                             }) => (title_applied.clone(), Some(event_id.clone())),
                             _ => (None, None),
                         };
-                        emit_meeting_started(meeting_id, &app, title.as_deref(), event_id.as_deref());
+                        emit_meeting_started(
+                            meeting_id,
+                            &app,
+                            title.as_deref(),
+                            event_id.as_deref(),
+                        );
                     }
 
                     // Update state with actual meeting ID (replace the placeholder -1)
@@ -3293,11 +3298,10 @@ pub async fn run_meeting_detection_loop(
         } = state
         {
             if meeting_id >= 0 {
-                let tracker = match calendar_bind.take() {
+                let mut tracker = match calendar_bind.take() {
                     Some(t) if t.meeting_id == meeting_id => t,
                     _ => CalendarBindTracker::new(meeting_id, None),
                 };
-                let mut tracker = tracker;
                 if tracker.profile_index.is_none() {
                     tracker.profile_index = best_in_call_profile(&scan_results);
                 }
@@ -3568,7 +3572,10 @@ async fn conferences_for_call(
     let mut urls = match db_recent_browser_urls(db, since).await {
         Ok(urls) => urls,
         Err(e) => {
-            debug!("meeting v2: browser URL lookup for calendar binding failed: {}", e);
+            debug!(
+                "meeting v2: browser URL lookup for calendar binding failed: {}",
+                e
+            );
             Vec::new()
         }
     };
@@ -6233,7 +6240,11 @@ mod w3_08_tests {
     fn meet_profile_index(profiles: &[MeetingDetectionProfile]) -> usize {
         profiles
             .iter()
-            .position(|p| p.app_identifiers.browser_url_patterns.contains(&"meet.google.com"))
+            .position(|p| {
+                p.app_identifiers
+                    .browser_url_patterns
+                    .contains(&"meet.google.com")
+            })
             .expect("built-in Google Meet profile")
     }
 
@@ -6243,7 +6254,9 @@ mod w3_08_tests {
         let now = Utc::now();
         // The call's tab was on screen 20 s ago (scheme hidden by the browser);
         // an older Meet tab and a Zoom tab are not this call.
-        db.insert_video_chunk("chunk.mp4", "monitor_1").await.unwrap();
+        db.insert_video_chunk("chunk.mp4", "monitor_1")
+            .await
+            .unwrap();
         for (url, ago) in [
             ("meet.google.com/abc-defg-hij?authuser=0", 20),
             ("https://meet.google.com/old-call-xyz", 900),
@@ -6261,13 +6274,24 @@ mod w3_08_tests {
             .await
             .unwrap();
         }
-        let meeting_id = db.insert_meeting("Google Chrome", "ui_scan", None, None).await.unwrap();
+        let meeting_id = db
+            .insert_meeting("Google Chrome", "ui_scan", None, None)
+            .await
+            .unwrap();
 
         let profiles = load_detection_profiles();
         let meet = &profiles[meet_profile_index(&profiles)];
         let calendar = book(vec![
-            entry_signal("evt-meet", Some("http://MEET.google.com/abc-defg-hij/"), now),
-            entry_signal("evt-other", Some("https://meet.google.com/old-call-xyz"), now),
+            entry_signal(
+                "evt-meet",
+                Some("http://MEET.google.com/abc-defg-hij/"),
+                now,
+            ),
+            entry_signal(
+                "evt-other",
+                Some("https://meet.google.com/old-call-xyz"),
+                now,
+            ),
         ]);
         let urls = conferences_for_call(&db, &calendar, Some(meet), &[], now).await;
         assert_eq!(urls, vec![conference_identity(MEET_URL).unwrap()]);
@@ -6282,19 +6306,28 @@ mod w3_08_tests {
         );
         assert!(outcome.settled());
         assert_eq!(
-            db.get_meeting_calendar_event_id(meeting_id).await.unwrap().as_deref(),
+            db.get_meeting_calendar_event_id(meeting_id)
+                .await
+                .unwrap()
+                .as_deref(),
             Some("evt-meet")
         );
         let stored = db.get_meeting_by_id(meeting_id).await.unwrap();
         assert_eq!(stored.title.as_deref(), Some("Planning evt-meet"));
-        assert_eq!(stored.attendees.as_deref(), Some("ana@example.com, bo@example.com"));
+        assert_eq!(
+            stored.attendees.as_deref(),
+            Some("ana@example.com, bo@example.com")
+        );
     }
 
     #[tokio::test]
     async fn time_only_match_does_not_bind_or_title() {
         let db = setup_db().await;
         let now = Utc::now();
-        let meeting_id = db.insert_meeting("zoom.us", "ui_scan", None, None).await.unwrap();
+        let meeting_id = db
+            .insert_meeting("zoom.us", "ui_scan", None, None)
+            .await
+            .unwrap();
         // Scheduled right now, but its link is another conference than the
         // call's, and a second entry has no link at all.
         let calendar = book(vec![
@@ -6307,7 +6340,10 @@ mod w3_08_tests {
             assert_eq!(outcome, CalendarAttach::TimeOnly { overlapping: 2 });
             assert!(!outcome.settled());
         }
-        assert_eq!(db.get_meeting_calendar_event_id(meeting_id).await.unwrap(), None);
+        assert_eq!(
+            db.get_meeting_calendar_event_id(meeting_id).await.unwrap(),
+            None
+        );
         let stored = db.get_meeting_by_id(meeting_id).await.unwrap();
         assert_eq!(stored.title, None);
         assert_eq!(stored.attendees, None);
@@ -6324,7 +6360,10 @@ mod w3_08_tests {
     async fn bound_meetings_are_never_rebound_and_owned_events_are_refused() {
         let db = setup_db().await;
         let now = Utc::now();
-        let first = db.insert_meeting("Google Chrome", "ui_scan", Some("My title"), None).await.unwrap();
+        let first = db
+            .insert_meeting("Google Chrome", "ui_scan", Some("My title"), None)
+            .await
+            .unwrap();
         let calendar = book(vec![
             entry_signal("evt-a", Some(MEET_URL), now),
             entry_signal("evt-b", Some("https://zoom.us/j/777"), now),
@@ -6343,12 +6382,17 @@ mod w3_08_tests {
         );
         let stored = db.get_meeting_by_id(first).await.unwrap();
         assert_eq!(stored.title.as_deref(), Some("My title"));
-        assert_eq!(stored.attendees.as_deref(), Some("ana@example.com, bo@example.com"));
+        assert_eq!(
+            stored.attendees.as_deref(),
+            Some("ana@example.com, bo@example.com")
+        );
 
         // Same entry again: nothing changes.
         assert_eq!(
             attach_calendar_event(&db, first, &calendar, &meet_call, now).await,
-            CalendarAttach::AlreadyBound { event_id: "evt-a".into() }
+            CalendarAttach::AlreadyBound {
+                event_id: "evt-a".into()
+            }
         );
 
         // Another entry for the same meeting: the existing binding stays.
@@ -6361,18 +6405,27 @@ mod w3_08_tests {
             } if event_id == "evt-b" && existing == "evt-a"
         ));
         assert_eq!(
-            db.get_meeting_calendar_event_id(first).await.unwrap().as_deref(),
+            db.get_meeting_calendar_event_id(first)
+                .await
+                .unwrap()
+                .as_deref(),
             Some("evt-a")
         );
 
         // A second meeting on the first one's entry fails the ownership check.
-        let second = db.insert_meeting("Google Chrome", "ui_scan", None, None).await;
+        let second = db
+            .insert_meeting("Google Chrome", "ui_scan", None, None)
+            .await;
         let second = match second {
             Ok(id) => id,
             // The single-open index refuses a second open row; end the first.
             Err(_) => {
-                db.end_meeting(first, &Utc::now().to_rfc3339(), None).await.unwrap();
-                db.insert_meeting("Google Chrome", "ui_scan", None, None).await.unwrap()
+                db.end_meeting(first, &Utc::now().to_rfc3339(), None)
+                    .await
+                    .unwrap();
+                db.insert_meeting("Google Chrome", "ui_scan", None, None)
+                    .await
+                    .unwrap()
             }
         };
         let outcome = attach_calendar_event(&db, second, &calendar, &meet_call, now).await;
@@ -6388,14 +6441,20 @@ mod w3_08_tests {
         assert!(outcome.settled());
         let stored = db.get_meeting_by_id(second).await.unwrap();
         assert_eq!(stored.title, None);
-        assert_eq!(db.get_meeting_calendar_event_id(second).await.unwrap(), None);
+        assert_eq!(
+            db.get_meeting_calendar_event_id(second).await.unwrap(),
+            None
+        );
     }
 
     #[tokio::test]
     async fn excluded_calendar_entry_is_ignored_entirely() {
         let db = setup_db().await;
         let now = Utc::now();
-        let meeting_id = db.insert_meeting("Google Chrome", "ui_scan", None, None).await.unwrap();
+        let meeting_id = db
+            .insert_meeting("Google Chrome", "ui_scan", None, None)
+            .await
+            .unwrap();
         let mut declined = entry_signal("evt-declined", Some(MEET_URL), now);
         declined.exclude_from_meeting_detection = true;
         let calendar = book(vec![declined]);
@@ -6408,8 +6467,13 @@ mod w3_08_tests {
         // Nothing to bind, so the screen is not even searched for URLs.
         let profiles = load_detection_profiles();
         let meet = &profiles[meet_profile_index(&profiles)];
-        assert!(conferences_for_call(&db, &calendar, Some(meet), &[], now).await.is_empty());
-        assert_eq!(db.get_meeting_calendar_event_id(meeting_id).await.unwrap(), None);
+        assert!(conferences_for_call(&db, &calendar, Some(meet), &[], now)
+            .await
+            .is_empty());
+        assert_eq!(
+            db.get_meeting_calendar_event_id(meeting_id).await.unwrap(),
+            None
+        );
     }
 
     #[test]
@@ -6495,7 +6559,9 @@ mod w3_08_tests {
             meeting_id: 42,
             app: "zoom.us".into(),
             started_at: Utc::now(),
-            since: Instant::now().checked_sub(ago).expect("monotonic clock has run long enough"),
+            since: Instant::now()
+                .checked_sub(ago)
+                .expect("monotonic clock has run long enough"),
             is_browser: false,
             controls_seen_in_ending: 1,
         }
@@ -6560,7 +6626,13 @@ mod w3_08_tests {
             gate_scan_iteration(&mut pause, &mut state, false, false, now),
             ScanGate::Scan
         );
-        let MeetingState::Ending { since, meeting_id, controls_seen_in_ending, .. } = &state else {
+        let MeetingState::Ending {
+            since,
+            meeting_id,
+            controls_seen_in_ending,
+            ..
+        } = &state
+        else {
             panic!("state changed kind on unlock: {:?}", state);
         };
         assert_eq!((*meeting_id, *controls_seen_in_ending), (42, 1));
@@ -6578,7 +6650,10 @@ mod w3_08_tests {
 
         // Without the pause, the same scan would have ended it.
         let (_, action) = advance_state(ending_since(Duration::from_secs(55)), &[], false);
-        assert!(matches!(action, Some(StateAction::EndMeeting { meeting_id: 42 })));
+        assert!(matches!(
+            action,
+            Some(StateAction::EndMeeting { meeting_id: 42 })
+        ));
     }
 
     #[test]

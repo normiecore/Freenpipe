@@ -2907,7 +2907,9 @@ mod tests {
                 {"email": "other@example.com", "responseStatus": "declined"}
             ]
         });
-        assert!(!google_event_excluded_from_meeting_detection(&other_declined));
+        assert!(!google_event_excluded_from_meeting_detection(
+            &other_declined
+        ));
         assert!(google_event_excluded_from_meeting_detection(
             &json!({"transparency": "transparent"})
         ));
