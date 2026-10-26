@@ -3253,9 +3253,7 @@ mod tests {
             let black = guard_frame_pixels(Some(image::DynamicImage::new_rgb8(64, 64)), 1)
                 .err()
                 .unwrap();
-            track_frame_validity(&black, &mut streak, &metrics, 1, || {
-                released_at.push(frame)
-            });
+            track_frame_validity(&black, &mut streak, &metrics, 1, || released_at.push(frame));
         }
         assert_eq!(released_at, vec![3, 33, 63, 93]);
         assert_eq!(metrics.snapshot().frames_corrupt_black, 100);

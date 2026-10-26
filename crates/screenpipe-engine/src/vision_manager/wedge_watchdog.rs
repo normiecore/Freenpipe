@@ -1171,7 +1171,10 @@ mod tests {
             );
             healthy += u32::from(verdict == Verdict::Healthy);
         }
-        assert!(healthy >= 10, "the replacement loop turns ({healthy}/20 healthy)");
+        assert!(
+            healthy >= 10,
+            "the replacement loop turns ({healthy}/20 healthy)"
+        );
         assert_eq!(wd.restarts(), 1);
         vision.stop_capture().await.unwrap();
         assert!(!vision.metrics.loop_stages.is_tracked(1));
