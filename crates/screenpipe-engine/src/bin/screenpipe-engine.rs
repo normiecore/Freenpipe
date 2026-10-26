@@ -1227,7 +1227,8 @@ async fn main() -> anyhow::Result<()> {
     let user_token = screenpipe_core::ai_gateway::credential(None);
     let pi_executor = std::sync::Arc::new(
         screenpipe_core::agents::pi::PiExecutor::new(user_token.clone())
-            .with_api_auth_key(config.api_auth_key.clone()),
+            .with_api_auth_key(config.api_auth_key.clone())
+            .with_local_api_port(config.port),
     );
 
     // Workflow event classifier — opt-in. Polls recent activity and emits

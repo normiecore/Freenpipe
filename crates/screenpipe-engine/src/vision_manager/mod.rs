@@ -5,6 +5,7 @@
 
 mod manager;
 mod monitor_watcher;
+mod wedge_watchdog;
 
 pub use manager::{
     DeviceControlError, MonitorDeviceState, MonitorSummary, VisionDeviceControl, VisionManager,

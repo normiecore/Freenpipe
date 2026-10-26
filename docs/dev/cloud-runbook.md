@@ -219,7 +219,9 @@ The full Windows and Linux builds run in CI. In the VM, run what is fast and tar
   notes in PLAN.md section 3 are for Windows.
 - Run every acceptance check that can run on Linux. For the rest, record where it runs instead:
   the CI `windows`/`linux` job, or a Windows smoke checklist entry you add (section 1.3).
-- Free disk under 8 GB: run `fp_disk_check` (defined in the env file); it clears old build output.
+- Free disk under 8 GB: run `fp_disk_check` (defined in the env file); it clears old build output. While WP
+  worktrees exist it only prunes dead builds (`prune-target.py --delete`) and never removes the shared target
+  dir, because other workers build from it. Workers and reviewers started by the coordinator do not run it.
 
 ### 3.5 Review: two independent subagents, up to two fix rounds
 
@@ -471,7 +473,7 @@ reasons), main CI state, and any wave integration recorded.
 | Main red after merges | Two PRs passed alone but not together | Merger re-runs once (4.5), then a worker takes `fix-main` (3.10). |
 | `bun install` fails in the VM | Bun and the cloud proxy disagree | Frontend build and tests run only in CI. |
 | Network host blocked (403 `host_not_allowed`) | The environment allowlist lacks a host | Note the host in your report. The owner adds it (cloud-environment.md). |
-| Disk full | Build fails with ENOSPC | `fp_disk_check`; as a last resort `rm -rf "$CARGO_TARGET_DIR"`. |
+| Disk full | Build fails with ENOSPC | `fp_disk_check`; as a last resort, and only when no other worker is building, `rm -rf "$CARGO_TARGET_DIR"`. |
 | GitHub API error | `fp.py` prints `GitHub API error` | Retry once. If it persists, report it and end the session. |
 
 ## 6. Reference

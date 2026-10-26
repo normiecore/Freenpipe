@@ -164,7 +164,9 @@ function sourceCitationsFromToolCall(toolCall: ToolCallLike | undefined): Source
   const args = isObject(toolCall.args) ? toolCall.args : {};
   const resultText = resultToText(toolCall.result);
 
-  if (toolName === "web_search") {
+  // `sp_web_search` is the current tool name; `web_search` is what older
+  // chats stored.
+  if (toolName === "web_search" || toolName === "sp_web_search") {
     return webSearchCitations(args, toolCall.result, resultText);
   }
 

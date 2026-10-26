@@ -281,6 +281,36 @@ describe("source citations", () => {
     });
   });
 
+  it("reads sources from the sp_web_search tool details", () => {
+    const citations = sourceCitationsFromMessage({
+      contentBlocks: [
+        {
+          type: "tool",
+          toolCall: {
+            toolName: "sp_web_search",
+            args: { query: "searxng json api" },
+            result: {
+              content: [{ type: "text", text: "1. SearXNG docs" }],
+              details: {
+                text: "1. SearXNG docs",
+                query: "searxng json api",
+                sources: [{ title: "SearXNG docs", url: "https://docs.searxng.org/" }],
+              },
+            },
+            isRunning: false,
+          },
+        },
+      ],
+    });
+
+    expect(citations).toHaveLength(1);
+    expect(citations[0]).toMatchObject({
+      kind: "web",
+      title: "SearXNG docs",
+      href: "https://docs.searxng.org/",
+    });
+  });
+
   it("derives direct screenpipe_search tool citations", () => {
     const citations = sourceCitationsFromMessage({
       contentBlocks: [

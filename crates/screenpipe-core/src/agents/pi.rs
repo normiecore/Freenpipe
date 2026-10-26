@@ -256,6 +256,12 @@ pub struct PiExecutor {
     /// is also exported as a deprecated alias (one release) for old pipe.md
     /// files on disk. None = auth disabled.
     pub api_auth_key: Option<String>,
+    /// Port the engine's local API listens on. Exported to the Pi
+    /// subprocess as `SCREENPIPE_LOCAL_API_PORT` and
+    /// `SCREENPIPE_LOCAL_API_URL` so bundled extensions (`sp_web_search`)
+    /// reach this engine, not whatever listens on the default port. `None`
+    /// leaves both as the parent process has them.
+    pub local_api_port: Option<u16>,
 }
 
 impl PiExecutor {
@@ -264,6 +270,7 @@ impl PiExecutor {
             user_token: Arc::new(ArcSwap::new(Arc::new(user_token))),
             api_url: SCREENPIPE_API_URL.to_string(),
             api_auth_key: None,
+            local_api_port: None,
         }
     }
 
@@ -277,6 +284,7 @@ impl PiExecutor {
             user_token,
             api_url: SCREENPIPE_API_URL.to_string(),
             api_auth_key: None,
+            local_api_port: None,
         }
     }
 
@@ -318,6 +326,36 @@ impl PiExecutor {
     pub fn with_api_auth_key(mut self, key: Option<String>) -> Self {
         self.api_auth_key = key.filter(|k| !k.is_empty());
         self
+    }
+
+    /// Record the port the engine's local API listens on (the pipe
+    /// manager's `api_port`), so agent runs call this engine.
+    pub fn with_local_api_port(mut self, port: u16) -> Self {
+        self.local_api_port = Some(port);
+        self
+    }
+
+    /// The local API environment for a Pi subprocess: the key (with its
+    /// deprecated alias) and, when known, the port and base URL.
+    fn local_api_env(&self) -> Vec<(&'static str, String)> {
+        let mut vars = Vec::new();
+        // Canonical name: SCREENPIPE_LOCAL_API_KEY. The AUTH_KEY alias is
+        // kept ONE release as a deprecated fallback for user-installed
+        // pipe.md files that hardcoded the old name (e.g. an older
+        // meeting-summary install on disk that install_builtin_pipes won't
+        // overwrite). TODO(remove next release): drop SCREENPIPE_API_AUTH_KEY.
+        if let Some(ref key) = self.api_auth_key {
+            vars.push((crate::env::SCREENPIPE_LOCAL_API_KEY, key.clone()));
+            vars.push((crate::env::SCREENPIPE_API_AUTH_KEY, key.clone())); // deprecated alias
+        }
+        if let Some(port) = self.local_api_port {
+            vars.push((crate::env::SCREENPIPE_LOCAL_API_PORT, port.to_string()));
+            vars.push((
+                crate::env::SCREENPIPE_LOCAL_API_URL,
+                format!("http://localhost:{port}"),
+            ));
+        }
+        vars
     }
 
     /// Whether the screenpipe-api skill gets the cloud media analysis
@@ -564,15 +602,12 @@ impl PiExecutor {
     }
 
     /// Install the extensions every executor run needs: the always-on
-    /// manifest entries plus web-search when the run qualifies for it.
-    /// Permission and sub-agent extensions are pipe setup's business and are
-    /// left as they are.
-    pub fn ensure_run_extensions(project_dir: &Path, provider: Option<&str>) -> Result<()> {
+    /// manifest entries plus web-search when a search provider is
+    /// configured. Permission and sub-agent extensions are pipe setup's
+    /// business and are left as they are.
+    pub fn ensure_run_extensions(project_dir: &Path) -> Result<()> {
         let conditions = ExtensionConditions {
-            web_search: Some(extensions_manifest::web_search_wanted(
-                provider,
-                crate::ai_gateway::is_configured(),
-            )),
+            web_search: Some(extensions_manifest::web_search_wanted()),
             ..Default::default()
         };
         extensions_manifest::first_error(extensions_manifest::sync_bundled_extensions(
@@ -683,32 +718,23 @@ impl PiExecutor {
         )
     }
 
-    /// Install or remove the web-search extension. The extension sends
-    /// queries to the user's AI gateway (`{gateway}/web-search`), so it is
-    /// installed only for the gateway-backed provider and only when a
-    /// gateway is configured; otherwise it is removed and no search tool is
-    /// offered.
-    pub fn ensure_web_search_extension(project_dir: &Path, provider: Option<&str>) -> Result<()> {
+    /// Install or remove the web-search extension. Its `sp_web_search` tool
+    /// calls the engine's `/v1/web-search` route, which forwards to the
+    /// user's search provider, so it is installed only when one is
+    /// configured; otherwise it is removed and no search tool is offered.
+    pub fn ensure_web_search_extension(project_dir: &Path) -> Result<()> {
         Self::ensure_web_search_extension_with(
             project_dir,
-            provider,
-            crate::ai_gateway::is_configured(),
+            extensions_manifest::web_search_wanted(),
         )
     }
 
-    fn ensure_web_search_extension_with(
-        project_dir: &Path,
-        provider: Option<&str>,
-        gateway_configured: bool,
-    ) -> Result<()> {
+    fn ensure_web_search_extension_with(project_dir: &Path, search_configured: bool) -> Result<()> {
         Self::apply_bundled_extension(
             project_dir,
             "web-search",
             &ExtensionConditions {
-                web_search: Some(extensions_manifest::web_search_wanted(
-                    provider,
-                    gateway_configured,
-                )),
+                web_search: Some(search_configured),
                 ..Default::default()
             },
         )
@@ -1071,7 +1097,7 @@ impl PiExecutor {
         if let Some(ref token) = cloud_token {
             cmd.env("SCREENPIPE_API_KEY", token);
         }
-        // The web-search extension reads the gateway base from here.
+        // Agents that talk to the gateway directly read its base from here.
         match self.gateway_base() {
             Some(base) => {
                 cmd.env(crate::ai_gateway::URL_ENV, base);
@@ -1110,15 +1136,8 @@ impl PiExecutor {
             }
         }
 
-        // Canonical name: SCREENPIPE_LOCAL_API_KEY. The AUTH_KEY alias is
-        // kept ONE release as a deprecated fallback for user-installed
-        // pipe.md files that hardcoded the old name (e.g. an older
-        // meeting-summary install on disk that install_builtin_pipes won't
-        // overwrite). TODO(remove next release): drop SCREENPIPE_API_AUTH_KEY.
-        if let Some(ref key) = self.api_auth_key {
-            cmd.env("SCREENPIPE_LOCAL_API_KEY", key);
-            cmd.env("SCREENPIPE_API_AUTH_KEY", key); // deprecated alias
-        }
+        // Local API key, port and URL (see `local_api_env`).
+        cmd.envs(self.local_api_env());
 
         // Auto-auth the agent's `curl localhost:3030/...` calls via a bash
         // shim sourced from $BASH_ENV on every subshell. See bash_env.rs.
@@ -1228,7 +1247,7 @@ impl PiExecutor {
         if let Some(ref token) = cloud_token {
             cmd.env("SCREENPIPE_API_KEY", token);
         }
-        // The web-search extension reads the gateway base from here.
+        // Agents that talk to the gateway directly read its base from here.
         match self.gateway_base() {
             Some(base) => {
                 cmd.env(crate::ai_gateway::URL_ENV, base);
@@ -1265,11 +1284,8 @@ impl PiExecutor {
             }
         }
 
-        // See spawn_pi above — TODO(remove next release): drop the deprecated alias.
-        if let Some(ref key) = self.api_auth_key {
-            cmd.env("SCREENPIPE_LOCAL_API_KEY", key);
-            cmd.env("SCREENPIPE_API_AUTH_KEY", key); // deprecated alias
-        }
+        // Local API key, port and URL (see `local_api_env`).
+        cmd.envs(self.local_api_env());
 
         // Tag this run's local API calls with the owning chat/session so the
         // owned-browser sidebar can route navigations to the right chat (the
@@ -1452,7 +1468,7 @@ impl AgentExecutor for PiExecutor {
         // Use filtered skills if permissions are configured, unfiltered otherwise
         Self::ensure_screenpipe_skill_auto(working_dir)?;
 
-        Self::ensure_run_extensions(working_dir, Some(&resolved_provider))?;
+        Self::ensure_run_extensions(working_dir)?;
 
         let pi_path = find_pi_executable().ok_or_else(|| {
             anyhow!(
@@ -1564,7 +1580,7 @@ impl AgentExecutor for PiExecutor {
         .await?;
         // Use filtered skills if permissions are configured, unfiltered otherwise
         Self::ensure_screenpipe_skill_auto(working_dir)?;
-        Self::ensure_run_extensions(working_dir, Some(&resolved_provider))?;
+        Self::ensure_run_extensions(working_dir)?;
 
         let pi_path = find_pi_executable().ok_or_else(|| {
             anyhow!(
@@ -2846,7 +2862,27 @@ mod tests {
     }
 
     #[test]
-    fn web_search_extension_needs_the_gateway_provider_and_a_gateway() {
+    fn runs_learn_the_local_api_port_and_key() {
+        let vars = |exec: &PiExecutor| -> std::collections::HashMap<&'static str, String> {
+            exec.local_api_env().into_iter().collect()
+        };
+        // Nothing known: nothing exported, the parent's values stand.
+        assert!(vars(&PiExecutor::new(None)).is_empty());
+
+        // A dev engine on port 3035: extensions must call that engine, not
+        // whatever listens on 3030.
+        let exec = PiExecutor::new(None)
+            .with_api_auth_key(Some("local-key".into()))
+            .with_local_api_port(3035);
+        let env = vars(&exec);
+        assert_eq!(env["SCREENPIPE_LOCAL_API_PORT"], "3035");
+        assert_eq!(env["SCREENPIPE_LOCAL_API_URL"], "http://localhost:3035");
+        assert_eq!(env["SCREENPIPE_LOCAL_API_KEY"], "local-key");
+        assert_eq!(env["SCREENPIPE_API_AUTH_KEY"], "local-key");
+    }
+
+    #[test]
+    fn web_search_extension_follows_the_search_configuration() {
         let dir = tempfile::tempdir().unwrap();
         let ext = dir
             .path()
@@ -2854,17 +2890,16 @@ mod tests {
             .join("extensions")
             .join("web-search.ts");
 
-        PiExecutor::ensure_web_search_extension_with(dir.path(), Some("screenpipe"), false)
-            .unwrap();
-        assert!(!ext.exists(), "no gateway, no search tool");
+        PiExecutor::ensure_web_search_extension_with(dir.path(), false).unwrap();
+        assert!(!ext.exists(), "no search provider, no search tool");
 
-        PiExecutor::ensure_web_search_extension_with(dir.path(), Some("screenpipe"), true).unwrap();
+        PiExecutor::ensure_web_search_extension_with(dir.path(), true).unwrap();
         assert!(ext.exists());
         let body = std::fs::read_to_string(&ext).unwrap();
-        assert!(body.contains("SCREENPIPE_AI_GATEWAY_URL"));
+        assert!(body.contains("/v1/web-search"));
 
-        PiExecutor::ensure_web_search_extension_with(dir.path(), Some("ollama"), true).unwrap();
-        assert!(!ext.exists(), "other providers never get the gateway tool");
+        PiExecutor::ensure_web_search_extension_with(dir.path(), false).unwrap();
+        assert!(!ext.exists(), "turning search off removes the tool again");
     }
 
     #[test]
