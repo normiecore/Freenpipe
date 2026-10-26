@@ -525,7 +525,7 @@ pub fn from_hits(summary: Option<&str>, hits: Vec<Hit>, limit: usize) -> WebSear
         }
     }
     WebSearchResponse {
-        content: truncate_chars(&content, MAX_CONTENT_CHARS),
+        content: truncate_chars(&content, MAX_CONTENT_CHARS, false),
         sources: kept
             .into_iter()
             .map(|hit| WebSearchSource {
@@ -1256,7 +1256,8 @@ mod tests {
         let (prefix, cut) = raw_prefix(&wide, 1);
         assert!(cut);
         assert_eq!(prefix.len(), MIN_RAW_BYTES);
-        let (prefix, cut) = raw_prefix(&format!("x{wide}"), 1);
+        let shifted = format!("x{wide}");
+        let (prefix, cut) = raw_prefix(&shifted, 1);
         assert!(cut);
         assert_eq!(prefix.len(), MIN_RAW_BYTES - 1);
         // Text past the bound is reported as cut even when what is left
