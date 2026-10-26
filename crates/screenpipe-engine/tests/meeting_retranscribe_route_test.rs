@@ -70,7 +70,7 @@ async fn call(app: &Router, method: &str, uri: &str, body: Option<Value>) -> (St
 
 #[tokio::test]
 async fn retranscribe_reports_transcript_update_and_summary_refresh_fields() {
-    let (app, _db, _dir) = setup().await;
+    let (app, db, _dir) = setup().await;
 
     let (status, started) = call(
         &app,
@@ -81,6 +81,15 @@ async fn retranscribe_reports_transcript_update_and_summary_refresh_fields() {
     .await;
     assert_eq!(status, StatusCode::OK, "{started}");
     let id = started["id"].as_i64().unwrap();
+
+    // The route refuses a meeting shorter than a second, so start this one
+    // ten minutes ago instead of waiting.
+    let earlier = (chrono::Utc::now() - chrono::Duration::minutes(10))
+        .format("%Y-%m-%dT%H:%M:%S%.3fZ")
+        .to_string();
+    db.update_meeting(id, Some(&earlier), None, None, None, None, None)
+        .await
+        .unwrap();
 
     // Still running: refused.
     let (status, _) = call(
