@@ -280,6 +280,42 @@ pub fn set_audio_device_status(devices: Vec<AudioDeviceEntry>) {
     *guard = devices;
 }
 
+/// Why audio is deliberately not recording while capture runs, as reported
+/// by the engine's `capture_status.status` (meetings-only capture). The
+/// tray shows it next to the recording status.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum AudioWaitState {
+    /// Audio records normally (or is off, or the engine did not say).
+    #[default]
+    None,
+    /// `meetings-only`: no meeting is running, so no audio device is open.
+    WaitingForMeeting,
+    /// `meetings-only`, but meeting detection is not running.
+    MeetingDetectionUnavailable,
+}
+
+impl AudioWaitState {
+    /// Read the engine's `capture_status.status` value.
+    pub fn from_capture_status(status: Option<&str>) -> Self {
+        match status {
+            Some("waiting_for_meeting") => Self::WaitingForMeeting,
+            Some("meeting_detector_unavailable") => Self::MeetingDetectionUnavailable,
+            _ => Self::None,
+        }
+    }
+}
+
+static AUDIO_WAIT_STATE: Lazy<RwLock<AudioWaitState>> =
+    Lazy::new(|| RwLock::new(AudioWaitState::None));
+
+pub fn get_audio_wait_state() -> AudioWaitState {
+    *AUDIO_WAIT_STATE.read().unwrap_or_else(|e| e.into_inner())
+}
+
+fn set_audio_wait_state(state: AudioWaitState) {
+    *AUDIO_WAIT_STATE.write().unwrap_or_else(|e| e.into_inner()) = state;
+}
+
 /// Mirror of `routes::capture::HighFpsState` — what the tray needs to
 /// render the "HD recording" menu item label and checked state.
 /// Updated by the health poll so the tray reads from a local cache
@@ -379,6 +415,16 @@ struct HealthCheckResponse {
     /// DRM streaming content detected — capture should be fully stopped
     #[serde(default)]
     drm_content_paused: bool,
+    /// Audio side of capture; `status` tells the tray when audio waits for
+    /// a meeting.
+    #[serde(default)]
+    capture_status: Option<CaptureStatusInfo>,
+}
+
+#[derive(Debug, Deserialize, Default)]
+struct CaptureStatusInfo {
+    #[serde(default)]
+    status: Option<String>,
 }
 
 /// Decide recording status based on health check result and time since startup.
@@ -1286,6 +1332,15 @@ pub async fn start_health_check(app: tauri::AppHandle) -> Result<()> {
             }
 
             set_recording_info(status, devices);
+            set_audio_wait_state(match &health_result {
+                Ok(health) => AudioWaitState::from_capture_status(
+                    health
+                        .capture_status
+                        .as_ref()
+                        .and_then(|c| c.status.as_deref()),
+                ),
+                Err(_) => AudioWaitState::None,
+            });
 
             let current_status = status_to_icon_key(status);
 
@@ -1593,6 +1648,7 @@ mod tests {
             vision_db_write_stalled: false,
             audio_db_write_stalled: false,
             drm_content_paused: false,
+            capture_status: None,
         })
     }
 
@@ -1614,7 +1670,36 @@ mod tests {
             vision_db_write_stalled: false,
             audio_db_write_stalled: false,
             drm_content_paused: false,
+            capture_status: None,
         })
+    }
+
+    #[test]
+    fn audio_wait_state_follows_capture_status() {
+        assert_eq!(
+            AudioWaitState::from_capture_status(Some("waiting_for_meeting")),
+            AudioWaitState::WaitingForMeeting
+        );
+        assert_eq!(
+            AudioWaitState::from_capture_status(Some("meeting_detector_unavailable")),
+            AudioWaitState::MeetingDetectionUnavailable
+        );
+        assert_eq!(
+            AudioWaitState::from_capture_status(Some("recording")),
+            AudioWaitState::None
+        );
+        assert_eq!(AudioWaitState::from_capture_status(None), AudioWaitState::None);
+        let parsed: HealthCheckResponse = serde_json::from_value(serde_json::json!({
+            "status": "healthy",
+            "last_frame_timestamp": null,
+            "last_audio_timestamp": null,
+            "capture_status": {"status": "waiting_for_meeting", "reason": "x"}
+        }))
+        .unwrap();
+        assert_eq!(
+            parsed.capture_status.unwrap().status.as_deref(),
+            Some("waiting_for_meeting")
+        );
     }
 
     fn make_connection_error() -> Result<HealthCheckResponse> {
