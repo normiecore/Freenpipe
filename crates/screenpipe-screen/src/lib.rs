@@ -29,8 +29,8 @@ pub mod utils;
 pub use apple::perform_ocr_apple;
 pub use core::RealtimeVisionEvent;
 pub use metrics::{
-    CaptureLoopStage, CorruptFrameKind, LoopStageGuard, LoopStageReport, MetricsSnapshot,
-    PipelineMetrics,
+    AttemptEnd, CaptureLoopStage, CorruptFrameKind, LoopLiveness, LoopStageGuard, LoopStageReport,
+    MetricsSnapshot, PipelineMetrics,
 };
 pub use utils::OcrEngine;
 pub mod capture_screenshot_by_window;

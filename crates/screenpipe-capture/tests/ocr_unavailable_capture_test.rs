@@ -64,6 +64,7 @@ async fn capture_keeps_accessibility_text_when_ocr_is_unavailable() {
         languages: vec![],
         elements_ref_frame_id: None,
         screenshot_disabled: false,
+        pixels_withheld: false,
     };
     let snap = TreeSnapshot {
         app_name: "Google Chrome".to_string(),
