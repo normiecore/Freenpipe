@@ -411,14 +411,20 @@ mod tests {
         assert_eq!(fallback, listed);
 
         // The background rows are narrowed through the timestamp index.
-        let plan: Vec<(i64, i64, i64, String)> =
-            sqlx::query_as(&format!("EXPLAIN QUERY PLAN {TRANSCRIPT_COUNT_SQL}"))
-                .bind(id)
-                .bind("2026-10-26")
-                .bind("2026-10-29")
-                .fetch_all(&db.pool)
-                .await
-                .unwrap();
-        eprintln!("plan: {plan:#?}");
+        let plan: Vec<(i64, i64, i64, String)> = sqlx::query_as(sqlx::AssertSqlSafe(format!(
+            "EXPLAIN QUERY PLAN {TRANSCRIPT_COUNT_SQL}"
+        )))
+        .bind(id)
+        .bind("2026-10-26")
+        .bind("2026-10-29")
+        .fetch_all(&db.pool)
+        .await
+        .unwrap();
+        assert!(
+            plan.iter()
+                .any(|(_, _, _, detail)| detail.starts_with("SEARCH at USING")
+                    && detail.contains("timestamp>? AND timestamp<?")),
+            "background rows are not read through a timestamp range: {plan:#?}"
+        );
     }
 }
