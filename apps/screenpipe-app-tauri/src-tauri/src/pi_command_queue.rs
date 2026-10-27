@@ -144,6 +144,7 @@ pub struct QueueActivity {
 }
 
 impl QueueActivity {
+    #[cfg(test)]
     pub fn is_busy(&self) -> bool {
         self.busy_reason().is_some()
     }
@@ -545,7 +546,9 @@ impl PiQueueHandle {
     }
 
     /// Send a non-prompt command (new_session / abort wrapper / internal).
-    /// These don't appear in the queued-prompts UI.
+    /// These don't appear in the queued-prompts UI. (The app reserves under
+    /// the pool lock and uses `send_reserved`.)
+    #[cfg(test)]
     pub async fn send(
         &self,
         payload: Value,
@@ -577,7 +580,9 @@ impl PiQueueHandle {
     /// prompt and exposes it to the UI as a "queued" item until it's pulled
     /// by the drain loop. Returns the queue id alongside the reply receiver
     /// so callers can correlate later (e.g. for individual cancellation).
-    /// Refused once `MAX_PENDING_PROMPTS` prompts are pending.
+    /// Refused once `MAX_PENDING_PROMPTS` prompts are pending. (The app
+    /// reserves under the pool lock and uses `send_prompt_reserved`.)
+    #[cfg(test)]
     pub async fn send_prompt(
         &self,
         payload: Value,
@@ -774,6 +779,7 @@ impl PiQueueHandle {
 /// * `state` — Shared state for done/terminated signals from stdout reader
 /// * `request_id_start` — Starting request ID counter (to avoid collisions with
 ///   any commands sent before the queue was created)
+#[cfg(test)]
 pub fn spawn_queue(
     stdin: Arc<Mutex<ChildStdin>>,
     state: Arc<PiQueueState>,
