@@ -107,7 +107,8 @@ import {
   parseRateLimitWaitSeconds,
   PI_MAX_RATE_LIMIT_RETRIES,
 } from "@/lib/chat/quota-errors";
-import { buildSystemPrompt, buildConnectionsContext } from "@/lib/chat/system-prompt";
+import { buildSystemPrompt } from "@/lib/chat/system-prompt";
+import { stripConnectionsContext } from "@/lib/chat/strip-connections-context";
 import {
   classifyCurl,
   endpointFamily,
@@ -1973,6 +1974,9 @@ function MessageContent({
   onRetry?: (prompt: string) => void;
 }) {
   const isUser = message.role === "user";
+  // A user turn may carry the runtime's per-turn <connections_context>
+  // block (Pi's echo, older or imported chats); it is for the model only.
+  const userText = isUser ? stripConnectionsContext(message.content) : message.content;
   const { settings } = useSettings();
   const hideThinkingBlocks = settings?.hideThinkingBlocks ?? true;
   const sourceCitations = isUser ? [] : sourceCitationsFromMessage(message);
@@ -2154,14 +2158,14 @@ function MessageContent({
         {attachmentsRow}
         {hasDocs
           ? <div className="text-sm font-medium">{message.displayContent}</div>
-          : <CollapsibleUserMessage label={message.displayContent} fullContent={message.content} />}
+          : <CollapsibleUserMessage label={message.displayContent} fullContent={userText} />}
       </div>
     );
   }
   // Strip raw "Error:" prefix that leaks from backend — show only the human part
   const displayText = !isUser && message.content.startsWith("Error: ")
     ? message.content.slice("Error: ".length)
-    : message.content;
+    : userText;
 
   return (
     <div className="space-y-2">
@@ -4705,10 +4709,11 @@ export function StandaloneChat({
     if (!p) return null;
     // Combine the screenpipe search instructions with the user's preset prompt.
     // This is passed via --append-system-prompt to Pi, enabling Anthropic prompt
-    // caching (90% input cost reduction on subsequent messages).
+    // caching (90% input cost reduction on subsequent messages). Connected
+    // integrations are not part of it: the runtime prefixes every user turn
+    // with a fresh <connections_context> block instead.
     const presetPrompt = p.prompt || "";
-    const connectionsCtx = buildConnectionsContext(connections);
-    const systemPrompt = `${buildSystemPrompt()}\n\n${presetPrompt}${connectionsCtx}`.trim() || null;
+    const systemPrompt = `${buildSystemPrompt()}\n\n${presetPrompt}`.trim() || null;
     return {
       provider: p.provider,
       url: p.url || "",
@@ -4718,7 +4723,7 @@ export function StandaloneChat({
       systemPrompt,
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [activePreset?.provider, activePreset?.url, activePreset?.model, activePreset?.apiKey, (activePreset as any)?.maxTokens, activePreset?.prompt, connections]);
+  }, [activePreset?.provider, activePreset?.url, activePreset?.model, activePreset?.apiKey, (activePreset as any)?.maxTokens, activePreset?.prompt]);
 
   const setRunningConfigFromProviderConfig = useCallback((providerConfig: NonNullable<ReturnType<typeof buildProviderConfig>>) => {
     piRunningConfigRef.current = {
@@ -4767,24 +4772,8 @@ export function StandaloneChat({
     setRunningConfigFromProviderConfig(providerConfig);
   }, [piInfo?.pid, piInfo?.running, setRunningConfigFromProviderConfig, settings.user?.token]);
 
-  // When connections change (e.g., user connected Google Calendar in Settings),
-  // silently restart Pi if the system prompt changed and no message is in-flight.
-  useEffect(() => {
-    if (connections.length === 0) return;
-    const config = buildProviderConfig();
-    if (!config) return;
-    const running = piRunningConfigRef.current;
-    if (!running || running.systemPrompt === config.systemPrompt) return;
-    if (piMessageIdRef.current) return; // don't interrupt an active turn
-    restartCurrentPiSession(config)
-      .then(() => {
-        if (piRunningConfigRef.current) {
-          piRunningConfigRef.current = { ...piRunningConfigRef.current, systemPrompt: config.systemPrompt };
-        }
-      })
-      .catch(() => {});
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [connections]);
+  // Connecting or removing an integration needs no Pi restart: the runtime
+  // sends the current list with every user turn (<connections_context>).
 
   // Check Pi status on mount — Pi is auto-started at app boot by Rust
   useEffect(() => {
@@ -5294,7 +5283,8 @@ export function StandaloneChat({
             }
             return "";
           })();
-          const text = extractConversationHistorySyncUserText(rawText) ?? rawText;
+          const visibleText = stripConnectionsContext(rawText);
+          const text = extractConversationHistorySyncUserText(visibleText) ?? visibleText;
           const eventImages = imageDataUrlsFromPiContent(data.message?.content);
           const pendingOptimisticSteer = optimisticSteerRef.current;
           const isPendingOptimisticSteerEcho = Boolean(

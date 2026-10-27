@@ -2358,7 +2358,20 @@ pub async fn pi_abort(state: State<'_, PiState>, session_id: Option<String>) -> 
             .clone()
             .ok_or("Pi command queue not initialized")?
     };
+    cancel_open_dialogs(&queue).await;
     queue.abort().await
+}
+
+/// Dismiss every extension dialog still waiting in a session. Stopping a
+/// turn must not leave the agent blocked on a question nobody will answer.
+async fn cancel_open_dialogs(queue: &PiQueueHandle) {
+    for id in queue.state().pending_dialogs() {
+        if queue.state().take_dialog(&id) {
+            if let Err(e) = queue.write_raw(&extension_dialog_cancel(&id)).await {
+                warn!("could not cancel extension dialog {}: {}", id, e);
+            }
+        }
+    }
 }
 
 /// Abort only the active Pi operation. Pending queued follow-ups remain queued.
@@ -2380,6 +2393,7 @@ pub async fn pi_abort_active(
             .clone()
             .ok_or("Pi command queue not initialized")?
     };
+    cancel_open_dialogs(&queue).await;
     queue.abort_active_only().await
 }
 
@@ -4159,5 +4173,129 @@ error: InstallFailed extracting tarball"#;
             assert!(m["cost"]["input"].is_number(), "model missing cost.input");
             assert!(m["cost"]["output"].is_number(), "model missing cost.output");
         }
+    }
+
+    // -- W4-05: chat runtime commands --
+
+    #[test]
+    fn start_stages_use_the_wire_names_in_order() {
+        use super::PiStartStage::*;
+        let stages = [Requested, ConfigReady, WaitingForPool, PoolAcquired, ProcessSpawned];
+        let names: Vec<String> = stages
+            .iter()
+            .map(|s| serde_json::to_value(s).unwrap().as_str().unwrap().to_string())
+            .collect();
+        assert_eq!(
+            names,
+            ["requested", "config_ready", "waiting_for_pool", "pool_acquired", "process_spawned"]
+        );
+        for stage in stages {
+            assert_eq!(serde_json::to_value(stage).unwrap(), json!(stage.as_str()));
+        }
+        assert_eq!(
+            super::start_failure_message(WaitingForPool, "pool full"),
+            "Pi start failed at stage 'waiting_for_pool': pool full"
+        );
+    }
+
+    #[test]
+    fn busy_refusal_keeps_the_reason() {
+        let msg = super::busy_refusal("tab-1", "a reply is still being generated");
+        assert!(msg.contains("tab-1") && msg.contains("a reply is still being generated"));
+    }
+
+    #[test]
+    fn start_locks_are_per_session_and_pruned() {
+        let mut pool = super::PiPool::new();
+        let a = pool.start_lock("a");
+        let a_again = pool.start_lock("a");
+        assert!(std::sync::Arc::ptr_eq(&a, &a_again), "one lock per session");
+        let b = pool.start_lock("b");
+        assert!(!std::sync::Arc::ptr_eq(&a, &b));
+        drop(a);
+        drop(a_again);
+        // "a" has no session and nobody holds its lock: dropped on the next call.
+        let _c = pool.start_lock("c");
+        assert!(!pool.start_locks.contains_key("a"));
+        assert!(pool.start_locks.contains_key("b"), "a held lock is kept");
+    }
+
+    #[test]
+    fn thinking_levels_are_validated_and_normalized() {
+        for level in super::PI_THINKING_LEVELS {
+            assert_eq!(super::normalize_thinking_level(level).unwrap(), level);
+        }
+        assert_eq!(super::normalize_thinking_level(" High ").unwrap(), "high");
+        let err = super::normalize_thinking_level("loud").unwrap_err();
+        assert!(err.contains("loud") && err.contains("xhigh"), "{err}");
+        assert!(super::normalize_thinking_level("").is_err());
+    }
+
+    #[test]
+    fn thinking_replies_are_read_leniently() {
+        let state = json!({"thinkingLevel": "medium", "isStreaming": false});
+        assert_eq!(super::level_from_state(Some(&state)).as_deref(), Some("medium"));
+        assert_eq!(super::level_from_state(Some(&json!({}))), None);
+        assert_eq!(super::level_from_state(None), None);
+        let levels = json!({"levels": ["off", "low", 3, "high"]});
+        assert_eq!(super::levels_from_reply(Some(&levels)), ["off", "low", "high"]);
+        assert!(super::levels_from_reply(None).is_empty());
+    }
+
+    #[test]
+    fn extension_answers_need_exactly_one_kind() {
+        use super::{extension_ui_response_payload as payload, PiExtensionUiResponse as Answer};
+        let answer = |value: Option<&str>, confirmed: Option<bool>, cancelled: Option<bool>| Answer {
+            id: " dlg-1 ".to_string(),
+            value: value.map(str::to_string),
+            confirmed,
+            cancelled,
+        };
+        assert_eq!(
+            payload(&answer(Some("Allow"), None, None)).unwrap(),
+            json!({"type": "extension_ui_response", "id": "dlg-1", "value": "Allow"})
+        );
+        assert_eq!(
+            payload(&answer(None, Some(false), None)).unwrap(),
+            json!({"type": "extension_ui_response", "id": "dlg-1", "confirmed": false})
+        );
+        assert_eq!(
+            payload(&answer(None, None, Some(true))).unwrap(),
+            json!({"type": "extension_ui_response", "id": "dlg-1", "cancelled": true})
+        );
+        assert!(payload(&answer(None, None, None)).is_err(), "no answer at all");
+        assert!(payload(&answer(None, None, Some(false))).is_err(), "cancelled: false is no answer");
+        assert!(payload(&answer(Some("x"), Some(true), None)).is_err(), "two answers");
+        let mut blank = answer(Some("x"), None, None);
+        blank.id = "  ".to_string();
+        assert!(payload(&blank).is_err(), "an answer needs the dialog id");
+        assert_eq!(
+            super::extension_dialog_cancel("d9"),
+            json!({"type": "extension_ui_response", "id": "d9", "cancelled": true})
+        );
+    }
+
+    #[tokio::test]
+    async fn direct_replies_go_to_their_caller_only() {
+        let pending: super::PendingResponses =
+            std::sync::Arc::new(std::sync::Mutex::new(std::collections::HashMap::new()));
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        pending.lock().unwrap().insert("rpc_1".to_string(), tx);
+
+        let other = json!({"type": "response", "command": "prompt", "id": "req_4", "success": true});
+        assert!(!super::route_direct_reply(&pending, &other), "queue ACKs are not direct replies");
+        let no_id = json!({"type": "response", "command": "abort", "success": true});
+        assert!(!super::route_direct_reply(&pending, &no_id));
+
+        let reply = json!({
+            "type": "response", "command": "get_state", "id": "rpc_1", "success": true,
+            "data": {"thinkingLevel": "low"}
+        });
+        assert!(super::route_direct_reply(&pending, &reply));
+        let got = rx.await.unwrap();
+        assert_eq!(got.success, Some(true));
+        assert_eq!(got.data.unwrap()["thinkingLevel"], "low");
+        assert!(pending.lock().unwrap().is_empty());
+        assert!(!super::route_direct_reply(&pending, &reply), "answered once");
     }
 }

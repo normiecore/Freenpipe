@@ -89,6 +89,43 @@ export interface AgentSessionEvictedPayload {
   reason: string;
 }
 
+/** Inner `agent_event` sent by the app after `pi_set_thinking_level`
+ *  changed a running session's level. `level` is what Pi reports in effect
+ *  (it may lower a level the model lacks). */
+export interface ThinkingLevelChangedEvent {
+  type: "thinking_level_changed";
+  level: string;
+  requestedLevel: string;
+  previousLevel: string | null;
+}
+
+/** Extension UI methods that wait for an answer
+ *  (`commands.piExtensionUiResponse`). The others (notify, setStatus,
+ *  setWidget, setTitle, set_editor_text) need none. */
+export const EXTENSION_DIALOG_METHODS = ["select", "confirm", "input", "editor"] as const;
+
+/** Inner event Pi sends when an extension asks the user something or
+ *  updates the chat chrome. Fields beyond `id` and `method` depend on the
+ *  method (title, message, options, placeholder, prefill, timeout,
+ *  notifyType, statusKey/statusText, widgetKey/widgetLines, text). */
+export interface ExtensionUiRequestEvent {
+  type: "extension_ui_request";
+  id: string;
+  method: string;
+  [k: string]: unknown;
+}
+
+/** Inner event Pi sends when a compaction ends. `result` is null when it was
+ *  aborted or failed (`errorMessage` says why). */
+export interface CompactionEndEvent {
+  type: "compaction_end";
+  reason?: "manual" | "threshold" | "overflow";
+  result?: { summary?: string; tokensBefore?: number; estimatedTokensAfter?: number } | null;
+  aborted?: boolean;
+  willRetry?: boolean;
+  errorMessage?: string;
+}
+
 /** Tauri topic names. String-typed so callers don't accidentally listen
  *  on a topic that doesn't exist. */
 export const AGENT_TOPICS = {

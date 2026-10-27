@@ -421,7 +421,8 @@ impl PiQueueState {
 
     /// Called by the stdout reader when the process terminates (EOF).
     pub fn signal_terminated(&self) {
-        let _ = self.alive.send(false);
+        // send_replace: the value must change even when nobody subscribed yet.
+        self.alive.send_replace(false);
         self.terminated_notify.notify_one();
         // Also wake anyone waiting for done — they'll see terminated
         self.done_notify.notify_waiters();

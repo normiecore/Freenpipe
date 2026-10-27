@@ -936,6 +936,19 @@ async listCacheFiles() : Promise<Result<CacheFile[], string>> {
 }
 },
 /**
+ * Chat conversation files (`<data dir>/chats/*.json`), most recently
+ * modified first, `offset` entries skipped and at most `limit` returned.
+ * One call instead of a stat per file from the webview.
+ */
+async listChatEntriesByMtime(offset: number | null, limit: number | null) : Promise<Result<ChatEntry[], string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("list_chat_entries_by_mtime", { offset, limit }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
  * List skills currently in the screenpipe store.
  */
 async listImportedSkills() : Promise<Result<ImportedSkill[], string>> {
@@ -1349,6 +1362,30 @@ async piCheck() : Promise<Result<PiCheckResult, string>> {
 }
 },
 /**
+ * Answer an extension dialog that is waiting in a session. Fails when no
+ * dialog with that id is open (already answered, timed out, or the session
+ * restarted), so a stale answer never reaches a different dialog.
+ */
+async piExtensionUiResponse(sessionId: string | null, response: PiExtensionUiResponse) : Promise<Result<null, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("pi_extension_ui_response", { sessionId, response }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
+ * Read a session's thinking level and the levels its model supports.
+ */
+async piGetThinkingLevel(sessionId: string | null) : Promise<Result<PiThinkingLevel, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("pi_get_thinking_level", { sessionId }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
  * Get Pi info
  */
 async piInfo(sessionId: string | null) : Promise<Result<PiInfo, string>> {
@@ -1423,6 +1460,19 @@ async piQueuePrompt(sessionId: string | null, message: string, images: PiImageCo
 }
 },
 /**
+ * Report a session's state: running, busy and why, queued prompts, open
+ * extension dialogs, thinking level, and Pi's own `get_state` answer. Safe
+ * to call at any time; it never waits behind a running turn.
+ */
+async piRequestState(sessionId: string | null) : Promise<Result<PiSessionState, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("pi_request_state", { sessionId }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
  * Hot-swap Pi's active model without killing the subprocess. Preserves the
  * full conversation state in-place — the user can switch haiku ↔ sonnet ↔ opus
  * mid-session and the new model sees the real threaded history, not a
@@ -1442,11 +1492,41 @@ async piSetModel(sessionId: string | null, providerConfig: PiProviderConfig) : P
 }
 },
 /**
+ * Set a session's thinking level. It is remembered for the session and
+ * passed to every later start; a running session switches at once (from
+ * its next model call) and announces it with an `agent_event` of type
+ * `thinking_level_changed` (`{level, requestedLevel, previousLevel}`).
+ */
+async piSetThinkingLevel(sessionId: string | null, level: string) : Promise<Result<PiThinkingLevel, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("pi_set_thinking_level", { sessionId, level }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
  * Start the Pi sidecar in RPC mode (Tauri command wrapper)
  */
 async piStart(sessionId: string | null, projectDir: string, userToken: string | null, providerConfig: PiProviderConfig | null) : Promise<Result<PiInfo, string>> {
     try {
     return { status: "ok", data: await TAURI_INVOKE("pi_start", { sessionId, projectDir, userToken, providerConfig }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
+ * Start the session when it is not running, then send it one prompt, in a
+ * single call. A running idle session is reused as it is (use `pi_start`
+ * to apply a different provider config). A session that is mid-turn gets
+ * nothing: the result says `busy` and why, and the prompt is neither queued
+ * nor dropped silently. A failed start returns the error of `pi_start`,
+ * which names the stage it failed at.
+ */
+async piStartAndPrompt(sessionId: string | null, projectDir: string, userToken: string | null, providerConfig: PiProviderConfig | null, message: string, images: PiImageContent[] | null, displayPreview: string | null) : Promise<Result<PiStartAndPromptResult, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("pi_start_and_prompt", { sessionId, projectDir, userToken, providerConfig, message, images, displayPreview }) };
 } catch (e) {
     if(e instanceof Error) throw e;
     else return { status: "error", error: e  as any };
@@ -1484,6 +1564,19 @@ async piSteerQueued(sessionId: string | null, promptId: string) : Promise<Result
 async piStop(sessionId: string | null) : Promise<Result<PiInfo, string>> {
     try {
     return { status: "ok", data: await TAURI_INVOKE("pi_stop", { sessionId }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
+ * Stop a session's process only when it is idle: no turn, compaction,
+ * steer, queued prompt, open extension dialog or command on its way. Use it
+ * to free resources of chats nobody looks at; it never cuts a reply short.
+ */
+async piStopIfIdle(sessionId: string | null) : Promise<Result<PiStopIfIdleResult, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("pi_stop_if_idle", { sessionId }) };
 } catch (e) {
     if(e instanceof Error) throw e;
     else return { status: "error", error: e  as any };
@@ -2501,6 +2594,27 @@ endDisplay: string; attendees: string[]; location: string | null; meetingUrl: st
  */
 source?: string }
 export type CalendarStatus = { available: boolean; authorized: boolean; authorizationStatus: string; calendarCount: number }
+/**
+ * One conversation file.
+ */
+export type ChatEntry = {
+/**
+ * File name, `<conversation id>.json`.
+ */
+name: string;
+/**
+ * Absolute path of the file.
+ */
+path: string;
+/**
+ * When the file last changed, in ms since the Unix epoch (its creation
+ * time where no modification time is available; 0 when neither is).
+ */
+mtimeMs: number;
+/**
+ * File size in bytes.
+ */
+sizeBytes: number }
 export type ChatGptOAuthStatus = { logged_in: boolean }
 export type Credits = { amount: number }
 /**
@@ -2795,10 +2909,33 @@ downloaded: boolean;
 auth_required: boolean }
 export type PiCheckResult = { available: boolean; path: string | null }
 /**
+ * The user's answer to an extension dialog (`extension_ui_request` with
+ * method `select`, `confirm`, `input` or `editor`). Set exactly one of
+ * `value` (select, input, editor), `confirmed` (confirm) or `cancelled`.
+ */
+export type PiExtensionUiResponse = {
+/**
+ * The `id` of the request being answered.
+ */
+id: string; value: string | null; confirmed: boolean | null; cancelled: boolean | null }
+/**
  * Image content for Pi RPC protocol (pi-ai ImageContent format)
  */
 export type PiImageContent = { type: string; mimeType: string; data: string }
 export type PiInfo = { running: boolean; projectDir: string | null; pid: number | null; sessionId: string | null }
+/**
+ * What `pi_start_and_prompt` did with the prompt.
+ */
+export type PiPromptOutcome =
+/**
+ * The prompt was written to Pi; its turn has started.
+ */
+"sent" |
+/**
+ * The session was mid-turn, so the prompt was refused. Nothing was
+ * queued: send it with `pi_queue_prompt` or `pi_steer`, or retry later.
+ */
+"busy"
 /**
  * Configuration for which AI provider Pi should use
  */
@@ -2849,6 +2986,105 @@ preview: string;
  * label in the UI ("queued 4s ago").
  */
 queuedAtMs: number }
+/**
+ * A session's state as the app sees it, plus Pi's own `get_state` report.
+ */
+export type PiSessionState = { sessionId: string; running: boolean; pid: number | null;
+/**
+ * True when the session is mid-turn or has work waiting.
+ */
+busy: boolean; busyReason: string | null;
+/**
+ * A reply is being generated.
+ */
+agentActive: boolean;
+/**
+ * Pi is compacting the conversation.
+ */
+compacting: boolean;
+/**
+ * Prompts waiting behind the current turn.
+ */
+queued: PiQueuedPrompt[];
+/**
+ * Ids of extension dialogs waiting for `pi_extension_ui_response`.
+ */
+pendingExtensionDialogs: string[];
+/**
+ * The thinking level chosen for this session, if any.
+ */
+thinkingLevel: string | null;
+/**
+ * Milliseconds since the app last sent this session a command.
+ */
+idleMs: number | null;
+/**
+ * Pi's `get_state` answer (model, thinkingLevel, isStreaming,
+ * isCompacting, messageCount, sessionFile, ...); None when the session
+ * is not running or Pi did not answer.
+ */
+piState: JsonValue | null;
+/**
+ * Why `pi_state` is missing, when Pi was asked and failed.
+ */
+piStateError: string | null }
+export type PiStartAndPromptResult = { outcome: PiPromptOutcome;
+/**
+ * True when this call started the session's process.
+ */
+started: boolean;
+/**
+ * Queue id of the prompt when it was sent.
+ */
+queueId: string | null;
+/**
+ * Why the session was busy, when the prompt was refused.
+ */
+busyReason: string | null; info: PiInfo }
+/**
+ * What `pi_stop_if_idle` found.
+ */
+export type PiStopIfIdleOutcome =
+/**
+ * The session was idle and has been stopped and removed from the pool.
+ */
+"stopped" |
+/**
+ * There was no running process for this session.
+ */
+"not_running" |
+/**
+ * The session is mid-turn (or has work waiting); it was left alone.
+ */
+"busy" |
+/**
+ * A start of this session is in progress; it was left alone.
+ */
+"starting"
+export type PiStopIfIdleResult = { outcome: PiStopIfIdleOutcome;
+/**
+ * True only for `stopped`.
+ */
+stopped: boolean;
+/**
+ * Why the session was left running, for `busy`.
+ */
+busyReason: string | null }
+export type PiThinkingLevel = {
+/**
+ * The level in effect: Pi's own report for a running session (Pi may
+ * lower a level the model does not support), else the level chosen for
+ * the next start. None when neither is known.
+ */
+level: string | null;
+/**
+ * Levels the current model supports; empty when unknown.
+ */
+availableLevels: string[];
+/**
+ * True when `level` was read from (or applied to) a running session.
+ */
+applied: boolean }
 export type PipeSuggestionsSettings = { enabled: boolean; frequencyHours: number }
 /**
  * Configuration for remote sync.

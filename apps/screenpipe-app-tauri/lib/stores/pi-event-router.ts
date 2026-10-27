@@ -69,6 +69,7 @@ import {
   isInjectedTitleSourcePrompt,
 } from "@/lib/chat-utils";
 import { deriveFallbackConversationTitle } from "@/lib/utils/chat-title";
+import { stripConnectionsContext } from "@/lib/chat/strip-connections-context";
 import { isInternalTitleSession } from "@/lib/utils/internal-session";
 import {
   useChatStore,
@@ -497,7 +498,9 @@ function applyEventToSessionContent(sid: string, payload: PiInnerEvent) {
   // placeholder itself. Without this, completed background queues persist only
   // assistant replies and the user turns appear to vanish from history.
   if (t === "message_start" && payload.message?.role === "user") {
-    const rawText = textFromPiMessageContent(payload.message?.content);
+    // The runtime's per-turn <connections_context> block is for the model
+    // only; the stored user message is the text that was typed.
+    const rawText = stripConnectionsContext(textFromPiMessageContent(payload.message?.content));
     const text = extractConversationHistorySyncUserText(rawText) ?? rawText;
     const images = imageDataUrlsFromPiContent(payload.message?.content);
     if (!text && images.length === 0) return;
