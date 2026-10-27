@@ -219,10 +219,13 @@ impl ScreenpipeCalendar {
                     .or_else(|| extract_meeting_url(event.location.as_deref()))
                     .or_else(|| extract_meeting_url(event.notes.as_deref()));
 
+                let start = event.start_date.with_timezone(&Utc);
                 CalendarEvent {
-                    id: event.identifier,
+                    // `eventIdentifier` is shared by every occurrence of a
+                    // recurring event; the start makes it name this occurrence.
+                    id: crate::calendar_occurrence::occurrence_event_id(&event.identifier, start),
                     title: event.title,
-                    start: event.start_date.with_timezone(&Utc),
+                    start,
                     end: event.end_date.with_timezone(&Utc),
                     start_local: event.start_date,
                     end_local: event.end_date,

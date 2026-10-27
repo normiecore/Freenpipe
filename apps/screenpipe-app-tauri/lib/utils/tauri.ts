@@ -2592,7 +2592,13 @@ endDisplay: string; attendees: string[]; location: string | null; meetingUrl: st
  * Source identifier: "native" for OS calendar, "ics" for ICS feeds.
  * Used by meeting detector to merge events from multiple publishers.
  */
-source?: string }
+source?: string;
+/**
+ * The user is not attending this entry as a meeting (declined, shown as
+ * free, cancelled). The meeting detector ignores such entries entirely:
+ * they never bind to, title or keep alive a detected meeting.
+ */
+excludeFromMeetingDetection?: boolean }
 export type CalendarStatus = { available: boolean; authorized: boolean; authorizationStatus: string; calendarCount: number }
 /**
  * One conversation file.

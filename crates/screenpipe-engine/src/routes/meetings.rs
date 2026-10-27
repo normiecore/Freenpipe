@@ -382,12 +382,14 @@ const SUCCESSOR_FLAG_CHECK_INTERVAL: Duration = Duration::from_secs(1);
 /// meeting a room change opened) holds the manual slot, and return once the
 /// slot holds anything else.
 ///
-/// The room change sends `detector_stop_tracking` for the old meeting. When
-/// the UI-scan detector was tracking it, its stop branch lowers the flag
-/// without looking at the manual slot, and while the slot is taken it skips
-/// the step that would raise it again. Left alone, the successor would read as
-/// no meeting at all: batch transcription stops deferring, a +HD session falls
-/// back to its short timer and `/health` reports no meeting.
+/// The room change sends `detector_stop_tracking` for the old meeting. The
+/// UI-scan detector's stop branch keeps the flag raised while the manual slot
+/// is taken, but it only handles the stop on its next tick, and while the slot
+/// is taken it skips the step that would raise the flag again. This task
+/// covers that gap and any other writer that lowers the flag. Left alone, the
+/// successor could read as no meeting at all: batch transcription stops
+/// deferring, a +HD session falls back to its short timer and `/health`
+/// reports no meeting.
 ///
 /// The check runs under the slot's read lock. The stop route and the
 /// detector's auto-end clear the slot under its write lock before they lower
@@ -1122,11 +1124,12 @@ pub(crate) async fn stop_meeting_handler(
     // The detector stands down first (skipping its grace period), then
     // event-triggered pipes hear that the meeting ended.
     emit_detector_stop_tracking(id, &app);
-    if let Err(e) =
-        screenpipe_events::send_event("meeting_ended", serde_json::json!({ "meeting_id": id }))
-    {
-        tracing::warn!("failed to emit meeting_ended event: {}", e);
-    }
+    crate::meeting_watcher::ended_event::emit_meeting_ended(
+        &state.db,
+        id,
+        Some(MEETING_END_REASON_EXPLICIT_STOP),
+    )
+    .await;
 
     let meeting = meeting.map_err(|e| {
         (
@@ -1447,15 +1450,12 @@ pub(crate) async fn resolve_room_change_handler(
             }
 
             emit_detector_stop_tracking(meeting_id, &meeting_app);
-            if let Err(e) = screenpipe_events::send_event(
-                "meeting_ended",
-                json!({
-                    "meeting_id": meeting_id,
-                    "end_reason": MEETING_END_REASON_ROOM_CHANGED,
-                }),
-            ) {
-                tracing::warn!("failed to emit meeting_ended event: {}", e);
-            }
+            crate::meeting_watcher::ended_event::emit_meeting_ended(
+                &state.db,
+                meeting_id,
+                Some(MEETING_END_REASON_ROOM_CHANGED),
+            )
+            .await;
             if let Err(e) = screenpipe_events::send_event(
                 "meeting_started",
                 json!({
