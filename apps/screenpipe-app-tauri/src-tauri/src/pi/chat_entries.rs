@@ -76,7 +76,11 @@ pub fn list_by_mtime(
             size_bytes: meta.len(),
         });
     }
-    entries.sort_by(|a, b| b.mtime_ms.cmp(&a.mtime_ms).then_with(|| b.name.cmp(&a.name)));
+    entries.sort_by(|a, b| {
+        b.mtime_ms
+            .cmp(&a.mtime_ms)
+            .then_with(|| b.name.cmp(&a.name))
+    });
     let page = entries.into_iter().skip(offset);
     Ok(match limit {
         Some(limit) => page.take(limit).collect(),

@@ -239,8 +239,19 @@ pub fn redact_secrets(text: &str, secret_values: &[String]) -> String {
 fn name_looks_secret(key: &str) -> bool {
     let key = key.to_ascii_lowercase();
     [
-        "token", "secret", "password", "passwd", "apikey", "api_key", "key", "webhook",
-        "auth", "cookie", "session", "credential", "private",
+        "token",
+        "secret",
+        "password",
+        "passwd",
+        "apikey",
+        "api_key",
+        "key",
+        "webhook",
+        "auth",
+        "cookie",
+        "session",
+        "credential",
+        "private",
     ]
     .iter()
     .any(|marker| key.contains(marker))
@@ -326,7 +337,10 @@ async fn sources_for(data_dir: &Path) -> (Option<Arc<SecretStore>>, Arc<Connecti
     } else {
         None
     };
-    let manager = Arc::new(ConnectionManager::new(data_dir.to_path_buf(), store.clone()));
+    let manager = Arc::new(ConnectionManager::new(
+        data_dir.to_path_buf(),
+        store.clone(),
+    ));
     *slot = Some(Sources {
         data_dir: data_dir.to_path_buf(),
         store: store.clone(),
@@ -595,7 +609,10 @@ mod tests {
             credential_is_secret(&def, "session_cookie"),
             "a secret-looking name wins over the declaration"
         );
-        assert!(credential_is_secret(&def, "undeclared"), "unknown keys are withheld");
+        assert!(
+            credential_is_secret(&def, "undeclared"),
+            "unknown keys are withheld"
+        );
     }
 
     #[test]
@@ -621,7 +638,10 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let body = render_body(dir.path(), 3035).await;
         assert!(body.is_empty(), "{body}");
-        assert!(!dir.path().join("db.sqlite").exists(), "no database is created");
+        assert!(
+            !dir.path().join("db.sqlite").exists(),
+            "no database is created"
+        );
         assert!(wrap_block(&body).contains(NOTHING_CONNECTED));
     }
 

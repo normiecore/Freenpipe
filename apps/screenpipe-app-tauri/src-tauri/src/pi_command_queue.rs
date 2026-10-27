@@ -121,7 +121,9 @@ impl Drop for CommandTicket {
     fn drop(&mut self) {
         self.state.outstanding.fetch_sub(1, Ordering::SeqCst);
         if self.prompt {
-            self.state.outstanding_prompts.fetch_sub(1, Ordering::SeqCst);
+            self.state
+                .outstanding_prompts
+                .fetch_sub(1, Ordering::SeqCst);
         }
     }
 }
@@ -293,11 +295,11 @@ impl PiQueueState {
             return Err("Pi process has died".to_string());
         }
         if prompt {
-            let accepted = self.outstanding_prompts.fetch_update(
-                Ordering::SeqCst,
-                Ordering::SeqCst,
-                |n| (n < MAX_PENDING_PROMPTS).then_some(n + 1),
-            );
+            let accepted =
+                self.outstanding_prompts
+                    .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |n| {
+                        (n < MAX_PENDING_PROMPTS).then_some(n + 1)
+                    });
             if accepted.is_err() {
                 return Err(format!(
                     "Pi prompt queue is full: {} prompts are already waiting in this chat. \
@@ -709,8 +711,7 @@ impl PiQueueHandle {
             req_id,
             cmd_str.len()
         );
-        let write_result = writeln!(*stdin_guard, "{}", cmd_str)
-            .and_then(|_| stdin_guard.flush());
+        let write_result = writeln!(*stdin_guard, "{}", cmd_str).and_then(|_| stdin_guard.flush());
         if write_result.is_err() {
             if cmd_type == "steer" {
                 self.state.clear_steer_in_flight();
@@ -964,8 +965,8 @@ pub fn spawn_queue_with(
                             if ok {
                                 let _ = reply.send(Ok(()));
                             } else {
-                                let _ = reply
-                                    .send(Err("Pi process died while processing".to_string()));
+                                let _ =
+                                    reply.send(Err("Pi process died while processing".to_string()));
                             }
                         }
                     }
@@ -1561,10 +1562,14 @@ mod tests {
         for _ in 0..MAX_PENDING_PROMPTS {
             tickets.push(state.reserve(true).expect("under the cap"));
         }
-        let refused = state.reserve(true).expect_err("one past the cap is refused");
+        let refused = state
+            .reserve(true)
+            .expect_err("one past the cap is refused");
         assert!(refused.contains("queue is full"), "{refused}");
         // Non-prompt commands are not counted against the prompt cap.
-        let other = state.reserve(false).expect("non-prompt command still accepted");
+        let other = state
+            .reserve(false)
+            .expect("non-prompt command still accepted");
         let activity = state.activity();
         assert_eq!(activity.outstanding_prompts, MAX_PENDING_PROMPTS);
         assert_eq!(activity.outstanding, MAX_PENDING_PROMPTS + 1);
@@ -1592,12 +1597,30 @@ mod tests {
     fn busy_reasons_cover_every_kind_of_work() {
         assert_eq!(QueueActivity::default().busy_reason(), None);
         let cases = [
-            QueueActivity { agent_active: true, ..Default::default() },
-            QueueActivity { steer_in_flight: true, ..Default::default() },
-            QueueActivity { compacting: true, ..Default::default() },
-            QueueActivity { outstanding: 1, ..Default::default() },
-            QueueActivity { queued: 2, ..Default::default() },
-            QueueActivity { dialogs: 1, ..Default::default() },
+            QueueActivity {
+                agent_active: true,
+                ..Default::default()
+            },
+            QueueActivity {
+                steer_in_flight: true,
+                ..Default::default()
+            },
+            QueueActivity {
+                compacting: true,
+                ..Default::default()
+            },
+            QueueActivity {
+                outstanding: 1,
+                ..Default::default()
+            },
+            QueueActivity {
+                queued: 2,
+                ..Default::default()
+            },
+            QueueActivity {
+                dialogs: 1,
+                ..Default::default()
+            },
         ];
         for activity in cases {
             let reason = activity.busy_reason();
@@ -1611,9 +1634,20 @@ mod tests {
         let state = PiQueueState::new();
         observe_pi_event(&state, &json!({"type": "agent_start"}), false);
         assert!(state.is_agent_active());
-        observe_pi_event(&state, &json!({"type": "agent_end", "willRetry": true}), false);
-        assert!(state.is_agent_active(), "a retry follows, the turn is not over");
-        observe_pi_event(&state, &json!({"type": "agent_end", "willRetry": false}), false);
+        observe_pi_event(
+            &state,
+            &json!({"type": "agent_end", "willRetry": true}),
+            false,
+        );
+        assert!(
+            state.is_agent_active(),
+            "a retry follows, the turn is not over"
+        );
+        observe_pi_event(
+            &state,
+            &json!({"type": "agent_end", "willRetry": false}),
+            false,
+        );
         assert!(!state.is_agent_active());
 
         observe_pi_event(&state, &json!({"type": "agent_start"}), false);
@@ -1624,7 +1658,11 @@ mod tests {
     #[test]
     fn compaction_events_mark_the_session_busy() {
         let state = PiQueueState::new();
-        observe_pi_event(&state, &json!({"type": "compaction_start", "reason": "threshold"}), false);
+        observe_pi_event(
+            &state,
+            &json!({"type": "compaction_start", "reason": "threshold"}),
+            false,
+        );
         assert!(state.is_compacting());
         assert!(state.activity().is_busy());
         observe_pi_event(
@@ -1643,14 +1681,25 @@ mod tests {
     #[test]
     fn only_dialog_requests_wait_for_an_answer() {
         let state = PiQueueState::new();
-        for (id, method) in [("d1", "select"), ("d2", "confirm"), ("d3", "input"), ("d4", "editor")] {
+        for (id, method) in [
+            ("d1", "select"),
+            ("d2", "confirm"),
+            ("d3", "input"),
+            ("d4", "editor"),
+        ] {
             observe_pi_event(
                 &state,
                 &json!({"type": "extension_ui_request", "id": id, "method": method}),
                 false,
             );
         }
-        for method in ["notify", "setStatus", "setWidget", "setTitle", "set_editor_text"] {
+        for method in [
+            "notify",
+            "setStatus",
+            "setWidget",
+            "setTitle",
+            "set_editor_text",
+        ] {
             observe_pi_event(
                 &state,
                 &json!({"type": "extension_ui_request", "id": format!("f-{method}"), "method": method}),
@@ -1660,16 +1709,25 @@ mod tests {
         assert_eq!(state.pending_dialogs(), vec!["d1", "d2", "d3", "d4"]);
         assert!(state.take_dialog("d2"));
         assert!(!state.take_dialog("d2"), "answered once");
-        assert!(!state.take_dialog("f-notify"), "fire-and-forget is never pending");
+        assert!(
+            !state.take_dialog("f-notify"),
+            "fire-and-forget is never pending"
+        );
         state.signal_terminated();
-        assert!(state.pending_dialogs().is_empty(), "a dead process has no dialogs");
+        assert!(
+            state.pending_dialogs().is_empty(),
+            "a dead process has no dialogs"
+        );
     }
 
     #[test]
     fn responses_drive_the_done_fallback_only_for_queue_commands() {
         let state = PiQueueState::new();
         let ack = json!({"type": "response", "command": "new_session", "success": true});
-        assert_eq!(observe_pi_event(&state, &ack, false), ReaderFollowUp::DelayedDone);
+        assert_eq!(
+            observe_pi_event(&state, &ack, false),
+            ReaderFollowUp::DelayedDone
+        );
         assert_eq!(
             observe_pi_event(&state, &ack, true),
             ReaderFollowUp::Nothing,
@@ -1677,7 +1735,11 @@ mod tests {
         );
         state.mark_agent_active();
         assert_eq!(
-            observe_pi_event(&state, &json!({"type": "response", "command": "prompt", "success": true}), false),
+            observe_pi_event(
+                &state,
+                &json!({"type": "response", "command": "prompt", "success": true}),
+                false
+            ),
             ReaderFollowUp::Nothing,
             "a prompt ACK mid-turn must not unblock the queue"
         );
@@ -1723,7 +1785,11 @@ mod tests {
             .await
             .unwrap();
         assert!(pi.nothing_within(200).await, "held while the turn runs");
-        assert_eq!(calls.load(Ordering::SeqCst), 0, "decorated only at write time");
+        assert_eq!(
+            calls.load(Ordering::SeqCst),
+            0,
+            "decorated only at write time"
+        );
         // The queued row keeps the user's own words.
         assert_eq!(state.queued_snapshot()[0].preview, "hello");
 
@@ -1757,13 +1823,23 @@ mod tests {
         let (handle, join) = spawn_queue(stdin, state.clone(), 0);
 
         let (_a, first) = handle
-            .send_prompt(json!({"type": "prompt", "message": "a"}), WaitMode::Prompt, "a".into(), false)
+            .send_prompt(
+                json!({"type": "prompt", "message": "a"}),
+                WaitMode::Prompt,
+                "a".into(),
+                false,
+            )
             .await
             .unwrap();
         first.await.unwrap().unwrap();
         assert_eq!(pi.next().await["message"], "a");
         let (_b, second) = handle
-            .send_prompt(json!({"type": "prompt", "message": "b"}), WaitMode::Prompt, "b".into(), false)
+            .send_prompt(
+                json!({"type": "prompt", "message": "b"}),
+                WaitMode::Prompt,
+                "b".into(),
+                false,
+            )
             .await
             .unwrap();
         assert!(pi.nothing_within(150).await, "b waits for a's turn");
@@ -1793,14 +1869,30 @@ mod tests {
         let state = PiQueueState::new();
         let (handle, join) = spawn_queue(stdin, state.clone(), 0);
 
-        observe_pi_event(&state, &json!({"type": "compaction_start", "reason": "threshold"}), false);
+        observe_pi_event(
+            &state,
+            &json!({"type": "compaction_start", "reason": "threshold"}),
+            false,
+        );
         let (_id, reply) = handle
-            .send_prompt(json!({"type": "prompt", "message": "x"}), WaitMode::Prompt, "x".into(), false)
+            .send_prompt(
+                json!({"type": "prompt", "message": "x"}),
+                WaitMode::Prompt,
+                "x".into(),
+                false,
+            )
             .await
             .unwrap();
         assert!(pi.nothing_within(200).await, "held during compaction");
-        assert!(state.activity().is_busy(), "the waiting prompt keeps the session busy");
-        observe_pi_event(&state, &json!({"type": "compaction_end", "reason": "threshold"}), false);
+        assert!(
+            state.activity().is_busy(),
+            "the waiting prompt keeps the session busy"
+        );
+        observe_pi_event(
+            &state,
+            &json!({"type": "compaction_end", "reason": "threshold"}),
+            false,
+        );
         reply.await.unwrap().unwrap();
         assert_eq!(pi.next().await["message"], "x");
 
@@ -1817,7 +1909,10 @@ mod tests {
         let (handle, join) = spawn_queue(stdin, state.clone(), 0);
 
         let ticket = handle.reserve(true).unwrap();
-        assert!(state.activity().is_busy(), "busy from the moment it is reserved");
+        assert!(
+            state.activity().is_busy(),
+            "busy from the moment it is reserved"
+        );
         let (_id, reply) = handle
             .send_prompt_reserved(
                 json!({"type": "prompt", "message": "y"}),
@@ -1854,7 +1949,9 @@ mod tests {
         let state = PiQueueState::new();
         let (handle, join) = spawn_queue(stdin, state.clone(), 0);
         handle
-            .write_raw(&json!({"type": "extension_ui_response", "id": "dialog-7", "cancelled": true}))
+            .write_raw(
+                &json!({"type": "extension_ui_response", "id": "dialog-7", "cancelled": true}),
+            )
             .await
             .unwrap();
         let written = pi.next().await;
@@ -1862,7 +1959,10 @@ mod tests {
         assert_eq!(written["cancelled"], true);
 
         state.signal_terminated();
-        assert!(handle.write_raw(&json!({"type": "get_state"})).await.is_err());
+        assert!(handle
+            .write_raw(&json!({"type": "get_state"}))
+            .await
+            .is_err());
         drop(handle);
         let _ = tokio::time::timeout(Duration::from_secs(2), join).await;
     }

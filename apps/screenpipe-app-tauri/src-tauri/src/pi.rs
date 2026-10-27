@@ -17,8 +17,8 @@ pub(crate) mod connections_context;
 
 use crate::ai_gateway::GatewayAccess;
 use crate::pi_command_queue::{
-    observe_pi_event, CommandTicket, PiQueueHandle, PiQueueState, QueueActivity,
-    ReaderFollowUp, EXTENSION_DIALOG_METHODS,
+    observe_pi_event, CommandTicket, PiQueueHandle, PiQueueState, QueueActivity, ReaderFollowUp,
+    EXTENSION_DIALOG_METHODS,
 };
 use screenpipe_core::agents::pi::{ensure_model_listed, screenpipe_cloud_models};
 use screenpipe_core::agents::{bun_runtime, pi_install, pi_runtime};
@@ -419,7 +419,7 @@ fn fail_start(app: &AppHandle, sid: &str, stage: PiStartStage, reason: &str) -> 
 /// Why a session cannot be restarted, stopped or prompted right now.
 fn busy_refusal(sid: &str, reason: &str) -> String {
     format!(
-        "Pi session '{}' is busy ({}). Wait for it to finish, or stop it first.",
+        "Pi session '{}' is busy ({}). Let the current reply end, or stop the session first.",
         sid, reason
     )
 }
@@ -597,11 +597,7 @@ impl PiManager {
         if let Some(reason) = self.activity().busy_reason() {
             return Some(reason);
         }
-        let waiting_calls = self
-            .pending_responses
-            .lock()
-            .map(|p| p.len())
-            .unwrap_or(0);
+        let waiting_calls = self.pending_responses.lock().map(|p| p.len()).unwrap_or(0);
         if waiting_calls > 0 {
             return Some("a request to the agent is waiting for its answer".to_string());
         }
@@ -614,10 +610,7 @@ impl PiManager {
 
     /// The queue of this running session with one command accepted for it
     /// (see `CommandTicket`). Call with the pool locked.
-    fn reserve_command(
-        &mut self,
-        prompt: bool,
-    ) -> Result<(PiQueueHandle, CommandTicket), String> {
+    fn reserve_command(&mut self, prompt: bool) -> Result<(PiQueueHandle, CommandTicket), String> {
         if !self.is_running() {
             return Err("Pi is not running".to_string());
         }
@@ -1976,7 +1969,10 @@ async fn start_session(
                     }
                 } else {
                     // Not JSON — log as warn so Pi startup errors are visible
-                    warn!("Pi stderr: {}", &line[..line.floor_char_boundary(line.len().min(500))]);
+                    warn!(
+                        "Pi stderr: {}",
+                        &line[..line.floor_char_boundary(line.len().min(500))]
+                    );
                 }
                 let _ = app_handle.emit("pi_log", &line);
             }
@@ -2129,9 +2125,7 @@ fn watch_extension_dialog(qs: &Arc<PiQueueState>, queue: &PiQueueHandle, event: 
                         "extension dialog {} got no answer in {:?}; cancelling it",
                         id, EXTENSION_DIALOG_MAX_WAIT
                     );
-                    let _ = queue
-                        .write_raw(&extension_dialog_cancel(&id))
-                        .await;
+                    let _ = queue.write_raw(&extension_dialog_cancel(&id)).await;
                 }
             }
         }
@@ -2905,7 +2899,10 @@ pub async fn pi_set_thinking_level(
             Some(p) => pool.thinking_levels.insert(sid.clone(), p.clone()),
             None => pool.thinking_levels.remove(&sid),
         };
-        return Err(format!("Pi did not accept thinking level '{}': {}", level, e));
+        return Err(format!(
+            "Pi did not accept thinking level '{}': {}",
+            level, e
+        ));
     }
 
     let current = rpc_call(&queue, &pending, json!({"type": "get_state"}))
@@ -2965,8 +2962,7 @@ fn extension_ui_response_payload(answer: &PiExtensionUiResponse) -> Result<Value
         return Err("extension dialog answer has no id".to_string());
     }
     let cancelled = answer.cancelled == Some(true);
-    let kinds =
-        answer.value.is_some() as u8 + answer.confirmed.is_some() as u8 + cancelled as u8;
+    let kinds = answer.value.is_some() as u8 + answer.confirmed.is_some() as u8 + cancelled as u8;
     if kinds != 1 {
         return Err(
             "an extension dialog answer needs exactly one of value, confirmed or cancelled"
@@ -4180,14 +4176,32 @@ error: InstallFailed extracting tarball"#;
     #[test]
     fn start_stages_use_the_wire_names_in_order() {
         use super::PiStartStage::*;
-        let stages = [Requested, ConfigReady, WaitingForPool, PoolAcquired, ProcessSpawned];
+        let stages = [
+            Requested,
+            ConfigReady,
+            WaitingForPool,
+            PoolAcquired,
+            ProcessSpawned,
+        ];
         let names: Vec<String> = stages
             .iter()
-            .map(|s| serde_json::to_value(s).unwrap().as_str().unwrap().to_string())
+            .map(|s| {
+                serde_json::to_value(s)
+                    .unwrap()
+                    .as_str()
+                    .unwrap()
+                    .to_string()
+            })
             .collect();
         assert_eq!(
             names,
-            ["requested", "config_ready", "waiting_for_pool", "pool_acquired", "process_spawned"]
+            [
+                "requested",
+                "config_ready",
+                "waiting_for_pool",
+                "pool_acquired",
+                "process_spawned"
+            ]
         );
         for stage in stages {
             assert_eq!(serde_json::to_value(stage).unwrap(), json!(stage.as_str()));
@@ -4234,23 +4248,30 @@ error: InstallFailed extracting tarball"#;
     #[test]
     fn thinking_replies_are_read_leniently() {
         let state = json!({"thinkingLevel": "medium", "isStreaming": false});
-        assert_eq!(super::level_from_state(Some(&state)).as_deref(), Some("medium"));
+        assert_eq!(
+            super::level_from_state(Some(&state)).as_deref(),
+            Some("medium")
+        );
         assert_eq!(super::level_from_state(Some(&json!({}))), None);
         assert_eq!(super::level_from_state(None), None);
         let levels = json!({"levels": ["off", "low", 3, "high"]});
-        assert_eq!(super::levels_from_reply(Some(&levels)), ["off", "low", "high"]);
+        assert_eq!(
+            super::levels_from_reply(Some(&levels)),
+            ["off", "low", "high"]
+        );
         assert!(super::levels_from_reply(None).is_empty());
     }
 
     #[test]
     fn extension_answers_need_exactly_one_kind() {
         use super::{extension_ui_response_payload as payload, PiExtensionUiResponse as Answer};
-        let answer = |value: Option<&str>, confirmed: Option<bool>, cancelled: Option<bool>| Answer {
-            id: " dlg-1 ".to_string(),
-            value: value.map(str::to_string),
-            confirmed,
-            cancelled,
-        };
+        let answer =
+            |value: Option<&str>, confirmed: Option<bool>, cancelled: Option<bool>| Answer {
+                id: " dlg-1 ".to_string(),
+                value: value.map(str::to_string),
+                confirmed,
+                cancelled,
+            };
         assert_eq!(
             payload(&answer(Some("Allow"), None, None)).unwrap(),
             json!({"type": "extension_ui_response", "id": "dlg-1", "value": "Allow"})
@@ -4263,9 +4284,18 @@ error: InstallFailed extracting tarball"#;
             payload(&answer(None, None, Some(true))).unwrap(),
             json!({"type": "extension_ui_response", "id": "dlg-1", "cancelled": true})
         );
-        assert!(payload(&answer(None, None, None)).is_err(), "no answer at all");
-        assert!(payload(&answer(None, None, Some(false))).is_err(), "cancelled: false is no answer");
-        assert!(payload(&answer(Some("x"), Some(true), None)).is_err(), "two answers");
+        assert!(
+            payload(&answer(None, None, None)).is_err(),
+            "no answer at all"
+        );
+        assert!(
+            payload(&answer(None, None, Some(false))).is_err(),
+            "cancelled: false is no answer"
+        );
+        assert!(
+            payload(&answer(Some("x"), Some(true), None)).is_err(),
+            "two answers"
+        );
         let mut blank = answer(Some("x"), None, None);
         blank.id = "  ".to_string();
         assert!(payload(&blank).is_err(), "an answer needs the dialog id");
@@ -4282,8 +4312,12 @@ error: InstallFailed extracting tarball"#;
         let (tx, rx) = tokio::sync::oneshot::channel();
         pending.lock().unwrap().insert("rpc_1".to_string(), tx);
 
-        let other = json!({"type": "response", "command": "prompt", "id": "req_4", "success": true});
-        assert!(!super::route_direct_reply(&pending, &other), "queue ACKs are not direct replies");
+        let other =
+            json!({"type": "response", "command": "prompt", "id": "req_4", "success": true});
+        assert!(
+            !super::route_direct_reply(&pending, &other),
+            "queue ACKs are not direct replies"
+        );
         let no_id = json!({"type": "response", "command": "abort", "success": true});
         assert!(!super::route_direct_reply(&pending, &no_id));
 
@@ -4296,6 +4330,9 @@ error: InstallFailed extracting tarball"#;
         assert_eq!(got.success, Some(true));
         assert_eq!(got.data.unwrap()["thinkingLevel"], "low");
         assert!(pending.lock().unwrap().is_empty());
-        assert!(!super::route_direct_reply(&pending, &reply), "answered once");
+        assert!(
+            !super::route_direct_reply(&pending, &reply),
+            "answered once"
+        );
     }
 }
