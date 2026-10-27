@@ -47,6 +47,10 @@ struct GoogleCalendarEventDto {
     calendar_name: Option<String>,
     #[serde(default)]
     is_all_day: bool,
+    /// Declined, free (transparent) or cancelled on the user's side; the
+    /// meeting detector ignores such entries.
+    #[serde(default)]
+    exclude_from_meeting_detection: bool,
 }
 
 pub async fn start_google_calendar_publisher(app: AppHandle) {
@@ -139,6 +143,7 @@ fn into_calendar_event_item(event: GoogleCalendarEventDto) -> CalendarEventItem 
         calendar_name: event.calendar_name.unwrap_or_else(|| "primary".to_string()),
         is_all_day: event.is_all_day,
         source: "google".to_string(),
+        exclude_from_meeting_detection: event.exclude_from_meeting_detection,
     }
 }
 
@@ -158,4 +163,45 @@ fn format_display(start: &str, end: &str) -> (String, String) {
         })
         .unwrap_or_default();
     (s, e)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn engine_event_fields_reach_the_detector_item() {
+        let raw = serde_json::json!({
+            "id": "evt-1",
+            "title": "Planning",
+            "start": "2026-10-26T10:00:00Z",
+            "end": "2026-10-26T11:00:00Z",
+            "attendees": ["ana@example.com"],
+            "meetingUrl": "https://meet.google.com/abc-defg-hij",
+            "calendarName": "Work",
+            "isAllDay": false,
+            "excludeFromMeetingDetection": true
+        });
+        let dto: GoogleCalendarEventDto = serde_json::from_value(raw).unwrap();
+        let item = into_calendar_event_item(dto);
+        assert_eq!(item.id, "evt-1");
+        assert_eq!(
+            item.meeting_url.as_deref(),
+            Some("https://meet.google.com/abc-defg-hij")
+        );
+        assert!(item.exclude_from_meeting_detection);
+        assert_eq!(item.source, "google");
+
+        // An engine without the flag yields an entry that is not excluded.
+        let dto: GoogleCalendarEventDto = serde_json::from_value(serde_json::json!({
+            "id": "evt-2", "title": "x",
+            "start": "2026-10-26T10:00:00Z", "end": "2026-10-26T11:00:00Z"
+        }))
+        .unwrap();
+        let item = into_calendar_event_item(dto);
+        assert!(!item.exclude_from_meeting_detection);
+        let wire = serde_json::to_value(&item).unwrap();
+        assert_eq!(wire["excludeFromMeetingDetection"], false);
+        assert_eq!(wire["meetingUrl"], serde_json::Value::Null);
+    }
 }

@@ -187,7 +187,9 @@ impl ScreenpipeCalendar {
                 .unwrap_or_default();
 
             items.push(CalendarEvent {
-                id,
+                // `LocalId` is shared by every occurrence of a recurring
+                // appointment; the start makes it name this occurrence.
+                id: crate::calendar_occurrence::occurrence_event_id(&id, start_utc),
                 title,
                 start: start_utc,
                 end: end_utc,

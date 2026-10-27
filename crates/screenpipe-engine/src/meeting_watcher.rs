@@ -6,6 +6,14 @@
 //!
 //! Periodically scans the accessibility tree of running meeting app processes
 //! for call control elements (mute, leave, hangup buttons).
+//!
+//! Pieces every meeting detector shares live in submodules: calendar binding
+//! ([`calendar`]), the `meeting_ended` payload ([`ended_event`]) and the
+//! screen-lock pause of scan loops ([`lock_pause`]).
+
+pub mod calendar;
+pub mod ended_event;
+pub mod lock_pause;
 
 use crate::meeting_detector;
 use screenpipe_audio::meeting_detector::MeetingDetector;

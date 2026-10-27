@@ -49,6 +49,11 @@ pub struct CalendarEventItem {
     /// Used by meeting detector to merge events from multiple publishers.
     #[serde(default = "default_native_source")]
     pub source: String,
+    /// The user is not attending this entry as a meeting (declined, shown as
+    /// free, cancelled). The meeting detector ignores such entries entirely:
+    /// they never bind to, title or keep alive a detected meeting.
+    #[serde(default)]
+    pub exclude_from_meeting_detection: bool,
 }
 
 fn default_native_source() -> String {
@@ -451,6 +456,9 @@ fn calendar_event_to_item(event: screenpipe_connect::calendar::CalendarEvent) ->
         calendar_name: event.calendar_name,
         is_all_day: event.is_all_day,
         source: "native".to_string(),
+        // The OS calendar bindings do not expose the user's response or
+        // free/busy state yet, so native entries are never excluded.
+        exclude_from_meeting_detection: false,
     }
 }
 
@@ -474,5 +482,8 @@ fn calendar_event_to_item_win(
         calendar_name: event.calendar_name,
         is_all_day: event.is_all_day,
         source: "native".to_string(),
+        // The OS calendar bindings do not expose the user's response or
+        // free/busy state yet, so native entries are never excluded.
+        exclude_from_meeting_detection: false,
     }
 }
