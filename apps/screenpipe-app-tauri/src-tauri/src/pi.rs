@@ -2578,33 +2578,44 @@ pub async fn pi_stop_if_idle(
     // Decided and acted on under one pool lock: commands reserve their
     // ticket under the same lock, so none can slip in between.
     let mut pool = state.0.lock().await;
-    let decision = match pool.sessions.get_mut(&sid) {
-        None => PiStopIfIdleOutcome::NotRunning,
+    let result = match pool.sessions.get_mut(&sid) {
+        None => idle_stop_decision(false, None),
         Some(m) => {
-            if !m.is_running() {
-                PiStopIfIdleOutcome::NotRunning
-            } else if let Some(reason) = m.busy_reason() {
-                return Ok(PiStopIfIdleResult {
-                    outcome: PiStopIfIdleOutcome::Busy,
-                    stopped: false,
-                    busy_reason: Some(reason),
-                });
-            } else {
-                PiStopIfIdleOutcome::Stopped
-            }
+            let running = m.is_running();
+            let busy = if running { m.busy_reason() } else { None };
+            idle_stop_decision(running, busy)
         }
     };
-    if let Some(mut m) = pool.sessions.remove(&sid) {
-        if decision == PiStopIfIdleOutcome::Stopped {
-            info!("Stopping idle Pi session '{}'", sid);
+    if result.outcome != PiStopIfIdleOutcome::Busy {
+        if let Some(mut m) = pool.sessions.remove(&sid) {
+            if result.stopped {
+                info!("Stopping idle Pi session '{}'", sid);
+            }
+            m.stop();
         }
-        m.stop();
     }
-    Ok(PiStopIfIdleResult {
-        outcome: decision,
-        stopped: decision == PiStopIfIdleOutcome::Stopped,
-        busy_reason: None,
-    })
+    Ok(result)
+}
+
+/// The rule of `pi_stop_if_idle` for a session that is `running` (or not)
+/// and busy for `busy_reason` (or idle). Only a running idle session is
+/// stopped; a busy one is never touched. A session that is not running is
+/// dropped from the pool by the caller, which frees its slot.
+fn idle_stop_decision(running: bool, busy_reason: Option<String>) -> PiStopIfIdleResult {
+    let outcome = match (running, &busy_reason) {
+        (false, _) => PiStopIfIdleOutcome::NotRunning,
+        (true, Some(_)) => PiStopIfIdleOutcome::Busy,
+        (true, None) => PiStopIfIdleOutcome::Stopped,
+    };
+    PiStopIfIdleResult {
+        outcome,
+        stopped: outcome == PiStopIfIdleOutcome::Stopped,
+        busy_reason: if outcome == PiStopIfIdleOutcome::Busy {
+            busy_reason
+        } else {
+            None
+        },
+    }
 }
 
 /// How long a request/response call waits for Pi's answer.
@@ -4209,6 +4220,32 @@ error: InstallFailed extracting tarball"#;
         assert_eq!(
             super::start_failure_message(WaitingForPool, "pool full"),
             "Pi start failed at stage 'waiting_for_pool': pool full"
+        );
+    }
+
+    #[test]
+    fn stop_if_idle_never_stops_a_busy_session() {
+        use super::{idle_stop_decision, PiStopIfIdleOutcome as Outcome};
+        let busy = idle_stop_decision(true, Some("a reply is still being generated".into()));
+        assert_eq!(busy.outcome, Outcome::Busy);
+        assert!(!busy.stopped);
+        assert_eq!(
+            busy.busy_reason.as_deref(),
+            Some("a reply is still being generated")
+        );
+
+        let idle = idle_stop_decision(true, None);
+        assert_eq!(idle.outcome, Outcome::Stopped);
+        assert!(idle.stopped && idle.busy_reason.is_none());
+
+        // A dead process is not "busy", whatever its queue last said.
+        let dead = idle_stop_decision(false, Some("stale".into()));
+        assert_eq!(dead.outcome, Outcome::NotRunning);
+        assert!(!dead.stopped && dead.busy_reason.is_none());
+
+        assert_eq!(
+            serde_json::to_value(&busy).unwrap(),
+            json!({"outcome": "busy", "stopped": false, "busyReason": "a reply is still being generated"})
         );
     }
 
