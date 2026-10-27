@@ -35,6 +35,17 @@ pub const TRIGGER_CONTEXT_MAX_CHARS: usize = 2_000;
 /// pipe busy) is kept and tried again.
 pub const DEFERRED_REQUEST_TTL: std::time::Duration = std::time::Duration::from_secs(10 * 60);
 
+/// Event a connection watcher sends to run one pipe for one detected item
+/// (payload: `pipe_name`, `source_delivery_id`, the item).
+pub const CONNECTION_TRIGGER_EVENT: &str = "connection_trigger";
+
+/// Prefix of the events that wake a workflow task pipe
+/// (`workflow_ready:<pipe>`).
+pub const WORKFLOW_READY_PREFIX: &str = "workflow_ready:";
+
+/// Prefix of the events a finished pipe run sends (`pipe_completed:<pipe>`).
+pub const PIPE_COMPLETED_PREFIX: &str = "pipe_completed:";
+
 /// One `pipe_event_runs` row: the pipe, the event and the event instance.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct EventClaim {
@@ -62,6 +73,35 @@ pub struct EventRun {
 }
 
 impl EventRun {
+    /// `pipe_executions.trigger_type` of the run: `connection` for a
+    /// connection trigger, `event` otherwise.
+    pub fn trigger_type(&self) -> &'static str {
+        if self.event == CONNECTION_TRIGGER_EVENT {
+            "connection"
+        } else {
+            "event"
+        }
+    }
+
+    /// A connection trigger aimed at one pipe (`pipe_name` in the payload).
+    /// `None` when the payload names no pipe; such an event is matched
+    /// against trigger lists like any other.
+    pub fn connection_trigger(data: &Value) -> Option<Self> {
+        let pipe = data
+            .get("pipe_name")
+            .or_else(|| data.get("pipe"))
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|p| !p.is_empty())?;
+        Some(Self {
+            pipe: pipe.to_string(),
+            event: CONNECTION_TRIGGER_EVENT.to_string(),
+            key: event_instance_key(CONNECTION_TRIGGER_EVENT, data),
+            data: data.clone(),
+            directed: true,
+        })
+    }
+
     pub fn claim(&self) -> Option<EventClaim> {
         self.key.as_ref().map(|key| EventClaim {
             pipe: self.pipe.clone(),
@@ -79,7 +119,7 @@ impl EventRun {
 ///
 /// `None` means the event is not claimed.
 pub fn event_instance_key(event_name: &str, data: &Value) -> Option<String> {
-    if event_name.starts_with("pipe_completed:") {
+    if event_name.starts_with(PIPE_COMPLETED_PREFIX) {
         return None;
     }
     if event_name == "meeting_ended" {
@@ -106,9 +146,11 @@ fn scalar_key(value: Option<&Value>) -> Option<String> {
 }
 
 /// Text added to an event-triggered run's prompt so the agent knows which
-/// event instance it is handling.
+/// event instance it is handling. Credentials in the payload are removed
+/// first (see [`redact`](super::redact)).
 pub fn render_trigger_context(run: &EventRun) -> String {
-    let mut payload = serde_json::to_string(&run.data).unwrap_or_default();
+    let mut payload =
+        serde_json::to_string(&super::redact::redact_value(&run.data)).unwrap_or_default();
     if payload.chars().count() > TRIGGER_CONTEXT_MAX_CHARS {
         payload = payload.chars().take(TRIGGER_CONTEXT_MAX_CHARS).collect();
         payload.push_str("…");
@@ -239,6 +281,22 @@ mod tests {
         assert!(text.chars().count() < TRIGGER_CONTEXT_MAX_CHARS + 200);
         assert!(!text.contains("(instance"));
         assert_eq!(big.claim(), None);
+    }
+
+    #[test]
+    fn connection_triggers_are_aimed_at_their_pipe() {
+        let data = json!({"pipe_name": "digest", "source_delivery_id": "slack:C1:9", "token": "t-1234567890"});
+        let run = EventRun::connection_trigger(&data).unwrap();
+        assert_eq!(run.pipe, "digest");
+        assert_eq!(run.event, CONNECTION_TRIGGER_EVENT);
+        assert_eq!(run.key.as_deref(), Some("slack:C1:9"));
+        assert!(run.directed);
+        assert_eq!(run.trigger_type(), "connection");
+        assert!(EventRun::connection_trigger(&json!({"source_delivery_id": "x"})).is_none());
+        // The prompt never carries the credential.
+        let text = render_trigger_context(&run);
+        assert!(!text.contains("t-1234567890"), "{text}");
+        assert!(text.contains("slack:C1:9"));
     }
 
     #[test]
