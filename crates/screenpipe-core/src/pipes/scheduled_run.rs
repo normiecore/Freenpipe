@@ -25,7 +25,9 @@ use tokio::sync::Mutex;
 use tracing::{error, info, warn};
 
 use super::event_runs::RunSlot;
-use super::preset_fallback::{PresetFallbackRegistry, ERROR_AI_PRESET_UNAVAILABLE, MAX_FALLBACK_DEPTH};
+use super::preset_fallback::{
+    PresetFallbackRegistry, ERROR_AI_PRESET_UNAVAILABLE, MAX_FALLBACK_DEPTH,
+};
 use super::trajectory::{RunTrajectory, TrajectoryConfig, TrajectoryEnd, TrajectoryMeta};
 use super::{
     choose_run_model, cleanup_pipe_token, delete_pi_sessions, filter_ndjson_stdout,
@@ -92,9 +94,13 @@ impl ScheduledRun {
             match self.semaphore.clone().acquire_owned().await {
                 Ok(permit) => Some(permit),
                 Err(_) => {
-                    warn!("scheduler: execution queue closed; run of '{}' dropped", name);
+                    warn!(
+                        "scheduler: execution queue closed; run of '{}' dropped",
+                        name
+                    );
                     self.queued_or_running.lock().await.remove(&name);
                     remove_run_slot(&self.run_slots, &name, &self.slot).await;
+                    self.drop_token();
                     return;
                 }
             }
@@ -159,7 +165,10 @@ impl ScheduledRun {
         let first_started = Utc::now();
         let mut exec_id = self.exec_id;
         let mut model = self.run_model.clone();
-        let mut note = model.as_ref().ok().and_then(|m| m.fallback_note(None, None));
+        let mut note = model
+            .as_ref()
+            .ok()
+            .and_then(|m| m.fallback_note(None, None));
         let mut attempt_no = 1u32;
         let mut any_launched = false;
         let last = loop {
@@ -200,6 +209,22 @@ impl ScheduledRun {
             );
             let next_id = self.open_retry_row(&next).await;
             if self.slot.is_cancelled() {
+                // Stopped while the retry was being set up: its row never
+                // ran.
+                if let (Some(store), Some(id)) = (&self.store, next_id) {
+                    let _ = store
+                        .finish_execution(
+                            id,
+                            "cancelled",
+                            "",
+                            "",
+                            None,
+                            Some("cancelled"),
+                            None,
+                            None,
+                        )
+                        .await;
+                }
                 break attempt;
             }
             note = next.fallback_note(previous.as_ref(), attempt.error_type.as_deref());
@@ -218,9 +243,7 @@ impl ScheduledRun {
             }
         }
         if let Some(ref store) = self.store {
-            let _ = store
-                .upsert_scheduler_state(&name, last.log.success)
-                .await;
+            let _ = store.upsert_scheduler_state(&name, last.log.success).await;
         }
 
         // Auto-clear Pi session on context overflow so the next run starts fresh
@@ -228,7 +251,7 @@ impl ScheduledRun {
             let pipe_dir = self.pipes_dir.join(&name);
             if let Err(e) = delete_pi_sessions(&pipe_dir) {
                 warn!(
-                    "failed to clear Pi session after context overflow for '{}': {}",
+                    "pipe '{}' overflowed its context, but its Pi session could not be reset: {}",
                     name, e
                 );
             } else {
@@ -268,10 +291,8 @@ impl ScheduledRun {
         if !self.is_event_triggered {
             let others_waiting = !self.queued_or_running.lock().await.is_empty();
             if others_waiting {
-                tokio::time::sleep(std::time::Duration::from_secs(
-                    SCHEDULED_RUN_SPACING_SECS,
-                ))
-                .await;
+                tokio::time::sleep(std::time::Duration::from_secs(SCHEDULED_RUN_SPACING_SECS))
+                    .await;
             }
         }
     }
@@ -339,7 +360,16 @@ impl ScheduledRun {
         let cancelled = self.slot.is_cancelled();
         if let (Some(store), Some(id)) = (&self.store, exec_id.filter(|_| !cancelled)) {
             let _ = store
-                .finish_execution(id, status, stdout, stderr, None, error_type, message, session_path)
+                .finish_execution(
+                    id,
+                    status,
+                    stdout,
+                    stderr,
+                    None,
+                    error_type,
+                    message,
+                    session_path,
+                )
                 .await;
         }
     }
@@ -385,7 +415,7 @@ impl ScheduledRun {
         let m = match model {
             Ok(m) => m,
             Err(unavailable) => {
-                warn!("{}", unavailable.message);
+                // Logged when the run was queued.
                 let attempt = Attempt {
                     log: PipeRunLog {
                         pipe_name: name.clone(),
@@ -446,6 +476,10 @@ impl ScheduledRun {
             self.run_context.as_deref(),
         );
 
+        // A retry starts without the previous attempt's process id.
+        if let Some(handle) = self.running.lock().await.get_mut(name.as_str()) {
+            handle.pid = 0;
+        }
         // Shared PID — set synchronously by the executor right after spawn.
         let shared_pid = Arc::new(AtomicU32::new(0));
         {
@@ -584,8 +618,8 @@ impl ScheduledRun {
                             .clone()
                             .unwrap_or_else(|| "unknown".to_string())
                     });
-                    let session_path = find_latest_pi_session(&pipe_dir)
-                        .map(|p| p.to_string_lossy().to_string());
+                    let session_path =
+                        find_latest_pi_session(&pipe_dir).map(|p| p.to_string_lossy().to_string());
                     (
                         Attempt {
                             log: PipeRunLog {
@@ -707,7 +741,11 @@ impl RunModel {
     /// the first preset the pipe asked for: after a failed attempt
     /// (`previous`), or because earlier presets were missing or cooling
     /// down. `None` when nothing fell back.
-    pub(super) fn fallback_note(&self, previous: Option<&RunModel>, reason: Option<&str>) -> Option<Value> {
+    pub(super) fn fallback_note(
+        &self,
+        previous: Option<&RunModel>,
+        reason: Option<&str>,
+    ) -> Option<Value> {
         let requested = match previous {
             Some(p) => p.preset_id.clone().unwrap_or_else(|| p.model.clone()),
             None => {

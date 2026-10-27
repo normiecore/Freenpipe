@@ -487,7 +487,12 @@ impl PresetChain {
     /// The reason a run with this chain cannot start, for a chain without
     /// any usable preset. `available` lists the user's preset ids; `store`
     /// says whether the AI settings could be read at all.
-    pub fn unavailable_reason(&self, pipe: &str, available: &[String], store_readable: bool) -> String {
+    pub fn unavailable_reason(
+        &self,
+        pipe: &str,
+        available: &[String],
+        store_readable: bool,
+    ) -> String {
         let named = if self.missing.is_empty() {
             "the pipe's preset list is empty".to_string()
         } else {
@@ -747,8 +752,14 @@ mod tests {
         assert!(chain.slots.is_empty());
         assert_eq!(chain.missing, list(&["deleted"]));
         let reason = chain.unavailable_reason("digest", &list(&["work", "local"]), true);
-        assert!(reason.contains("'deleted' is not in your AI settings"), "{reason}");
-        assert!(reason.contains("available presets: work, local"), "{reason}");
+        assert!(
+            reason.contains("'deleted' is not in your AI settings"),
+            "{reason}"
+        );
+        assert!(
+            reason.contains("available presets: work, local"),
+            "{reason}"
+        );
 
         // The list's own next entry is used; nothing else is added.
         let chain = PresetChain::build(&list(&["screenpipe-cloud", "*"]), &presets);

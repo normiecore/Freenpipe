@@ -76,7 +76,10 @@ impl TrajectoryConfig {
             "" | "0" | "false" | "off" | "no" => return None,
             "1" | "true" | "on" | "yes" => data_dir.join(DEFAULT_DIR_NAME),
             _ => {
-                let path = match value.strip_prefix("~/").or_else(|| value.strip_prefix("~\\")) {
+                let path = match value
+                    .strip_prefix("~/")
+                    .or_else(|| value.strip_prefix("~\\"))
+                {
                     Some(rest) => dirs::home_dir()?.join(rest),
                     None => PathBuf::from(value),
                 };
@@ -349,7 +352,11 @@ pub fn prune(dir: &Path, max_runs: usize) -> std::io::Result<usize> {
         }
         match std::fs::remove_file(&path) {
             Ok(()) => removed += 1,
-            Err(e) => debug!("trajectory prune: could not remove {}: {}", path.display(), e),
+            Err(e) => debug!(
+                "trajectory prune: could not remove {}: {}",
+                path.display(),
+                e
+            ),
         }
     }
     Ok(removed)
@@ -537,14 +544,27 @@ mod tests {
         assert!(is_trajectory_file(&name), "{name}");
 
         let records = read_records(&path);
-        let kinds: Vec<&str> = records.iter().map(|r| r["type"].as_str().unwrap()).collect();
+        let kinds: Vec<&str> = records
+            .iter()
+            .map(|r| r["type"].as_str().unwrap())
+            .collect();
         assert_eq!(
             kinds,
-            vec!["run_start", "agent_event", "agent_event", "agent_event", "status", "run_end"]
+            vec![
+                "run_start",
+                "agent_event",
+                "agent_event",
+                "agent_event",
+                "status",
+                "run_end"
+            ]
         );
         assert_eq!(records[0]["pipe"], "digest");
         assert_eq!(records[0]["trigger_key"], "42");
-        assert!(!records[0]["prompt"].as_str().unwrap().contains("abcdef0123456789"));
+        assert!(!records[0]["prompt"]
+            .as_str()
+            .unwrap()
+            .contains("abcdef0123456789"));
         assert_eq!(records[1]["event"]["delta"], "Hel");
         assert_eq!(records[2]["event"]["args"]["api_key"], "[redacted]");
         assert_eq!(records[3]["event"]["text"], "plain text line");
@@ -600,7 +620,10 @@ mod tests {
         rec.agent_event(r#"{"type":"y"}"#);
         let path = rec.finish(&TrajectoryEnd::default());
         let records = read_records(&path);
-        let kinds: Vec<&str> = records.iter().map(|r| r["type"].as_str().unwrap()).collect();
+        let kinds: Vec<&str> = records
+            .iter()
+            .map(|r| r["type"].as_str().unwrap())
+            .collect();
         assert_eq!(kinds, vec!["run_start", "truncated", "run_end"]);
         assert_eq!(records[2]["events"], 2);
         assert_eq!(records[2]["truncated"], true);

@@ -958,10 +958,26 @@ pub trait PipeStore: Send + Sync {
         message: &str,
     ) -> Result<i64> {
         let id = self
-            .create_execution(pipe_name, trigger_type, "", None, trigger_event, trigger_key)
+            .create_execution(
+                pipe_name,
+                trigger_type,
+                "",
+                None,
+                trigger_event,
+                trigger_key,
+            )
             .await?;
-        self.finish_execution(id, "skipped", "", "", None, Some(reason), Some(message), None)
-            .await?;
+        self.finish_execution(
+            id,
+            "skipped",
+            "",
+            "",
+            None,
+            Some(reason),
+            Some(message),
+            None,
+        )
+        .await?;
         Ok(id)
     }
 
@@ -1889,7 +1905,8 @@ fn skip_event_run(
     }
     if why == Blocked::NotReady && origin.is_some_and(|o| backlog.is_expired(&o, now)) {
         backlog.note_expired();
-        pass.dropped.push((run.clone(), backlog::DropReason::Expired));
+        pass.dropped
+            .push((run.clone(), backlog::DropReason::Expired));
         return;
     }
     debug!(
@@ -1909,7 +1926,7 @@ fn pipe_accepts_run(config: &PipeConfig, run: &event_runs::EventRun) -> bool {
     let Some(trigger) = config.trigger.as_ref() else {
         return false;
     };
-    trigger.events.iter().any(|e| *e == run.event)
+    trigger.events.contains(&run.event)
         || (run.event == event_runs::CONNECTION_TRIGGER_EVENT && !trigger.sources.is_empty())
 }
 
@@ -2218,10 +2235,7 @@ impl PipeManager {
 
     /// Totals of the scheduler's deferred-run backlog so far.
     pub fn backlog_stats(&self) -> backlog::BacklogStats {
-        *self
-            .backlog_stats
-            .lock()
-            .unwrap_or_else(|p| p.into_inner())
+        *self.backlog_stats.lock().unwrap_or_else(|p| p.into_inner())
     }
 
     /// Run the per-run log archive sweep now, on a blocking thread, and log
@@ -3759,9 +3773,12 @@ impl PipeManager {
             if let (false, Some(cur_idx)) = (log.success, active_preset_idx) {
                 let next_idx = cur_idx + 1;
                 if next_idx < max_attempts {
-                    if let Ok(next) =
-                        choose_run_model(&self.pipes_dir, &config, &self.fallback_registry, next_idx)
-                    {
+                    if let Ok(next) = choose_run_model(
+                        &self.pipes_dir,
+                        &config,
+                        &self.fallback_registry,
+                        next_idx,
+                    ) {
                         info!(
                             "pipe '{}': preset '{}' failed, immediately retrying with fallback preset '{}' (attempt {}/{})",
                             name,
@@ -7257,7 +7274,15 @@ mod tests {
         };
         let late = now + ttl;
         let kept = (run(Some("13")), Some(old));
-        skip_event_run("digest", Some(&kept), Blocked::Busy, &mut pass, &mut last_run, &mut backlog, late);
+        skip_event_run(
+            "digest",
+            Some(&kept),
+            Blocked::Busy,
+            &mut pass,
+            &mut last_run,
+            &mut backlog,
+            late,
+        );
         assert_eq!(pass.to_defer.len(), 3);
         skip_event_run(
             "digest",
@@ -7274,7 +7299,15 @@ mod tests {
         assert_eq!(backlog.stats().expired, 1);
 
         // No event run: nothing happens.
-        skip_event_run("digest", None, Blocked::NotReady, &mut pass, &mut last_run, &mut backlog, now);
+        skip_event_run(
+            "digest",
+            None,
+            Blocked::NotReady,
+            &mut pass,
+            &mut last_run,
+            &mut backlog,
+            now,
+        );
         assert_eq!(pass.to_defer.len(), 3);
     }
 

@@ -23,7 +23,9 @@ use super::event_runs::EventRun;
 use super::preset_fallback::{PresetFallbackRegistry, ERROR_AI_PRESET_UNAVAILABLE};
 use super::test_support::{finished_answer, MemoryPipeStore, SchedulerReady, ScriptedAgent};
 use super::trajectory::TrajectoryConfig;
-use super::{choose_run_model, pipe_accepts_run, PipeConfig, PipeManager, PipeStore, SKIP_STALE_ONE_OFF};
+use super::{
+    choose_run_model, pipe_accepts_run, PipeConfig, PipeManager, PipeStore, SKIP_STALE_ONE_OFF,
+};
 use crate::agents::AgentExecutor;
 
 static NEXT_ID: AtomicI64 = AtomicI64::new(0);
@@ -114,7 +116,9 @@ async fn start(
     let lines: Lines = Arc::new(StdMutex::new(Vec::new()));
     let sink = lines.clone();
     manager.set_on_output_line(Arc::new(move |pipe, _id, line| {
-        sink.lock().unwrap().push((pipe.to_string(), line.to_string()));
+        sink.lock()
+            .unwrap()
+            .push((pipe.to_string(), line.to_string()));
     }));
     configure(&mut manager);
     let ready = Arc::new(SchedulerReady::default());
@@ -122,7 +126,10 @@ async fn start(
     manager.load_pipes().await.unwrap();
     manager.start_scheduler().await.unwrap();
     assert!(
-        wait_until(Duration::from_secs(20), || ready.ready.load(Ordering::SeqCst)).await,
+        wait_until(Duration::from_secs(20), || ready
+            .ready
+            .load(Ordering::SeqCst))
+        .await,
         "scheduler never subscribed"
     );
     (manager, lines)
@@ -160,7 +167,10 @@ async fn scheduler_busy_pipe_defers_wakeups_then_runs_once_coalesced() {
 
     screenpipe_events::send_event(&event, json!({"reason": "first"})).unwrap();
     assert!(
-        wait_until(Duration::from_secs(10), || !store.executions_for_pipe(&pipe).is_empty()).await,
+        wait_until(Duration::from_secs(10), || !store
+            .executions_for_pipe(&pipe)
+            .is_empty())
+        .await,
         "the first wake-up never started a run"
     );
     // Four more wake-ups while the run is going: one more run afterwards.
@@ -169,7 +179,9 @@ async fn scheduler_busy_pipe_defers_wakeups_then_runs_once_coalesced() {
         tokio::time::sleep(Duration::from_millis(60)).await;
     }
     assert!(
-        wait_until(Duration::from_secs(15), || finished_rows(&store, &pipe) >= 2).await,
+        wait_until(Duration::from_secs(15), || finished_rows(&store, &pipe)
+            >= 2)
+        .await,
         "the deferred wake-up never ran"
     );
     // Nothing else is waiting.
@@ -177,7 +189,9 @@ async fn scheduler_busy_pipe_defers_wakeups_then_runs_once_coalesced() {
     let rows = store.executions_for_pipe(&pipe);
     assert_eq!(rows.len(), 2, "{rows:?}");
     assert!(rows.iter().all(|r| r.status == "completed"));
-    assert!(rows.iter().all(|r| r.trigger_event.as_deref() == Some(event.as_str())));
+    assert!(rows
+        .iter()
+        .all(|r| r.trigger_event.as_deref() == Some(event.as_str())));
     // The second run handled the newest wake-up.
     let prompts = agent.prompts.lock().unwrap().clone();
     assert!(prompts[1].contains("\"n\":3"), "{}", prompts[1]);
@@ -237,7 +251,10 @@ async fn scheduler_coalescing_keeps_one_run_per_meeting() {
     tokio::time::sleep(Duration::from_millis(1200)).await;
     assert_eq!(store.executions_for_key(&first_key).len(), 1);
     assert_eq!(store.executions_for_key(&second_key).len(), 1);
-    assert_eq!(agent.runs_mentioning(&format!("instance `{second_key}`")), 1);
+    assert_eq!(
+        agent.runs_mentioning(&format!("instance `{second_key}`")),
+        1
+    );
     assert!(manager.backlog_stats().coalesced >= 2);
 
     manager.stop_scheduler().await;
@@ -329,7 +346,10 @@ async fn scheduler_gives_up_a_deferred_run_after_its_deadline() {
     meeting_ended(meeting);
     let key = meeting.to_string();
     assert!(
-        wait_until(Duration::from_secs(10), || !store.executions_for_key(&key).is_empty()).await,
+        wait_until(Duration::from_secs(10), || !store
+            .executions_for_key(&key)
+            .is_empty())
+        .await,
         "the expired run was not recorded"
     );
     let rows = store.executions_for_key(&key);
@@ -355,7 +375,14 @@ async fn scheduler_connection_triggers_run_their_pipe_with_a_private_context() {
     write_pipe(dir.path(), &other, frontmatter);
     let store = Arc::new(MemoryPipeStore::default());
     let agent = Arc::new(ScriptedAgent::new(&finished_answer("done"), true));
-    let (mut manager, _) = start(pipes_dir.clone(), store.clone(), agent.clone(), vec![], |_| {}).await;
+    let (mut manager, _) = start(
+        pipes_dir.clone(),
+        store.clone(),
+        agent.clone(),
+        vec![],
+        |_| {},
+    )
+    .await;
 
     let delivery = format!("slack:general:{}", unique_id());
     let payload = json!({
@@ -366,7 +393,9 @@ async fn scheduler_connection_triggers_run_their_pipe_with_a_private_context() {
     });
     screenpipe_events::send_event("connection_trigger", payload.clone()).unwrap();
     assert!(
-        wait_until(Duration::from_secs(10), || finished_rows(&store, &pipe) == 1).await,
+        wait_until(Duration::from_secs(10), || finished_rows(&store, &pipe)
+            == 1)
+        .await,
         "the connection trigger never ran its pipe"
     );
     let row = &store.executions_for_pipe(&pipe)[0];
@@ -410,7 +439,9 @@ fn scheduler_directed_runs_need_a_pipe_that_takes_them() {
         directed: true,
     };
     let parse = |yaml: &str| -> PipeConfig {
-        super::parse_frontmatter(&format!("---\n{yaml}---\nbody\n")).unwrap().0
+        super::parse_frontmatter(&format!("---\n{yaml}---\nbody\n"))
+            .unwrap()
+            .0
     };
     let sources = parse("enabled: true\ntrigger:\n  sources:\n    - app: github\n");
     assert!(pipe_accepts_run(&sources, &run("connection_trigger")));
@@ -431,10 +462,9 @@ fn scheduler_star_preset_expands_to_the_users_presets() {
     let pipes_dir = write_pipe(dir.path(), "p", "schedule: manual\npreset: [\"*\"]\n");
     write_store(dir.path(), two_presets());
     let registry = PresetFallbackRegistry::new(dir.path());
-    let (config, _) = super::parse_frontmatter(
-        &std::fs::read_to_string(pipes_dir.join("p/pipe.md")).unwrap(),
-    )
-    .unwrap();
+    let (config, _) =
+        super::parse_frontmatter(&std::fs::read_to_string(pipes_dir.join("p/pipe.md")).unwrap())
+            .unwrap();
     let first = choose_run_model(&pipes_dir, &config, &registry, 0).unwrap();
     // The default preset first, then the others.
     assert_eq!(first.preset_id.as_deref(), Some("local"));
@@ -449,17 +479,26 @@ fn scheduler_star_preset_expands_to_the_users_presets() {
 #[test]
 fn scheduler_missing_named_preset_fails_without_a_fallback() {
     let dir = tempfile::tempdir().unwrap();
-    let pipes_dir = write_pipe(dir.path(), "p", "schedule: manual\npreset: deleted\nmodel: some-cloud-model\n");
+    let pipes_dir = write_pipe(
+        dir.path(),
+        "p",
+        "schedule: manual\npreset: deleted\nmodel: some-cloud-model\n",
+    );
     write_store(dir.path(), two_presets());
     let registry = PresetFallbackRegistry::new(dir.path());
-    let (mut config, _) = super::parse_frontmatter(
-        &std::fs::read_to_string(pipes_dir.join("p/pipe.md")).unwrap(),
-    )
-    .unwrap();
+    let (mut config, _) =
+        super::parse_frontmatter(&std::fs::read_to_string(pipes_dir.join("p/pipe.md")).unwrap())
+            .unwrap();
     config.name = "p".into();
     let err = choose_run_model(&pipes_dir, &config, &registry, 0).unwrap_err();
-    assert!(err.message.contains("'deleted' is not in your AI settings"), "{err}");
-    assert!(err.message.contains("available presets: work, local"), "{err}");
+    assert!(
+        err.message.contains("'deleted' is not in your AI settings"),
+        "{err}"
+    );
+    assert!(
+        err.message.contains("available presets: work, local"),
+        "{err}"
+    );
     // Not even the pipe's own `model` is used.
     assert!(!err.message.contains("some-cloud-model"));
 }
@@ -477,7 +516,14 @@ async fn scheduler_event_run_with_a_missing_preset_fails_and_runs_nothing() {
     let store = Arc::new(MemoryPipeStore::default());
     let agent = Arc::new(ScriptedAgent::new(&finished_answer("Saved."), true));
     let meeting = unique_id();
-    let (mut manager, _) = start(pipes_dir, store.clone(), agent.clone(), vec![meeting], |_| {}).await;
+    let (mut manager, _) = start(
+        pipes_dir,
+        store.clone(),
+        agent.clone(),
+        vec![meeting],
+        |_| {},
+    )
+    .await;
 
     meeting_ended(meeting);
     let key = meeting.to_string();
@@ -491,9 +537,19 @@ async fn scheduler_event_run_with_a_missing_preset_fails_and_runs_nothing() {
     let rows = store.executions_for_key(&key);
     assert_eq!(rows.len(), 1);
     assert_eq!(rows[0].status, "failed");
-    assert_eq!(rows[0].error_type.as_deref(), Some(ERROR_AI_PRESET_UNAVAILABLE));
-    assert!(rows[0].error_message.as_deref().unwrap().contains("'deleted'"));
-    assert!(agent.prompts.lock().unwrap().is_empty(), "the agent must not run");
+    assert_eq!(
+        rows[0].error_type.as_deref(),
+        Some(ERROR_AI_PRESET_UNAVAILABLE)
+    );
+    assert!(rows[0]
+        .error_message
+        .as_deref()
+        .unwrap()
+        .contains("'deleted'"));
+    assert!(
+        agent.prompts.lock().unwrap().is_empty(),
+        "the agent must not run"
+    );
     // The pipe is free again afterwards.
     assert!(!manager.run_slots.lock().await.contains_key(&pipe));
 
@@ -534,8 +590,14 @@ async fn scheduler_star_preset_runs_on_the_users_presets_and_falls_back() {
         .unwrap()
         .insert("m-local".to_string());
     let meeting = unique_id();
-    let (mut manager, lines) =
-        start(pipes_dir, store.clone(), agent.clone(), vec![meeting], |_| {}).await;
+    let (mut manager, lines) = start(
+        pipes_dir,
+        store.clone(),
+        agent.clone(),
+        vec![meeting],
+        |_| {},
+    )
+    .await;
 
     meeting_ended(meeting);
     let key = meeting.to_string();
@@ -555,7 +617,13 @@ async fn scheduler_star_preset_runs_on_the_users_presets_and_falls_back() {
     assert_eq!(rows[1].status, "completed");
     assert_eq!(rows[1].model.as_deref(), Some("m-work"));
     assert_eq!(rows[1].trigger_event.as_deref(), Some("meeting_ended"));
-    let models: Vec<String> = agent.models.lock().unwrap().iter().map(|m| m.0.clone()).collect();
+    let models: Vec<String> = agent
+        .models
+        .lock()
+        .unwrap()
+        .iter()
+        .map(|m| m.0.clone())
+        .collect();
     assert_eq!(models, vec!["m-local".to_string(), "m-work".to_string()]);
     // One claim for the instance, held by the run.
     assert!(store.is_claimed(&pipe, "meeting_ended", &key));
@@ -588,10 +656,20 @@ async fn scheduler_records_a_stale_one_off_as_skipped_and_switches_it_off() {
     let pipes_dir = write_pipe(dir.path(), &pipe, &format!("schedule: at {at}\n"));
     let store = Arc::new(MemoryPipeStore::default());
     let agent = Arc::new(ScriptedAgent::new(&finished_answer("done"), true));
-    let (mut manager, _) = start(pipes_dir.clone(), store.clone(), agent.clone(), vec![], |_| {}).await;
+    let (mut manager, _) = start(
+        pipes_dir.clone(),
+        store.clone(),
+        agent.clone(),
+        vec![],
+        |_| {},
+    )
+    .await;
 
     assert!(
-        wait_until(Duration::from_secs(10), || !store.executions_for_pipe(&pipe).is_empty()).await
+        wait_until(Duration::from_secs(10), || !store
+            .executions_for_pipe(&pipe)
+            .is_empty())
+        .await
     );
     tokio::time::sleep(Duration::from_millis(300)).await;
     let rows = store.executions_for_pipe(&pipe);
@@ -659,7 +737,11 @@ async fn scheduler_trajectories_dir_set_records_one_jsonl_file_per_run() {
     .await;
 
     screenpipe_events::send_event(&event, json!({"why": "test"})).unwrap();
-    assert!(wait_until(Duration::from_secs(10), || finished_rows(&store, &pipe) == 1).await);
+    assert!(
+        wait_until(Duration::from_secs(10), || finished_rows(&store, &pipe)
+            == 1)
+        .await
+    );
     assert!(
         wait_until(Duration::from_secs(5), || trajectory_records(&traj_dir)
             .first()
@@ -674,7 +756,10 @@ async fn scheduler_trajectories_dir_set_records_one_jsonl_file_per_run() {
     assert_eq!(records[0]["pipe"], pipe);
     assert_eq!(records[0]["trigger"], "event");
     assert_eq!(records[0]["trigger_event"], event);
-    let events: Vec<&Value> = records.iter().filter(|r| r["type"] == "agent_event").collect();
+    let events: Vec<&Value> = records
+        .iter()
+        .filter(|r| r["type"] == "agent_event")
+        .collect();
     assert_eq!(events.len(), 2);
     assert_eq!(events[0]["event"]["args"]["api_key"], "[redacted]");
     let end = records.last().unwrap();
@@ -739,7 +824,11 @@ async fn scheduler_log_archive_sweep_reports_its_counts_in_the_log() {
         let age = Duration::from_secs(86_400 * (30 + i as u64));
         let started: chrono::DateTime<Utc> = (now - age).into();
         let path = logs.join(format!("{}.json", started.format("%Y%m%d_%H%M%S")));
-        std::fs::write(&path, json!({"pipe_name": pipe, "success": true}).to_string()).unwrap();
+        std::fs::write(
+            &path,
+            json!({"pipe_name": pipe, "success": true}).to_string(),
+        )
+        .unwrap();
         std::fs::File::options()
             .write(true)
             .open(&path)
@@ -760,14 +849,20 @@ async fn scheduler_log_archive_sweep_reports_its_counts_in_the_log() {
     assert_eq!(report.failed, 0);
     let remaining = std::fs::read_dir(&logs)
         .unwrap()
-        .filter(|e| e.as_ref().unwrap().path().extension().is_some_and(|x| x == "json"))
+        .filter(|e| {
+            e.as_ref()
+                .unwrap()
+                .path()
+                .extension()
+                .is_some_and(|x| x == "json")
+        })
         .count();
     assert_eq!(remaining, 50);
     let lines = capture.lines.lock().unwrap().clone();
     assert!(
-        lines
-            .iter()
-            .any(|l| l.contains("pipe log archive") && l.contains("scanned=60") && l.contains("archived=10")),
+        lines.iter().any(|l| l.contains("pipe log archive")
+            && l.contains("scanned=60")
+            && l.contains("archived=10")),
         "{lines:?}"
     );
 }

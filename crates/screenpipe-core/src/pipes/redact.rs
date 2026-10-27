@@ -390,7 +390,9 @@ mod tests {
             "https://api.example.com/cb?code=[redacted]&state=ok&access_token=[redacted]#frag"
         );
 
-        let t = redact_text("my key is sk-ant-api03-ABCDEFGHIJKLMNOPQRSTUV and ghp_0123456789abcdefghijABCD");
+        let t = redact_text(
+            "my key is sk-ant-api03-ABCDEFGHIJKLMNOPQRSTUV and ghp_0123456789abcdefghijABCD",
+        );
         assert!(!t.contains("ABCDEFGHIJKLMNOP"), "{t}");
         assert!(!t.contains("0123456789abcdefghij"), "{t}");
         assert_eq!(t.matches(REDACTED).count(), 2);

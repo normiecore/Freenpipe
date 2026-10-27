@@ -72,7 +72,11 @@ pub fn render(run: &EventRun, triggered_at: DateTime<Utc>) -> Value {
 /// one. The file is written next to its final name and renamed into place,
 /// so a reader never sees half a document. Readable by the owner only on
 /// Unix.
-pub fn write(pipe_dir: &Path, run: &EventRun, triggered_at: DateTime<Utc>) -> std::io::Result<PathBuf> {
+pub fn write(
+    pipe_dir: &Path,
+    run: &EventRun,
+    triggered_at: DateTime<Utc>,
+) -> std::io::Result<PathBuf> {
     let doc = render(run, triggered_at);
     let body = serde_json::to_vec_pretty(&doc)
         .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;

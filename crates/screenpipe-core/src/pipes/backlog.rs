@@ -240,7 +240,12 @@ impl TriggerBacklog {
     /// Keep `run` for a later pass. `origin` is the bookkeeping of a run
     /// taken from the backlog this pass (it keeps its place, wait time and
     /// generation); a new run passes `None`.
-    pub fn defer(&mut self, mut run: EventRun, origin: Option<Origin>, now: Instant) -> DeferOutcome {
+    pub fn defer(
+        &mut self,
+        mut run: EventRun,
+        origin: Option<Origin>,
+        now: Instant,
+    ) -> DeferOutcome {
         // A kept run is aimed at its pipe from now on: it does not go
         // through trigger matching or the event gate again.
         run.directed = true;
@@ -404,7 +409,11 @@ mod tests {
         b.defer(run("p", "e", Some("1"), 0), None, t0);
         let first = b.take_all().remove(0);
         // A fresh copy is deferred first, then the taken one comes back.
-        b.defer(run("p", "e", Some("1"), 1), None, t0 + Duration::from_secs(5));
+        b.defer(
+            run("p", "e", Some("1"), 1),
+            None,
+            t0 + Duration::from_secs(5),
+        );
         b.defer(first.run, Some(first.origin), t0 + Duration::from_secs(5));
         let only = b.take_all();
         assert_eq!(only.len(), 1);

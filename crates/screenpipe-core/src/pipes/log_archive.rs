@@ -212,7 +212,12 @@ pub fn sweep(
     report
 }
 
-fn sweep_pipe(logs_dir: &Path, policy: &ArchivePolicy, now: SystemTime, report: &mut ArchiveReport) {
+fn sweep_pipe(
+    logs_dir: &Path,
+    policy: &ArchivePolicy,
+    now: SystemTime,
+    report: &mut ArchiveReport,
+) {
     let Ok(entries) = std::fs::read_dir(logs_dir) else {
         return;
     };
@@ -249,7 +254,9 @@ fn sweep_pipe(logs_dir: &Path, policy: &ArchivePolicy, now: SystemTime, report: 
         if !(old_by_name && old_by_mtime) {
             continue;
         }
-        let budget = policy.max_files.saturating_sub(report.archived + report.failed);
+        let budget = policy
+            .max_files
+            .saturating_sub(report.archived + report.failed);
         let queued: usize = by_month.values().map(Vec::len).sum();
         if queued >= budget {
             report.limited = true;
@@ -263,7 +270,11 @@ fn sweep_pipe(logs_dir: &Path, policy: &ArchivePolicy, now: SystemTime, report: 
         if let Err(e) = std::fs::create_dir_all(&archive_dir) {
             let n: usize = by_month.values().map(Vec::len).sum();
             report.failed += n;
-            tracing::warn!("pipe log archive: cannot create {}: {}", archive_dir.display(), e);
+            tracing::warn!(
+                "pipe log archive: cannot create {}: {}",
+                archive_dir.display(),
+                e
+            );
             return;
         }
         for (month, mut files) in by_month {
@@ -376,8 +387,10 @@ mod tests {
         let path = logs.join(format!("{}.json", started.format("%Y%m%d_%H%M%S")));
         std::fs::write(
             &path,
-            serde_json::to_string_pretty(&json!({"pipe_name": "p", "success": true, "stdout": "ok"}))
-                .unwrap(),
+            serde_json::to_string_pretty(
+                &json!({"pipe_name": "p", "success": true, "stdout": "ok"}),
+            )
+            .unwrap(),
         )
         .unwrap();
         let file = std::fs::File::options().write(true).open(&path).unwrap();
@@ -408,7 +421,12 @@ mod tests {
         }
         // Two recent logs: inside keep_recent and younger than min_age.
         let recent_a = write_log(&logs, now_utc - chrono::Duration::days(1), DAY, now);
-        let recent_b = write_log(&logs, now_utc - chrono::Duration::hours(1), Duration::from_secs(3600), now);
+        let recent_b = write_log(
+            &logs,
+            now_utc - chrono::Duration::hours(1),
+            Duration::from_secs(3600),
+            now,
+        );
         // Not a per-run log: never touched.
         std::fs::write(logs.join("notes.txt"), "keep me").unwrap();
 
@@ -450,7 +468,12 @@ mod tests {
         let mut paths = Vec::new();
         for days in 20..25u64 {
             let age = DAY * days as u32;
-            paths.push(write_log(&logs, now_utc - chrono::Duration::from_std(age).unwrap(), age, now));
+            paths.push(write_log(
+                &logs,
+                now_utc - chrono::Duration::from_std(age).unwrap(),
+                age,
+                now,
+            ));
         }
         let busy: HashSet<String> = ["busy".to_string()].into_iter().collect();
         let report = sweep(dir.path(), &busy, &policy(), now);
@@ -484,7 +507,12 @@ mod tests {
         let logs = dir.path().join("p").join(LOGS_DIR);
         for days in 100..110u64 {
             let age = DAY * days as u32;
-            write_log(&logs, now_utc - chrono::Duration::from_std(age).unwrap(), age, now);
+            write_log(
+                &logs,
+                now_utc - chrono::Duration::from_std(age).unwrap(),
+                age,
+                now,
+            );
         }
         let archive = logs.join(ARCHIVE_DIR);
         std::fs::create_dir_all(&archive).unwrap();
@@ -526,7 +554,12 @@ mod tests {
     #[test]
     fn missing_or_empty_pipes_dirs_are_fine() {
         let dir = tempfile::tempdir().unwrap();
-        let report = sweep(&dir.path().join("nope"), &HashSet::new(), &policy(), SystemTime::now());
+        let report = sweep(
+            &dir.path().join("nope"),
+            &HashSet::new(),
+            &policy(),
+            SystemTime::now(),
+        );
         assert_eq!(report, ArchiveReport::default());
         std::fs::create_dir_all(dir.path().join("p")).unwrap();
         let report = sweep(dir.path(), &HashSet::new(), &policy(), SystemTime::now());
