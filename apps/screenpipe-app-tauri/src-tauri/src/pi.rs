@@ -968,6 +968,43 @@ async fn build_models_json(
     json!({"providers": providers_map})
 }
 
+/// Taken while a start writes files that other starts share: the Pi config
+/// directory's `models.json` and `auth.json` (one for every session) and the
+/// project directory's skills and extensions (one for every chat). Starts of
+/// different sessions otherwise prepare in parallel, and two read-merge-write
+/// passes over `models.json` at once could drop one start's provider.
+static SHARED_START_FILES: std::sync::LazyLock<Mutex<()>> =
+    std::sync::LazyLock::new(|| Mutex::new(()));
+
+/// Write `contents` to `path` through a temporary file next to it and a
+/// rename, so no reader (another start, a pipe, Pi itself) ever sees a
+/// half-written file. When the rename is refused (on Windows, a reader that
+/// holds the file without delete sharing) the file is written in place.
+fn write_config_file(path: &Path, contents: &str) -> std::io::Result<()> {
+    static NEXT_TMP: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let name = path
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_else(|| "config".to_string());
+    let tmp = path.with_file_name(format!(
+        "{}.{}.{}.tmp",
+        name,
+        std::process::id(),
+        NEXT_TMP.fetch_add(1, Ordering::Relaxed)
+    ));
+    std::fs::write(&tmp, contents)?;
+    if let Err(e) = std::fs::rename(&tmp, path) {
+        let _ = std::fs::remove_file(&tmp);
+        warn!(
+            "could not replace {} ({}); writing it in place",
+            path.display(),
+            e
+        );
+        std::fs::write(path, contents)?;
+    }
+    Ok(())
+}
+
 /// Write pi's provider config (models.json + auth.json).
 async fn ensure_pi_config(
     gateway: Option<&GatewayAccess>,
@@ -977,8 +1014,27 @@ async fn ensure_pi_config(
     std::fs::create_dir_all(&config_dir)
         .map_err(|e| format!("Failed to create pi config dir: {}", e))?;
 
+    // Built before the lock is taken: listing the gateway's models is a
+    // network call.
     let new_providers = build_models_json(gateway, provider_config).await;
 
+    let _shared_files = SHARED_START_FILES.lock().await;
+    merge_pi_config(
+        &config_dir,
+        &new_providers,
+        gateway.is_some(),
+        gateway.and_then(|g| g.key.as_deref()),
+    )
+}
+
+/// Merge `new_providers` into `<config_dir>/models.json` and the gateway key
+/// (if any) into `auth.json`. Call with `SHARED_START_FILES` held.
+fn merge_pi_config(
+    config_dir: &Path,
+    new_providers: &Value,
+    has_gateway: bool,
+    gateway_key: Option<&str>,
+) -> Result<(), String> {
     // Merge into existing models.json to avoid race conditions with concurrent pipes
     let models_path = config_dir.join("models.json");
     let mut models_config: serde_json::Value = if models_path.exists() {
@@ -1007,18 +1063,18 @@ async fn ensure_pi_config(
         }
         // Without a gateway, drop our managed gateway entry: one left by an
         // earlier screenpipe install points at the vendor's hosted gateway.
-        if gateway.is_none() && existing.remove("screenpipe").is_some() {
+        if !has_gateway && existing.remove("screenpipe").is_some() {
             info!("Removed the screenpipe provider from pi config (no AI gateway configured)");
         }
     }
 
     let models_str = serde_json::to_string_pretty(&models_config)
         .map_err(|e| format!("Failed to serialize models config: {}", e))?;
-    std::fs::write(&models_path, models_str)
+    write_config_file(&models_path, &models_str)
         .map_err(|e| format!("Failed to write pi models config: {}", e))?;
 
     // -- auth.json: merge the gateway key, preserve other providers --
-    if let Some(token) = gateway.and_then(|g| g.key.as_deref()) {
+    if let Some(token) = gateway_key {
         let auth_path = config_dir.join("auth.json");
         let mut auth: serde_json::Value = if auth_path.exists() {
             let content = std::fs::read_to_string(&auth_path).unwrap_or_default();
@@ -1033,8 +1089,14 @@ async fn ensure_pi_config(
 
         let auth_str = serde_json::to_string_pretty(&auth)
             .map_err(|e| format!("Failed to serialize auth: {}", e))?;
-        std::fs::write(&auth_path, auth_str)
+        write_config_file(&auth_path, &auth_str)
             .map_err(|e| format!("Failed to write pi auth: {}", e))?;
+        // The file holds a credential: owner read/write only.
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let _ = std::fs::set_permissions(&auth_path, std::fs::Permissions::from_mode(0o600));
+        }
     }
 
     info!("Pi config merged at {:?}", models_path);
@@ -1247,6 +1309,10 @@ async fn prepare_start(
     std::fs::create_dir_all(&project_dir)
         .map_err(|e| format!("Failed to create project directory: {}", e))?;
 
+    // The project's skills and extensions are shared by every chat that
+    // uses this directory: written by one start at a time.
+    let shared_files = SHARED_START_FILES.lock().await;
+
     // Ensure screenpipe skills exist in project
     ensure_screenpipe_skill(&project_dir)?;
 
@@ -1263,8 +1329,10 @@ async fn prepare_start(
         std::path::Path::new(&project_dir),
         chat_web_search_wanted(),
     )?;
+    drop(shared_files);
 
-    // Ensure Pi is configured with the user's provider
+    // Ensure Pi is configured with the user's provider (takes the shared
+    // files lock itself, after fetching the gateway's model list).
     ensure_pi_config(gateway.as_ref(), provider_config).await?;
 
     // Determine which Pi provider and model to use
@@ -3043,9 +3111,10 @@ pub async fn pi_extension_ui_response(
     queue.write_raw(&payload).await
 }
 
-/// Chat conversation files (`<data dir>/chats/*.json`), most recently
-/// modified first, `offset` entries skipped and at most `limit` returned.
-/// One call instead of a stat per file from the webview.
+/// Chat conversation files (`~/.screenpipe/chats/*.json`, where the chat
+/// saves them), most recently modified first, `offset` entries skipped and
+/// at most `limit` returned. One call instead of a stat per file from the
+/// webview.
 #[tauri::command]
 #[specta::specta]
 pub async fn list_chat_entries_by_mtime(
@@ -4212,6 +4281,67 @@ error: InstallFailed extracting tarball"#;
     }
 
     // -- W4-05: chat runtime commands --
+
+    #[tokio::test]
+    async fn concurrent_config_merges_keep_every_provider() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("models.json"),
+            r#"{"providers": {"user-own": {"baseUrl": "http://localhost:1"}, "screenpipe": {}}}"#,
+        )
+        .unwrap();
+        // Starts of different sessions merge at the same time, each under
+        // the shared-files lock, as `ensure_pi_config` does.
+        let tasks: Vec<_> = (0..8)
+            .map(|i| {
+                let dir = dir.path().to_path_buf();
+                tokio::spawn(async move {
+                    let _shared = super::SHARED_START_FILES.lock().await;
+                    let providers =
+                        json!({"providers": {format!("p{i}"): {"baseUrl": format!("http://h{i}")}}});
+                    super::merge_pi_config(&dir, &providers, false, None).unwrap();
+                })
+            })
+            .collect();
+        for task in tasks {
+            task.await.unwrap();
+        }
+        let merged: Value =
+            serde_json::from_str(&std::fs::read_to_string(dir.path().join("models.json")).unwrap())
+                .unwrap();
+        let providers = merged["providers"].as_object().unwrap();
+        for i in 0..8 {
+            assert!(providers.contains_key(&format!("p{i}")), "{merged}");
+        }
+        assert!(providers.contains_key("user-own"), "other providers are kept");
+        assert!(
+            !providers.contains_key("screenpipe"),
+            "no gateway: the managed gateway entry goes"
+        );
+        // Only the two config files remain: no temporary file is left behind.
+        let names: Vec<String> = std::fs::read_dir(dir.path())
+            .unwrap()
+            .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+            .collect();
+        assert_eq!(names, vec!["models.json".to_string()], "{names:?}");
+    }
+
+    #[test]
+    fn the_gateway_key_is_merged_into_auth_json() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("auth.json"), r#"{"anthropic": {"key": "k"}}"#).unwrap();
+        super::merge_pi_config(dir.path(), &json!({"providers": {}}), true, Some("gw-key")).unwrap();
+        let auth: Value =
+            serde_json::from_str(&std::fs::read_to_string(dir.path().join("auth.json")).unwrap())
+                .unwrap();
+        assert_eq!(auth["screenpipe"], "gw-key");
+        assert_eq!(auth["anthropic"]["key"], "k");
+        super::write_config_file(&dir.path().join("auth.json"), "{}").unwrap();
+        assert_eq!(
+            std::fs::read_to_string(dir.path().join("auth.json")).unwrap(),
+            "{}"
+        );
+    }
 
     #[test]
     fn start_stages_use_the_wire_names_in_order() {

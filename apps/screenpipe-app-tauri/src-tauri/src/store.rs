@@ -1844,9 +1844,18 @@ pub async fn open_secret_store() -> Result<screenpipe_secrets::SecretStore, Stri
     open_secret_store_at(&db_path).await
 }
 
-pub(crate) async fn open_secret_store_at(
+async fn open_secret_store_at(db_path: &Path) -> Result<screenpipe_secrets::SecretStore, String> {
+    open_secret_store_and_pool_at(db_path)
+        .await
+        .map(|(_pool, store)| store)
+}
+
+/// [`open_secret_store_at`] that also returns the store's pool, so a caller
+/// that opens the store for one short task can close the pool when it is
+/// done instead of leaving connections to `db.sqlite` open.
+pub(crate) async fn open_secret_store_and_pool_at(
     db_path: &Path,
-) -> Result<screenpipe_secrets::SecretStore, String> {
+) -> Result<(sqlx::SqlitePool, screenpipe_secrets::SecretStore), String> {
     let db_url = format!("sqlite:{}?mode=rwc", db_path.display());
     let pool = sqlx::SqlitePool::connect(&db_url)
         .await
@@ -1855,9 +1864,10 @@ pub(crate) async fn open_secret_store_at(
         secrets::KeyResult::Found(k) => Some(k),
         _ => None,
     };
-    screenpipe_secrets::SecretStore::new(pool, key)
+    let store = screenpipe_secrets::SecretStore::new(pool.clone(), key)
         .await
-        .map_err(|e| format!("failed to open the secret store: {:#}", e))
+        .map_err(|e| format!("failed to open the secret store: {:#}", e))?;
+    Ok((pool, store))
 }
 
 /// The cached account token, if the secret store holds one.

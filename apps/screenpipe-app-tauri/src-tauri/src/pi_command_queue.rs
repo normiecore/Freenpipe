@@ -902,6 +902,16 @@ pub fn spawn_queue_with(
                         }
                     }
 
+                    // `agent_start` can arrive a little later than the write.
+                    // Mark active optimistically for prompt commands so the
+                    // next queued prompt cannot slip through this tiny window.
+                    // The mark comes before the write: Pi's refusal of the
+                    // prompt (`prompt_rejected`) may be read before this task
+                    // runs again, and it must find the mark to undo it.
+                    if is_prompt {
+                        state.mark_agent_active();
+                    }
+
                     // Write to stdin
                     let write_result = {
                         let mut stdin_guard = stdin.lock().await;
@@ -918,18 +928,15 @@ pub fn spawn_queue_with(
 
                     if let Err(e) = write_result {
                         error!("pi_command_queue: stdin write failed: {}", e);
+                        if is_prompt {
+                            // Nothing reached Pi, so no turn will end it.
+                            state.mark_agent_idle();
+                        }
                         if let Some(pid) = &prompt_id {
                             state.dequeue_prompt(pid);
                         }
                         let _ = reply.send(Err(format!("stdin write failed: {}", e)));
                         continue;
-                    }
-
-                    // `agent_start` can arrive a little later than the write.
-                    // Mark active optimistically for prompt commands so the
-                    // next queued prompt cannot slip through this tiny window.
-                    if is_prompt {
-                        state.mark_agent_active();
                     }
 
                     match wait_mode {
@@ -1856,6 +1863,83 @@ mod tests {
             .unwrap()
             .unwrap();
         assert_eq!(pi.next().await["message"], "b");
+
+        state.signal_terminated();
+        drop(handle);
+        let _ = tokio::time::timeout(Duration::from_secs(2), join).await;
+    }
+
+    /// Whether the session becomes idle within a second (a command's ticket
+    /// is released just after its caller got the answer).
+    #[cfg(unix)]
+    async fn settles_idle(state: &PiQueueState) -> bool {
+        for _ in 0..50 {
+            if state.activity().busy_reason().is_none() {
+                return true;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        false
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_prompt_is_marked_active_before_pi_can_refuse_it() {
+        let (mut pi, stdin) = EchoPi::spawn();
+        let state = PiQueueState::new();
+        let (handle, join) = spawn_queue(stdin, state.clone(), 0);
+        let (_id, reply) = handle
+            .send_prompt(
+                json!({"type": "prompt", "message": "a"}),
+                WaitMode::Prompt,
+                "a".into(),
+                false,
+            )
+            .await
+            .unwrap();
+        // The moment Pi can read the prompt, the session already counts as
+        // mid-turn, so a refusal read right away always finds a mark to undo.
+        assert_eq!(pi.next().await["message"], "a");
+        assert!(state.is_agent_active());
+        observe_pi_event(
+            &state,
+            &json!({"type": "response", "command": "prompt", "success": false, "error": "no model"}),
+            false,
+        );
+        assert!(!state.is_agent_active(), "the refusal leaves the session idle");
+        reply.await.unwrap().unwrap();
+        assert!(settles_idle(&state).await, "{:?}", state.activity());
+
+        state.signal_terminated();
+        drop(handle);
+        let _ = tokio::time::timeout(Duration::from_secs(2), join).await;
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_prompt_that_cannot_be_written_leaves_the_session_idle() {
+        let (mut pi, stdin) = EchoPi::spawn();
+        // Pi is gone, but its exit has not been noticed yet: the write fails.
+        let _ = pi.child.kill();
+        let _ = pi.child.wait();
+        let state = PiQueueState::new();
+        let (handle, join) = spawn_queue(stdin, state.clone(), 0);
+        let (_id, reply) = handle
+            .send_prompt(
+                json!({"type": "prompt", "message": "a"}),
+                WaitMode::Prompt,
+                "a".into(),
+                false,
+            )
+            .await
+            .unwrap();
+        let result = tokio::time::timeout(Duration::from_secs(5), reply)
+            .await
+            .expect("the failed write answers at once")
+            .unwrap();
+        assert!(result.unwrap_err().contains("stdin write failed"));
+        assert!(!state.is_agent_active());
+        assert!(settles_idle(&state).await, "{:?}", state.activity());
 
         state.signal_terminated();
         drop(handle);

@@ -3,10 +3,11 @@
 
 //! Listing of saved chat conversations, newest first.
 //!
-//! The chat stores one JSON file per conversation under `<data dir>/chats`.
-//! Sorting them by modification time from the webview takes one `stat` call
-//! per file; `list_chat_entries_by_mtime` does the whole listing in one
-//! command.
+//! The chat stores one JSON file per conversation under
+//! `~/.screenpipe/chats` (`lib/chat-storage.ts`, which uses the home
+//! directory and not `SCREENPIPE_DATA_DIR`). Sorting them by modification
+//! time from the webview takes one `stat` call per file;
+//! `list_chat_entries_by_mtime` does the whole listing in one command.
 
 use serde::{Deserialize, Serialize};
 use specta::Type;
@@ -28,9 +29,21 @@ pub struct ChatEntry {
     pub size_bytes: u64,
 }
 
-/// `<data dir>/chats`.
+/// The directory the chat writes its conversations to: `.screenpipe/chats`
+/// in the user's home directory, exactly as `lib/chat-storage.ts` builds it
+/// (`homeDir()` + `.screenpipe/chats`). It does not follow
+/// `SCREENPIPE_DATA_DIR`, because the chat does not either: a dev or test
+/// data directory would list no chats at all.
 pub fn chats_dir() -> PathBuf {
-    screenpipe_core::paths::default_screenpipe_data_dir().join("chats")
+    chats_dir_in(dirs::home_dir().as_deref())
+}
+
+/// [`chats_dir`] for the home directory `home` (the current directory when
+/// there is none, as a relative path would be).
+fn chats_dir_in(home: Option<&Path>) -> PathBuf {
+    home.unwrap_or_else(|| Path::new("."))
+        .join(".screenpipe")
+        .join("chats")
 }
 
 fn epoch_ms(time: std::io::Result<SystemTime>) -> u64 {
@@ -123,6 +136,16 @@ mod tests {
             .collect();
         assert_eq!(page, ["mid.json"]);
         assert!(list_by_mtime(dir.path(), 5, Some(10)).unwrap().is_empty());
+    }
+
+    #[test]
+    fn chats_are_listed_where_the_chat_writes_them() {
+        let home = Path::new("/home/someone");
+        assert_eq!(
+            chats_dir_in(Some(home)),
+            home.join(".screenpipe").join("chats")
+        );
+        assert!(chats_dir().ends_with(Path::new(".screenpipe").join("chats")));
     }
 
     #[test]
