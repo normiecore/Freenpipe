@@ -1844,7 +1844,9 @@ pub async fn open_secret_store() -> Result<screenpipe_secrets::SecretStore, Stri
     open_secret_store_at(&db_path).await
 }
 
-async fn open_secret_store_at(db_path: &Path) -> Result<screenpipe_secrets::SecretStore, String> {
+pub(crate) async fn open_secret_store_at(
+    db_path: &Path,
+) -> Result<screenpipe_secrets::SecretStore, String> {
     let db_url = format!("sqlite:{}?mode=rwc", db_path.display());
     let pool = sqlx::SqlitePool::connect(&db_url)
         .await

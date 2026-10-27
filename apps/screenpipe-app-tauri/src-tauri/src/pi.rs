@@ -5,8 +5,21 @@
 //! Pi Coding Agent Integration
 //!
 //! Manages the pi coding agent via RPC mode (stdin/stdout JSON protocol).
+//!
+//! A session start walks through the stages in [`PiStartStage`]; a start
+//! that fails reports the stage it was in and leaves no process behind. A
+//! session that is mid-turn is never restarted or stopped by an idle check,
+//! and every user turn carries a fresh connections context
+//! ([`connections_context`]).
+
+pub(crate) mod chat_entries;
+pub(crate) mod connections_context;
 
 use crate::ai_gateway::GatewayAccess;
+use crate::pi_command_queue::{
+    observe_pi_event, CommandTicket, PiQueueHandle, PiQueueState, QueueActivity,
+    ReaderFollowUp, EXTENSION_DIALOG_METHODS,
+};
 use screenpipe_core::agents::pi::{ensure_model_listed, screenpipe_cloud_models};
 use screenpipe_core::agents::{bun_runtime, pi_install, pi_runtime};
 use serde::{Deserialize, Serialize};
@@ -306,14 +319,109 @@ const GATEWAY_REQUIRED: &str = "This preset uses the AI gateway provider, but no
 /// Pool of Pi sessions — each session_id gets its own PiManager/process.
 pub struct PiPool {
     pub sessions: HashMap<String, PiManager>,
+    /// One lock per session id. Starts of the same session run one after the
+    /// other (a second start sees the first one's process), while starts of
+    /// different sessions prepare their config in parallel.
+    start_locks: HashMap<String, Arc<Mutex<()>>>,
+    /// Thinking level chosen per session (`pi_set_thinking_level`), passed
+    /// as `--thinking` whenever that session's process is (re)started.
+    thinking_levels: HashMap<String, String>,
 }
 
 impl PiPool {
     pub fn new() -> Self {
         Self {
             sessions: HashMap::new(),
+            start_locks: HashMap::new(),
+            thinking_levels: HashMap::new(),
         }
     }
+
+    /// The start lock of `sid`. Locks of sessions that are gone and not held
+    /// by anyone are dropped on the way.
+    fn start_lock(&mut self, sid: &str) -> Arc<Mutex<()>> {
+        let sessions = &self.sessions;
+        self.start_locks.retain(|key, lock| {
+            key == sid || sessions.contains_key(key) || Arc::strong_count(lock) > 1
+        });
+        self.start_locks
+            .entry(sid.to_string())
+            .or_insert_with(|| Arc::new(Mutex::new(())))
+            .clone()
+    }
+}
+
+/// The checkpoints a Pi session start passes, in order. A start is "at" the
+/// last stage it reached; a failed start names that stage in its error
+/// (`Pi start failed at stage '<stage>': ...`) and in its `pi_start_stage`
+/// event.
+///
+/// - `requested`: the start was accepted; the project directory, skills,
+///   extensions, `models.json` and the command line are being prepared.
+/// - `config_ready`: everything needed to spawn Pi is ready.
+/// - `waiting_for_pool`: waiting for the session pool; a busy session or a
+///   full pool of busy sessions is refused here.
+/// - `pool_acquired`: the session has a pool slot; its old process (if any)
+///   was stopped and the new one is being spawned.
+/// - `process_spawned`: the process runs; the start checks it did not exit
+///   at once.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "snake_case")]
+pub enum PiStartStage {
+    Requested,
+    ConfigReady,
+    WaitingForPool,
+    PoolAcquired,
+    ProcessSpawned,
+}
+
+impl PiStartStage {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            PiStartStage::Requested => "requested",
+            PiStartStage::ConfigReady => "config_ready",
+            PiStartStage::WaitingForPool => "waiting_for_pool",
+            PiStartStage::PoolAcquired => "pool_acquired",
+            PiStartStage::ProcessSpawned => "process_spawned",
+        }
+    }
+}
+
+/// The error text of a start that failed while at `stage`.
+fn start_failure_message(stage: PiStartStage, reason: &str) -> String {
+    format!("Pi start failed at stage '{}': {}", stage.as_str(), reason)
+}
+
+/// Tell listeners (and the log) that a start reached `stage`, or failed in
+/// it. Topic `pi_start_stage`: `{sessionId, source, stage, error}`.
+fn report_start_stage(app: &AppHandle, sid: &str, stage: PiStartStage, error: Option<&str>) {
+    match error {
+        None => debug!("Pi start '{}': {}", sid, stage.as_str()),
+        Some(e) => warn!("Pi start '{}' failed at {}: {}", sid, stage.as_str(), e),
+    }
+    let _ = app.emit(
+        "pi_start_stage",
+        json!({
+            "sessionId": sid,
+            "source": "pi",
+            "stage": stage,
+            "error": error,
+        }),
+    );
+}
+
+/// Report a failed start and build its error.
+fn fail_start(app: &AppHandle, sid: &str, stage: PiStartStage, reason: &str) -> String {
+    report_start_stage(app, sid, stage, Some(reason));
+    start_failure_message(stage, reason)
+}
+
+/// Why a session cannot be restarted, stopped or prompted right now.
+fn busy_refusal(sid: &str, reason: &str) -> String {
+    format!(
+        "Pi session '{}' is busy ({}). Wait for it to finish, or stop it first.",
+        sid, reason
+    )
 }
 
 /// State for managing multiple Pi sidecar processes
@@ -473,6 +581,67 @@ impl PiManager {
     pub fn is_running(&mut self) -> bool {
         self.check_alive()
     }
+
+    /// What the session's queue is doing.
+    fn activity(&self) -> QueueActivity {
+        self.queue_state
+            .as_ref()
+            .map(|qs| qs.activity())
+            .unwrap_or_default()
+    }
+
+    /// Why the session is busy, or `None` when it is idle. A busy session is
+    /// mid-turn (or about to be): it is never restarted, evicted or stopped
+    /// by an idle check.
+    fn busy_reason(&self) -> Option<String> {
+        if let Some(reason) = self.activity().busy_reason() {
+            return Some(reason);
+        }
+        let waiting_calls = self
+            .pending_responses
+            .lock()
+            .map(|p| p.len())
+            .unwrap_or(0);
+        if waiting_calls > 0 {
+            return Some("a request to the agent is waiting for its answer".to_string());
+        }
+        None
+    }
+
+    fn is_busy(&self) -> bool {
+        self.busy_reason().is_some()
+    }
+
+    /// The queue of this running session with one command accepted for it
+    /// (see `CommandTicket`). Call with the pool locked.
+    fn reserve_command(
+        &mut self,
+        prompt: bool,
+    ) -> Result<(PiQueueHandle, CommandTicket), String> {
+        if !self.is_running() {
+            return Err("Pi is not running".to_string());
+        }
+        self.last_activity = std::time::Instant::now();
+        let queue = self
+            .queue_handle
+            .clone()
+            .ok_or("Pi command queue not initialized")?;
+        let ticket = queue.reserve(prompt)?;
+        Ok((queue, ticket))
+    }
+}
+
+/// The queue of running session `sid` with a command accepted for it under
+/// the pool lock, so an idle check can never stop the process before the
+/// command reaches the queue.
+async fn reserve_on_session(
+    state: &PiState,
+    sid: &str,
+    prompt: bool,
+) -> Result<(PiQueueHandle, CommandTicket), String> {
+    let mut pool = state.0.lock().await;
+    let m = pool.sessions.get_mut(sid).ok_or("Pi not initialized")?;
+    m.reserve_command(prompt)
 }
 
 /// Freenpipe's own Pi config directory (`<data dir>/pi-agent/pi-config`),
@@ -1033,6 +1202,9 @@ fn resolve_screenpipe_model(requested: &str, provider: &str) -> String {
 const MAX_PI_SESSIONS: usize = 20;
 
 /// Core Pi start logic — callable from both Tauri commands and Rust boot code.
+///
+/// Starts of one session id run one at a time (the session's start lock);
+/// see [`PiStartStage`] for the stages and how failures are reported.
 pub async fn pi_start_inner(
     app: AppHandle,
     state: &PiState,
@@ -1041,6 +1213,38 @@ pub async fn pi_start_inner(
     user_token: Option<String>,
     provider_config: Option<PiProviderConfig>,
 ) -> Result<PiInfo, String> {
+    let start_lock = state.0.lock().await.start_lock(session_id);
+    let _start_guard = start_lock.lock().await;
+    start_session(
+        &app,
+        state,
+        session_id,
+        project_dir,
+        user_token,
+        provider_config,
+    )
+    .await
+}
+
+/// Everything a start prepares before it asks the pool for a slot.
+struct PreparedStart {
+    cmd: Command,
+    project_dir: String,
+    bun_path: String,
+}
+
+/// Prepare the project directory, skills, extensions and Pi config, find
+/// Pi, and build its command line. Takes no pool slot: a slow step here
+/// (waiting for the background install, fetching bash) never holds up
+/// other sessions.
+async fn prepare_start(
+    app: &AppHandle,
+    state: &PiState,
+    sid: &str,
+    project_dir: String,
+    user_token: Option<String>,
+    provider_config: Option<&PiProviderConfig>,
+) -> Result<PreparedStart, String> {
     let project_dir = project_dir.trim().to_string();
     if project_dir.is_empty() {
         return Err("Project directory is required".to_string());
@@ -1057,7 +1261,7 @@ pub async fn pi_start_inner(
     // the frontend is a cached screenpipe sign-in at best and is never used
     // as a gateway credential; the key comes from the aiGatewayApiKey setting.
     let _ = user_token;
-    let gateway = crate::ai_gateway::gateway_access(&app);
+    let gateway = crate::ai_gateway::gateway_access(app);
 
     // Bundled chat extensions (pi_extensions_manifest.rs): the MCP bridge,
     // which lets the agent reach user-registered MCP servers, and web-search
@@ -1068,10 +1272,10 @@ pub async fn pi_start_inner(
     )?;
 
     // Ensure Pi is configured with the user's provider
-    ensure_pi_config(gateway.as_ref(), provider_config.as_ref()).await?;
+    ensure_pi_config(gateway.as_ref(), provider_config).await?;
 
     // Determine which Pi provider and model to use
-    let (pi_provider, pi_model) = match &provider_config {
+    let (pi_provider, pi_model) = match provider_config {
         Some(config) => {
             let provider_name = match config.provider.as_str() {
                 "openai" => "openai-byok",
@@ -1090,90 +1294,6 @@ pub async fn pi_start_inner(
     if pi_provider == "screenpipe" && gateway.is_none() {
         return Err(GATEWAY_REQUIRED.to_string());
     }
-
-    let sid = session_id.to_string();
-    let mut pool = state.0.lock().await;
-
-    // Stop existing instance for this session if running
-    let mut any_alive = false;
-    if let Some(m) = pool.sessions.get_mut(&sid) {
-        if m.is_running() {
-            let old_pid = m.child.as_ref().map(|c| c.id());
-            info!(
-                "Stopping existing pi instance (pid {:?}) for session '{}' to start new one",
-                old_pid, sid
-            );
-            m.stop();
-        }
-    }
-
-    // Check if any session has a live process (for orphan cleanup decision)
-    for m in pool.sessions.values_mut() {
-        if m.is_running() {
-            any_alive = true;
-            break;
-        }
-    }
-
-    // Only kill orphans when pool has no live sessions (app startup scenario)
-    kill_orphan_pi_processes(any_alive);
-
-    // Evict least-recently-active idle session if at capacity. Two safety
-    // properties beyond the prior LRU-only scheme:
-    //   1. Skip sessions with in-flight RPC responses — those are mid-turn
-    //      (streaming a reply, running a tool). Killing them mid-stream is
-    //      a worse UX than refusing to open a new session.
-    //   2. Emit `pi_session_evicted` so the UI can reflect the loss instead
-    //      of the chat tab silently going dark. Frontend listens, marks the
-    //      tab as closed and explains why.
-    // The "chat" key (legacy singleton chat session) and the requesting sid
-    // remain exempt — same as before.
-    if pool.sessions.len() >= MAX_PI_SESSIONS && !pool.sessions.contains_key(&sid) {
-        let evict_key = pool
-            .sessions
-            .iter()
-            .filter(|(k, m)| {
-                k.as_str() != "chat"
-                    && k.as_str() != sid.as_str()
-                    && m.pending_responses
-                        .lock()
-                        .map(|r| r.is_empty())
-                        .unwrap_or(true)
-            })
-            .min_by_key(|(_, m)| m.last_activity)
-            .map(|(k, _)| k.clone());
-        if let Some(key) = evict_key {
-            info!(
-                "Evicting idle Pi session '{}' to make room for '{}'",
-                key, sid
-            );
-            if let Some(mut m) = pool.sessions.remove(&key) {
-                m.stop();
-            }
-            // Stage 5: legacy `pi_session_evicted` topic dropped.
-            // Consumers read from `agent_session_evicted` via the bus.
-            let _ = app.emit(
-                "agent_session_evicted",
-                serde_json::json!({
-                    "sessionId": key,
-                    "source": "pi",
-                    "reason": "pool_full",
-                }),
-            );
-        } else {
-            // Every session in the pool is busy. Refuse rather than kill a
-            // streaming session — caller surfaces a "too many active chats"
-            // toast, user can close one manually.
-            return Err(format!(
-                "pi pool full ({} active sessions, all busy) — close one before opening a new chat",
-                MAX_PI_SESSIONS
-            ));
-        }
-    }
-
-    // Insert a fresh PiManager for this session
-    pool.sessions
-        .insert(sid.clone(), PiManager::new(app.clone()));
 
     // Find pi executable — if not found, wait for background install (up to 60s)
     let pi_path = match find_pi_executable() {
@@ -1219,6 +1339,12 @@ pub async fn pi_start_inner(
         "--model",
         &pi_model,
     ]);
+
+    // The thinking level chosen for this chat survives restarts.
+    let thinking_level = state.0.lock().await.thinking_levels.get(sid).cloned();
+    if let Some(level) = thinking_level {
+        cmd.args(["--thinking", &level]);
+    }
 
     // Ensure bun is discoverable by pi.exe shim: the bun global-install shim (pi.exe)
     // needs to find bun.exe to execute the actual JS. If bun isn't in PATH (common on
@@ -1283,7 +1409,7 @@ pub async fn pi_start_inner(
     // Append the user's AI preset system prompt (enables Anthropic prompt caching —
     // Pi's built-in system prompt + this text form the cached prefix, reducing
     // input costs by 90% on subsequent messages in the same conversation)
-    if let Some(ref config) = provider_config {
+    if let Some(config) = provider_config {
         if let Some(ref prompt) = config.system_prompt {
             if !prompt.is_empty() {
                 cmd.args(["--append-system-prompt", prompt]);
@@ -1322,7 +1448,7 @@ pub async fn pi_start_inner(
     // Pass local API config so the Pi agent can authenticate to the runtime local API.
     {
         use crate::recording::local_api_context_from_app;
-        let api = local_api_context_from_app(&app);
+        let api = local_api_context_from_app(app);
         cmd.env("SCREENPIPE_LOCAL_API_PORT", api.port.to_string());
         cmd.env("SCREENPIPE_LOCAL_API_URL", api.url(""));
         if let Some(ref key) = api.api_key {
@@ -1336,7 +1462,7 @@ pub async fn pi_start_inner(
     // x-screenpipe-session and the navigate handler rides it to the frontend.
     // If the user switches to another chat mid-run, this agent's later
     // navigations no longer match the on-screen conversation and stay hidden.
-    cmd.env("SCREENPIPE_SESSION_ID", &sid);
+    cmd.env("SCREENPIPE_SESSION_ID", sid);
 
     // Auto-auth the agent's `curl localhost:3030/...` calls via a bash
     // shim sourced from $BASH_ENV on every subshell. See bash_env.rs in
@@ -1355,7 +1481,7 @@ pub async fn pi_start_inner(
     pi_runtime::apply_to_command(&mut cmd, &pi_config_dir);
 
     // Pass the user's API key as env var for non-screenpipe providers
-    if let Some(ref config) = provider_config {
+    if let Some(config) = provider_config {
         // ChatGPT OAuth: inject token from secret store (no api_key in config)
         if config.provider == "openai-chatgpt" {
             match crate::chatgpt_oauth::get_valid_token().await {
@@ -1400,61 +1526,205 @@ pub async fn pi_start_inner(
         cmd.env("SCREENPIPE_API_AUTH_KEY", key); // deprecated alias
     }
 
+    Ok(PreparedStart {
+        cmd,
+        project_dir,
+        bun_path,
+    })
+}
+
+/// Kill a child this start spawned but could not hand to the pool, so a
+/// failed start never leaves a process behind.
+fn discard_child(mut child: Child) {
+    let _ = child.kill();
+    let _ = child.wait();
+}
+
+/// One start of session `session_id`. The caller holds the session's start
+/// lock.
+async fn start_session(
+    app: &AppHandle,
+    state: &PiState,
+    session_id: &str,
+    project_dir: String,
+    user_token: Option<String>,
+    provider_config: Option<PiProviderConfig>,
+) -> Result<PiInfo, String> {
+    let sid = session_id.to_string();
+
+    report_start_stage(app, &sid, PiStartStage::Requested, None);
+    let prepared = prepare_start(
+        app,
+        state,
+        &sid,
+        project_dir,
+        user_token,
+        provider_config.as_ref(),
+    )
+    .await
+    .map_err(|e| fail_start(app, &sid, PiStartStage::Requested, &e))?;
+    let PreparedStart {
+        mut cmd,
+        project_dir,
+        bun_path,
+    } = prepared;
+    report_start_stage(app, &sid, PiStartStage::ConfigReady, None);
+
+    report_start_stage(app, &sid, PiStartStage::WaitingForPool, None);
+    let mut pool = state.0.lock().await;
+
+    // A session that is mid-turn is never restarted: refuse instead of
+    // killing a reply that is still streaming.
+    if let Some(m) = pool.sessions.get_mut(&sid) {
+        if m.is_running() {
+            if let Some(reason) = m.busy_reason() {
+                return Err(fail_start(
+                    app,
+                    &sid,
+                    PiStartStage::WaitingForPool,
+                    &busy_refusal(&sid, &reason),
+                ));
+            }
+            let old_pid = m.child.as_ref().map(|c| c.id());
+            info!(
+                "Stopping existing pi instance (pid {:?}) for session '{}' to start new one",
+                old_pid, sid
+            );
+            m.stop();
+        }
+    }
+
+    // Check if any other session has a live process (for orphan cleanup decision)
+    let mut any_alive = false;
+    for (key, m) in pool.sessions.iter_mut() {
+        if key != &sid && m.is_running() {
+            any_alive = true;
+            break;
+        }
+    }
+
+    // Only kill orphans when pool has no live sessions (app startup scenario)
+    kill_orphan_pi_processes(any_alive);
+
+    // Evict least-recently-active idle session if at capacity. Two safety
+    // properties beyond the prior LRU-only scheme:
+    //   1. Skip busy sessions — mid-turn, compacting, waiting on a dialog or
+    //      with commands on their way. Killing them mid-stream is a worse UX
+    //      than refusing to open a new session.
+    //   2. Emit `agent_session_evicted` so the UI can reflect the loss instead
+    //      of the chat tab silently going dark.
+    // The "chat" key (legacy singleton chat session) and the requesting sid
+    // remain exempt — same as before.
+    if pool.sessions.len() >= MAX_PI_SESSIONS && !pool.sessions.contains_key(&sid) {
+        let evict_key = pool
+            .sessions
+            .iter()
+            .filter(|(k, m)| k.as_str() != "chat" && k.as_str() != sid.as_str() && !m.is_busy())
+            .min_by_key(|(_, m)| m.last_activity)
+            .map(|(k, _)| k.clone());
+        if let Some(key) = evict_key {
+            info!(
+                "Evicting idle Pi session '{}' to make room for '{}'",
+                key, sid
+            );
+            if let Some(mut m) = pool.sessions.remove(&key) {
+                m.stop();
+            }
+            // Stage 5: legacy `pi_session_evicted` topic dropped.
+            // Consumers read from `agent_session_evicted` via the bus.
+            let _ = app.emit(
+                "agent_session_evicted",
+                serde_json::json!({
+                    "sessionId": key,
+                    "source": "pi",
+                    "reason": "pool_full",
+                }),
+            );
+        } else {
+            // Every session in the pool is busy. Refuse rather than kill a
+            // streaming session — caller surfaces a "too many active chats"
+            // toast, user can close one manually.
+            return Err(fail_start(
+                app,
+                &sid,
+                PiStartStage::WaitingForPool,
+                &format!(
+                    "pi pool full ({} active sessions, all busy) — close one before opening a new chat",
+                    MAX_PI_SESSIONS
+                ),
+            ));
+        }
+    }
+    report_start_stage(app, &sid, PiStartStage::PoolAcquired, None);
+
     // Spawn process
-    let mut child = cmd
-        .spawn()
-        .map_err(|e| format!("Failed to spawn pi: {}", e))?;
+    let mut child = match cmd.spawn() {
+        Ok(child) => child,
+        Err(e) => {
+            // The old process (if any) is gone; do not leave its dead
+            // manager holding a pool slot.
+            pool.sessions.remove(&sid);
+            return Err(fail_start(
+                app,
+                &sid,
+                PiStartStage::PoolAcquired,
+                &format!("Failed to spawn pi: {}", e),
+            ));
+        }
+    };
 
     let pid = child.id();
     info!("Pi started with PID: {}", pid);
 
-    // Take stdin for writing commands
-    let stdin = child
-        .stdin
-        .take()
-        .ok_or_else(|| "Failed to get pi stdin".to_string())?;
-
-    // Take stdout for reading events
-    let stdout = child
-        .stdout
-        .take()
-        .ok_or_else(|| "Failed to get pi stdout".to_string())?;
-
+    let (stdin, stdout) = match (child.stdin.take(), child.stdout.take()) {
+        (Some(stdin), Some(stdout)) => (stdin, stdout),
+        _ => {
+            discard_child(child);
+            pool.sessions.remove(&sid);
+            return Err(fail_start(
+                app,
+                &sid,
+                PiStartStage::PoolAcquired,
+                "Failed to get pi stdin/stdout",
+            ));
+        }
+    };
     // Take stderr for logging
     let stderr = child.stderr.take();
 
-    // Update manager for this session
-    let terminated_emitted = Arc::new(AtomicBool::new(false));
-    let pending_responses: PendingResponses;
-    if let Some(m) = pool.sessions.get_mut(&sid) {
-        // Spawn the command queue for this session
-        let queue_state = crate::pi_command_queue::PiQueueState::new();
-        let stdin_arc = Arc::new(tokio::sync::Mutex::new(stdin));
-        let (queue_handle, queue_task) =
-            crate::pi_command_queue::spawn_queue(stdin_arc, queue_state.clone(), 0);
-        m.queue_handle = Some(queue_handle);
-        m.queue_state = Some(queue_state);
-        m.queue_task = Some(queue_task);
+    // The session's command queue. Every user turn written through it gets
+    // a fresh connections context (internal title sessions excepted).
+    let queue_state = PiQueueState::new();
+    let stdin_arc = Arc::new(tokio::sync::Mutex::new(stdin));
+    let (queue_handle, queue_task) = crate::pi_command_queue::spawn_queue_with(
+        stdin_arc,
+        queue_state.clone(),
+        0,
+        connections_context::decorator_for_session(app, &sid),
+    );
 
-        m.child = Some(child);
-        m.stdin = None; // stdin is now owned by the queue
-        m.project_dir = Some(project_dir.clone());
-        m.last_activity = std::time::Instant::now();
-        // Fresh flag for this session — old reader threads keep their own Arc
-        m.terminated_emitted = terminated_emitted.clone();
-        pending_responses = m.pending_responses.clone();
-    } else {
-        pending_responses = Arc::new(std::sync::Mutex::new(HashMap::new()));
-    }
+    let mut manager = PiManager::new(app.clone());
+    manager.child = Some(child);
+    manager.stdin = None; // stdin is owned by the queue
+    manager.project_dir = Some(project_dir.clone());
+    manager.last_activity = std::time::Instant::now();
+    manager.queue_handle = Some(queue_handle.clone());
+    manager.queue_state = Some(queue_state.clone());
+    manager.queue_task = Some(queue_task);
+    let terminated_emitted = manager.terminated_emitted.clone();
+    let pending_responses = manager.pending_responses.clone();
+    pool.sessions.insert(sid.clone(), manager);
+    report_start_stage(app, &sid, PiStartStage::ProcessSpawned, None);
 
-    // Grab queue_state for the stdout reader before dropping the lock
-    let queue_state_for_reader = pool.sessions.get(&sid).and_then(|m| m.queue_state.clone());
+    let queue_state_for_reader = Some(queue_state.clone());
+    let queue_handle_for_reader = queue_handle;
 
     // Spawn a watcher that mirrors queue-pending changes out as Tauri events.
     // The frontend uses these to render "queued" cards under the in-flight
     // streaming message and badges in the sidebar — without this, the UI has
     // no visibility into the rust-side mpsc state.
-    if let Some(qs) = queue_state_for_reader.clone() {
+    {
+        let qs = queue_state.clone();
         let app_handle_for_queue = app.clone();
         let sid_for_queue = sid.clone();
         tokio::spawn(async move {
@@ -1535,84 +1805,50 @@ pub async fn pi_start_inner(
                 ready_signalled = true;
             }
 
-            // Signal the command queue when the SDK's agent loop finishes.
+            // A reply to a request/response call (`rpc_call`) goes to the
+            // caller waiting for it, and nowhere else: it never moves the
+            // command queue and is not shown in the chat.
+            let direct_reply = match (event_type.as_deref(), parsed.as_ref()) {
+                (Some("response"), Some(event)) => route_direct_reply(&pending_for_reader, event),
+                _ => false,
+            };
+
+            // Keep the command queue in step with the agent loop.
             //
             // pi-mono SDK event types that matter for queue synchronization:
-            //   "agent_end"  = agent turn fully complete (prompt finished streaming).
-            //                  This is the authoritative "done" signal for prompts.
-            //   "response"   = command ACK (new_session/abort/prompt acknowledged).
-            //                  Fires immediately when the SDK receives the command,
-            //                  NOT when it finishes processing it.
-            //
-            // The "done" type was the original intent but pi-mono never emits it —
-            // it emits "agent_end" instead. Without "agent_end" handling, the queue
-            // was only ever unblocked by the "response" + 500ms path, which fires
-            // ~500ms after command ACK regardless of whether the agent is still
-            // streaming. This caused "Agent is already processing" when a second
-            // prompt was sent while the first was still running.
-            if let Some(ref qs) = queue_state_for_reader {
-                match event_type.as_deref() {
-                    Some("agent_start") => {
-                        // A prompt has begun streaming. Suppress the
-                        // response→done fallback below so the prompt's
-                        // mid-stream `response` ACK doesn't unblock the
-                        // queue early.
-                        qs.mark_agent_active();
-                        // If a steer was in flight, it has now started its
-                        // agent turn. The drain loop can rely on agent_active
-                        // from here on.
-                        qs.clear_steer_in_flight();
-                    }
-                    Some("agent_end") => {
-                        qs.mark_agent_idle();
+            //   "agent_start"  = a prompt began.
+            //   "agent_end"    = the agent run finished (unless `willRetry`).
+            //                    This is the authoritative "done" signal for
+            //                    prompts; "agent_settled" confirms it.
+            //   "compaction_*" = Pi is rewriting the session; prompts wait.
+            //   "response"     = command ACK (new_session/abort/prompt acknowledged).
+            //                    Fires immediately when the SDK receives the command,
+            //                    NOT when it finishes processing it. A refused prompt
+            //                    or steer ends its wait at once.
+            //   "extension_ui_request" with a dialog method = the agent waits
+            //                    for the user's answer (`pi_extension_ui_response`).
+            // See `observe_pi_event` for the details.
+            if let (Some(ref qs), Some(ref event)) = (&queue_state_for_reader, &parsed) {
+                if observe_pi_event(qs, event, direct_reply) == ReaderFollowUp::DelayedDone {
+                    // Note: this runs on a std::thread (not tokio),
+                    // so use std::thread::spawn + std::thread::sleep.
+                    let qs = qs.clone();
+                    std::thread::spawn(move || {
+                        std::thread::sleep(std::time::Duration::from_millis(500));
                         qs.signal_done();
-                    }
-                    Some("message_start") => {
-                        // Native steer may not emit agent_start — it goes
-                        // straight from message_start to text deltas. If a
-                        // steer is in flight, treat message_start as the
-                        // start of the steered turn so the drain loop
-                        // stays blocked via agent_active until agent_end.
-                        if qs.is_steer_in_flight() {
-                            qs.mark_agent_active();
-                            qs.clear_steer_in_flight();
-                        }
-                    }
-                    Some("response") => {
-                        // Only meaningful for new_session/abort — those don't
-                        // fire agent_start/agent_end. Suppress while a prompt
-                        // is mid-stream so the queue never advances on an ACK
-                        // while the assistant is still replying.
-                        if !qs.is_agent_active() {
-                            // Note: this runs on a std::thread (not tokio),
-                            // so use std::thread::spawn + std::thread::sleep.
-                            let qs = qs.clone();
-                            std::thread::spawn(move || {
-                                std::thread::sleep(std::time::Duration::from_millis(500));
-                                qs.signal_done();
-                            });
-                        }
-                    }
-                    _ => {}
+                    });
                 }
+                if event_type.as_deref() == Some("extension_ui_request") {
+                    watch_extension_dialog(qs, &queue_handle_for_reader, event);
+                }
+            }
+
+            if direct_reply {
+                continue;
             }
 
             match parsed {
                 Some(event) => {
-                    // Route RPC responses to waiting callers (legacy path, kept for compat)
-                    if event_type.as_deref() == Some("response") {
-                        if let Some(id) = event.get("id").and_then(|v| v.as_str()) {
-                            let mut pending = pending_for_reader.lock().unwrap();
-                            if let Some(tx) = pending.remove(id) {
-                                if let Ok(rpc) =
-                                    serde_json::from_value::<RpcResponse>(event.clone())
-                                {
-                                    let _ = tx.send(rpc);
-                                }
-                            }
-                        }
-                    }
-
                     if let Some(delta) = assistant_text_delta(&event).map(str::to_owned) {
                         // Title sessions bypass batching — they produce ≤50 chars
                         // and must stream token-by-token for visible animation.
@@ -1677,6 +1913,10 @@ pub async fn pi_start_inner(
         if let Some(ref qs) = queue_state_for_reader {
             qs.signal_terminated();
         }
+        // Calls still waiting for an answer get an error at once.
+        if let Ok(mut pending) = pending_for_reader.lock() {
+            pending.clear();
+        }
         // Only emit once per session — overlapping sessions could race
         if terminated_guard
             .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
@@ -1736,7 +1976,7 @@ pub async fn pi_start_inner(
                     }
                 } else {
                     // Not JSON — log as warn so Pi startup errors are visible
-                    warn!("Pi stderr: {}", &line[..line.len().min(500)]);
+                    warn!("Pi stderr: {}", &line[..line.floor_char_boundary(line.len().min(500))]);
                 }
                 let _ = app_handle.emit("pi_log", &line);
             }
@@ -1754,25 +1994,37 @@ pub async fn pi_start_inner(
             debug!("Pi readiness timeout after {:?} (pid: {}), checking if alive", PI_READY_TIMEOUT, pid);
         }
     }
-    {
+    let exit_failure = {
         let mut pool = state.0.lock().await;
-        if let Some(m) = pool.sessions.get_mut(&sid) {
-            if let Some(ref mut child) = m.child {
-                match child.try_wait() {
-                    Ok(Some(status)) => {
-                        let code = status.code().unwrap_or(-1);
-                        error!("Pi process exited immediately with code {} — check 'Pi stderr:' warnings above for details (bun path: {})", code, bun_path);
-                        if bun_runtime::is_illegal_instruction_exit(status.code()) {
-                            note_pi_exit(status.code());
-                            m.child = None;
-                            m.stdin = None;
-                            return Err(format!(
-                                "Pi could not start: this processor cannot run the bun build at {}. Freenpipe is fetching bun's baseline build; start the chat again in a minute.",
-                                bun_path
-                            ));
-                        }
-                        m.child = None;
-                        m.stdin = None;
+        let mut failure = None;
+        let ours = pool
+            .sessions
+            .get(&sid)
+            .and_then(|m| m.child.as_ref())
+            .map(|c| c.id() == pid)
+            .unwrap_or(false);
+        if ours {
+            let exited = pool
+                .sessions
+                .get_mut(&sid)
+                .and_then(|m| m.child.as_mut())
+                .map(|child| child.try_wait());
+            match exited {
+                Some(Ok(Some(status))) => {
+                    let code = status.code().unwrap_or(-1);
+                    error!("Pi process exited immediately with code {} — check 'Pi stderr:' warnings above for details (bun path: {})", code, bun_path);
+                    // Nothing of this start may stay behind: drop the dead
+                    // session (its queue task included) from the pool.
+                    if let Some(mut m) = pool.sessions.remove(&sid) {
+                        m.stop();
+                    }
+                    failure = Some(if bun_runtime::is_illegal_instruction_exit(status.code()) {
+                        note_pi_exit(status.code());
+                        format!(
+                            "Pi could not start: this processor cannot run the bun build at {}. Freenpipe is fetching bun's baseline build; start the chat again in a minute.",
+                            bun_path
+                        )
+                    } else {
                         let install_hint = take_pi_install_error()
                             .map(|e| format!(" The Pi install previously failed: {} Try removing ~/.screenpipe/pi-agent and restarting.", e))
                             .unwrap_or_default();
@@ -1784,20 +2036,24 @@ pub async fn pi_start_inner(
                             .unwrap_or_else(|| {
                                 " Check app logs for 'Pi stderr:' lines.".to_string()
                             });
-                        return Err(format!(
+                        format!(
                             "Pi exited immediately with code {} (bun: {}).{}{}",
                             code, bun_path, install_hint, stderr_hint
-                        ));
-                    }
-                    Ok(None) => {
-                        // Still running — good
-                    }
-                    Err(e) => {
-                        warn!("Failed to check pi process status: {}", e);
-                    }
+                        )
+                    });
+                }
+                Some(Ok(None)) | None => {
+                    // Still running — good
+                }
+                Some(Err(e)) => {
+                    warn!("Failed to check pi process status: {}", e);
                 }
             }
         }
+        failure
+    };
+    if let Some(reason) = exit_failure {
+        return Err(fail_start(app, &sid, PiStartStage::ProcessSpawned, &reason));
     }
 
     // Pi agent bug (pi-mono#2461): first RPC prompt fails with "startsWith" error.
@@ -1806,6 +2062,85 @@ pub async fn pi_start_inner(
     // and can crash Pi with 429 errors.
 
     Ok(snapshot)
+}
+
+/// Hand a `response` event to the `rpc_call` waiting for its id. Returns
+/// whether it was such a reply.
+fn route_direct_reply(pending: &PendingResponses, event: &Value) -> bool {
+    let Some(id) = event.get("id").and_then(|v| v.as_str()) else {
+        return false;
+    };
+    let sender = match pending.lock() {
+        Ok(mut pending) => pending.remove(id),
+        Err(_) => None,
+    };
+    let Some(sender) = sender else {
+        return false;
+    };
+    match serde_json::from_value::<RpcResponse>(event.clone()) {
+        Ok(response) => {
+            let _ = sender.send(response);
+        }
+        Err(e) => {
+            warn!("Pi reply to {} could not be read: {}", id, e);
+            // Dropping the sender tells the caller the call failed.
+        }
+    }
+    true
+}
+
+/// How long an extension dialog without its own `timeout` may wait for an
+/// answer. After that it is cancelled, so an unanswered dialog (no chat
+/// window open, a UI that does not support it) cannot hold the session busy
+/// forever.
+const EXTENSION_DIALOG_MAX_WAIT: std::time::Duration = std::time::Duration::from_secs(10 * 60);
+
+/// Bound the wait of a dialog the reader just recorded. A dialog with its
+/// own `timeout` is resolved by Pi itself when it expires, so only the
+/// bookkeeping is dropped; any other dialog is cancelled after
+/// `EXTENSION_DIALOG_MAX_WAIT`.
+fn watch_extension_dialog(qs: &Arc<PiQueueState>, queue: &PiQueueHandle, event: &Value) {
+    let method = event.get("method").and_then(|m| m.as_str()).unwrap_or("");
+    if !EXTENSION_DIALOG_METHODS.contains(&method) {
+        return;
+    }
+    let Some(id) = event.get("id").and_then(|i| i.as_str()).map(str::to_string) else {
+        return;
+    };
+    let own_timeout = event
+        .get("timeout")
+        .and_then(|t| t.as_u64())
+        .filter(|ms| *ms > 0)
+        .map(std::time::Duration::from_millis);
+    let qs = qs.clone();
+    let queue = queue.clone();
+    tauri::async_runtime::spawn(async move {
+        match own_timeout {
+            Some(limit) => {
+                tokio::time::sleep(limit + std::time::Duration::from_secs(2)).await;
+                if qs.take_dialog(&id) {
+                    debug!("extension dialog {} expired on Pi's side", id);
+                }
+            }
+            None => {
+                tokio::time::sleep(EXTENSION_DIALOG_MAX_WAIT).await;
+                if qs.take_dialog(&id) {
+                    warn!(
+                        "extension dialog {} got no answer in {:?}; cancelling it",
+                        id, EXTENSION_DIALOG_MAX_WAIT
+                    );
+                    let _ = queue
+                        .write_raw(&extension_dialog_cancel(&id))
+                        .await;
+                }
+            }
+        }
+    });
+}
+
+/// The `extension_ui_response` that dismisses dialog `id`.
+fn extension_dialog_cancel(id: &str) -> Value {
+    json!({"type": "extension_ui_response", "id": id, "cancelled": true})
 }
 
 /// Image content for Pi RPC protocol (pi-ai ImageContent format)
@@ -1864,26 +2199,17 @@ pub async fn pi_prompt(
     display_preview: Option<String>,
 ) -> Result<String, String> {
     let sid = session_id.unwrap_or_else(|| "chat".to_string());
-    let queue = {
-        let mut pool = state.0.lock().await;
-        let m = pool.sessions.get_mut(&sid).ok_or("Pi not initialized")?;
-        if !m.is_running() {
-            return Err("Pi is not running".to_string());
-        }
-        m.last_activity = std::time::Instant::now();
-        m.queue_handle
-            .clone()
-            .ok_or("Pi command queue not initialized")?
-    };
+    let (queue, ticket) = reserve_on_session(&state, &sid, true).await?;
 
     let preview = display_preview.unwrap_or_else(|| message.clone());
     let cmd = build_prompt_command(message, images)?;
     let (queue_id, rx) = queue
-        .send_prompt(
+        .send_prompt_reserved(
             cmd,
             crate::pi_command_queue::WaitMode::Prompt,
             preview,
             false,
+            ticket,
         )
         .await?;
     rx.await
@@ -1904,26 +2230,17 @@ pub async fn pi_queue_prompt(
     display_preview: Option<String>,
 ) -> Result<String, String> {
     let sid = session_id.unwrap_or_else(|| "chat".to_string());
-    let queue = {
-        let mut pool = state.0.lock().await;
-        let m = pool.sessions.get_mut(&sid).ok_or("Pi not initialized")?;
-        if !m.is_running() {
-            return Err("Pi is not running".to_string());
-        }
-        m.last_activity = std::time::Instant::now();
-        m.queue_handle
-            .clone()
-            .ok_or("Pi command queue not initialized")?
-    };
+    let (queue, ticket) = reserve_on_session(&state, &sid, true).await?;
 
     let preview = display_preview.unwrap_or_else(|| message.clone());
     let cmd = build_prompt_command(message, images)?;
     let (queue_id, _rx) = queue
-        .send_prompt(
+        .send_prompt_reserved(
             cmd,
             crate::pi_command_queue::WaitMode::Prompt,
             preview,
             true,
+            ticket,
         )
         .await?;
     Ok(queue_id)
@@ -1941,17 +2258,8 @@ pub async fn pi_steer(
     images: Option<Vec<PiImageContent>>,
 ) -> Result<(), String> {
     let sid = session_id.unwrap_or_else(|| "chat".to_string());
-    let queue = {
-        let mut pool = state.0.lock().await;
-        let m = pool.sessions.get_mut(&sid).ok_or("Pi not initialized")?;
-        if !m.is_running() {
-            return Err("Pi is not running".to_string());
-        }
-        m.last_activity = std::time::Instant::now();
-        m.queue_handle
-            .clone()
-            .ok_or("Pi command queue not initialized")?
-    };
+    // The ticket keeps the session busy until the steer is written.
+    let (queue, _ticket) = reserve_on_session(&state, &sid, false).await?;
 
     let mut cmd = json!({
         "type": "steer",
@@ -1977,17 +2285,7 @@ pub async fn pi_steer_queued(
     prompt_id: String,
 ) -> Result<bool, String> {
     let sid = session_id.unwrap_or_else(|| "chat".to_string());
-    let queue = {
-        let mut pool = state.0.lock().await;
-        let m = pool.sessions.get_mut(&sid).ok_or("Pi not initialized")?;
-        if !m.is_running() {
-            return Err("Pi is not running".to_string());
-        }
-        m.last_activity = std::time::Instant::now();
-        m.queue_handle
-            .clone()
-            .ok_or("Pi command queue not initialized")?
-    };
+    let (queue, _ticket) = reserve_on_session(&state, &sid, false).await?;
 
     let Some(payload) = queue.take_queued_payload(prompt_id).await? else {
         return Ok(false);
@@ -2095,25 +2393,626 @@ pub async fn pi_new_session(
     session_id: Option<String>,
 ) -> Result<(), String> {
     let sid = session_id.unwrap_or_else(|| "chat".to_string());
-    let queue = {
-        let mut pool = state.0.lock().await;
-        let m = pool.sessions.get_mut(&sid).ok_or("Pi not initialized")?;
-        if !m.is_running() {
-            return Err("Pi is not running".to_string());
-        }
-        m.last_activity = std::time::Instant::now();
-        m.queue_handle
-            .clone()
-            .ok_or("Pi command queue not initialized")?
-    };
+    let (queue, ticket) = reserve_on_session(&state, &sid, false).await?;
     let rx = queue
-        .send(
+        .send_reserved(
             json!({"type": "new_session"}),
             crate::pi_command_queue::WaitMode::WaitDone,
+            ticket,
         )
         .await?;
     rx.await
         .map_err(|_| "Pi command queue dropped".to_string())?
+}
+
+/// What `pi_start_and_prompt` did with the prompt.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "snake_case")]
+pub enum PiPromptOutcome {
+    /// The prompt was written to Pi; its turn has started.
+    Sent,
+    /// The session was mid-turn, so the prompt was refused. Nothing was
+    /// queued: send it with `pi_queue_prompt` or `pi_steer`, or retry later.
+    Busy,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct PiStartAndPromptResult {
+    pub outcome: PiPromptOutcome,
+    /// True when this call started the session's process.
+    pub started: bool,
+    /// Queue id of the prompt when it was sent.
+    pub queue_id: Option<String>,
+    /// Why the session was busy, when the prompt was refused.
+    pub busy_reason: Option<String>,
+    pub info: PiInfo,
+}
+
+/// Start the session when it is not running, then send it one prompt, in a
+/// single call. A running idle session is reused as it is (use `pi_start`
+/// to apply a different provider config). A session that is mid-turn gets
+/// nothing: the result says `busy` and why, and the prompt is neither queued
+/// nor dropped silently. A failed start returns the error of `pi_start`,
+/// which names the stage it failed at.
+#[tauri::command]
+#[specta::specta]
+#[allow(clippy::too_many_arguments)]
+pub async fn pi_start_and_prompt(
+    app: AppHandle,
+    state: State<'_, PiState>,
+    session_id: Option<String>,
+    project_dir: String,
+    user_token: Option<String>,
+    provider_config: Option<PiProviderConfig>,
+    message: String,
+    images: Option<Vec<PiImageContent>>,
+    display_preview: Option<String>,
+) -> Result<PiStartAndPromptResult, String> {
+    let sid = session_id.unwrap_or_else(|| "chat".to_string());
+    // Hold the session's start lock across start and send, so a second
+    // caller sees this prompt's turn (and is told the session is busy)
+    // instead of restarting the process under it.
+    let start_lock = state.0.lock().await.start_lock(&sid);
+    let _start_guard = start_lock.lock().await;
+
+    enum Running {
+        Ready(PiQueueHandle, CommandTicket, PiInfo),
+        Busy(String, PiInfo),
+        Stopped,
+    }
+    let check = |pool: &mut PiPool| -> Result<Running, String> {
+        let Some(m) = pool.sessions.get_mut(&sid) else {
+            return Ok(Running::Stopped);
+        };
+        if !m.is_running() {
+            return Ok(Running::Stopped);
+        }
+        let info = m.snapshot(&sid);
+        if let Some(reason) = m.busy_reason() {
+            return Ok(Running::Busy(reason, info));
+        }
+        let (queue, ticket) = m.reserve_command(true)?;
+        Ok(Running::Ready(queue, ticket, info))
+    };
+
+    let mut started = false;
+    let mut running = check(&mut *state.0.lock().await)?;
+    if matches!(running, Running::Stopped) {
+        start_session(&app, &state, &sid, project_dir, user_token, provider_config).await?;
+        started = true;
+        running = check(&mut *state.0.lock().await)?;
+    }
+
+    match running {
+        Running::Busy(reason, info) => {
+            info!("pi_start_and_prompt: session '{}' is busy ({})", sid, reason);
+            Ok(PiStartAndPromptResult {
+                outcome: PiPromptOutcome::Busy,
+                started,
+                queue_id: None,
+                busy_reason: Some(reason),
+                info,
+            })
+        }
+        Running::Stopped => Err(format!(
+            "Pi session '{}' stopped right after it started; check the app logs for 'Pi stderr:' lines",
+            sid
+        )),
+        Running::Ready(queue, ticket, info) => {
+            let preview = display_preview.unwrap_or_else(|| message.clone());
+            let cmd = build_prompt_command(message, images)?;
+            let (queue_id, rx) = queue
+                .send_prompt_reserved(
+                    cmd,
+                    crate::pi_command_queue::WaitMode::Prompt,
+                    preview,
+                    false,
+                    ticket,
+                )
+                .await?;
+            rx.await
+                .map_err(|_| "Pi command queue dropped".to_string())??;
+            Ok(PiStartAndPromptResult {
+                outcome: PiPromptOutcome::Sent,
+                started,
+                queue_id: Some(queue_id),
+                busy_reason: None,
+                info,
+            })
+        }
+    }
+}
+
+/// What `pi_stop_if_idle` found.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "snake_case")]
+pub enum PiStopIfIdleOutcome {
+    /// The session was idle and has been stopped and removed from the pool.
+    Stopped,
+    /// There was no running process for this session.
+    NotRunning,
+    /// The session is mid-turn (or has work waiting); it was left alone.
+    Busy,
+    /// A start of this session is in progress; it was left alone.
+    Starting,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct PiStopIfIdleResult {
+    pub outcome: PiStopIfIdleOutcome,
+    /// True only for `stopped`.
+    pub stopped: bool,
+    /// Why the session was left running, for `busy`.
+    pub busy_reason: Option<String>,
+}
+
+/// Stop a session's process only when it is idle: no turn, compaction,
+/// steer, queued prompt, open extension dialog or command on its way. Use it
+/// to free resources of chats nobody looks at; it never cuts a reply short.
+#[tauri::command]
+#[specta::specta]
+pub async fn pi_stop_if_idle(
+    state: State<'_, PiState>,
+    session_id: Option<String>,
+) -> Result<PiStopIfIdleResult, String> {
+    let sid = session_id.unwrap_or_else(|| "chat".to_string());
+    let start_lock = state.0.lock().await.start_lock(&sid);
+    let Ok(_start_guard) = start_lock.try_lock() else {
+        return Ok(PiStopIfIdleResult {
+            outcome: PiStopIfIdleOutcome::Starting,
+            stopped: false,
+            busy_reason: None,
+        });
+    };
+
+    // Decided and acted on under one pool lock: commands reserve their
+    // ticket under the same lock, so none can slip in between.
+    let mut pool = state.0.lock().await;
+    let decision = match pool.sessions.get_mut(&sid) {
+        None => PiStopIfIdleOutcome::NotRunning,
+        Some(m) => {
+            if !m.is_running() {
+                PiStopIfIdleOutcome::NotRunning
+            } else if let Some(reason) = m.busy_reason() {
+                return Ok(PiStopIfIdleResult {
+                    outcome: PiStopIfIdleOutcome::Busy,
+                    stopped: false,
+                    busy_reason: Some(reason),
+                });
+            } else {
+                PiStopIfIdleOutcome::Stopped
+            }
+        }
+    };
+    if let Some(mut m) = pool.sessions.remove(&sid) {
+        if decision == PiStopIfIdleOutcome::Stopped {
+            info!("Stopping idle Pi session '{}'", sid);
+        }
+        m.stop();
+    }
+    Ok(PiStopIfIdleResult {
+        outcome: decision,
+        stopped: decision == PiStopIfIdleOutcome::Stopped,
+        busy_reason: None,
+    })
+}
+
+/// How long a request/response call waits for Pi's answer.
+const PI_RPC_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
+
+/// Send one command that Pi answers with a `response` carrying the same id,
+/// and wait for that answer. The command is written outside the serialized
+/// queue, so it works while a turn runs. Returns the response's `data`.
+async fn rpc_call(
+    queue: &PiQueueHandle,
+    pending: &PendingResponses,
+    mut payload: Value,
+) -> Result<Option<Value>, String> {
+    let id = format!("rpc_{}", uuid::Uuid::new_v4().simple());
+    let command = payload
+        .get("type")
+        .and_then(|t| t.as_str())
+        .unwrap_or("?")
+        .to_string();
+    if let Some(obj) = payload.as_object_mut() {
+        obj.insert("id".to_string(), json!(&id));
+    }
+    let (tx, rx) = oneshot::channel();
+    pending
+        .lock()
+        .map_err(|_| "Pi reply table is unavailable".to_string())?
+        .insert(id.clone(), tx);
+    let forget = |pending: &PendingResponses| {
+        if let Ok(mut p) = pending.lock() {
+            p.remove(&id);
+        }
+    };
+    if let Err(e) = queue.write_raw(&payload).await {
+        forget(pending);
+        return Err(e);
+    }
+    match tokio::time::timeout(PI_RPC_TIMEOUT, rx).await {
+        Ok(Ok(response)) => {
+            if response.success == Some(false) {
+                Err(response
+                    .error
+                    .unwrap_or_else(|| format!("Pi refused {}", command)))
+            } else {
+                Ok(response.data)
+            }
+        }
+        Ok(Err(_)) => Err(format!("Pi stopped before answering {}", command)),
+        Err(_) => {
+            forget(pending);
+            Err(format!(
+                "Pi did not answer {} within {} s",
+                command,
+                PI_RPC_TIMEOUT.as_secs()
+            ))
+        }
+    }
+}
+
+/// The queue and reply table of running session `sid`, for `rpc_call`.
+async fn rpc_target(
+    state: &PiState,
+    sid: &str,
+) -> Result<Option<(PiQueueHandle, PendingResponses)>, String> {
+    let mut pool = state.0.lock().await;
+    let Some(m) = pool.sessions.get_mut(sid) else {
+        return Ok(None);
+    };
+    if !m.is_running() {
+        return Ok(None);
+    }
+    let queue = m
+        .queue_handle
+        .clone()
+        .ok_or("Pi command queue not initialized")?;
+    Ok(Some((queue, m.pending_responses.clone())))
+}
+
+/// A session's state as the app sees it, plus Pi's own `get_state` report.
+#[derive(Debug, Clone, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct PiSessionState {
+    pub session_id: String,
+    pub running: bool,
+    pub pid: Option<u32>,
+    /// True when the session is mid-turn or has work waiting.
+    pub busy: bool,
+    pub busy_reason: Option<String>,
+    /// A reply is being generated.
+    pub agent_active: bool,
+    /// Pi is compacting the conversation.
+    pub compacting: bool,
+    /// Prompts waiting behind the current turn.
+    pub queued: Vec<crate::pi_command_queue::PiQueuedPrompt>,
+    /// Ids of extension dialogs waiting for `pi_extension_ui_response`.
+    pub pending_extension_dialogs: Vec<String>,
+    /// The thinking level chosen for this session, if any.
+    pub thinking_level: Option<String>,
+    /// Milliseconds since the app last sent this session a command.
+    pub idle_ms: Option<u64>,
+    /// Pi's `get_state` answer (model, thinkingLevel, isStreaming,
+    /// isCompacting, messageCount, sessionFile, ...); None when the session
+    /// is not running or Pi did not answer.
+    pub pi_state: Option<Value>,
+    /// Why `pi_state` is missing, when Pi was asked and failed.
+    pub pi_state_error: Option<String>,
+}
+
+/// Report a session's state: running, busy and why, queued prompts, open
+/// extension dialogs, thinking level, and Pi's own `get_state` answer. Safe
+/// to call at any time; it never waits behind a running turn.
+#[tauri::command]
+#[specta::specta]
+pub async fn pi_request_state(
+    state: State<'_, PiState>,
+    session_id: Option<String>,
+) -> Result<PiSessionState, String> {
+    let sid = session_id.unwrap_or_else(|| "chat".to_string());
+    let (mut report, target) = {
+        let mut pool = state.0.lock().await;
+        let thinking_level = pool.thinking_levels.get(&sid).cloned();
+        let mut report = PiSessionState {
+            session_id: sid.clone(),
+            running: false,
+            pid: None,
+            busy: false,
+            busy_reason: None,
+            agent_active: false,
+            compacting: false,
+            queued: Vec::new(),
+            pending_extension_dialogs: Vec::new(),
+            thinking_level,
+            idle_ms: None,
+            pi_state: None,
+            pi_state_error: None,
+        };
+        let mut target = None;
+        if let Some(m) = pool.sessions.get_mut(&sid) {
+            report.running = m.is_running();
+            report.pid = m.child.as_ref().map(|c| c.id());
+            report.idle_ms = Some(m.last_activity.elapsed().as_millis() as u64);
+            if report.running {
+                let activity = m.activity();
+                report.busy_reason = m.busy_reason();
+                report.busy = report.busy_reason.is_some();
+                report.agent_active = activity.agent_active;
+                report.compacting = activity.compacting;
+                if let Some(qs) = m.queue_state.as_ref() {
+                    report.queued = qs.queued_snapshot();
+                    report.pending_extension_dialogs = qs.pending_dialogs();
+                }
+                target = m
+                    .queue_handle
+                    .clone()
+                    .map(|q| (q, m.pending_responses.clone()));
+            }
+        }
+        (report, target)
+    };
+
+    if let Some((queue, pending)) = target {
+        match rpc_call(&queue, &pending, json!({"type": "get_state"})).await {
+            Ok(data) => report.pi_state = data,
+            Err(e) => report.pi_state_error = Some(e),
+        }
+    }
+    Ok(report)
+}
+
+/// Thinking levels Pi accepts (`set_thinking_level`, `--thinking`). The
+/// model decides which of them it supports.
+pub const PI_THINKING_LEVELS: [&str; 7] =
+    ["off", "minimal", "low", "medium", "high", "xhigh", "max"];
+
+/// The canonical spelling of `level`, or an error naming the valid levels.
+fn normalize_thinking_level(level: &str) -> Result<String, String> {
+    let wanted = level.trim().to_ascii_lowercase();
+    if PI_THINKING_LEVELS.contains(&wanted.as_str()) {
+        Ok(wanted)
+    } else {
+        Err(format!(
+            "unknown thinking level '{}'; use one of {}",
+            level.trim(),
+            PI_THINKING_LEVELS.join(", ")
+        ))
+    }
+}
+
+/// The levels listed in a `get_available_thinking_levels` answer.
+fn levels_from_reply(data: Option<&Value>) -> Vec<String> {
+    data.and_then(|d| d.get("levels"))
+        .and_then(|l| l.as_array())
+        .map(|levels| {
+            levels
+                .iter()
+                .filter_map(|l| l.as_str().map(str::to_string))
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// The `thinkingLevel` in a `get_state` answer.
+fn level_from_state(data: Option<&Value>) -> Option<String> {
+    data.and_then(|d| d.get("thinkingLevel"))
+        .and_then(|l| l.as_str())
+        .map(str::to_string)
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct PiThinkingLevel {
+    /// The level in effect: Pi's own report for a running session (Pi may
+    /// lower a level the model does not support), else the level chosen for
+    /// the next start. None when neither is known.
+    pub level: Option<String>,
+    /// Levels the current model supports; empty when unknown.
+    pub available_levels: Vec<String>,
+    /// True when `level` was read from (or applied to) a running session.
+    pub applied: bool,
+}
+
+/// Read a session's thinking level and the levels its model supports.
+#[tauri::command]
+#[specta::specta]
+pub async fn pi_get_thinking_level(
+    state: State<'_, PiState>,
+    session_id: Option<String>,
+) -> Result<PiThinkingLevel, String> {
+    let sid = session_id.unwrap_or_else(|| "chat".to_string());
+    let chosen = state.0.lock().await.thinking_levels.get(&sid).cloned();
+    let Some((queue, pending)) = rpc_target(&state, &sid).await? else {
+        return Ok(PiThinkingLevel {
+            level: chosen,
+            available_levels: Vec::new(),
+            applied: false,
+        });
+    };
+    let current = rpc_call(&queue, &pending, json!({"type": "get_state"})).await?;
+    let available = rpc_call(
+        &queue,
+        &pending,
+        json!({"type": "get_available_thinking_levels"}),
+    )
+    .await
+    .map(|d| levels_from_reply(d.as_ref()))
+    .unwrap_or_default();
+    Ok(PiThinkingLevel {
+        level: level_from_state(current.as_ref()).or(chosen),
+        available_levels: available,
+        applied: true,
+    })
+}
+
+/// Set a session's thinking level. It is remembered for the session and
+/// passed to every later start; a running session switches at once (from
+/// its next model call) and announces it with an `agent_event` of type
+/// `thinking_level_changed` (`{level, requestedLevel, previousLevel}`).
+#[tauri::command]
+#[specta::specta]
+pub async fn pi_set_thinking_level(
+    app: AppHandle,
+    state: State<'_, PiState>,
+    session_id: Option<String>,
+    level: String,
+) -> Result<PiThinkingLevel, String> {
+    let sid = session_id.unwrap_or_else(|| "chat".to_string());
+    let level = normalize_thinking_level(&level)?;
+    let previous = state
+        .0
+        .lock()
+        .await
+        .thinking_levels
+        .insert(sid.clone(), level.clone());
+
+    let Some((queue, pending)) = rpc_target(&state, &sid).await? else {
+        return Ok(PiThinkingLevel {
+            level: Some(level),
+            available_levels: Vec::new(),
+            applied: false,
+        });
+    };
+
+    if let Err(e) = rpc_call(
+        &queue,
+        &pending,
+        json!({"type": "set_thinking_level", "level": &level}),
+    )
+    .await
+    {
+        // Pi refused it (a level this model lacks): keep the old choice.
+        let mut pool = state.0.lock().await;
+        match &previous {
+            Some(p) => pool.thinking_levels.insert(sid.clone(), p.clone()),
+            None => pool.thinking_levels.remove(&sid),
+        };
+        return Err(format!("Pi did not accept thinking level '{}': {}", level, e));
+    }
+
+    let current = rpc_call(&queue, &pending, json!({"type": "get_state"}))
+        .await
+        .ok()
+        .flatten();
+    let in_effect = level_from_state(current.as_ref()).unwrap_or_else(|| level.clone());
+    let available = rpc_call(
+        &queue,
+        &pending,
+        json!({"type": "get_available_thinking_levels"}),
+    )
+    .await
+    .map(|d| levels_from_reply(d.as_ref()))
+    .unwrap_or_default();
+
+    info!(
+        "Pi thinking level (session '{}'): {} (asked for {})",
+        sid, in_effect, level
+    );
+    if let Err(e) = emit_agent_event(
+        &app,
+        &sid,
+        json!({
+            "type": "thinking_level_changed",
+            "level": &in_effect,
+            "requestedLevel": &level,
+            "previousLevel": previous,
+        }),
+    ) {
+        warn!("Failed to emit thinking_level_changed: {}", e);
+    }
+    Ok(PiThinkingLevel {
+        level: Some(in_effect),
+        available_levels: available,
+        applied: true,
+    })
+}
+
+/// The user's answer to an extension dialog (`extension_ui_request` with
+/// method `select`, `confirm`, `input` or `editor`). Set exactly one of
+/// `value` (select, input, editor), `confirmed` (confirm) or `cancelled`.
+#[derive(Debug, Clone, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct PiExtensionUiResponse {
+    /// The `id` of the request being answered.
+    pub id: String,
+    pub value: Option<String>,
+    pub confirmed: Option<bool>,
+    pub cancelled: Option<bool>,
+}
+
+/// The stdin line for an answer, after checking it has exactly one kind.
+fn extension_ui_response_payload(answer: &PiExtensionUiResponse) -> Result<Value, String> {
+    let id = answer.id.trim();
+    if id.is_empty() {
+        return Err("extension dialog answer has no id".to_string());
+    }
+    let cancelled = answer.cancelled == Some(true);
+    let kinds =
+        answer.value.is_some() as u8 + answer.confirmed.is_some() as u8 + cancelled as u8;
+    if kinds != 1 {
+        return Err(
+            "an extension dialog answer needs exactly one of value, confirmed or cancelled"
+                .to_string(),
+        );
+    }
+    let mut payload = json!({"type": "extension_ui_response", "id": id});
+    if let Some(value) = &answer.value {
+        payload["value"] = json!(value);
+    } else if let Some(confirmed) = answer.confirmed {
+        payload["confirmed"] = json!(confirmed);
+    } else {
+        payload["cancelled"] = json!(true);
+    }
+    Ok(payload)
+}
+
+/// Answer an extension dialog that is waiting in a session. Fails when no
+/// dialog with that id is open (already answered, timed out, or the session
+/// restarted), so a stale answer never reaches a different dialog.
+#[tauri::command]
+#[specta::specta]
+pub async fn pi_extension_ui_response(
+    state: State<'_, PiState>,
+    session_id: Option<String>,
+    response: PiExtensionUiResponse,
+) -> Result<(), String> {
+    let sid = session_id.unwrap_or_else(|| "chat".to_string());
+    let payload = extension_ui_response_payload(&response)?;
+    let id = response.id.trim().to_string();
+    let (queue, _ticket) = reserve_on_session(&state, &sid, false).await?;
+    if !queue.state().take_dialog(&id) {
+        return Err(format!(
+            "no extension dialog '{}' is waiting in this chat (it may have been answered or timed out)",
+            id
+        ));
+    }
+    queue.write_raw(&payload).await
+}
+
+/// Chat conversation files (`<data dir>/chats/*.json`), most recently
+/// modified first, `offset` entries skipped and at most `limit` returned.
+/// One call instead of a stat per file from the webview.
+#[tauri::command]
+#[specta::specta]
+pub async fn list_chat_entries_by_mtime(
+    offset: Option<u32>,
+    limit: Option<u32>,
+) -> Result<Vec<chat_entries::ChatEntry>, String> {
+    let dir = chat_entries::chats_dir();
+    tokio::task::spawn_blocking(move || {
+        chat_entries::list_by_mtime(
+            &dir,
+            offset.unwrap_or(0) as usize,
+            limit.map(|l| l as usize),
+        )
+    })
+    .await
+    .map_err(|e| format!("chat listing task failed: {}", e))?
+    .map_err(|e| format!("could not list chats: {}", e))
 }
 
 /// Check if pi is available
@@ -2218,17 +3117,7 @@ pub async fn pi_set_model(
         return Err(GATEWAY_REQUIRED.to_string());
     }
 
-    let queue = {
-        let mut pool = state.0.lock().await;
-        let m = pool.sessions.get_mut(&sid).ok_or("Pi not initialized")?;
-        if !m.is_running() {
-            return Err("Pi is not running".to_string());
-        }
-        m.last_activity = std::time::Instant::now();
-        m.queue_handle
-            .clone()
-            .ok_or("Pi command queue not initialized")?
-    };
+    let (queue, ticket) = reserve_on_session(&state, &sid, false).await?;
 
     info!(
         "Pi set_model (session '{}'): provider={} model={}",
@@ -2242,7 +3131,7 @@ pub async fn pi_set_model(
     });
 
     let rx = queue
-        .send(cmd, crate::pi_command_queue::WaitMode::WaitDone)
+        .send_reserved(cmd, crate::pi_command_queue::WaitMode::WaitDone, ticket)
         .await?;
     rx.await
         .map_err(|_| "Pi command queue dropped".to_string())?
