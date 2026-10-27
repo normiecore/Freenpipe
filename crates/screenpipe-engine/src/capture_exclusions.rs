@@ -24,6 +24,7 @@
 //! accessibility-based window gate in `do_capture`.
 
 use screenpipe_a11y::tree::TreeWalkerConfig;
+use screenpipe_a11y::url_filter::UrlPolicy;
 use screenpipe_screen::capture_screenshot_by_window::{
     try_get_excluded_sck_window_ids, window_filters_are_empty, WindowFilters,
     WINDOW_ID_EXCLUSION_SUPPORTED,
@@ -115,17 +116,23 @@ impl ExclusionProbe {
             &config.ignored_windows,
             &config.included_windows,
             &config.ignored_urls,
+            &config.url_policy,
         )
     }
 
-    /// Probe for the given ignore, include and URL rules.
+    /// Probe for the given ignore, include and URL rules. With a website
+    /// allow list in `url_policy`, unfocused browser windows are excluded
+    /// too: their URL cannot be checked (see
+    /// `screenpipe_screen::capture_screenshot_by_window::window_excluded_from_capture`).
     pub fn for_rules(
         monitor_id: u32,
         ignored_windows: &[String],
         included_windows: &[String],
         ignored_urls: &[String],
+        url_policy: &UrlPolicy,
     ) -> Self {
-        let filters = WindowFilters::new(ignored_windows, included_windows, ignored_urls);
+        let filters = WindowFilters::new(ignored_windows, included_windows, ignored_urls)
+            .with_url_policy(url_policy.clone());
         if !WINDOW_ID_EXCLUSION_SUPPORTED || window_filters_are_empty(&filters) {
             return Self::without_exclusions(monitor_id);
         }
@@ -394,6 +401,23 @@ mod tests {
         let probe = ExclusionProbe::for_tree_walker_config(1, &config);
         assert!(probe.is_static());
         assert_eq!(probe.state(), &ExclusionState::Known(vec![]));
+    }
+
+    #[test]
+    fn an_allow_list_alone_needs_an_enumeration_where_windows_can_be_excluded() {
+        let config = TreeWalkerConfig {
+            url_policy: UrlPolicy::new(
+                &[],
+                &[screenpipe_a11y::url_filter::DomainRule {
+                    domain: "example.org".to_string(),
+                    include_subdomains: true,
+                    excluded_subdomains: vec![],
+                }],
+            ),
+            ..TreeWalkerConfig::default()
+        };
+        let probe = ExclusionProbe::for_tree_walker_config(1, &config);
+        assert_eq!(probe.is_static(), !WINDOW_ID_EXCLUSION_SUPPORTED);
     }
 
     #[test]

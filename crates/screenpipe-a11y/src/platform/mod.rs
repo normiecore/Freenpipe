@@ -1,5 +1,13 @@
 //! Platform-specific UI event capture implementations
 
+// Platform-neutral parts of the Windows input-hook and window-identity code.
+// They hold no OS calls, so they build everywhere and every platform's test
+// run covers them; `windows.rs` feeds them from Win32.
+pub mod hook_watchdog;
+pub mod input_focus;
+pub mod input_queue;
+pub mod window_identity;
+
 #[cfg(target_os = "macos")]
 pub mod macos;
 
@@ -26,6 +34,20 @@ pub use windows::{PermissionStatus, RecordingHandle, UiRecorder};
 
 #[cfg(target_os = "linux")]
 pub use linux::{PermissionStatus, RecordingHandle, UiRecorder};
+
+/// Name of the app that owns the foreground window, resolved the way frames
+/// and app switches name it. Windows only; `None` elsewhere, and whenever
+/// the foreground window cannot be identified.
+#[cfg(target_os = "windows")]
+pub fn foreground_app_name() -> Option<String> {
+    windows::foreground_app_name()
+}
+
+/// Name of the app that owns the foreground window (Windows only).
+#[cfg(not(target_os = "windows"))]
+pub fn foreground_app_name() -> Option<String> {
+    None
+}
 
 // Cross-platform stubs for the Input Monitoring helpers. macOS is the only
 // platform with a distinct TCC category for input monitoring; on Windows

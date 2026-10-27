@@ -62,6 +62,9 @@ pub struct HdRecorderConfig {
     /// Ignored-URL patterns — windows showing a blocked URL are excluded from
     /// HD capture too (URL privacy parity with the event-driven capture loop).
     pub ignored_urls: Vec<String>,
+    /// Website policy; with an allow list, unfocused browser windows (whose
+    /// URL cannot be checked) are excluded as in the event-driven loop.
+    pub url_policy: screenpipe_a11y::url_filter::UrlPolicy,
 }
 
 /// Per-monitor HD recorder loop. Idles until an HD session is active, then
@@ -172,6 +175,7 @@ mod macos {
             &config.ignored_windows,
             &config.included_windows,
             &config.ignored_urls,
+            &config.url_policy,
         );
 
         loop {

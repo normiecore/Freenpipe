@@ -416,7 +416,12 @@ pub struct TreeWalkerConfig {
     pub included_windows: Vec<String>,
     /// User-configured URLs to ignore (domain-level match on the focused
     /// browser tab's URL — see [`crate::url_filter::is_url_blocked`]).
+    /// Used as a block-only policy when `url_policy` is empty.
     pub ignored_urls: Vec<String>,
+    /// The full website policy (`ignoredUrls` with structured domain rules,
+    /// plus the `includedUrls` allow list). When it is not empty it decides
+    /// instead of `ignored_urls`; see [`TreeWalkerConfig::effective_url_policy`].
+    pub url_policy: crate::url_filter::UrlPolicy,
     /// Monitor origin X in screen points (virtual desktop coordinate space).
     /// Used to normalize element bounds to monitor-relative 0-1 coords.
     pub monitor_x: f64,
@@ -464,6 +469,7 @@ impl Default for TreeWalkerConfig {
             ignored_windows: Vec::new(),
             included_windows: Vec::new(),
             ignored_urls: Vec::new(),
+            url_policy: crate::url_filter::UrlPolicy::default(),
             monitor_x: 0.0,
             monitor_y: 0.0,
             monitor_width: 0.0,
@@ -490,6 +496,17 @@ impl TreeWalkerConfig {
     pub fn effective_walk_timeout(&self) -> Duration {
         self.walk_timeout_override.unwrap_or(self.walk_timeout)
     }
+
+    /// The website policy captures must follow: `url_policy` when it has
+    /// rules, else a block-only policy from the plain `ignored_urls`
+    /// patterns (callers that only know the legacy strings).
+    pub fn effective_url_policy(&self) -> crate::url_filter::UrlPolicy {
+        if self.url_policy.is_empty() {
+            crate::url_filter::UrlPolicy::from_legacy_patterns(&self.ignored_urls)
+        } else {
+            self.url_policy.clone()
+        }
+    }
 }
 
 /// Result of a tree walk attempt.
@@ -505,7 +522,7 @@ pub enum TreeWalkResult {
 }
 
 /// Reason a window was skipped during tree walk.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SkipReason {
     /// Incognito or private browsing window detected.
     Incognito,
@@ -515,8 +532,26 @@ pub enum SkipReason {
     UserIgnored,
     /// User-configured included window whitelist didn't match.
     NotInIncludeList,
-    /// Focused browser tab's URL matched a user-configured ignored URL.
+    /// The browser URL policy refuses the focused tab: its URL is on the
+    /// block list, or an allow list is set and the URL is not on it.
     BlockedUrl,
+    /// An allow list is set and the focused browser tab's URL could not be
+    /// read yet, so it cannot be checked. Nothing is stored for the capture.
+    UrlValidationPending,
+}
+
+impl SkipReason {
+    /// Stable machine-readable label (for health and diagnostics).
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            SkipReason::Incognito => "incognito",
+            SkipReason::ExcludedApp => "excluded_app",
+            SkipReason::UserIgnored => "user_ignored",
+            SkipReason::NotInIncludeList => "not_in_include_list",
+            SkipReason::BlockedUrl => "blocked_url",
+            SkipReason::UrlValidationPending => "url_validation_pending",
+        }
+    }
 }
 
 impl std::fmt::Display for SkipReason {
@@ -526,7 +561,10 @@ impl std::fmt::Display for SkipReason {
             SkipReason::ExcludedApp => write!(f, "excluded app"),
             SkipReason::UserIgnored => write!(f, "user-configured ignored window"),
             SkipReason::NotInIncludeList => write!(f, "not in included windows list"),
-            SkipReason::BlockedUrl => write!(f, "user-configured ignored URL"),
+            SkipReason::BlockedUrl => write!(f, "refused by the browser URL policy"),
+            SkipReason::UrlValidationPending => {
+                write!(f, "browser URL not yet verified against the URL policy")
+            }
         }
     }
 }
@@ -539,7 +577,7 @@ pub trait TreeWalkerPlatform: Send {
 
 /// Create a platform-appropriate tree walker.
 pub fn create_tree_walker(config: TreeWalkerConfig) -> Box<dyn TreeWalkerPlatform> {
-    let ignored_urls = config.ignored_urls.clone();
+    let url_policy = config.effective_url_policy();
     let walker: Box<dyn TreeWalkerPlatform> = {
         #[cfg(target_os = "macos")]
         {
@@ -558,32 +596,43 @@ pub fn create_tree_walker(config: TreeWalkerConfig) -> Box<dyn TreeWalkerPlatfor
             Box::new(StubTreeWalker)
         }
     };
-    if ignored_urls.is_empty() {
+    if url_policy.is_empty() {
         walker
     } else {
         Box::new(UrlFilteredWalker {
             inner: walker,
-            ignored_urls,
+            url_policy,
         })
     }
 }
 
-/// Decorator that drops snapshots whose `browser_url` matches a
-/// user-configured ignored URL. Wrapping here (rather than inside each
-/// platform walker) applies the filter uniformly across macOS/Windows/Linux.
+/// Decorator that applies the website policy to every snapshot: a URL on the
+/// block list, or (with an allow list) a browser URL that is not on it or
+/// that the walk could not read, turns the snapshot into a skip. Wrapping
+/// here (rather than inside each platform walker) applies the policy
+/// uniformly across macOS/Windows/Linux.
 struct UrlFilteredWalker {
     inner: Box<dyn TreeWalkerPlatform>,
-    ignored_urls: Vec<String>,
+    url_policy: crate::url_filter::UrlPolicy,
 }
 
 impl TreeWalkerPlatform for UrlFilteredWalker {
     fn walk_focused_window(&self) -> Result<TreeWalkResult> {
         let result = self.inner.walk_focused_window()?;
         if let TreeWalkResult::Found(ref snapshot) = result {
-            if let Some(ref url) = snapshot.browser_url {
-                if crate::url_filter::is_url_blocked(url, &self.ignored_urls) {
-                    return Ok(TreeWalkResult::Skipped(SkipReason::BlockedUrl));
-                }
+            let decision = self
+                .url_policy
+                .decide(&snapshot.app_name, snapshot.browser_url.as_deref());
+            if let Some(reason) = decision.skip_reason() {
+                // The URL itself is not logged: it is what the user asked
+                // to keep out of the record.
+                tracing::debug!(
+                    app = %snapshot.app_name,
+                    decision = decision.as_str(),
+                    "a11y: skipped — {}",
+                    reason
+                );
+                return Ok(TreeWalkResult::Skipped(reason));
             }
         }
         Ok(result)
@@ -631,12 +680,17 @@ mod tests {
         }
     }
 
+    fn legacy_walker(url: Option<&str>, patterns: &[&str]) -> UrlFilteredWalker {
+        let patterns: Vec<String> = patterns.iter().map(|p| p.to_string()).collect();
+        UrlFilteredWalker {
+            inner: Box::new(FakeWalker(url.map(str::to_string))),
+            url_policy: crate::url_filter::UrlPolicy::from_legacy_patterns(&patterns),
+        }
+    }
+
     #[test]
     fn test_url_filtered_walker_blocks_matching_url() {
-        let walker = UrlFilteredWalker {
-            inner: Box::new(FakeWalker(Some("https://www.chase.com/login".into()))),
-            ignored_urls: vec!["chase.com".into()],
-        };
+        let walker = legacy_walker(Some("https://www.chase.com/login"), &["chase.com"]);
         assert!(matches!(
             walker.walk_focused_window().unwrap(),
             TreeWalkResult::Skipped(SkipReason::BlockedUrl)
@@ -645,10 +699,7 @@ mod tests {
 
     #[test]
     fn test_url_filtered_walker_passes_other_urls() {
-        let walker = UrlFilteredWalker {
-            inner: Box::new(FakeWalker(Some("https://example.com".into()))),
-            ignored_urls: vec!["chase.com".into()],
-        };
+        let walker = legacy_walker(Some("https://example.com"), &["chase.com"]);
         assert!(matches!(
             walker.walk_focused_window().unwrap(),
             TreeWalkResult::Found(_)
@@ -657,14 +708,88 @@ mod tests {
 
     #[test]
     fn test_url_filtered_walker_passes_non_browser_windows() {
+        let walker = legacy_walker(None, &["chase.com"]);
+        assert!(matches!(
+            walker.walk_focused_window().unwrap(),
+            TreeWalkResult::Found(_)
+        ));
+    }
+
+    fn allow_list_policy(domain: &str) -> crate::url_filter::UrlPolicy {
+        crate::url_filter::UrlPolicy::new(
+            &[],
+            &[screenpipe_config::DomainRule {
+                domain: domain.to_string(),
+                include_subdomains: true,
+                excluded_subdomains: vec![],
+            }],
+        )
+    }
+
+    #[test]
+    fn url_filtered_walker_applies_the_allow_list_to_browsers() {
+        // FakeWalker reports app "Safari", one of the policy browsers.
         let walker = UrlFilteredWalker {
-            inner: Box::new(FakeWalker(None)),
-            ignored_urls: vec!["chase.com".into()],
+            inner: Box::new(FakeWalker(Some("https://news.example.net".into()))),
+            url_policy: allow_list_policy("example.org"),
+        };
+        assert!(matches!(
+            walker.walk_focused_window().unwrap(),
+            TreeWalkResult::Skipped(SkipReason::BlockedUrl)
+        ));
+
+        let walker = UrlFilteredWalker {
+            inner: Box::new(FakeWalker(Some("https://wiki.example.org".into()))),
+            url_policy: allow_list_policy("example.org"),
         };
         assert!(matches!(
             walker.walk_focused_window().unwrap(),
             TreeWalkResult::Found(_)
         ));
+    }
+
+    #[test]
+    fn url_filtered_walker_skips_unreadable_browser_url_under_allow_list() {
+        let walker = UrlFilteredWalker {
+            inner: Box::new(FakeWalker(None)),
+            url_policy: allow_list_policy("example.org"),
+        };
+        assert!(matches!(
+            walker.walk_focused_window().unwrap(),
+            TreeWalkResult::Skipped(SkipReason::UrlValidationPending)
+        ));
+    }
+
+    #[test]
+    fn effective_url_policy_prefers_the_structured_policy() {
+        let mut config = TreeWalkerConfig {
+            ignored_urls: vec!["chase.com".into()],
+            ..TreeWalkerConfig::default()
+        };
+        assert!(config
+            .effective_url_policy()
+            .is_blocked("https://chase.com"));
+        config.url_policy = allow_list_policy("example.org");
+        let policy = config.effective_url_policy();
+        assert!(policy.has_allow_list());
+        assert!(!policy.has_block_list());
+    }
+
+    #[test]
+    fn skip_reasons_have_distinct_labels() {
+        let all = [
+            SkipReason::Incognito,
+            SkipReason::ExcludedApp,
+            SkipReason::UserIgnored,
+            SkipReason::NotInIncludeList,
+            SkipReason::BlockedUrl,
+            SkipReason::UrlValidationPending,
+        ];
+        let labels: std::collections::HashSet<_> = all.iter().map(|r| r.as_str()).collect();
+        let texts: std::collections::HashSet<_> = all.iter().map(|r| r.to_string()).collect();
+        assert_eq!(labels.len(), all.len());
+        assert_eq!(texts.len(), all.len());
+        assert!(SkipReason::BlockedUrl.to_string().contains("URL policy"));
     }
 
     #[test]
