@@ -119,7 +119,7 @@ mod tests {
         assert_eq!(search_response.pagination.total, 1);
         assert_eq!(search_response.data.len(), 1);
 
-        match &search_response.data[0] {
+        match &search_response.data[0].item {
             ContentItem::OCR(ocr) => {
                 assert_eq!(ocr.frame_id, frame_id);
                 assert!(ocr.text.contains("local api sentinel exactmatch"));

@@ -90,6 +90,23 @@ pub enum SearchResult {
     Input(UiEventRecord),
     /// Persistent memory
     Memory(MemoryRecord),
+    /// Structured content parsed from one frame (`content_type=parsed`).
+    Parsed(crate::ext::search_parsed::ParsedFrameResult),
+}
+
+impl SearchResult {
+    /// The time the hit is ordered by: the capture time, or a memory's
+    /// creation time.
+    pub fn sort_timestamp(&self) -> DateTime<Utc> {
+        match self {
+            SearchResult::OCR(ocr) => ocr.timestamp,
+            SearchResult::Audio(audio) => audio.timestamp,
+            SearchResult::UI(ui) => ui.timestamp,
+            SearchResult::Input(input) => input.timestamp,
+            SearchResult::Memory(m) => m.created_at.parse::<DateTime<Utc>>().unwrap_or_default(),
+            SearchResult::Parsed(p) => p.timestamp,
+        }
+    }
 }
 
 #[derive(FromRow, Debug)]
@@ -154,6 +171,10 @@ pub struct OCRResult {
 /// - `input` - User actions (clicks, keystrokes, clipboard)
 /// - `accessibility` - Accessibility tree text
 /// - `memory` - Persistent facts, preferences, decisions
+/// - `parsed` - Structured content parsed from frames (messages, documents,
+///   tasks, calendar events, pages)
+///
+/// `memory` and `parsed` are never part of `all`.
 #[derive(OaSchema, Debug, Deserialize, PartialEq, Default, Clone)]
 #[serde(rename_all = "lowercase")]
 pub enum ContentType {
@@ -170,6 +191,117 @@ pub enum ContentType {
     Accessibility,
     /// Persistent memories: facts, preferences, decisions, insights
     Memory,
+    /// Parsed semantic content: one hit per frame whose handled parser run
+    /// matches, with the run's typed items and their actors
+    Parsed,
+}
+
+/// Disjoint `[start, end)` time windows a search is restricted to. The
+/// `/search` route builds them from the starred sessions overlapping the
+/// requested range (`starred_only`, `starred_session_id`).
+///
+/// A hit belongs to the windows when its timestamp lies in one of them. SQL
+/// narrows each candidate table by a second-precision text range on its
+/// indexed timestamp column, then compares exactly through `julianday()`, so
+/// stored spellings with a `Z` or an offset, and any number of fractional
+/// digits, are judged by the instant they denote.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct SearchWindows {
+    islands: Vec<(DateTime<Utc>, DateTime<Utc>)>,
+}
+
+impl SearchWindows {
+    /// Windows from `[start, end)` pairs. Empty pairs are dropped; the rest
+    /// are sorted and overlapping or touching pairs merged, so the result is
+    /// always disjoint.
+    pub fn new(pairs: impl IntoIterator<Item = (DateTime<Utc>, DateTime<Utc>)>) -> Self {
+        let mut pairs: Vec<_> = pairs.into_iter().filter(|(s, e)| s < e).collect();
+        pairs.sort();
+        let mut islands: Vec<(DateTime<Utc>, DateTime<Utc>)> = Vec::with_capacity(pairs.len());
+        for (s, e) in pairs {
+            match islands.last_mut() {
+                Some(last) if s <= last.1 => last.1 = last.1.max(e),
+                _ => islands.push((s, e)),
+            }
+        }
+        Self { islands }
+    }
+
+    /// The windows, sorted by start.
+    pub fn islands(&self) -> &[(DateTime<Utc>, DateTime<Utc>)] {
+        &self.islands
+    }
+
+    pub fn len(&self) -> usize {
+        self.islands.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.islands.is_empty()
+    }
+
+    /// Start of the first window and end of the last one.
+    pub fn hull(&self) -> Option<(DateTime<Utc>, DateTime<Utc>)> {
+        Some((self.islands.first()?.0, self.islands.last()?.1))
+    }
+
+    /// Whether `t` lies in one of the windows.
+    pub fn contains(&self, t: DateTime<Utc>) -> bool {
+        // Index of the first window starting after `t`; only the one before
+        // it can hold `t`.
+        let after = self.islands.partition_point(|(s, _)| *s <= t);
+        after > 0 && t < self.islands[after - 1].1
+    }
+
+    /// JSON bound to the SQL membership filter: one
+    /// `[start, end, text_lo, text_hi]` array per window. `start`/`end` are
+    /// exact RFC 3339 UTC instants for `julianday()`; `text_lo`/`text_hi` are
+    /// second-precision `YYYY-MM-DDTHH:MM:SS` bounds one second wider, for
+    /// range scans on timestamp indexes.
+    pub(crate) fn to_sql_json(&self) -> String {
+        let rows: Vec<[String; 4]> = self
+            .islands
+            .iter()
+            .map(|(s, e)| {
+                let lo = *s - chrono::Duration::seconds(1);
+                let hi = *e + chrono::Duration::seconds(1);
+                [
+                    s.to_rfc3339_opts(chrono::SecondsFormat::Millis, true),
+                    e.to_rfc3339_opts(chrono::SecondsFormat::Millis, true),
+                    lo.format("%Y-%m-%dT%H:%M:%S").to_string(),
+                    hi.format("%Y-%m-%dT%H:%M:%S").to_string(),
+                ]
+            })
+            .collect();
+        serde_json::to_string(&rows).unwrap_or_else(|_| "[]".to_string())
+    }
+}
+
+/// Restrictions from the `/search` v2 parameters that the base search did
+/// not have. The default restricts nothing, so a search with it runs exactly
+/// the SQL it ran before these parameters existed.
+#[derive(Debug, Clone, Default)]
+pub struct SearchScope {
+    /// Keep only hits inside these windows. `Some` with no windows matches
+    /// nothing. Memories have no capture time and never match a window.
+    pub windows: Option<SearchWindows>,
+    /// `content_type=input` only: keep events that carry typed or copied
+    /// text, or that hit a named UI element. Bare pointer moves, scrolls and
+    /// key codes are left out.
+    pub input_context_only: bool,
+    /// `content_type=parsed` only: the one frame to return.
+    pub frame_id: Option<i64>,
+    /// `content_type=parsed` only: frames holding an item assigned to this
+    /// semantic actor; their items are narrowed to that actor's items and the
+    /// items containing them.
+    pub actor_id: Option<i64>,
+}
+
+impl SearchScope {
+    /// True when the scope cannot match anything (an empty window set).
+    pub fn matches_nothing(&self) -> bool {
+        self.windows.as_ref().is_some_and(SearchWindows::is_empty)
+    }
 }
 
 #[derive(FromRow)]
@@ -459,6 +591,11 @@ pub struct UiContent {
     pub offset_index: i64,
     pub frame_name: Option<String>,
     pub browser_url: Option<String>,
+    /// What made the capture happen (`frames.capture_trigger`, for example
+    /// `app_switch`, `click` or `typing_pause`). `None` for rows captured
+    /// before triggers were recorded.
+    #[sqlx(default)]
+    pub event_source: Option<String>,
 }
 
 #[derive(OaSchema, Debug, Clone)]
@@ -1030,6 +1167,71 @@ mod tests {
             ContentType::Memory,
             serde_json::from_str(r#""memory""#).unwrap()
         );
+        assert_eq!(
+            ContentType::Parsed,
+            serde_json::from_str(r#""parsed""#).unwrap()
+        );
+    }
+
+    fn t(s: &str) -> DateTime<Utc> {
+        DateTime::parse_from_rfc3339(s).unwrap().with_timezone(&Utc)
+    }
+
+    #[test]
+    fn search_windows_merge_and_contain() {
+        let w = SearchWindows::new([
+            (t("2026-10-21T11:00:00Z"), t("2026-10-21T12:00:00Z")),
+            (t("2026-10-21T09:00:00Z"), t("2026-10-21T10:00:00Z")),
+            // touches the first window: merged
+            (t("2026-10-21T10:00:00Z"), t("2026-10-21T10:30:00Z")),
+            // empty: dropped
+            (t("2026-10-21T13:00:00Z"), t("2026-10-21T13:00:00Z")),
+        ]);
+        assert_eq!(
+            w.islands(),
+            &[
+                (t("2026-10-21T09:00:00Z"), t("2026-10-21T10:30:00Z")),
+                (t("2026-10-21T11:00:00Z"), t("2026-10-21T12:00:00Z")),
+            ]
+        );
+        assert_eq!(
+            w.hull(),
+            Some((t("2026-10-21T09:00:00Z"), t("2026-10-21T12:00:00Z")))
+        );
+        assert!(w.contains(t("2026-10-21T09:00:00Z")), "start is inside");
+        assert!(w.contains(t("2026-10-21T10:15:00Z")));
+        assert!(!w.contains(t("2026-10-21T10:30:00Z")), "end is outside");
+        assert!(!w.contains(t("2026-10-21T08:59:59.999Z")));
+        assert!(w.contains(t("2026-10-21T11:59:59.999Z")));
+        assert!(!w.contains(t("2026-10-21T12:00:00Z")));
+        assert!(SearchWindows::new([]).hull().is_none());
+    }
+
+    #[test]
+    fn search_windows_sql_json_carries_exact_and_widened_bounds() {
+        let w = SearchWindows::new([(t("2026-10-21T09:00:00.250Z"), t("2026-10-21T10:00:00Z"))]);
+        let rows: Vec<Vec<String>> = serde_json::from_str(&w.to_sql_json()).unwrap();
+        assert_eq!(
+            rows,
+            vec![vec![
+                "2026-10-21T09:00:00.250Z".to_string(),
+                "2026-10-21T10:00:00.000Z".to_string(),
+                "2026-10-21T08:59:59".to_string(),
+                "2026-10-21T10:00:01".to_string(),
+            ]]
+        );
+    }
+
+    #[test]
+    fn default_scope_restricts_nothing() {
+        let scope = SearchScope::default();
+        assert!(scope.windows.is_none());
+        assert!(!scope.matches_nothing());
+        let empty = SearchScope {
+            windows: Some(SearchWindows::default()),
+            ..Default::default()
+        };
+        assert!(empty.matches_nothing());
     }
 
     #[test]

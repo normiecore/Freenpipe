@@ -87,6 +87,7 @@ pub async fn handle_search_command(args: &SearchArgs) -> anyhow::Result<()> {
                 .as_ref()
                 .is_none_or(|app| !is_screenpipe_app(app)),
             SearchResult::Memory(_) => true,
+            SearchResult::Parsed(parsed) => !is_screenpipe_app(&parsed.app_name),
         })
         .map(|r| search_result_to_content_item(r, args.max_content_length))
         .collect();
@@ -110,8 +111,9 @@ fn parse_content_type(s: &str) -> Result<ContentType, String> {
         "accessibility" | "a11y" => Ok(ContentType::Accessibility),
         "input" => Ok(ContentType::Input),
         "memory" => Ok(ContentType::Memory),
+        "parsed" => Ok(ContentType::Parsed),
         other => Err(format!(
-            "unknown content type '{}' — expected one of: all, ocr, audio, accessibility, input, memory",
+            "unknown content type '{}' — expected one of: all, ocr, audio, accessibility, input, memory, parsed",
             other
         )),
     }
@@ -189,6 +191,19 @@ fn print_text(items: &[ContentItem]) {
                     c.importance,
                     one_line(&c.content)
                 );
+            }
+            ContentItem::Parsed(c) => {
+                println!(
+                    "[{}] parsed · {} · {} · frame {} · {} items",
+                    c.timestamp.to_rfc3339(),
+                    c.app_name,
+                    c.window_name,
+                    c.frame_id,
+                    c.items.len()
+                );
+                for line in c.text.lines() {
+                    println!("  {}", line);
+                }
             }
         }
     }

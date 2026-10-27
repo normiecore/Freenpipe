@@ -41,6 +41,72 @@ pub enum ContentItem {
     Input(InputContent),
     /// Persistent memory: fact, preference, decision, insight
     Memory(MemoryContent),
+    /// Structured content parsed from one frame (`content_type=parsed`)
+    Parsed(ParsedContent),
+}
+
+/// One frame's parsed content: the parser run that read it, its items in run
+/// order and the actors assigned to them.
+#[derive(OaSchema, Serialize, Deserialize, Debug, Clone)]
+pub struct ParsedContent {
+    pub frame_id: i64,
+    pub timestamp: DateTime<Utc>,
+    pub app_name: String,
+    pub window_name: String,
+    /// Compact text of the items, one line per item, nested items indented.
+    pub text: String,
+    pub run_id: i64,
+    pub parser_id: String,
+    pub parser_version: String,
+    /// `macos`, `windows` or `linux`.
+    pub app_platform: String,
+    pub app_id: Option<String>,
+    pub app_executable: Option<String>,
+    pub parse_duration_us: i64,
+    pub text_bytes: i64,
+    pub items: Vec<ParsedItem>,
+    /// One entry per item that has an assigned actor.
+    pub actors: Vec<ParsedActorReference>,
+}
+
+/// One typed item of a parsed frame.
+#[derive(OaSchema, Serialize, Deserialize, Debug, Clone)]
+pub struct ParsedItem {
+    /// Stable id of the item across the runs that saw it.
+    pub item_id: i64,
+    /// Id inside this run; `parent_local_id` refers to it.
+    pub local_id: String,
+    pub parent_local_id: Option<String>,
+    /// `conversation`, `message`, `document`, `task`, `calendar_event` or
+    /// `page`.
+    pub kind: String,
+    pub item_key: String,
+    /// `stable`, `derived` or `ephemeral`.
+    pub identity_quality: String,
+    pub title: Option<String>,
+    pub body: Option<String>,
+    /// Actor label as the parser saw it.
+    pub actor: Option<String>,
+    pub occurred_at: Option<String>,
+    pub timestamp_precision: Option<String>,
+    pub status: Option<String>,
+    /// Accessibility-tree node ids the item was read from (null when the
+    /// stored list is in an encoding this build does not read).
+    pub source_nodes: Option<Vec<u32>>,
+}
+
+/// The actor identity assigned to one parsed item.
+#[derive(OaSchema, Serialize, Deserialize, Debug, Clone)]
+pub struct ParsedActorReference {
+    pub item_id: i64,
+    pub local_id: String,
+    pub actor_id: i64,
+    /// Canonical actor name.
+    pub name: String,
+    /// The label the parser saw on the item.
+    pub observed_name: Option<String>,
+    /// `heuristic` or `reconciled`.
+    pub assignment_source: String,
 }
 
 #[derive(OaSchema, Serialize, Deserialize, Debug, Clone)]
@@ -120,6 +186,11 @@ pub struct UiContent {
     pub offset_index: i64,
     pub frame_name: Option<String>,
     pub browser_url: Option<String>,
+    /// What triggered the capture of this frame (`app_switch`, `click`,
+    /// `typing_pause`, ...). Left out for frames captured before triggers
+    /// were recorded.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub event_source: Option<String>,
 }
 
 /// User input event content (clicks, keystrokes, clipboard, etc.)
@@ -140,6 +211,10 @@ pub struct InputContent {
     pub key_code: Option<u16>,
     /// Modifier keys (shift, ctrl, alt, etc.)
     pub modifiers: Option<u8>,
+    /// Clicks in the gesture (2 for a double click). Left out when not
+    /// recorded.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub click_count: Option<u8>,
     /// Element context from accessibility APIs
     pub element_role: Option<String>,
     pub element_name: Option<String>,
