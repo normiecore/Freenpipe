@@ -378,6 +378,11 @@ pub(crate) struct ScriptedAgent {
     /// What `is_available` reports; a test clears it to stand for an agent
     /// that is still being installed.
     pub available: AtomicBool,
+    /// Process id each run reports through the shared pid, as a real agent
+    /// does right after spawning. `None` reports none.
+    pub fake_pid: Option<u32>,
+    /// Process ids `kill` was asked to stop.
+    pub kills: StdMutex<Vec<u32>>,
 }
 
 impl ScriptedAgent {
@@ -394,6 +399,8 @@ impl ScriptedAgent {
             failing_models: StdMutex::new(HashSet::new()),
             delay: std::time::Duration::from_millis(20),
             available: AtomicBool::new(true),
+            fake_pid: None,
+            kills: StdMutex::new(Vec::new()),
         }
     }
 
@@ -418,9 +425,12 @@ impl AgentExecutor for ScriptedAgent {
         provider: Option<&str>,
         _provider_url: Option<&str>,
         _provider_api_key: Option<&str>,
-        _shared_pid: Option<SharedPid>,
+        shared_pid: Option<SharedPid>,
         _continue_session: bool,
     ) -> Result<AgentOutput> {
+        if let (Some(pid), Some(shared)) = (self.fake_pid, shared_pid.as_ref()) {
+            shared.store(pid, Ordering::SeqCst);
+        }
         self.prompts.lock().unwrap().push(prompt.to_string());
         self.models
             .lock()
@@ -438,7 +448,8 @@ impl AgentExecutor for ScriptedAgent {
         Ok(self.output.clone())
     }
 
-    fn kill(&self, _handle: &ExecutionHandle) -> Result<()> {
+    fn kill(&self, handle: &ExecutionHandle) -> Result<()> {
+        self.kills.lock().unwrap().push(handle.pid);
         Ok(())
     }
 

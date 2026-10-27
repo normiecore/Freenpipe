@@ -1562,13 +1562,7 @@ pub(crate) fn choose_run_model(
             }
         );
     }
-    let requested = config
-        .preset
-        .iter()
-        .map(|p| p.trim())
-        .find(|p| !p.is_empty() && *p != preset_fallback::WILDCARD_PRESET)
-        .map(str::to_string)
-        .or_else(|| chain.slots.first().cloned());
+    let requested = chain.requested.clone();
     let limit = chain.slots.len().min(preset_fallback::MAX_FALLBACK_DEPTH);
     let mut unusable: Vec<String> = Vec::new();
     let mut floor = floor;

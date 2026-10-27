@@ -16,7 +16,7 @@
 
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::Arc;
 
 use chrono::Utc;
@@ -235,11 +235,16 @@ impl ScheduledRun {
 
         self.clear_running_state().await;
 
-        // The agent never launched: the event instance was not handled, so
-        // its claim goes back.
-        if !any_launched && last.error_type.as_deref() == Some("crash") {
+        // No attempt started the agent (no usable preset, a launch error, a
+        // timeout before the process came up): the event instance was not
+        // handled, so its claim goes back and a later delivery may run it.
+        if !any_launched && !last.log.success {
             if let Some(ref claim) = self.slot.claim {
-                release_claim(self.store.as_ref(), claim, "the agent could not start").await;
+                let reason = match last.error_type.as_deref() {
+                    Some(ERROR_AI_PRESET_UNAVAILABLE) => "no usable AI preset",
+                    _ => "the agent could not start",
+                };
+                release_claim(self.store.as_ref(), claim, reason).await;
             }
         }
         if let Some(ref store) = self.store {
@@ -327,6 +332,42 @@ impl ScheduledRun {
         Some(id)
     }
 
+    /// Forget an attempt once its agent has exited (or never started). The
+    /// pipe stays claimed for a possible retry, but without a process id:
+    /// the handle and `run.pid` go back to the sentinel 0, so a stop (or the
+    /// orphan cleanup after a crash) never signals a process id the system
+    /// may already have handed to another program. `finished` tells the
+    /// attempt's PID watcher not to record the id after this point.
+    ///
+    /// The attempt's row leaves `running_execution_ids` here too. Returns
+    /// whether this worker took it out, and so still owns the row: when
+    /// `stop_pipe` got there first it finishes the row as cancelled, and the
+    /// worker must not overwrite that.
+    async fn end_attempt(&self, exec_id: Option<i64>, finished: Option<&AtomicBool>) -> bool {
+        {
+            // The same lock the watcher holds while it records a pid, so the
+            // two never interleave.
+            let mut running = self.running.lock().await;
+            if let Some(flag) = finished {
+                flag.store(true, Ordering::SeqCst);
+            }
+            if let Some(handle) = running.get_mut(&self.pipe_name) {
+                handle.pid = 0;
+            }
+            write_pid_file(&self.pipes_dir, &self.pipe_name, 0);
+        }
+        let Some(id) = exec_id else {
+            return false;
+        };
+        let mut ids = self.running_execution_ids.lock().await;
+        if ids.get(&self.pipe_name) == Some(&id) {
+            ids.remove(&self.pipe_name);
+            true
+        } else {
+            false
+        }
+    }
+
     async fn clear_running_state(&self) {
         self.running.lock().await.remove(&self.pipe_name);
         self.running_execution_ids
@@ -343,9 +384,8 @@ impl ScheduledRun {
         }
     }
 
-    /// Finish an attempt's execution row, unless the run was stopped (then
-    /// `stop_pipe` already recorded it as cancelled and the worker must not
-    /// overwrite it).
+    /// Finish an attempt's execution row. `exec_id` is `None` when the
+    /// worker does not own the row (see [`Self::end_attempt`]).
     #[allow(clippy::too_many_arguments)]
     async fn finish_row(
         &self,
@@ -357,8 +397,7 @@ impl ScheduledRun {
         message: Option<&str>,
         session_path: Option<&str>,
     ) {
-        let cancelled = self.slot.is_cancelled();
-        if let (Some(store), Some(id)) = (&self.store, exec_id.filter(|_| !cancelled)) {
+        if let (Some(store), Some(id)) = (&self.store, exec_id) {
             let _ = store
                 .finish_execution(
                     id,
@@ -429,8 +468,9 @@ impl ScheduledRun {
                     launched: false,
                 };
                 self.run_hooks.before_run(&hook_run).await;
+                let owns_row = self.end_attempt(exec_id, None).await;
                 self.finish_row(
-                    exec_id,
+                    exec_id.filter(|_| owns_row),
                     "failed",
                     "",
                     &unavailable.message,
@@ -476,30 +516,67 @@ impl ScheduledRun {
             self.run_context.as_deref(),
         );
 
-        // A retry starts without the previous attempt's process id.
-        if let Some(handle) = self.running.lock().await.get_mut(name.as_str()) {
-            handle.pid = 0;
+        // Stopped while this attempt was being set up (a retry after a
+        // failed slot): the agent does not start.
+        if self.slot.is_cancelled() {
+            let owns_row = self.end_attempt(exec_id, None).await;
+            self.finish_row(
+                exec_id.filter(|_| owns_row),
+                "cancelled",
+                "",
+                "",
+                Some("cancelled"),
+                None,
+                None,
+            )
+            .await;
+            return Attempt {
+                log: PipeRunLog {
+                    pipe_name: name.clone(),
+                    started_at,
+                    finished_at: Utc::now(),
+                    success: false,
+                    stdout: String::new(),
+                    stderr: "stopped before the agent started".to_string(),
+                },
+                error_type: Some("cancelled".to_string()),
+                launched: false,
+            };
         }
+
         // Shared PID — set synchronously by the executor right after spawn.
         let shared_pid = Arc::new(AtomicU32::new(0));
+        // Set by `end_attempt` once the agent has exited.
+        let finished = Arc::new(AtomicBool::new(false));
         {
             let running = self.running.clone();
             let store = self.store.clone();
             let pipes_dir = self.pipes_dir.clone();
             let name = name.clone();
             let shared_pid = shared_pid.clone();
+            let finished = finished.clone();
             tokio::spawn(async move {
                 // Brief wait for the synchronous PID store
                 tokio::time::sleep(std::time::Duration::from_millis(100)).await;
                 let pid = shared_pid.load(Ordering::SeqCst);
-                if pid != 0 {
-                    if let Some(handle) = running.lock().await.get_mut(&name) {
+                if pid == 0 {
+                    return;
+                }
+                {
+                    let mut running = running.lock().await;
+                    // An attempt that already ended keeps the sentinel: its
+                    // process is gone and the id may belong to another
+                    // program by now.
+                    if finished.load(Ordering::SeqCst) {
+                        return;
+                    }
+                    if let Some(handle) = running.get_mut(&name) {
                         handle.pid = pid;
                     }
                     write_pid_file(&pipes_dir, &name, pid);
-                    if let (Some(store), Some(id)) = (&store, exec_id) {
-                        let _ = store.set_execution_running(id, Some(pid)).await;
-                    }
+                }
+                if let (Some(store), Some(id)) = (&store, exec_id) {
+                    let _ = store.set_execution_running(id, Some(pid)).await;
                 }
             });
         }
@@ -574,7 +651,16 @@ impl ScheduledRun {
         )
         .await;
         let finished_at = Utc::now();
-        let launched = shared_pid.load(Ordering::SeqCst) != 0;
+        if run_result.is_err() {
+            // Timed out: the agent may still be running.
+            let pid = shared_pid.load(Ordering::SeqCst);
+            if pid != 0 {
+                let _ = crate::agents::pi::kill_process_group(pid);
+            }
+        }
+        let owns_row = self.end_attempt(exec_id, Some(&finished)).await;
+        // The agent ran when it reported a process id or returned an output.
+        let launched = shared_pid.load(Ordering::SeqCst) != 0 || matches!(run_result, Ok(Ok(_)));
         if trajectory.is_some() {
             // Let the drainer write the last lines before the end record.
             let _ = tokio::time::timeout(std::time::Duration::from_secs(5), drainer).await;
@@ -667,10 +753,6 @@ impl ScheduledRun {
                 }
                 Err(_elapsed) => {
                     warn!("pipe '{}' timed out after {}s", name, timeout_secs);
-                    let pid = shared_pid.load(Ordering::SeqCst);
-                    if pid != 0 {
-                        let _ = crate::agents::pi::kill_process_group(pid);
-                    }
                     let text = format!("execution timed out after {}s", timeout_secs);
                     (
                         Attempt {
@@ -695,8 +777,9 @@ impl ScheduledRun {
                 }
             };
 
+        let owned_id = exec_id.filter(|_| owns_row);
         self.finish_row(
-            exec_id,
+            owned_id,
             &row_status,
             &stdout,
             &stderr,
@@ -705,10 +788,10 @@ impl ScheduledRun {
             session_path.as_deref(),
         )
         .await;
-        if !self.slot.is_cancelled() && session_path.is_some() {
+        if owned_id.is_some() && session_path.is_some() {
             record_conversation_id(
                 self.store.as_ref(),
-                exec_id,
+                owned_id,
                 self.config.history,
                 session_path.as_deref(),
             )

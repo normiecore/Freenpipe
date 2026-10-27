@@ -423,6 +423,11 @@ pub struct PresetChain {
     /// Entries of the pipe's list that name no preset of the user's, as
     /// written.
     pub missing: Vec<String>,
+    /// What the pipe asks for first: the preset id its first entry resolves
+    /// to (aliases and `"*"` resolved the same way as the slots), or that
+    /// entry as written when it names no preset of the user's. A run on any
+    /// other preset is a fallback.
+    pub requested: Option<String>,
 }
 
 impl PresetChain {
@@ -450,11 +455,14 @@ impl PresetChain {
                 continue;
             }
             if entry == WILDCARD_PRESET {
-                if let Some(id) = default_id {
+                let expanded = default_id
+                    .into_iter()
+                    .chain(user.iter().filter(|p| !p.is_default).map(|p| p.id.as_str()));
+                for id in expanded {
+                    if chain.requested.is_none() {
+                        chain.requested = Some(id.to_string());
+                    }
                     push(&mut chain, id);
-                }
-                for preset in user.iter().filter(|p| !p.is_default) {
-                    push(&mut chain, &preset.id);
                 }
                 continue;
             }
@@ -472,6 +480,9 @@ impl PresetChain {
                         .map(|p| p.id.as_str())
                 }
             };
+            if chain.requested.is_none() {
+                chain.requested = Some(wanted.unwrap_or(entry).to_string());
+            }
             match wanted {
                 Some(id) => push(&mut chain, id),
                 None => {
@@ -777,6 +788,28 @@ mod tests {
         // Legacy ids still resolve.
         let chain = PresetChain::build(&list(&["pi-agent"]), &user(&["screenpipe-cloud"], None));
         assert_eq!(chain.slots, list(&["screenpipe-cloud"]));
+    }
+
+    #[test]
+    fn requested_is_the_preset_the_first_entry_resolves_to() {
+        let presets = user(&["work", "local", "screenpipe-cloud"], Some("local"));
+        let first = |entries: &[&str]| PresetChain::build(&list(entries), &presets).requested;
+        // Aliases resolve like the slots do, so they never read as a fallback.
+        assert_eq!(first(&["default"]).as_deref(), Some("local"));
+        assert_eq!(first(&["auto", "*"]).as_deref(), Some("local"));
+        assert_eq!(first(&["pi-agent"]).as_deref(), Some("screenpipe-cloud"));
+        assert_eq!(first(&["*", "work"]).as_deref(), Some("local"));
+        assert_eq!(first(&["", "work"]).as_deref(), Some("work"));
+        // A missing first entry is reported as written.
+        assert_eq!(first(&["gone", "work"]).as_deref(), Some("gone"));
+        // `*` without any presets asks for nothing in particular.
+        assert_eq!(
+            PresetChain::build(&list(&["*", "work"]), &[])
+                .requested
+                .as_deref(),
+            Some("work")
+        );
+        assert_eq!(PresetChain::build(&list(&["*"]), &[]).requested, None);
     }
 
     #[test]

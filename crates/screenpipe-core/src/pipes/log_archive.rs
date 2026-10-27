@@ -9,7 +9,10 @@
 //! file per month, `<pipe>/logs/archive/<YYYY-MM>.jsonl.gz`, one JSON line
 //! per run (`{"file": <original name>, "log": <the run log>}`). Each sweep
 //! appends a gzip member, so a month file is read with a multi-member gzip
-//! reader ([`read_archive`]).
+//! reader ([`read_archive`]). Next to it, `<YYYY-MM>.names` lists the file
+//! names the archive holds, one per line, so a log whose original could not
+//! be deleted (for example a file another program holds open on Windows) is
+//! not appended again on the next sweep: that sweep only retries the delete.
 //!
 //! What it never touches:
 //!
@@ -23,8 +26,9 @@
 //! A log is deleted only after its archive member has been written and
 //! synced to disk. If writing fails the originals stay and the failure is
 //! counted. One sweep handles at most [`ArchivePolicy::max_files`] logs; the
-//! rest wait for the next sweep. Month archives beyond
-//! [`ArchivePolicy::keep_months`] per pipe are removed.
+//! rest wait for the next sweep. Month archives are kept for good unless
+//! [`ArchivePolicy::keep_months`] is set: run logs are the only record of a
+//! run older than the execution rows the database keeps.
 //!
 //! The sweep does blocking file I/O and is meant to run on a blocking
 //! thread, away from the scheduler loop.
@@ -60,8 +64,8 @@ pub struct ArchivePolicy {
     pub min_age: Duration,
     /// Most logs archived in one sweep.
     pub max_files: usize,
-    /// Month archives kept per pipe.
-    pub keep_months: usize,
+    /// Month archives kept per pipe; `None` (the default) keeps them all.
+    pub keep_months: Option<usize>,
 }
 
 impl Default for ArchivePolicy {
@@ -70,7 +74,7 @@ impl Default for ArchivePolicy {
             keep_recent: 50,
             min_age: Duration::from_secs(7 * 24 * 60 * 60),
             max_files: 2_000,
-            keep_months: 12,
+            keep_months: None,
         }
     }
 }
@@ -86,8 +90,13 @@ pub struct ArchiveReport {
     pub archived: usize,
     /// Size of the archived logs before compression.
     pub archived_bytes: u64,
-    /// Logs that could not be archived (they stay in place).
+    /// Logs that could not be archived, or whose original could not be
+    /// deleted after archiving (they stay in place).
     pub failed: usize,
+    /// Logs found already in their month archive (an earlier sweep could not
+    /// delete them); this sweep deleted the leftover copy without adding it
+    /// again.
+    pub already_archived: usize,
     /// Pipes left alone because a run was queued or running.
     pub skipped_running: usize,
     /// Old month archives removed.
@@ -100,11 +109,12 @@ impl ArchiveReport {
     /// The line the scheduler logs.
     pub fn summary(&self) -> String {
         format!(
-            "scanned={} archived={} bytes={} failed={} pipes={} skipped_running={} archives_removed={}{}",
+            "scanned={} archived={} bytes={} failed={} already_archived={} pipes={} skipped_running={} archives_removed={}{}",
             self.scanned,
             self.archived,
             self.archived_bytes,
             self.failed,
+            self.already_archived,
             self.pipes,
             self.skipped_running,
             self.archives_removed,
@@ -281,8 +291,29 @@ fn sweep_pipe(
             // Oldest first inside the member.
             files.reverse();
             let target = archive_dir.join(format!("{month}.jsonl.gz"));
+            let names_path = archive_dir.join(format!("{month}{NAMES_SUFFIX}"));
+            let known = archived_names(&target, &names_path);
+            let (leftovers, files): (Vec<RunLogFile>, Vec<RunLogFile>) =
+                files.into_iter().partition(|f| known.contains(&f.name));
+            for file in leftovers {
+                match std::fs::remove_file(&file.path) {
+                    Ok(()) => report.already_archived += 1,
+                    Err(e) => {
+                        report.failed += 1;
+                        tracing::debug!(
+                            "pipe log archive: {} is archived but still cannot be removed: {}",
+                            file.path.display(),
+                            e
+                        );
+                    }
+                }
+            }
+            if files.is_empty() {
+                continue;
+            }
             match append_member(&target, &files) {
                 Ok(()) => {
+                    record_names(&names_path, &files);
                     for file in files {
                         match std::fs::remove_file(&file.path) {
                             Ok(()) => {
@@ -312,7 +343,84 @@ fn sweep_pipe(
         }
     }
 
-    report.archives_removed += prune_months(&logs_dir.join(ARCHIVE_DIR), policy.keep_months);
+    if let Some(keep) = policy.keep_months {
+        report.archives_removed += prune_months(&logs_dir.join(ARCHIVE_DIR), keep);
+    }
+}
+
+/// Suffix of the list of file names a month archive holds.
+const NAMES_SUFFIX: &str = ".names";
+
+/// Names of the logs already in the month archive `target`: from its names
+/// list, or, when that list is missing, from the archive itself (the list is
+/// then written again). Empty when there is no archive.
+fn archived_names(target: &Path, names_path: &Path) -> HashSet<String> {
+    if !target.exists() {
+        // A list without its archive vouches for nothing.
+        let _ = std::fs::remove_file(names_path);
+        return HashSet::new();
+    }
+    if let Ok(text) = std::fs::read_to_string(names_path) {
+        return text
+            .lines()
+            .map(str::trim)
+            .filter(|l| !l.is_empty())
+            .map(str::to_string)
+            .collect();
+    }
+    let names: HashSet<String> = match read_archive(target) {
+        Ok(records) => records
+            .iter()
+            .filter_map(|r| r.get("file").and_then(Value::as_str))
+            .map(str::to_string)
+            .collect(),
+        Err(e) => {
+            tracing::warn!("pipe log archive: cannot read {}: {}", target.display(), e);
+            HashSet::new()
+        }
+    };
+    let mut sorted: Vec<&String> = names.iter().collect();
+    sorted.sort();
+    let mut text = String::new();
+    for name in sorted {
+        text.push_str(name);
+        text.push('\n');
+    }
+    if let Err(e) = std::fs::write(names_path, text) {
+        tracing::debug!(
+            "pipe log archive: cannot write {}: {}",
+            names_path.display(),
+            e
+        );
+    }
+    names
+}
+
+/// Add the names of `files`, just appended to the month archive, to its
+/// names list. When that fails the list is removed, so the next sweep reads
+/// the names from the archive itself rather than trusting a stale list.
+fn record_names(names_path: &Path, files: &[RunLogFile]) {
+    let mut text = String::new();
+    for file in files {
+        text.push_str(&file.name);
+        text.push('\n');
+    }
+    let written = OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(names_path)
+        .and_then(|mut out| {
+            out.write_all(text.as_bytes())?;
+            out.sync_all()
+        });
+    if let Err(e) = written {
+        tracing::warn!(
+            "pipe log archive: cannot update {}: {}",
+            names_path.display(),
+            e
+        );
+        let _ = std::fs::remove_file(names_path);
+    }
 }
 
 /// Append one gzip member holding `files` to `target`, synced to disk.
@@ -357,22 +465,32 @@ fn prune_months(archive_dir: &Path, keep: usize) -> usize {
         .collect();
     months.sort_by(|a, b| b.0.cmp(&a.0));
     let mut removed = 0;
-    for (_, path) in months.into_iter().skip(keep.max(1)) {
+    for (name, path) in months.into_iter().skip(keep.max(1)) {
         if std::fs::remove_file(&path).is_ok() {
             removed += 1;
+            if let Some(month) = name.strip_suffix(".jsonl.gz") {
+                let _ = std::fs::remove_file(archive_dir.join(format!("{month}{NAMES_SUFFIX}")));
+            }
         }
     }
     removed
 }
 
-/// Every record of a month archive, in the order written.
+/// Every record of a month archive, in the order written. A log that was
+/// appended twice (the sweep stopped between writing a member and noting its
+/// names) is returned once.
 pub fn read_archive(path: &Path) -> std::io::Result<Vec<Value>> {
     let mut text = String::new();
     MultiGzDecoder::new(std::fs::File::open(path)?).read_to_string(&mut text)?;
+    let mut seen: HashSet<String> = HashSet::new();
     Ok(text
         .lines()
         .filter(|l| !l.trim().is_empty())
-        .filter_map(|l| serde_json::from_str(l).ok())
+        .filter_map(|l| serde_json::from_str::<Value>(l).ok())
+        .filter(|record| match record.get("file").and_then(Value::as_str) {
+            Some(name) => seen.insert(name.to_string()),
+            None => true,
+        })
         .collect())
 }
 
@@ -403,7 +521,7 @@ mod tests {
             keep_recent: 2,
             min_age: 7 * DAY,
             max_files: 100,
-            keep_months: 12,
+            keep_months: None,
         }
     }
 
@@ -444,9 +562,17 @@ mod tests {
         assert!(logs.join("notes.txt").exists());
 
         let mut records = Vec::new();
+        let mut listed = 0;
         for entry in std::fs::read_dir(logs.join(ARCHIVE_DIR)).unwrap() {
-            records.extend(read_archive(&entry.unwrap().path()).unwrap());
+            let path = entry.unwrap().path();
+            let name = path.file_name().unwrap().to_string_lossy().to_string();
+            if name.ends_with(NAMES_SUFFIX) {
+                listed += std::fs::read_to_string(&path).unwrap().lines().count();
+            } else {
+                records.extend(read_archive(&path).unwrap());
+            }
         }
+        assert_eq!(listed, 4);
         assert_eq!(records.len(), 4);
         assert!(records.iter().all(|r| r["log"]["stdout"] == "ok"));
         assert!(records
@@ -521,7 +647,7 @@ mod tests {
         }
         let bounded = ArchivePolicy {
             max_files: 3,
-            keep_months: 2,
+            keep_months: Some(2),
             ..policy()
         };
         let report = sweep(dir.path(), &HashSet::new(), &bounded, now);
@@ -532,6 +658,113 @@ mod tests {
         assert!(!archive.join("2001-01.jsonl.gz").exists());
         let next = sweep(dir.path(), &HashSet::new(), &bounded, now);
         assert_eq!(next.archived, 3);
+    }
+
+    #[test]
+    fn month_archives_are_kept_unless_pruning_is_asked_for() {
+        assert_eq!(ArchivePolicy::default().keep_months, None);
+        let dir = tempfile::tempdir().unwrap();
+        let now = SystemTime::now();
+        let now_utc: DateTime<Utc> = now.into();
+        let logs = dir.path().join("p").join(LOGS_DIR);
+        for days in 100..105u64 {
+            let age = DAY * days as u32;
+            write_log(
+                &logs,
+                now_utc - chrono::Duration::from_std(age).unwrap(),
+                age,
+                now,
+            );
+        }
+        let archive = logs.join(ARCHIVE_DIR);
+        std::fs::create_dir_all(&archive).unwrap();
+        // Twelve old months plus the one this sweep writes.
+        for month in 1..=12 {
+            std::fs::write(archive.join(format!("2001-{month:02}.jsonl.gz")), b"").unwrap();
+        }
+        let report = sweep(dir.path(), &HashSet::new(), &policy(), now);
+        assert_eq!(report.archived, 3);
+        assert_eq!(report.archives_removed, 0);
+        assert!(archive.join("2001-01.jsonl.gz").exists());
+    }
+
+    #[test]
+    fn a_log_whose_delete_failed_is_not_archived_twice() {
+        let dir = tempfile::tempdir().unwrap();
+        let now = SystemTime::now();
+        let now_utc: DateTime<Utc> = now.into();
+        let logs = dir.path().join("p").join(LOGS_DIR);
+        let started = now_utc - chrono::Duration::days(40);
+        let old = write_log(&logs, started, DAY * 40, now);
+        let body = std::fs::read(&old).unwrap();
+        for hours in 1..=2 {
+            write_log(
+                &logs,
+                now_utc - chrono::Duration::hours(hours),
+                Duration::from_secs(3600),
+                now,
+            );
+        }
+        let first = sweep(dir.path(), &HashSet::new(), &policy(), now);
+        assert_eq!(first.archived, 1);
+        let target = logs
+            .join(ARCHIVE_DIR)
+            .join(format!("{}.jsonl.gz", month_of(started)));
+        let names = target.with_file_name(format!("{}{NAMES_SUFFIX}", month_of(started)));
+        assert!(names.exists());
+
+        // The original comes back, as when its delete failed (another
+        // program held it open).
+        let leftover = |path: &Path| {
+            std::fs::write(path, &body).unwrap();
+            std::fs::File::options()
+                .write(true)
+                .open(path)
+                .unwrap()
+                .set_modified(now - DAY * 40)
+                .unwrap();
+        };
+        leftover(&old);
+        let again = sweep(dir.path(), &HashSet::new(), &policy(), now);
+        assert_eq!(again.archived, 0, "{again:?}");
+        assert_eq!(again.already_archived, 1);
+        assert_eq!(again.failed, 0);
+        assert!(!old.exists());
+        assert!(again.summary().contains("already_archived=1"));
+
+        // Without the names list the archive itself is read.
+        std::fs::remove_file(&names).unwrap();
+        leftover(&old);
+        let rebuilt = sweep(dir.path(), &HashSet::new(), &policy(), now);
+        assert_eq!(rebuilt.already_archived, 1, "{rebuilt:?}");
+        assert!(names.exists());
+
+        // The raw archive holds the log once.
+        let mut text = String::new();
+        MultiGzDecoder::new(std::fs::File::open(&target).unwrap())
+            .read_to_string(&mut text)
+            .unwrap();
+        assert_eq!(text.lines().filter(|l| !l.trim().is_empty()).count(), 1);
+        assert_eq!(read_archive(&target).unwrap().len(), 1);
+    }
+
+    #[test]
+    fn a_log_appended_twice_is_read_once() {
+        let dir = tempfile::tempdir().unwrap();
+        let now = SystemTime::now();
+        let now_utc: DateTime<Utc> = now.into();
+        let log = write_log(dir.path(), now_utc, DAY, now);
+        let file = RunLogFile {
+            path: log.clone(),
+            name: log.file_name().unwrap().to_string_lossy().to_string(),
+            started: now_utc,
+            size: 1,
+            modified: now,
+        };
+        let target = dir.path().join("2026-01.jsonl.gz");
+        append_member(&target, std::slice::from_ref(&file)).unwrap();
+        append_member(&target, std::slice::from_ref(&file)).unwrap();
+        assert_eq!(read_archive(&target).unwrap().len(), 1);
     }
 
     #[test]

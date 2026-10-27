@@ -11,7 +11,7 @@
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicI64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicI64, Ordering};
 use std::sync::{Arc, Mutex as StdMutex};
 use std::time::Duration;
 
@@ -582,8 +582,18 @@ async fn scheduler_event_run_with_a_missing_preset_fails_and_runs_nothing() {
         agent.prompts.lock().unwrap().is_empty(),
         "the agent must not run"
     );
-    // The pipe is free again afterwards.
+    // The pipe is free again afterwards, and the meeting was not handled,
+    // so its claim went back: once the preset is fixed, a later delivery of
+    // the same meeting may run.
     assert!(!manager.run_slots.lock().await.contains_key(&pipe));
+    assert!(
+        wait_until(Duration::from_secs(5), || !store.is_claimed(
+            &pipe,
+            "meeting_ended",
+            &key
+        ))
+        .await
+    );
 
     // A manual run gets the same reason and leaves the pipe runnable.
     manager.stop_scheduler().await;
@@ -676,6 +686,154 @@ async fn scheduler_star_preset_runs_on_the_users_presets_and_falls_back() {
     );
 
     manager.stop_scheduler().await;
+}
+
+#[test]
+fn scheduler_default_preset_aliases_add_no_fallback_note() {
+    let dir = tempfile::tempdir().unwrap();
+    write_store(
+        dir.path(),
+        json!([
+            {"id": "work", "model": "m-work", "provider": "openai"},
+            {"id": "local", "model": "m-local", "provider": "native-ollama", "defaultPreset": true},
+            {"id": "screenpipe-cloud", "model": "m-cloud", "provider": "openai"}
+        ]),
+    );
+    let registry = PresetFallbackRegistry::new(dir.path());
+    let model_for = |list: &str| {
+        let pipes_dir = write_pipe(
+            dir.path(),
+            "p",
+            &format!("schedule: manual\npreset: {list}\n"),
+        );
+        let (config, _) = super::parse_frontmatter(
+            &std::fs::read_to_string(pipes_dir.join("p/pipe.md")).unwrap(),
+        )
+        .unwrap();
+        choose_run_model(&pipes_dir, &config, &registry, 0).unwrap()
+    };
+    for list in [
+        "auto",
+        "default",
+        "pi-agent",
+        "[\"*\"]",
+        "[\"auto\", \"*\"]",
+    ] {
+        let model = model_for(list);
+        assert!(
+            model.fallback_note(None, None).is_none(),
+            "preset: {list} ran on {:?} and reported a fallback",
+            model.preset_id
+        );
+    }
+    // A missing first entry still reads as a fallback.
+    let model = model_for("[\"gone\", \"work\"]");
+    let note = model.fallback_note(None, None).expect("a fallback note");
+    assert_eq!(note["requested"], "gone");
+    assert_eq!(note["used"], "work");
+}
+
+// ── Run state after an attempt ───────────────────────────────────────────
+
+/// A process id no real process has (Linux caps ids at 2^22; Windows ids
+/// are multiples of 4).
+const FAKE_PID: u32 = 0x7FFF_FFF1;
+
+/// An `after_run` hook that holds the run until the test lets it go.
+#[derive(Default)]
+struct HoldAfterRun {
+    entered: AtomicBool,
+    release: AtomicBool,
+}
+
+#[async_trait::async_trait]
+impl super::hooks::PipeRunHook for HoldAfterRun {
+    fn name(&self) -> &str {
+        "test-hold-after-run"
+    }
+
+    async fn after_run(&self, _run: &super::hooks::RunEnd<'_>) {
+        self.entered.store(true, Ordering::SeqCst);
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(20);
+        while !self.release.load(Ordering::SeqCst) && tokio::time::Instant::now() < deadline {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn scheduler_stop_after_the_agent_exited_kills_nothing_and_keeps_the_row() {
+    // A short agent exits before the PID watcher looks (100 ms); a longer
+    // one exits after the watcher recorded its id.
+    for delay in [Duration::from_millis(20), Duration::from_millis(300)] {
+        let dir = tempfile::tempdir().unwrap();
+        let pipe = format!("w402-exited-{}", unique_id());
+        let pipes_dir = write_pipe(
+            dir.path(),
+            &pipe,
+            "schedule: manual\ntrigger:\n  events:\n    - meeting_ended\n",
+        );
+        let store = Arc::new(MemoryPipeStore::default());
+        let mut agent = ScriptedAgent::new(&finished_answer("Saved."), true);
+        agent.fake_pid = Some(FAKE_PID);
+        agent.delay = delay;
+        let agent = Arc::new(agent);
+        let hold = Arc::new(HoldAfterRun::default());
+        let hook = hold.clone();
+        let meeting = unique_id();
+        let key = meeting.to_string();
+        let (mut manager, _) = start(
+            pipes_dir.clone(),
+            store.clone(),
+            agent.clone(),
+            vec![meeting],
+            move |m| m.add_run_hook(hook),
+        )
+        .await;
+
+        meeting_ended(meeting);
+        assert!(
+            wait_until(Duration::from_secs(10), || hold
+                .entered
+                .load(Ordering::SeqCst))
+            .await,
+            "the run never reached its after_run hook"
+        );
+        // Past the watcher's wait, whichever agent ran.
+        tokio::time::sleep(Duration::from_millis(250)).await;
+        let rows = store.executions_for_key(&key);
+        assert_eq!(rows.len(), 1, "{rows:?}");
+        assert_eq!(rows[0].status, "completed");
+        // The agent is gone: the pipe is still busy, but with no process id.
+        let pid_file = pipes_dir.join(&pipe).join("run.pid");
+        assert_eq!(std::fs::read_to_string(&pid_file).unwrap().trim(), "0");
+        assert_eq!(
+            manager.running.lock().await.get(&pipe).map(|h| h.pid),
+            Some(0)
+        );
+        assert!(!manager
+            .running_execution_ids
+            .lock()
+            .await
+            .contains_key(&pipe));
+
+        // A stop in this window signals no process and keeps the result.
+        manager.stop_pipe(&pipe).await.unwrap();
+        assert!(
+            agent.kills.lock().unwrap().is_empty(),
+            "stop signalled {:?} after the agent had exited (delay {delay:?})",
+            agent.kills.lock().unwrap()
+        );
+        let row = &store.executions_for_key(&key)[0];
+        assert_eq!(row.status, "completed", "{row:?}");
+        assert_eq!(row.error_type, None);
+
+        hold.release.store(true, Ordering::SeqCst);
+        assert!(wait_until(Duration::from_secs(10), || !pid_file.exists()).await);
+        assert_eq!(store.executions_for_key(&key)[0].status, "completed");
+        assert_eq!(store.executions_for_key(&key).len(), 1);
+        manager.stop_scheduler().await;
+    }
 }
 
 // ── Stale one-offs ───────────────────────────────────────────────────────
