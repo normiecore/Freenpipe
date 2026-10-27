@@ -12,7 +12,10 @@
 //!
 //! [`HookWatchdog`] detects that symptom from two timestamps the hook thread
 //! already has, the last hook callback and the system's last-input time, and
-//! asks for a reinstall when input kept arriving but no callback did. It is
+//! asks for a reinstall when input kept arriving but no callback did. The
+//! system only reports its newest input, so the watchdog remembers the first
+//! input it saw go unanswered: a user who never pauses still has hooks that
+//! are found out once that input is old enough. It is
 //! pure logic over millisecond timestamps, so it runs in every platform's
 //! tests; the Win32 side (`platform::windows`) only feeds it numbers and
 //! performs the reinstall through [`HookReinstaller`].
@@ -40,10 +43,15 @@ pub struct HookWatchdogConfig {
     /// How long the hooks must have been quiet, while the system reported
     /// newer input, before they count as removed.
     pub silence_threshold: Duration,
-    /// How old the newest system input must be before its missing callback
-    /// counts. Covers the moment between the system recording an input and
-    /// the hook thread being called for it.
+    /// How old an unanswered system input must be before its missing
+    /// callback counts. Covers the moment between the system recording an
+    /// input and the hook thread being called for it.
     pub callback_grace: Duration,
+    /// System input counts as unanswered only when it is newer than the
+    /// last callback by more than this. The system's input time comes from
+    /// the coarse tick counter (about 16 ms steps), so the input a callback
+    /// just answered can look a few milliseconds newer than that callback.
+    pub clock_tolerance: Duration,
     /// Wait after the first attempt of a streak; doubles with each attempt.
     pub initial_backoff: Duration,
     /// Longest wait between two attempts.
@@ -58,6 +66,7 @@ impl Default for HookWatchdogConfig {
         Self {
             silence_threshold: Duration::from_secs(3),
             callback_grace: Duration::from_secs(1),
+            clock_tolerance: Duration::from_millis(100),
             initial_backoff: Duration::from_secs(5),
             max_backoff: Duration::from_secs(600),
             healthy_after: Duration::from_secs(60),
@@ -94,6 +103,11 @@ pub struct HookWatchdog {
     /// System input at or before this time is ignored (see
     /// [`HookWatchdog::ignore_input_until`]).
     ignore_input_until_ms: u64,
+    /// The first system input seen that no callback has answered yet. Kept
+    /// across looks because the system only reports its newest input: while
+    /// the user keeps typing, the newest input is always too fresh to count,
+    /// but this one keeps ageing.
+    first_unanswered_input_ms: Option<u64>,
     total_attempts: u64,
 }
 
@@ -108,6 +122,7 @@ impl HookWatchdog {
             last_attempt_at_ms: None,
             next_attempt_at_ms: 0,
             ignore_input_until_ms: 0,
+            first_unanswered_input_ms: None,
             total_attempts: 0,
         }
     }
@@ -156,11 +171,24 @@ impl HookWatchdog {
             .min(now_ms);
         let silent_for_ms = now_ms - reference;
 
-        let missed_input = last_input_ms.is_some_and(|input| {
-            input > reference
-                && input > self.ignore_input_until_ms
-                && input <= now_ms
-                && now_ms - input >= millis(self.config.callback_grace)
+        // Input up to here has been answered (or predates the current hooks,
+        // or was set aside); only input after it can be missed.
+        let answered_until = reference
+            .saturating_add(millis(self.config.clock_tolerance))
+            .max(self.ignore_input_until_ms);
+        if self
+            .first_unanswered_input_ms
+            .is_some_and(|input| input <= answered_until)
+        {
+            self.first_unanswered_input_ms = None;
+        }
+        if self.first_unanswered_input_ms.is_none() {
+            self.first_unanswered_input_ms =
+                last_input_ms.filter(|&input| input > answered_until && input <= now_ms);
+        }
+
+        let missed_input = self.first_unanswered_input_ms.is_some_and(|input| {
+            now_ms.saturating_sub(input) >= millis(self.config.callback_grace)
         });
         let silent = missed_input && silent_for_ms >= millis(self.config.silence_threshold);
 
@@ -390,9 +418,9 @@ mod tests {
         let mut wd = watchdog();
         let mut hooks = TestHooks::default();
         // Hooks answered until t=10s, then Windows dropped them; the user
-        // kept typing and the system recorded input up to t=14s.
+        // kept typing and the system kept recording input.
         let last_cb = Some(10_000);
-        for now in (10_000..=13_000).step_by(500) {
+        for now in (10_000..=12_500).step_by(500) {
             let input = Some(now);
             assert_eq!(
                 tick(&mut wd, now, last_cb, input, &mut hooks, &visible),
@@ -400,12 +428,13 @@ mod tests {
                 "too early at {now}"
             );
         }
-        let outcome = tick(&mut wd, 14_500, last_cb, Some(13_400), &mut hooks, &visible);
+        // Quiet for 3 s while the input of t=10.5s is still unanswered.
+        let outcome = tick(&mut wd, 13_000, last_cb, Some(13_000), &mut hooks, &visible);
         assert_eq!(
             outcome,
             TickOutcome::Reinstalled {
                 attempt: 1,
-                silent_for_ms: 4_500
+                silent_for_ms: 3_000
             }
         );
         assert_eq!(hooks.reinstalls, 1);
@@ -425,6 +454,55 @@ mod tests {
         assert_eq!(hooks.reinstalls, 1);
         // Healthy for a minute after the attempt: the streak is over.
         assert_eq!(wd.streak_attempts(), 0);
+    }
+
+    #[test]
+    fn removed_hooks_are_found_while_the_user_never_pauses() {
+        let mut wd = watchdog();
+        let mut hooks = TestHooks::default();
+        // Hooks answered until t=10s and then went silent, while the user
+        // kept typing: new input every 100 ms, so the newest input is never
+        // older than the grace period.
+        let last_cb = Some(10_000);
+        let mut reinstalled_at = None;
+        for now in (10_100..=20_000).step_by(100) {
+            let outcome = tick(&mut wd, now, last_cb, Some(now - 30), &mut hooks, &visible);
+            if matches!(outcome, TickOutcome::Reinstalled { attempt: 1, .. }) {
+                reinstalled_at = Some(now);
+                break;
+            }
+        }
+        // Found once the hooks were quiet for the silence threshold (3 s),
+        // not only at the user's first pause.
+        assert_eq!(reinstalled_at, Some(13_000));
+        assert_eq!(hooks.reinstalls, 1);
+
+        // The new hooks answer, again with input every 100 ms: left alone.
+        for now in (13_100..=200_000).step_by(100) {
+            let outcome = tick(
+                &mut wd,
+                now,
+                Some(now - 20),
+                Some(now - 30),
+                &mut hooks,
+                &visible,
+            );
+            assert_eq!(outcome, TickOutcome::Healthy, "at {now}");
+        }
+        assert_eq!(hooks.reinstalls, 1);
+    }
+
+    #[test]
+    fn coarse_input_clock_is_not_a_missed_callback() {
+        let mut wd = watchdog();
+        let mut hooks = TestHooks::default();
+        // The system's input time is read from a ~16 ms tick counter, so
+        // the last keystroke can look 15 ms newer than the callback that
+        // answered it. An idle user afterwards must not cause reinstalls.
+        for now in (5_000..600_000).step_by(500) {
+            tick(&mut wd, now, Some(4_000), Some(4_015), &mut hooks, &visible);
+        }
+        assert_eq!(hooks.reinstalls, 0);
     }
 
     #[test]

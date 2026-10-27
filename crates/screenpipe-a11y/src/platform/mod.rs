@@ -4,6 +4,7 @@
 // They hold no OS calls, so they build everywhere and every platform's test
 // run covers them; `windows.rs` feeds them from Win32.
 pub mod hook_watchdog;
+pub mod input_focus;
 pub mod input_queue;
 pub mod window_identity;
 

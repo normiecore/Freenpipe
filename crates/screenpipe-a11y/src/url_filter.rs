@@ -276,6 +276,34 @@ fn rule_host(text: &str) -> Result<String, UrlRuleError> {
     }
 }
 
+/// The host a block rule that failed validation most plausibly names, so
+/// the rule can still block it: a leading `*.` or `.` is dropped, any scheme
+/// is accepted (`https://` is assumed without one), and a port, path, query
+/// or credentials are ignored. `None` when no host can be read at all.
+fn lenient_rule_host(text: &str) -> Option<String> {
+    let mut rest = text.trim();
+    loop {
+        if let Some(stripped) = rest.strip_prefix("*.") {
+            rest = stripped;
+        } else if let Some(stripped) = rest.strip_prefix('.') {
+            rest = stripped;
+        } else {
+            break;
+        }
+    }
+    if rest.is_empty() {
+        return None;
+    }
+    let candidate = if starts_with_scheme_separator(rest) {
+        rest.to_string()
+    } else {
+        format!("https://{}", rest)
+    };
+    let parsed = Url::parse(&candidate).ok()?;
+    let host = canonical_host(parsed.host_str()?);
+    (!host.is_empty()).then_some(host)
+}
+
 /// True when `host` is a proper subdomain of `parent` (`a.b.example` is
 /// below `b.example`; `notexample` and `example` itself are not).
 fn is_below(host: &str, parent: &str) -> bool {
@@ -367,6 +395,53 @@ pub struct RejectedUrlRule {
     pub index: usize,
     pub domain: String,
     pub error: UrlRuleError,
+    /// For a block rule: the legacy pattern applied in its place (a host,
+    /// blocked with all of its subdomains, or, when no host could be read,
+    /// the rule's text matched like an old plain pattern). `None` for an
+    /// allow rule, which allows nothing, and for a block rule with nothing
+    /// usable in it.
+    pub applied_instead: Option<String>,
+}
+
+/// Log, once per policy build, what an invalid block rule is applied as.
+/// `from_host` says whether `applied` is a host read from the rule (else it
+/// is the rule's own text).
+fn log_block_rule_fallback(
+    index: usize,
+    domain: &str,
+    error: &UrlRuleError,
+    applied: Option<&str>,
+    from_host: bool,
+) {
+    match applied {
+        Some(host) if from_host && host.contains('.') => tracing::warn!(
+            index,
+            "ignoredUrls rule {:?} is invalid ({}); blocking {:?} and all of its subdomains instead",
+            domain,
+            error,
+            host
+        ),
+        Some(word) if from_host => tracing::warn!(
+            index,
+            "ignoredUrls rule {:?} is invalid ({}); blocking every host that has {:?} as one of its labels instead",
+            domain,
+            error,
+            word
+        ),
+        Some(text) => tracing::warn!(
+            index,
+            "ignoredUrls rule {:?} is invalid ({}) and names no readable host; matching {:?} like an old plain pattern instead, which may block nothing",
+            domain,
+            error,
+            text
+        ),
+        None => tracing::warn!(
+            index,
+            "ignoredUrls rule {:?} is invalid ({}) and names nothing to block",
+            domain,
+            error
+        ),
+    }
 }
 
 /// What a browser URL looks like to the allow list.
@@ -390,14 +465,27 @@ const HOSTLESS_SCHEMES: &[&str] = &[
     "file:",
 ];
 
+/// True when `text` starts with a URL scheme followed by `://`
+/// (`https://`, `chrome-extension://`). A `://` further in, as in
+/// `bank.com/login?next=https://x`, does not count.
+fn starts_with_scheme_separator(text: &str) -> bool {
+    let Some(idx) = text.find("://") else {
+        return false;
+    };
+    let scheme = &text[..idx];
+    let mut chars = scheme.chars();
+    chars.next().is_some_and(|c| c.is_ascii_alphabetic())
+        && chars.all(|c| c.is_ascii_alphanumeric() || matches!(c, '+' | '-' | '.'))
+}
+
 impl BrowserUrl {
     fn of(url: Option<&str>) -> Self {
         let Some(text) = url.map(str::trim).filter(|t| !t.is_empty()) else {
             return BrowserUrl::Unknown;
         };
         let lower = text.to_ascii_lowercase();
-        let has_scheme =
-            lower.contains("://") || HOSTLESS_SCHEMES.iter().any(|s| lower.starts_with(s));
+        let has_scheme = starts_with_scheme_separator(&lower)
+            || HOSTLESS_SCHEMES.iter().any(|s| lower.starts_with(s));
         let candidate = if has_scheme {
             text.to_string()
         } else {
@@ -528,9 +616,11 @@ impl UrlPolicy {
     ///
     /// A rule that fails [`validate_domain_rule`] never lets more through
     /// than the user asked for: a broken block rule falls back to the broad
-    /// legacy match on its domain (that domain and everything below it), and
-    /// a broken allow rule allows nothing. Each such rule is listed in
-    /// [`UrlPolicy::rejected_rules`] and logged once here.
+    /// legacy match on the host it names (that host and everything below
+    /// it; `*.bank.com`, `bank.com/login` and `bank.com:443` all name
+    /// bank.com), and a broken allow rule allows nothing. Each such rule is
+    /// listed in [`UrlPolicy::rejected_rules`] with what was applied instead,
+    /// and logged once here.
     pub fn new(ignored: &[UrlRule], included: &[DomainRule]) -> Self {
         let mut rules = PolicyRules {
             allow_list_active: !included.is_empty(),
@@ -548,21 +638,35 @@ impl UrlPolicy {
                 UrlRule::Domain(rule) => match CompiledDomainRule::compile(rule) {
                     Ok(compiled) => rules.blocked.push(BlockRule::Domain(compiled)),
                     Err(error) => {
-                        // The host the rule names when it can be read (so a
-                        // URL-form domain still blocks its host), else the
-                        // text as written.
-                        let fallback = rule_host(&rule.domain)
-                            .unwrap_or_else(|_| entry.legacy_pattern())
+                        // The host the rule names when one can be read (so
+                        // `*.bank.com`, `bank.com/login` or `bank.com:443`
+                        // still block bank.com), else the text as written,
+                        // matched like an old plain pattern.
+                        let host = rule_host(&rule.domain)
+                            .ok()
+                            .or_else(|| lenient_rule_host(&rule.domain));
+                        let from_host = host.is_some();
+                        let fallback = host
+                            .unwrap_or_else(|| entry.legacy_pattern())
                             .trim()
                             .to_lowercase();
-                        if !fallback.is_empty() {
-                            rules.blocked.push(BlockRule::Legacy(fallback));
+                        let applied_instead = (!fallback.is_empty()).then_some(fallback);
+                        log_block_rule_fallback(
+                            index,
+                            &rule.domain,
+                            &error,
+                            applied_instead.as_deref(),
+                            from_host,
+                        );
+                        if let Some(pattern) = applied_instead.clone() {
+                            rules.blocked.push(BlockRule::Legacy(pattern));
                         }
                         rules.rejected.push(RejectedUrlRule {
                             list: UrlRuleList::Blocked,
                             index,
                             domain: rule.domain.clone(),
                             error,
+                            applied_instead,
                         });
                     }
                 },
@@ -577,24 +681,19 @@ impl UrlPolicy {
                     index,
                     domain: rule.domain.clone(),
                     error,
+                    applied_instead: None,
                 }),
             }
         }
 
         for rejected in &rules.rejected {
-            match rejected.list {
-                UrlRuleList::Blocked => tracing::warn!(
-                    index = rejected.index,
-                    "ignoredUrls rule {:?} is invalid ({}); blocking that domain and all of its subdomains instead",
-                    rejected.domain,
-                    rejected.error
-                ),
-                UrlRuleList::Allowed => tracing::warn!(
+            if rejected.list == UrlRuleList::Allowed {
+                tracing::warn!(
                     index = rejected.index,
                     "includedUrls rule {:?} is invalid ({}); it allows nothing until it is fixed",
                     rejected.domain,
                     rejected.error
-                ),
+                );
             }
         }
 
@@ -1011,6 +1110,80 @@ mod tests {
         assert!(p.is_blocked("http://intranet/wiki"));
         assert!(p.is_blocked("https://intranet.corp.example"));
         assert!(!p.is_blocked("https://myintranet.example"));
+        assert_eq!(
+            p.rejected_rules()[0].applied_instead.as_deref(),
+            Some("intranet")
+        );
+
+        // Wildcards, paths, ports, credentials and other schemes are not
+        // valid in a rule, but the host they name is still blocked, with
+        // all of its subdomains.
+        for domain in [
+            "*.bank.com",
+            "bank.com/login",
+            "bank.com:443",
+            "Bank.COM:8443/login?x=1",
+            ".bank.com",
+            "user@bank.com",
+            "ftp://bank.com/files",
+        ] {
+            let p = block_policy(vec![rule(domain, false, &[]).into()]);
+            assert_eq!(p.rejected_rules().len(), 1, "{domain}");
+            assert_eq!(
+                p.rejected_rules()[0].applied_instead.as_deref(),
+                Some("bank.com"),
+                "{domain}"
+            );
+            assert!(p.is_blocked("https://bank.com"), "{domain}");
+            assert!(p.is_blocked("https://online.bank.com/x"), "{domain}");
+            assert!(p.is_blocked("bank.com/login"), "{domain}");
+            assert!(!p.is_blocked("https://notbank.com"), "{domain}");
+            assert!(!p.is_blocked("https://bank.com.evil.io"), "{domain}");
+        }
+
+        // No host can be read: the text itself is kept as a plain pattern
+        // (it blocks only what the old matcher would block with it).
+        let p = block_policy(vec![rule("bank .com", false, &[]).into()]);
+        assert_eq!(
+            p.rejected_rules()[0].applied_instead.as_deref(),
+            Some("bank .com")
+        );
+        assert!(!p.is_blocked("https://bank.com"));
+
+        // Nothing at all: nothing is applied, and nothing else is blocked.
+        let p = block_policy(vec![rule("  ", false, &[]).into()]);
+        assert!(p.is_empty());
+        assert!(!p.is_blocked("https://bank.com"));
+    }
+
+    #[test]
+    fn a_scheme_is_only_read_at_the_start_of_a_url() {
+        let p = block_policy(vec![rule("bank.com", true, &[]).into()]);
+        // An address bar without a scheme whose query holds another URL.
+        assert!(p.is_blocked("bank.com/login?next=https://x.example"));
+        assert!(p.is_blocked("online.bank.com/?r=http://evil.io"));
+        assert!(!p.is_blocked("evil.io/?next=https://bank.com"));
+
+        let allow = UrlPolicy::new(&[], &[rule("example.org", true, &[])]);
+        assert!(allow
+            .decide("chrome.exe", Some("docs.example.org/a?u=https://x.io"))
+            .is_allowed());
+        assert_eq!(
+            allow.decide("chrome.exe", Some("other.net/?u=https://example.org")),
+            UrlDecision::NotAllowed
+        );
+        // Real schemes, including ones with digits, dots, plus and dashes.
+        assert_eq!(
+            allow.decide("chrome.exe", Some("chrome-extension://abcdef/page.html")),
+            UrlDecision::NotAllowed
+        );
+        assert!(starts_with_scheme_separator("https://a"));
+        assert!(starts_with_scheme_separator("svn+ssh://a"));
+        assert!(starts_with_scheme_separator("web.3-x://a"));
+        assert!(!starts_with_scheme_separator("a.com/?u=https://b"));
+        assert!(!starts_with_scheme_separator("://a"));
+        assert!(!starts_with_scheme_separator("1http://a"));
+        assert!(!starts_with_scheme_separator("a b://c"));
     }
 
     #[test]
