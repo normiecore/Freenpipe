@@ -349,19 +349,47 @@ async fn sources_for(data_dir: &Path) -> (Option<Arc<SecretStore>>, Arc<Connecti
     (store, manager)
 }
 
-/// The data directory and API port of the running engine.
-fn engine_location(app: &AppHandle) -> (PathBuf, u16) {
+/// How long a turn waits for the engine's state lock to read its data
+/// directory. The lock is held briefly by start/stop and status calls.
+const ENGINE_LOOKUP_TIMEOUT: Duration = Duration::from_millis(500);
+
+/// The data directory and API port of the engine. The running engine's own
+/// directory wins; while its state is locked the directory seen last is
+/// used, and before any engine ran the one the settings resolve to (the
+/// `dataDir` setting, `SCREENPIPE_DATA_DIR`, or the default).
+async fn engine_location(app: &AppHandle) -> (PathBuf, u16) {
+    static LAST_ENGINE_DIR: std::sync::Mutex<Option<PathBuf>> = std::sync::Mutex::new(None);
+
     let port = crate::recording::local_api_context_from_app(app).port;
-    let data_dir = app
-        .try_state::<crate::recording::RecordingState>()
-        .and_then(|state| {
-            state
-                .server
-                .try_lock()
-                .ok()
-                .and_then(|guard| guard.as_ref().map(|core| core.data_dir.clone()))
-        })
-        .unwrap_or_else(screenpipe_core::paths::default_screenpipe_data_dir);
+    let running = match app.try_state::<crate::recording::RecordingState>() {
+        Some(state) => {
+            let server = state.server.clone();
+            match tokio::time::timeout(ENGINE_LOOKUP_TIMEOUT, server.lock()).await {
+                Ok(guard) => guard.as_ref().map(|core| core.data_dir.clone()),
+                Err(_) => None,
+            }
+        }
+        None => None,
+    };
+    let data_dir = match running {
+        Some(dir) => {
+            if let Ok(mut last) = LAST_ENGINE_DIR.lock() {
+                *last = Some(dir.clone());
+            }
+            dir
+        }
+        None => LAST_ENGINE_DIR
+            .lock()
+            .ok()
+            .and_then(|last| last.clone())
+            .unwrap_or_else(|| {
+                let settings = crate::store::SettingsStore::get(app)
+                    .ok()
+                    .flatten()
+                    .unwrap_or_default();
+                crate::config::resolve_data_dir(&settings.data_dir).0
+            }),
+    };
     (data_dir, port)
 }
 
@@ -385,7 +413,7 @@ async fn render_body(data_dir: &Path, port: u16) -> String {
 /// This turn's block, or the "unavailable" block when the list is not ready
 /// within `RENDER_TIMEOUT`.
 pub async fn block_for_turn(app: &AppHandle) -> String {
-    let (data_dir, port) = engine_location(app);
+    let (data_dir, port) = engine_location(app).await;
     match tokio::time::timeout(RENDER_TIMEOUT, render_body(&data_dir, port)).await {
         Ok(body) => wrap_block(&body),
         Err(_) => {
