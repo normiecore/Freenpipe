@@ -160,24 +160,35 @@ async fn scheduler_busy_pipe_defers_wakeups_then_runs_once_coalesced() {
         &format!("schedule: manual\ntrigger:\n  events:\n    - {event}\n"),
     );
     let store = Arc::new(MemoryPipeStore::default());
-    let mut agent = ScriptedAgent::new(&finished_answer("done"), true);
-    agent.delay = Duration::from_millis(700);
-    let agent = Arc::new(agent);
+    let agent = Arc::new(ScriptedAgent::new(&finished_answer("done"), true));
     let (mut manager, _) = start(pipes_dir, store.clone(), agent.clone(), vec![], |_| {}).await;
 
+    // Hold the first run in its queued state: the pipe stays busy.
+    let gate = store.running_gate.write().await;
     screenpipe_events::send_event(&event, json!({"reason": "first"})).unwrap();
     assert!(
         wait_until(Duration::from_secs(10), || !store
             .executions_for_pipe(&pipe)
             .is_empty())
         .await,
-        "the first wake-up never started a run"
+        "the first wake-up never queued a run"
     );
-    // Four more wake-ups while the run is going: one more run afterwards.
+    // Four more wake-ups while the pipe is busy: one more run afterwards.
     for n in 0..4 {
         screenpipe_events::send_event(&event, json!({"reason": "again", "n": n})).unwrap();
         tokio::time::sleep(Duration::from_millis(60)).await;
     }
+    assert!(
+        wait_until(Duration::from_secs(10), || {
+            let stats = manager.backlog_stats();
+            stats.deferred == 4 && stats.coalesced == 3
+        })
+        .await,
+        "{:?}",
+        manager.backlog_stats()
+    );
+    drop(gate);
+
     assert!(
         wait_until(Duration::from_secs(15), || finished_rows(&store, &pipe)
             >= 2)
@@ -185,7 +196,7 @@ async fn scheduler_busy_pipe_defers_wakeups_then_runs_once_coalesced() {
         "the deferred wake-up never ran"
     );
     // Nothing else is waiting.
-    tokio::time::sleep(Duration::from_millis(1200)).await;
+    tokio::time::sleep(Duration::from_millis(500)).await;
     let rows = store.executions_for_pipe(&pipe);
     assert_eq!(rows.len(), 2, "{rows:?}");
     assert!(rows.iter().all(|r| r.status == "completed"));
@@ -195,9 +206,6 @@ async fn scheduler_busy_pipe_defers_wakeups_then_runs_once_coalesced() {
     // The second run handled the newest wake-up.
     let prompts = agent.prompts.lock().unwrap().clone();
     assert!(prompts[1].contains("\"n\":3"), "{}", prompts[1]);
-    let stats = manager.backlog_stats();
-    assert!(stats.deferred >= 1, "{stats:?}");
-    assert!(stats.coalesced >= 3, "{stats:?}");
 
     manager.stop_scheduler().await;
 }
@@ -212,9 +220,7 @@ async fn scheduler_coalescing_keeps_one_run_per_meeting() {
         "schedule: manual\ntrigger:\n  events:\n    - meeting_ended\n",
     );
     let store = Arc::new(MemoryPipeStore::default());
-    let mut agent = ScriptedAgent::new(&finished_answer("Saved."), true);
-    agent.delay = Duration::from_millis(600);
-    let agent = Arc::new(agent);
+    let agent = Arc::new(ScriptedAgent::new(&finished_answer("Saved."), true));
     let first = unique_id();
     let second = unique_id();
     let (mut manager, _) = start(
@@ -226,6 +232,7 @@ async fn scheduler_coalescing_keeps_one_run_per_meeting() {
     )
     .await;
 
+    let gate = store.running_gate.write().await;
     meeting_ended(first);
     let first_key = first.to_string();
     assert!(
@@ -240,6 +247,17 @@ async fn scheduler_coalescing_keeps_one_run_per_meeting() {
         meeting_ended(second);
     }
     meeting_ended(first);
+    assert!(
+        wait_until(Duration::from_secs(10), || {
+            let stats = manager.backlog_stats();
+            stats.deferred == 4 && stats.coalesced == 2
+        })
+        .await,
+        "{:?}",
+        manager.backlog_stats()
+    );
+    drop(gate);
+
     let second_key = second.to_string();
     assert!(
         wait_until(Duration::from_secs(15), || store
@@ -248,14 +266,16 @@ async fn scheduler_coalescing_keeps_one_run_per_meeting() {
             .any(|e| e.finished_at.is_some()))
         .await
     );
-    tokio::time::sleep(Duration::from_millis(1200)).await;
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    // One run per meeting: the kept copy of the first meeting is a
+    // duplicate its claim stops.
     assert_eq!(store.executions_for_key(&first_key).len(), 1);
     assert_eq!(store.executions_for_key(&second_key).len(), 1);
     assert_eq!(
         agent.runs_mentioning(&format!("instance `{second_key}`")),
         1
     );
-    assert!(manager.backlog_stats().coalesced >= 2);
+    assert_eq!(agent.runs_mentioning(&format!("instance `{first_key}`")), 1);
 
     manager.stop_scheduler().await;
 }
@@ -270,9 +290,7 @@ async fn scheduler_backlog_cap_evicts_the_oldest_and_records_it() {
         "schedule: manual\ntrigger:\n  events:\n    - meeting_ended\n",
     );
     let store = Arc::new(MemoryPipeStore::default());
-    let mut agent = ScriptedAgent::new(&finished_answer("Saved."), true);
-    agent.delay = Duration::from_millis(900);
-    let agent = Arc::new(agent);
+    let agent = Arc::new(ScriptedAgent::new(&finished_answer("Saved."), true));
     let meetings: Vec<i64> = (0..5).map(|_| unique_id()).collect();
     let (mut manager, _) = start(
         pipes_dir,
@@ -283,6 +301,7 @@ async fn scheduler_backlog_cap_evicts_the_oldest_and_records_it() {
     )
     .await;
 
+    let gate = store.running_gate.write().await;
     meeting_ended(meetings[0]);
     assert!(
         wait_until(Duration::from_secs(10), || !store
@@ -290,12 +309,23 @@ async fn scheduler_backlog_cap_evicts_the_oldest_and_records_it() {
             .is_empty())
         .await
     );
-    // Four more meetings end, one per pass, while the first runs: the
-    // backlog holds two, so the two oldest are evicted.
+    // Four more meetings end while the first is held: the backlog keeps
+    // two, so the two oldest are evicted and recorded.
     for m in &meetings[1..] {
         meeting_ended(*m);
-        tokio::time::sleep(Duration::from_millis(90)).await;
+        tokio::time::sleep(Duration::from_millis(60)).await;
     }
+    assert!(
+        wait_until(Duration::from_secs(10), || manager
+            .backlog_stats()
+            .dropped_full
+            == 2)
+        .await,
+        "{:?}",
+        manager.backlog_stats()
+    );
+    drop(gate);
+
     for m in &meetings[3..] {
         let key = m.to_string();
         assert!(
@@ -315,7 +345,9 @@ async fn scheduler_backlog_cap_evicts_the_oldest_and_records_it() {
         assert!(rows[0].error_message.as_deref().unwrap().contains("busy"));
         assert_eq!(agent.runs_mentioning(&format!("instance `{m}`")), 0);
     }
-    assert_eq!(manager.backlog_stats().dropped_full, 2);
+    let stats = manager.backlog_stats();
+    assert_eq!(stats.dropped_full, 2, "{stats:?}");
+    assert_eq!(stats.deferred, 4, "{stats:?}");
 
     manager.stop_scheduler().await;
 }
