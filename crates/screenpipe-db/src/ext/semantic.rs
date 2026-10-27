@@ -949,23 +949,24 @@ pub struct SemanticGcStats {
 // Row mapping
 // ---------------------------------------------------------------------------
 
-const RUN_COLUMNS: &str = "r.id, r.input_fingerprint, r.parser_id, r.parser_version, \
+pub(crate) const RUN_COLUMNS: &str = "r.id, r.input_fingerprint, r.parser_id, r.parser_version, \
      r.schema_version, r.app_platform, r.app_id, r.app_executable, r.app_version, \
      r.input_content_hash, r.status, r.item_count, r.text_bytes, r.parse_duration_us, \
      r.created_at";
 
-const ITEM_COLUMNS: &str = "i.id AS item_id, i.entity_fingerprint, i.version_fingerprint, \
+pub(crate) const ITEM_COLUMNS: &str =
+    "i.id AS item_id, i.entity_fingerprint, i.version_fingerprint, \
      i.kind, i.item_key, i.identity_quality, i.title, i.body, i.actor, i.occurred_at, \
      i.timestamp_precision, i.status AS item_status, i.metadata_json, \
      i.created_at AS item_created_at";
 
-const ASSIGNED_COLUMNS: &str = "ia.actor_id AS assigned_actor_id, \
+pub(crate) const ASSIGNED_COLUMNS: &str = "ia.actor_id AS assigned_actor_id, \
      a.name AS assigned_actor_name, ia.observed_alias_id, ia.assignment_source";
 
 const ALIAS_COLUMNS: &str =
     "id, actor_id, source_key, source_label, normalized_label, observed_label, created_at";
 
-fn run_from_row(row: &SqliteRow) -> Result<SemanticRun> {
+pub(crate) fn run_from_row(row: &SqliteRow) -> Result<SemanticRun> {
     Ok(SemanticRun {
         id: row.try_get("id")?,
         input_fingerprint: fingerprint_from_blob(
@@ -988,7 +989,7 @@ fn run_from_row(row: &SqliteRow) -> Result<SemanticRun> {
     })
 }
 
-fn item_from_row(row: &SqliteRow) -> Result<SemanticItem> {
+pub(crate) fn item_from_row(row: &SqliteRow) -> Result<SemanticItem> {
     let metadata_text: String = row.try_get("metadata_json")?;
     let metadata = match serde_json::from_str(&metadata_text) {
         Ok(v) => v,
@@ -1025,7 +1026,7 @@ fn item_from_row(row: &SqliteRow) -> Result<SemanticItem> {
     })
 }
 
-fn assigned_from_row(row: &SqliteRow) -> Result<Option<SemanticAssignedActor>> {
+pub(crate) fn assigned_from_row(row: &SqliteRow) -> Result<Option<SemanticAssignedActor>> {
     let actor_id: Option<i64> = row.try_get("assigned_actor_id")?;
     let Some(actor_id) = actor_id else {
         return Ok(None);

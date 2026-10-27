@@ -8,7 +8,7 @@ use axum::{
     response::Json as JsonResponse,
 };
 use oasgen::{oasgen, OaSchema};
-use screenpipe_core::pipes::permissions::PipePermissions;
+use screenpipe_core::pipes::permissions::{PermissionRule, PipePermissions};
 
 /// Extracts an optional `Arc<PipePermissions>` from request extensions.
 /// Wrapper exists because `Option<Extension<T>>` falls back to oasgen's
@@ -41,19 +41,25 @@ impl<S: Send + Sync> FromRequestParts<S> for OptionalPipePerms {
 impl oasgen::OaParameter for OptionalPipePerms {}
 
 use chrono::{DateTime, Utc};
-use screenpipe_db::{ContentType, DatabaseManager, Order, SearchResult};
+use screenpipe_db::ext::search_parsed::{
+    compact_parsed_text, is_search_busy_error, ParsedFrameResult, RelatedTagSources,
+};
+use screenpipe_db::{
+    ContentType, DatabaseManager, Order, SearchResult, SearchScope, SearchWindows,
+};
 
-use futures::future::{try_join, try_join_all};
+use futures::future::{try_join3, try_join_all};
 use serde::{Deserialize, Deserializer, Serialize};
 use serde_json::{json, Value};
 use std::{
-    collections::hash_map::DefaultHasher,
+    collections::{hash_map::DefaultHasher, BTreeMap},
     hash::{Hash, Hasher},
     str::FromStr,
     sync::Arc,
     time::Duration,
 };
-use tokio::time::timeout;
+use tokio::sync::Semaphore;
+use tokio::time::{timeout_at, Instant};
 use tracing::{debug, error, warn};
 
 use crate::analytics;
@@ -61,9 +67,69 @@ use crate::server::AppState;
 use crate::video_utils::extract_frame;
 
 use super::content::{
-    AudioContent, ContentItem, InputContent, MemoryContent, OCRContent, PaginationInfo, UiContent,
+    AudioContent, ContentItem, InputContent, MemoryContent, OCRContent, PaginationInfo,
+    ParsedActorReference, ParsedContent, ParsedItem, UiContent,
 };
 use super::response_format::{ResponseShape, Shaped};
+
+/// Time budget for the database work of one `/search` request.
+pub const SEARCH_BUDGET: Duration = Duration::from_secs(30);
+
+/// Searches that may query the database at the same time.
+pub const SEARCH_MAX_CONCURRENT: usize = 8;
+
+/// How long a search waits for a free slot before answering "busy".
+pub const SEARCH_QUEUE_WAIT: Duration = Duration::from_secs(5);
+
+/// Longest a search waits for the lookup behind the `starred` flags. The flags
+/// are a decoration of results already in hand (often a cache hit), so a
+/// saturated read pool must not hold the response for the pool's own acquire
+/// timeout.
+pub const STARRED_FLAGS_BUDGET: Duration = Duration::from_millis(1500);
+
+/// Most disjoint starred intervals a starred filter may span.
+pub const MAX_STARRED_INTERVALS: usize = 100;
+
+/// Client-visible text of the 503 sent when search is saturated.
+pub const ERR_SEARCH_BUSY: &str = "search is busy — retry shortly";
+
+/// Client-visible text of the 504 sent when the budget runs out.
+pub const ERR_SEARCH_TIMEOUT: &str =
+    "search query timed out after 30s — try a narrower time range or add filters";
+
+static SEARCH_SLOTS: Semaphore = Semaphore::const_new(SEARCH_MAX_CONCURRENT);
+
+type ApiError = (StatusCode, JsonResponse<Value>);
+
+fn api_error(status: StatusCode, message: impl Into<String>) -> ApiError {
+    (status, JsonResponse(json!({ "error": message.into() })))
+}
+
+fn busy_error() -> ApiError {
+    (
+        StatusCode::SERVICE_UNAVAILABLE,
+        JsonResponse(json!({ "error": ERR_SEARCH_BUSY, "retry_after_ms": 1000 })),
+    )
+}
+
+fn timeout_error() -> ApiError {
+    warn!("search query timed out after 30s");
+    api_error(StatusCode::GATEWAY_TIMEOUT, ERR_SEARCH_TIMEOUT)
+}
+
+/// Map a database failure: saturation is a 503 the caller can retry,
+/// anything else a 500.
+fn db_error(e: sqlx::Error) -> ApiError {
+    if is_search_busy_error(&e) {
+        warn!("search hit a busy database: {}", e);
+        return busy_error();
+    }
+    error!("failed to perform search operations: {}", e);
+    api_error(
+        StatusCode::INTERNAL_SERVER_ERROR,
+        format!("failed to perform search operations: {}", e),
+    )
+}
 
 // Update the SearchQuery struct
 #[derive(OaSchema, Deserialize)]
@@ -152,6 +218,31 @@ pub(crate) struct SearchQuery {
     /// objects keyed by those paths; CSV/TSV use them as the columns.
     #[serde(default)]
     fields: Option<String>,
+    /// Only return hits whose timestamp lies inside a starred session.
+    /// Applied before pagination, so pages are full and `total` counts only
+    /// starred hits. Memories have no capture time and are never starred.
+    #[serde(default, deserialize_with = "deserialize_flexible_bool")]
+    starred_only: bool,
+    /// Only return hits inside this starred session (its UUID). Implies the
+    /// starred filter.
+    #[serde(default)]
+    starred_session_id: Option<String>,
+    /// `content_type=input`: only events that carry typed or copied text, or
+    /// that hit a named UI element. Ignored for other content types.
+    #[serde(default, deserialize_with = "deserialize_flexible_bool")]
+    input_context_only: bool,
+    /// `content_type=parsed` only: return the parsed content of this frame.
+    #[serde(default, deserialize_with = "deserialize_i64_option")]
+    frame_id: Option<i64>,
+    /// `content_type=parsed` only: frames holding items assigned to this
+    /// semantic actor; their items are narrowed to that actor's items and the
+    /// items containing them.
+    #[serde(default, deserialize_with = "deserialize_i64_option")]
+    actor_id: Option<i64>,
+    /// With `tags`: add `related`, the other tags found on the items carrying
+    /// the requested tags, by namespace.
+    #[serde(default, deserialize_with = "deserialize_flexible_bool")]
+    include_related: bool,
 }
 
 #[derive(OaSchema, Deserialize)]
@@ -199,6 +290,21 @@ where
     }
 }
 
+/// An optional integer where an empty value means "not given".
+fn deserialize_i64_option<'de, D>(deserializer: D) -> Result<Option<i64>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let s: Option<String> = serde::Deserialize::deserialize(deserializer)?;
+    match s.as_deref().map(str::trim) {
+        None | Some("") => Ok(None),
+        Some(v) => v
+            .parse::<i64>()
+            .map(Some)
+            .map_err(|_| serde::de::Error::custom(format!("expected an integer, got `{v}`"))),
+    }
+}
+
 fn parse_flexible_bool(s: &str) -> Result<bool, String> {
     match s.trim().to_ascii_lowercase().as_str() {
         "true" | "1" | "yes" | "on" => Ok(true),
@@ -212,11 +318,61 @@ fn parse_flexible_bool(s: &str) -> Result<bool, String> {
 
 #[derive(OaSchema, Serialize, Deserialize, Clone)]
 pub struct SearchResponse {
-    pub data: Vec<ContentItem>,
+    pub data: Vec<StarredSearchHit>,
     pub pagination: PaginationInfo,
     /// Metadata about cloud search availability (only present when cloud sync is available)
     #[serde(skip_serializing_if = "Option::is_none")]
     pub cloud: Option<crate::cloud_search::CloudSearchMetadata>,
+    /// With `include_related=true` and `tags`: namespace -> other tags found
+    /// on the items carrying the requested tags, most frequent first.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub related: Option<RelatedTags>,
+}
+
+/// Namespace -> co-occurring tags (full names, most frequent first), as
+/// `SearchResponse.related` carries it. A JSON object of string arrays.
+#[derive(Serialize, Deserialize, Clone, Debug, Default, PartialEq, Eq)]
+#[serde(transparent)]
+pub struct RelatedTags(pub BTreeMap<String, Vec<String>>);
+
+impl OaSchema for RelatedTags {
+    fn schema() -> oasgen::Schema {
+        <std::collections::HashMap<String, Vec<String>> as OaSchema>::schema()
+    }
+}
+
+/// One `/search` hit: the content item (`type` and `content`) plus whether
+/// its timestamp lies inside a starred session.
+#[derive(OaSchema, Serialize, Deserialize, Clone, Debug)]
+pub struct StarredSearchHit {
+    #[serde(flatten)]
+    pub item: ContentItem,
+    #[serde(default)]
+    pub starred: bool,
+}
+
+impl From<ContentItem> for StarredSearchHit {
+    fn from(item: ContentItem) -> Self {
+        Self {
+            item,
+            starred: false,
+        }
+    }
+}
+
+impl StarredSearchHit {
+    /// The time a starred session must contain for this hit to be starred;
+    /// `None` for memories, which have no capture time.
+    pub fn capture_time(&self) -> Option<DateTime<Utc>> {
+        match &self.item {
+            ContentItem::OCR(c) => Some(c.timestamp),
+            ContentItem::Audio(c) => Some(c.timestamp),
+            ContentItem::UI(c) => Some(c.timestamp),
+            ContentItem::Input(c) => Some(c.timestamp),
+            ContentItem::Parsed(c) => Some(c.timestamp),
+            ContentItem::Memory(_) => None,
+        }
+    }
 }
 
 /// Middle-truncate a string to at most `max_chars` characters.
@@ -310,6 +466,7 @@ pub fn search_result_to_content_item(
             offset_index: ui.offset_index,
             frame_name: ui.frame_name.clone(),
             browser_url: ui.browser_url.clone(),
+            event_source: ui.event_source.clone(),
         }),
         SearchResult::Input(input) => ContentItem::Input(InputContent {
             id: input.id,
@@ -323,6 +480,7 @@ pub fn search_result_to_content_item(
             y: input.y,
             key_code: input.key_code,
             modifiers: input.modifiers,
+            click_count: input.click_count,
             element_role: input.element.as_ref().and_then(|e| e.role.clone()),
             element_name: input.element.as_ref().and_then(|e| e.name.clone()),
             frame_id: input.frame_id,
@@ -344,6 +502,72 @@ pub fn search_result_to_content_item(
             created_at: m.created_at.clone(),
             updated_at: m.updated_at.clone(),
         }),
+        SearchResult::Parsed(p) => ContentItem::Parsed(parsed_to_content(p, max_content_length)),
+    }
+}
+
+/// The public shape of one parsed frame. `text` is the compact text of the
+/// items; `max_content_length` middle-truncates it and every item title and
+/// body.
+fn parsed_to_content(p: &ParsedFrameResult, max_content_length: Option<usize>) -> ParsedContent {
+    let truncate = |text: &str| -> String {
+        match max_content_length {
+            Some(max) => truncate_middle(text, max),
+            None => text.to_string(),
+        }
+    };
+    let actors = p
+        .items
+        .iter()
+        .filter_map(|item| {
+            Some(ParsedActorReference {
+                item_id: item.item_id,
+                local_id: item.local_id.clone(),
+                actor_id: item.assigned_actor_id?,
+                name: item.assigned_actor_name.clone().unwrap_or_default(),
+                observed_name: item.actor.clone(),
+                assignment_source: item
+                    .assignment_source
+                    .clone()
+                    .unwrap_or_else(|| "heuristic".to_string()),
+            })
+        })
+        .collect();
+    let items = p
+        .items
+        .iter()
+        .map(|item| ParsedItem {
+            item_id: item.item_id,
+            local_id: item.local_id.clone(),
+            parent_local_id: item.parent_local_id.clone(),
+            kind: item.kind.clone(),
+            item_key: item.item_key.clone(),
+            identity_quality: item.identity_quality.clone(),
+            title: item.title.as_deref().map(truncate),
+            body: item.body.as_deref().map(truncate),
+            actor: item.actor.clone(),
+            occurred_at: item.occurred_at.clone(),
+            timestamp_precision: item.timestamp_precision.clone(),
+            status: item.status.clone(),
+            source_nodes: item.source_nodes.clone(),
+        })
+        .collect();
+    ParsedContent {
+        frame_id: p.frame_id,
+        timestamp: p.timestamp,
+        app_name: p.app_name.clone(),
+        window_name: p.window_name.clone(),
+        text: truncate(&compact_parsed_text(&p.items)),
+        run_id: p.run_id,
+        parser_id: p.parser_id.clone(),
+        parser_version: p.parser_version.clone(),
+        app_platform: p.app_platform.clone(),
+        app_id: p.app_id.clone(),
+        app_executable: p.app_executable.clone(),
+        parse_duration_us: p.parse_duration_us,
+        text_bytes: p.text_bytes,
+        items,
+        actors,
     }
 }
 
@@ -377,6 +601,14 @@ pub(crate) fn compute_search_cache_key(query: &SearchQuery) -> u64 {
     // Tags change the result set materially — must be in the cache key so a
     // cached untagged response can't be served for a tag-filtered query.
     query.tags.hash(&mut hasher);
+    // Search v2 parameters. Starred-filtered queries are never cached (the
+    // sessions can change at any time), but the key still tells them apart.
+    query.starred_only.hash(&mut hasher);
+    query.starred_session_id.hash(&mut hasher);
+    query.input_context_only.hash(&mut hasher);
+    query.frame_id.hash(&mut hasher);
+    query.actor_id.hash(&mut hasher);
+    query.include_related.hash(&mut hasher);
     hasher.finish()
 }
 
@@ -395,12 +627,231 @@ pub(crate) async fn search(
     Ok(shape.respond(response))
 }
 
+/// What the search v2 parameters ask for, once validated.
+#[derive(Debug, Clone, Default)]
+struct SearchPlan {
+    /// Restrictions passed to the database (windows are filled in later).
+    scope: SearchScope,
+    /// The starred restriction, when one was asked for.
+    starred: Option<StarredFilter>,
+    /// Compute `related` (`include_related=true` with tags).
+    related: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct StarredFilter {
+    /// Only this session; `None` = any starred session.
+    session_id: Option<String>,
+}
+
+/// Validate the search v2 parameters that need no database work.
+fn plan_search(
+    query: &SearchQuery,
+    pipe_perms: Option<&PipePermissions>,
+) -> Result<SearchPlan, ApiError> {
+    let parsed = query.content_type == ContentType::Parsed;
+    for (name, value) in [("frame_id", query.frame_id), ("actor_id", query.actor_id)] {
+        let Some(value) = value else { continue };
+        if !parsed {
+            return Err(api_error(
+                StatusCode::BAD_REQUEST,
+                format!("{name} only applies to content_type=parsed"),
+            ));
+        }
+        if value <= 0 {
+            return Err(api_error(
+                StatusCode::BAD_REQUEST,
+                format!("{name} must be a positive integer"),
+            ));
+        }
+    }
+
+    let session_id = query
+        .starred_session_id
+        .as_deref()
+        .map(str::trim)
+        .filter(|id| !id.is_empty());
+    if let Some(id) = session_id {
+        if !super::starred::is_hyphenated_uuid(id) {
+            return Err(api_error(
+                StatusCode::BAD_REQUEST,
+                "starred_session_id must be the UUID of a starred session",
+            ));
+        }
+    }
+    let starred = (query.starred_only || session_id.is_some()).then(|| StarredFilter {
+        session_id: session_id.map(str::to_string),
+    });
+
+    let has_tags = query.tags.as_ref().is_some_and(|t| !t.is_empty());
+    let related = query.include_related && has_tags;
+    if related && pipe_perms.is_some_and(has_data_restrictions) {
+        return Err(api_error(
+            StatusCode::FORBIDDEN,
+            "include_related is not available to a pipe whose data access is restricted",
+        ));
+    }
+
+    Ok(SearchPlan {
+        scope: SearchScope {
+            windows: None,
+            input_context_only: query.input_context_only,
+            frame_id: query.frame_id,
+            actor_id: query.actor_id,
+        },
+        starred,
+        related,
+    })
+}
+
+/// True when a pipe's permissions limit which data it may read (apps,
+/// windows, content types, hours or days), as opposed to only which
+/// endpoints it may call. Such a pipe must not get the related-tags map,
+/// which summarises items outside its reach.
+fn has_data_restrictions(perms: &PipePermissions) -> bool {
+    perms
+        .allow_rules
+        .iter()
+        .chain(perms.deny_rules.iter())
+        .any(|rule| !matches!(rule, PermissionRule::Api { .. }))
+        || perms.time_range.is_some()
+        || perms.days.is_some()
+}
+
+/// The stores a related-tags map is computed over for a content type; the
+/// same stores the search itself reads tags from. `ocr_only` (a `focused` or
+/// `browser_url` filter) mirrors the database layer, which then searches
+/// frames for every content type except `parsed`.
+fn related_sources(content_type: &ContentType, ocr_only: bool) -> RelatedTagSources {
+    if ocr_only && *content_type != ContentType::Parsed {
+        return RelatedTagSources {
+            frames: true,
+            ..Default::default()
+        };
+    }
+    match content_type {
+        ContentType::All => RelatedTagSources {
+            frames: true,
+            audio: true,
+            ..Default::default()
+        },
+        ContentType::OCR => RelatedTagSources {
+            frames: true,
+            ..Default::default()
+        },
+        ContentType::Audio => RelatedTagSources {
+            audio: true,
+            ..Default::default()
+        },
+        ContentType::Memory => RelatedTagSources {
+            memories: true,
+            ..Default::default()
+        },
+        ContentType::Parsed => RelatedTagSources {
+            frames: true,
+            parsed_frames_only: true,
+            ..Default::default()
+        },
+        // No tags on input events or accessibility-only hits.
+        ContentType::Input | ContentType::Accessibility => RelatedTagSources::default(),
+    }
+}
+
+/// Wait for one of the [`SEARCH_MAX_CONCURRENT`] search slots, at most
+/// [`SEARCH_QUEUE_WAIT`] (and never past `deadline`); "busy" otherwise.
+async fn acquire_search_slot(
+    deadline: Instant,
+) -> Result<tokio::sync::SemaphorePermit<'static>, ApiError> {
+    let wait_until = (Instant::now() + SEARCH_QUEUE_WAIT).min(deadline);
+    match timeout_at(wait_until, SEARCH_SLOTS.acquire()).await {
+        Ok(Ok(permit)) => Ok(permit),
+        Ok(Err(_)) | Err(_) => {
+            warn!(
+                "search rejected: all {} search slots stayed busy",
+                SEARCH_MAX_CONCURRENT
+            );
+            Err(busy_error())
+        }
+    }
+}
+
+/// The starred time inside the requested range as search windows. With a
+/// session id, only that session counts; an unknown id is a 404.
+async fn starred_windows(
+    db: &DatabaseManager,
+    filter: &StarredFilter,
+    start_time: Option<DateTime<Utc>>,
+    end_time: Option<DateTime<Utc>>,
+) -> Result<SearchWindows, ApiError> {
+    if let Some(id) = &filter.session_id {
+        if db
+            .get_starred_session(id)
+            .await
+            .map_err(db_error)?
+            .is_none()
+        {
+            return Err(api_error(
+                StatusCode::NOT_FOUND,
+                "starred session not found",
+            ));
+        }
+    }
+    let earliest = DateTime::<Utc>::from_timestamp(-62_135_596_800, 0).unwrap_or_default(); // 0001-01-01
+    let latest = DateTime::<Utc>::from_timestamp(253_402_300_799, 0).unwrap_or_default(); // 9999-12-31T23:59:59
+    let window_start = start_time.unwrap_or(earliest);
+    // `end_time` is inclusive in search; the windows are half-open.
+    let window_end = end_time
+        .map(|e| e + chrono::Duration::milliseconds(1))
+        .unwrap_or(latest);
+    let islands = db
+        .starred_coverage_islands(window_start, window_end, filter.session_id.as_deref())
+        .await
+        .map_err(db_error)?;
+    if islands.len() > MAX_STARRED_INTERVALS {
+        return Err(api_error(
+            StatusCode::BAD_REQUEST,
+            format!(
+                "the starred filter covers {} separate intervals in this range (at most {} are \
+                 supported); narrow start_time and end_time",
+                islands.len(),
+                MAX_STARRED_INTERVALS
+            ),
+        ));
+    }
+    Ok(SearchWindows::new(
+        islands.into_iter().map(|island| (island.start, island.end)),
+    ))
+}
+
+/// Set `starred` on every hit whose capture time lies inside a starred
+/// session, with one lookup over the time span the hits cover. The lookup
+/// gets at most [`STARRED_FLAGS_BUDGET`] (and never runs past `deadline`). A
+/// failed or late lookup leaves the flags unset and is logged; it never fails
+/// or holds up a search whose results are already in hand.
+async fn mark_starred_hits(db: &DatabaseManager, hits: &mut [StarredSearchHit], deadline: Instant) {
+    let mut times = hits.iter().filter_map(StarredSearchHit::capture_time);
+    let Some(first) = times.next() else { return };
+    let (min, max) = times.fold((first, first), |(lo, hi), t| (lo.min(t), hi.max(t)));
+    let lookup = db.starred_coverage_islands(min, max + chrono::Duration::milliseconds(1), None);
+    let flags_deadline = (Instant::now() + STARRED_FLAGS_BUDGET).min(deadline);
+    match timeout_at(flags_deadline, lookup).await {
+        Ok(Ok(islands)) => {
+            let windows = SearchWindows::new(islands.into_iter().map(|i| (i.start, i.end)));
+            for hit in hits.iter_mut() {
+                hit.starred = hit.capture_time().is_some_and(|t| windows.contains(t));
+            }
+        }
+        Ok(Err(e)) => warn!("search: starred flags unavailable: {}", e),
+        Err(_) => warn!("search: starred flags skipped, the time budget ran out"),
+    }
+}
+
 /// The `/search` query itself, producing the JSON response.
 async fn run_search(
     mut query: SearchQuery,
     state: Arc<AppState>,
     pipe_perms: Option<Arc<PipePermissions>>,
-) -> Result<SearchResponse, (StatusCode, JsonResponse<serde_json::Value>)> {
+) -> Result<SearchResponse, ApiError> {
     // Server-authoritative privacy filter: if the request comes from a
     // pipe whose manifest declares `privacy_filter: true`, force PII
     // redaction regardless of what the request payload says. The pipe's
@@ -411,8 +862,9 @@ async fn run_search(
             query.filter_pii = true;
         }
     }
+    let plan = plan_search(&query, pipe_perms.as_deref())?;
     debug!(
-        "received search request: query='{}', content_type={:?}, limit={}, offset={}, start_time={:?}, end_time={:?}, app_name={:?}, window_name={:?}, min_length={:?}, max_length={:?}, speaker_ids={:?}, frame_name={:?}, browser_url={:?}, focused={:?}",
+        "received search request: query='{}', content_type={:?}, limit={}, offset={}, start_time={:?}, end_time={:?}, app_name={:?}, window_name={:?}, min_length={:?}, max_length={:?}, speaker_ids={:?}, frame_name={:?}, browser_url={:?}, focused={:?}, starred={:?}",
         query.q.as_deref().unwrap_or(""),
         query.content_type,
         query.pagination.limit,
@@ -427,32 +879,64 @@ async fn run_search(
         query.frame_name,
         query.browser_url,
         query.focused,
+        plan.starred,
     );
+    let deadline = Instant::now() + SEARCH_BUDGET;
 
-    // Check cache first (only for queries without frame extraction)
+    // Check cache first (only for queries without frame extraction). A
+    // starred filter depends on sessions that can change at any moment, so
+    // those queries are never cached; the `starred` flags of a cached
+    // response are recomputed on every hit for the same reason.
+    let cacheable = !query.include_frames && plan.starred.is_none();
     let cache_key = compute_search_cache_key(&query);
-    if !query.include_frames {
+    if cacheable {
         if let Some(cached) = state.search_cache.get(&cache_key).await {
             debug!("search cache hit for key {}", cache_key);
-            return Ok((*cached).clone());
+            let mut response = (*cached).clone();
+            mark_starred_hits(&state.db, &mut response.data, deadline).await;
+            return Ok(response);
         }
+    }
+
+    let slot = acquire_search_slot(deadline).await?;
+
+    let mut scope = plan.scope.clone();
+    let (mut start_time, mut end_time) = (query.start_time, query.end_time);
+    if let Some(starred) = &plan.starred {
+        let windows = timeout_at(
+            deadline,
+            starred_windows(&state.db, starred, start_time, end_time),
+        )
+        .await
+        .map_err(|_| timeout_error())??;
+        // Narrow the indexed time range to the starred time (one second wider
+        // on each side; the window filter itself is exact).
+        if let Some((first, last)) = windows.hull() {
+            let lo = first - chrono::Duration::seconds(1);
+            let hi = last + chrono::Duration::seconds(1);
+            start_time = Some(start_time.map_or(lo, |s| s.max(lo)));
+            end_time = Some(end_time.map_or(hi, |e| e.min(hi)));
+        }
+        scope.windows = Some(windows);
     }
 
     let query_str = query.q.as_deref().unwrap_or("");
 
     let content_type = query.content_type.clone();
     let tags = query.tags.as_deref().unwrap_or(&[]);
+    let ocr_only = query.focused.is_some() || query.browser_url.is_some();
+    let db = &state.db;
 
-    let (results, total) = timeout(
-        Duration::from_secs(30),
-        try_join(
-            state.db.search_with_tags(
+    let (results, total, related) = timeout_at(
+        deadline,
+        try_join3(
+            db.search_with_scope(
                 query_str,
                 content_type.clone(),
                 query.pagination.limit,
                 query.pagination.offset,
-                query.start_time,
-                query.end_time,
+                start_time,
+                end_time,
                 query.app_name.as_deref(),
                 query.window_name.as_deref(),
                 query.min_length,
@@ -466,12 +950,13 @@ async fn run_search(
                 query.machine_id.as_deref(),
                 query.on_screen,
                 tags,
+                &scope,
             ),
-            state.db.count_search_results_with_tags(
+            db.count_search_results_with_scope(
                 query_str,
-                content_type,
-                query.start_time,
-                query.end_time,
+                content_type.clone(),
+                start_time,
+                end_time,
                 query.app_name.as_deref(),
                 query.window_name.as_deref(),
                 query.min_length,
@@ -483,24 +968,30 @@ async fn run_search(
                 query.speaker_name.as_deref(),
                 query.on_screen,
                 tags,
+                &scope,
+                query.machine_id.as_deref(),
             ),
+            async {
+                if !plan.related {
+                    return Ok(None);
+                }
+                db.related_search_tags(
+                    tags,
+                    related_sources(&content_type, ocr_only),
+                    start_time,
+                    end_time,
+                    scope.windows.as_ref(),
+                )
+                .await
+                .map(|map| Some(RelatedTags(map)))
+            },
         ),
     )
     .await
-    .map_err(|_| {
-        warn!("search query timed out after 30s");
-        (
-            StatusCode::REQUEST_TIMEOUT,
-            JsonResponse(json!({"error": "search query timed out after 30s — try a narrower time range or add filters"})),
-        )
-    })?
-    .map_err(|e| {
-        error!("failed to perform search operations: {}", e);
-        (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            JsonResponse(json!({"error": format!("failed to perform search operations: {}", e)})),
-        )
-    })?;
+    .map_err(|_| timeout_error())?
+    .map_err(db_error)?;
+    // Redaction and frame extraction below do not touch the database.
+    drop(slot);
 
     let mut content_items: Vec<ContentItem> = results
         .iter()
@@ -514,6 +1005,7 @@ async fn run_search(
                 .as_ref()
                 .is_none_or(|app| !is_screenpipe_app(app)),
             SearchResult::Memory(_) => true,
+            SearchResult::Parsed(parsed) => !is_screenpipe_app(&parsed.app_name),
         })
         .map(|result| search_result_to_content_item(result, query.max_content_length))
         .collect();
@@ -588,6 +1080,12 @@ async fn run_search(
             Ui,
             Input,
             Memory,
+            ParsedText,
+            ParsedTitle(usize),
+            ParsedBody(usize),
+            ParsedActorLabel(usize),
+            ParsedActorName(usize),
+            ParsedObservedName(usize),
         }
         let mut targets: Vec<(usize, Field)> = Vec::with_capacity(content_items.len());
         let mut texts: Vec<String> = Vec::with_capacity(content_items.len());
@@ -615,6 +1113,32 @@ async fn run_search(
                     targets.push((i, Field::Memory));
                     texts.push(c.content.clone());
                 }
+                ContentItem::Parsed(c) => {
+                    // Every text a parsed frame carries: the compact text,
+                    // item titles, bodies and actor labels, and actor names.
+                    targets.push((i, Field::ParsedText));
+                    texts.push(c.text.clone());
+                    for (j, item) in c.items.iter().enumerate() {
+                        for (field, value) in [
+                            (Field::ParsedTitle(j), &item.title),
+                            (Field::ParsedBody(j), &item.body),
+                            (Field::ParsedActorLabel(j), &item.actor),
+                        ] {
+                            if let Some(text) = value {
+                                targets.push((i, field));
+                                texts.push(text.clone());
+                            }
+                        }
+                    }
+                    for (j, actor) in c.actors.iter().enumerate() {
+                        targets.push((i, Field::ParsedActorName(j)));
+                        texts.push(actor.name.clone());
+                        if let Some(observed) = &actor.observed_name {
+                            targets.push((i, Field::ParsedObservedName(j)));
+                            texts.push(observed.clone());
+                        }
+                    }
+                }
             }
         }
 
@@ -636,6 +1160,18 @@ async fn run_search(
                 (Field::Ui, ContentItem::UI(c)) => c.text = new_text,
                 (Field::Input, ContentItem::Input(c)) => c.text_content = Some(new_text),
                 (Field::Memory, ContentItem::Memory(c)) => c.content = new_text,
+                (Field::ParsedText, ContentItem::Parsed(c)) => c.text = new_text,
+                (Field::ParsedTitle(j), ContentItem::Parsed(c)) => {
+                    c.items[j].title = Some(new_text)
+                }
+                (Field::ParsedBody(j), ContentItem::Parsed(c)) => c.items[j].body = Some(new_text),
+                (Field::ParsedActorLabel(j), ContentItem::Parsed(c)) => {
+                    c.items[j].actor = Some(new_text)
+                }
+                (Field::ParsedActorName(j), ContentItem::Parsed(c)) => c.actors[j].name = new_text,
+                (Field::ParsedObservedName(j), ContentItem::Parsed(c)) => {
+                    c.actors[j].observed_name = Some(new_text)
+                }
                 _ => {}
             }
         }
@@ -702,22 +1238,36 @@ async fn run_search(
         None
     };
 
-    let response = SearchResponse {
-        data: content_items,
+    let mut response = SearchResponse {
+        data: content_items
+            .into_iter()
+            .map(StarredSearchHit::from)
+            .collect(),
         pagination: PaginationInfo {
             limit: query.pagination.limit,
             offset: query.pagination.offset,
             total: total as i64,
         },
         cloud,
+        related,
     };
 
-    // Cache the result (only for queries without frame extraction)
-    if !query.include_frames {
+    // Cache the result (only for queries without frame extraction), before
+    // the starred flags are set: they are recomputed on every cache hit.
+    if cacheable {
         state
             .search_cache
             .insert(cache_key, Arc::new(response.clone()))
             .await;
+    }
+
+    if plan.starred.is_some() {
+        // Every hit passed the starred filter.
+        for hit in &mut response.data {
+            hit.starred = hit.capture_time().is_some();
+        }
+    } else {
+        mark_starred_hits(&state.db, &mut response.data, deadline).await;
     }
 
     Ok(response)
@@ -941,6 +1491,12 @@ mod tests {
             tags: None,
             format: None,
             fields: None,
+            starred_only: false,
+            starred_session_id: None,
+            input_context_only: false,
+            frame_id: None,
+            actor_id: None,
+            include_related: false,
         };
 
         let query2 = SearchQuery {
@@ -971,6 +1527,12 @@ mod tests {
             tags: None,
             format: None,
             fields: None,
+            starred_only: false,
+            starred_session_id: None,
+            input_context_only: false,
+            frame_id: None,
+            actor_id: None,
+            include_related: false,
         };
 
         let key1 = compute_search_cache_key(&query1);
@@ -1009,6 +1571,12 @@ mod tests {
             tags: None,
             format: None,
             fields: None,
+            starred_only: false,
+            starred_session_id: None,
+            input_context_only: false,
+            frame_id: None,
+            actor_id: None,
+            include_related: false,
         };
 
         let query2 = SearchQuery {
@@ -1039,6 +1607,12 @@ mod tests {
             tags: None,
             format: None,
             fields: None,
+            starred_only: false,
+            starred_session_id: None,
+            input_context_only: false,
+            frame_id: None,
+            actor_id: None,
+            include_related: false,
         };
 
         let key1 = compute_search_cache_key(&query1);
@@ -1084,6 +1658,12 @@ mod tests {
             tags: None,
             format: None,
             fields: None,
+            starred_only: false,
+            starred_session_id: None,
+            input_context_only: false,
+            frame_id: None,
+            actor_id: None,
+            include_related: false,
         };
         let none = compute_search_cache_key(&mk(None));
         let yes = compute_search_cache_key(&mk(Some(true)));
@@ -1125,6 +1705,12 @@ mod tests {
             tags: None,
             format: format.map(str::to_string),
             fields: fields.map(str::to_string),
+            starred_only: false,
+            starred_session_id: None,
+            input_context_only: false,
+            frame_id: None,
+            actor_id: None,
+            include_related: false,
         };
         let plain = compute_search_cache_key(&mk(None, None));
         assert_eq!(plain, compute_search_cache_key(&mk(Some("csv"), None)));
@@ -1132,6 +1718,312 @@ mod tests {
             plain,
             compute_search_cache_key(&mk(Some("json"), Some("type,content.text")))
         );
+    }
+
+    fn parse_query(qs: &str) -> SearchQuery {
+        let uri: axum::http::Uri = format!("http://localhost/search?{qs}").parse().unwrap();
+        Query::<SearchQuery>::try_from_uri(&uri)
+            .unwrap_or_else(|e| panic!("{qs}: {e}"))
+            .0
+    }
+
+    fn perms(allow: Vec<PermissionRule>) -> PipePermissions {
+        PipePermissions {
+            pipe_name: "test-pipe".to_string(),
+            allow_rules: allow,
+            deny_rules: Vec::new(),
+            use_default_allowlist: false,
+            time_range: None,
+            days: None,
+            pipe_token: None,
+            pipe_dir: None,
+            privacy_filter: false,
+        }
+    }
+
+    #[test]
+    fn v2_params_parse_from_the_query_string() {
+        let q = parse_query(
+            "content_type=parsed&frame_id=12&actor_id=3&starred_only=1&starred_session_id=x\
+             &input_context_only=yes&include_related=true&tags=a,b",
+        );
+        assert_eq!(q.content_type, ContentType::Parsed);
+        assert_eq!(q.frame_id, Some(12));
+        assert_eq!(q.actor_id, Some(3));
+        assert!(q.starred_only && q.input_context_only && q.include_related);
+        assert_eq!(q.starred_session_id.as_deref(), Some("x"));
+        // Empty values mean "not given".
+        let q = parse_query("frame_id=&actor_id=&starred_only=");
+        assert_eq!(
+            (q.frame_id, q.actor_id, q.starred_only),
+            (None, None, false)
+        );
+        let uri: axum::http::Uri = "http://localhost/search?frame_id=abc".parse().unwrap();
+        assert!(Query::<SearchQuery>::try_from_uri(&uri).is_err());
+    }
+
+    #[test]
+    fn plan_validates_the_parsed_only_filters() {
+        for qs in [
+            "frame_id=4",
+            "content_type=ocr&actor_id=4",
+            "content_type=parsed&frame_id=0",
+            "content_type=parsed&actor_id=-2",
+        ] {
+            let err = plan_search(&parse_query(qs), None).unwrap_err();
+            assert_eq!(err.0, StatusCode::BAD_REQUEST, "{qs}");
+        }
+        let plan = plan_search(
+            &parse_query("content_type=parsed&frame_id=4&actor_id=9&input_context_only=true"),
+            None,
+        )
+        .unwrap();
+        assert_eq!(plan.scope.frame_id, Some(4));
+        assert_eq!(plan.scope.actor_id, Some(9));
+        assert!(plan.scope.input_context_only);
+        assert!(plan.scope.windows.is_none());
+        assert!(plan.starred.is_none());
+    }
+
+    #[test]
+    fn plan_reads_the_starred_filter() {
+        assert_eq!(
+            plan_search(&parse_query("starred_only=true"), None)
+                .unwrap()
+                .starred,
+            Some(StarredFilter { session_id: None })
+        );
+        let id = "6f1c1d4e-2b8a-4f0e-9a51-0d6c7f3b2a10";
+        assert_eq!(
+            plan_search(
+                &parse_query(&format!("starred_session_id=%20{id}%20")),
+                None
+            )
+            .unwrap()
+            .starred,
+            Some(StarredFilter {
+                session_id: Some(id.to_string())
+            })
+        );
+        assert!(plan_search(&parse_query("starred_session_id="), None)
+            .unwrap()
+            .starred
+            .is_none());
+        let err = plan_search(&parse_query("starred_session_id=nope"), None).unwrap_err();
+        assert_eq!(err.0, StatusCode::BAD_REQUEST);
+    }
+
+    #[test]
+    fn related_needs_tags_and_is_refused_to_restricted_pipes() {
+        assert!(
+            !plan_search(&parse_query("include_related=true"), None)
+                .unwrap()
+                .related
+        );
+        assert!(
+            plan_search(&parse_query("include_related=true&tags=a"), None)
+                .unwrap()
+                .related
+        );
+
+        let endpoints_only = perms(vec![PermissionRule::Api {
+            method: "GET".into(),
+            path: "/search".into(),
+        }]);
+        assert!(!has_data_restrictions(&endpoints_only));
+        let q = parse_query("include_related=true&tags=a");
+        assert!(plan_search(&q, Some(&endpoints_only)).unwrap().related);
+
+        let apps = perms(vec![PermissionRule::App {
+            value: "Slack".into(),
+        }]);
+        assert!(has_data_restrictions(&apps));
+        let err = plan_search(&q, Some(&apps)).unwrap_err();
+        assert_eq!(err.0, StatusCode::FORBIDDEN);
+        let mut hours = perms(Vec::new());
+        hours.time_range = Some((9, 0, 17, 0));
+        assert!(has_data_restrictions(&hours));
+        // Without tags nothing is computed, so nothing is refused.
+        assert!(plan_search(&parse_query("include_related=true"), Some(&apps)).is_ok());
+    }
+
+    #[test]
+    fn related_sources_follow_the_content_type() {
+        let s = related_sources(&ContentType::All, false);
+        assert!(s.frames && s.audio && !s.memories);
+        assert!(related_sources(&ContentType::Memory, false).memories);
+        let parsed = related_sources(&ContentType::Parsed, false);
+        assert!(parsed.frames && parsed.parsed_frames_only);
+        assert_eq!(
+            related_sources(&ContentType::Input, false),
+            RelatedTagSources::default()
+        );
+        // `focused` / `browser_url` make the database search frames for
+        // every content type but `parsed`; the map follows it.
+        let frames_only = RelatedTagSources {
+            frames: true,
+            ..Default::default()
+        };
+        for ct in [
+            ContentType::All,
+            ContentType::OCR,
+            ContentType::Audio,
+            ContentType::Memory,
+            ContentType::Input,
+            ContentType::Accessibility,
+        ] {
+            assert_eq!(related_sources(&ct, true), frames_only, "{ct:?}");
+        }
+        assert_eq!(related_sources(&ContentType::Parsed, true), parsed);
+    }
+
+    #[test]
+    fn hits_serialize_flat_with_a_starred_flag() {
+        let hit = StarredSearchHit {
+            item: ContentItem::Memory(MemoryContent {
+                id: 7,
+                content: "remember".into(),
+                source: "user".into(),
+                source_context: None,
+                tags: vec![],
+                importance: 0.5,
+                created_at: "2026-10-01T09:00:00.000Z".into(),
+                updated_at: "2026-10-01T09:00:00.000Z".into(),
+            }),
+            starred: true,
+        };
+        let value = serde_json::to_value(&hit).unwrap();
+        assert_eq!(value["type"], "Memory");
+        assert_eq!(value["content"]["id"], 7);
+        assert_eq!(value["starred"], true);
+        let back: StarredSearchHit = serde_json::from_value(value).unwrap();
+        assert!(back.starred);
+        assert!(
+            back.capture_time().is_none(),
+            "memories have no capture time"
+        );
+        // Older payloads without the flag still read.
+        let old: StarredSearchHit = serde_json::from_value(serde_json::json!({
+            "type": "Memory",
+            "content": serde_json::to_value(&back.item).unwrap()["content"],
+        }))
+        .unwrap();
+        assert!(!old.starred);
+    }
+
+    #[test]
+    fn parsed_results_map_to_content_with_actor_references() {
+        use screenpipe_db::ext::search_parsed::ParsedItemRecord;
+        let item = |local: &str, parent: Option<&str>, body: &str, actor: Option<(i64, &str)>| {
+            ParsedItemRecord {
+                item_id: 100 + local.len() as i64,
+                local_id: local.to_string(),
+                parent_local_id: parent.map(str::to_string),
+                sort_order: 0,
+                kind: "message".to_string(),
+                item_key: format!("k-{local}"),
+                identity_quality: "derived".to_string(),
+                title: None,
+                body: Some(body.to_string()),
+                actor: actor.map(|(_, n)| n.to_lowercase()),
+                occurred_at: None,
+                timestamp_precision: None,
+                status: None,
+                source_nodes: Some(vec![1, 2]),
+                assigned_actor_id: actor.map(|(id, _)| id),
+                assigned_actor_name: actor.map(|(_, n)| n.to_string()),
+                assignment_source: actor.map(|_| "reconciled".to_string()),
+            }
+        };
+        let result = ParsedFrameResult {
+            frame_id: 5,
+            timestamp: Utc::now(),
+            app_name: "Chat".into(),
+            window_name: "General".into(),
+            run_id: 9,
+            parser_id: "chat.test".into(),
+            parser_version: "1".into(),
+            app_platform: "windows".into(),
+            app_id: None,
+            app_executable: None,
+            parse_duration_us: 1,
+            text_bytes: 2,
+            items: vec![
+                item("c", None, "thread", None),
+                item(
+                    "m1",
+                    Some("c"),
+                    "a very long message body",
+                    Some((3, "Ada")),
+                ),
+            ],
+        };
+        let content = parsed_to_content(&result, None);
+        assert_eq!(content.text, "thread\n  Ada: a very long message body");
+        assert_eq!(content.items.len(), 2);
+        assert_eq!(content.items[1].source_nodes, Some(vec![1, 2]));
+        assert_eq!(content.actors.len(), 1);
+        let actor = &content.actors[0];
+        assert_eq!((actor.actor_id, actor.name.as_str()), (3, "Ada"));
+        assert_eq!(actor.observed_name.as_deref(), Some("ada"));
+        assert_eq!(actor.assignment_source, "reconciled");
+        assert_eq!(actor.local_id, "m1");
+
+        let short = parsed_to_content(&result, Some(10));
+        assert!(short.text.contains("...(truncated"));
+        assert!(short.items[1]
+            .body
+            .as_deref()
+            .unwrap()
+            .contains("...(truncated"));
+        assert_eq!(short.items[0].body.as_deref(), Some("thread"));
+    }
+
+    #[test]
+    fn cache_key_tells_the_v2_parameters_apart() {
+        let base = compute_search_cache_key(&parse_query("q=x"));
+        for qs in [
+            "q=x&starred_only=true",
+            "q=x&starred_session_id=6f1c1d4e-2b8a-4f0e-9a51-0d6c7f3b2a10",
+            "q=x&input_context_only=true",
+            "q=x&content_type=parsed",
+            "q=x&content_type=parsed&frame_id=1",
+            "q=x&content_type=parsed&actor_id=1",
+            "q=x&include_related=true",
+        ] {
+            assert_ne!(base, compute_search_cache_key(&parse_query(qs)), "{qs}");
+        }
+    }
+
+    #[tokio::test]
+    async fn search_slots_report_busy_when_exhausted() {
+        // Hold every slot, then ask for one with a deadline already passed.
+        let held = SEARCH_SLOTS
+            .acquire_many(SEARCH_MAX_CONCURRENT as u32)
+            .await
+            .unwrap();
+        let err = acquire_search_slot(Instant::now()).await.unwrap_err();
+        assert_eq!(err.0, StatusCode::SERVICE_UNAVAILABLE);
+        assert_eq!(err.1 .0["error"], ERR_SEARCH_BUSY);
+        drop(held);
+        assert!(acquire_search_slot(Instant::now() + Duration::from_secs(1))
+            .await
+            .is_ok());
+    }
+
+    #[test]
+    fn busy_and_timeout_errors_are_json() {
+        assert_eq!(
+            db_error(sqlx::Error::PoolTimedOut).0,
+            StatusCode::SERVICE_UNAVAILABLE
+        );
+        assert_eq!(
+            db_error(sqlx::Error::RowNotFound).0,
+            StatusCode::INTERNAL_SERVER_ERROR
+        );
+        let (status, body) = timeout_error();
+        assert_eq!(status, StatusCode::GATEWAY_TIMEOUT);
+        assert_eq!(body.0["error"], ERR_SEARCH_TIMEOUT);
     }
 
     #[test]

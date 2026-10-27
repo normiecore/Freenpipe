@@ -184,7 +184,7 @@ impl SaveRejection {
     }
 }
 
-fn is_hyphenated_uuid(id: &str) -> bool {
+pub(crate) fn is_hyphenated_uuid(id: &str) -> bool {
     id.len() == 36 && uuid::Uuid::try_parse(id).is_ok()
 }
 
