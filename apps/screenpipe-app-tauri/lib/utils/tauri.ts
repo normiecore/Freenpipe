@@ -936,9 +936,10 @@ async listCacheFiles() : Promise<Result<CacheFile[], string>> {
 }
 },
 /**
- * Chat conversation files (`<data dir>/chats/*.json`), most recently
- * modified first, `offset` entries skipped and at most `limit` returned.
- * One call instead of a stat per file from the webview.
+ * Chat conversation files (`~/.screenpipe/chats/*.json`, where the chat
+ * saves them), most recently modified first, `offset` entries skipped and
+ * at most `limit` returned. One call instead of a stat per file from the
+ * webview.
  */
 async listChatEntriesByMtime(offset: number | null, limit: number | null) : Promise<Result<ChatEntry[], string>> {
     try {
