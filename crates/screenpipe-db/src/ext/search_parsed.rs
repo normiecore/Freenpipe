@@ -29,8 +29,9 @@ use sqlx::Row;
 use tracing::warn;
 
 use crate::ext::semantic::{
-    assigned_from_row, decode_source_node_ids, item_from_row, run_from_row, SemanticRun,
-    SemanticStoreError, ASSIGNED_COLUMNS, ITEM_COLUMNS, RUN_COLUMNS,
+    assigned_from_row, decode_source_node_ids, item_from_row, run_from_row, SemanticAppPlatform,
+    SemanticRun, SemanticStoreError, ASSIGNED_COLUMNS, ITEM_COLUMNS, RUN_COLUMNS,
+    SEMANTIC_CONTENT_HASH_LEN, SEMANTIC_FINGERPRINT_LEN,
 };
 use crate::text_normalizer::sanitize_fts5_query;
 use crate::{DatabaseManager, SearchScope, SearchWindows};
@@ -406,12 +407,30 @@ fn like_literal(s: &str) -> String {
     out
 }
 
+/// Conditions on `r` that hold for every run [`run_from_row`] can read: the
+/// enum and blob columns it rejects otherwise (values a newer writer may
+/// store). With them in the shared WHERE, the count never includes a run the
+/// page would have to skip, so `pagination.total` matches what the pages can
+/// return. Built from this crate's constants only.
+fn readable_run_conditions() -> [String; 3] {
+    let platforms: Vec<String> = SemanticAppPlatform::ALL
+        .iter()
+        .map(|p| format!("'{}'", p.as_str()))
+        .collect();
+    [
+        format!("r.app_platform IN ({})", platforms.join(", ")),
+        format!("length(r.input_fingerprint) = {SEMANTIC_FINGERPRINT_LEN}"),
+        format!("length(r.input_content_hash) = {SEMANTIC_CONTENT_HASH_LEN}"),
+    ]
+}
+
 /// FROM/WHERE shared by the parsed page and count queries.
 fn parsed_from_where(filter: &ParsedSearchFilter<'_>, binds: &mut Binds) -> String {
     let mut conditions: Vec<String> = vec![
         "f.semantic_run_id IS NOT NULL".to_string(),
         "r.status = 'handled'".to_string(),
     ];
+    conditions.extend(readable_run_conditions());
     let scope = filter.scope;
     if let Some(frame_id) = scope.frame_id {
         conditions.push(format!("f.id = {}", binds.int(frame_id)));
@@ -534,9 +553,10 @@ struct ParsedFrameRow {
 
 impl DatabaseManager {
     /// Frames with parsed content matching `filter`, newest first, with their
-    /// runs and items. A frame whose run row cannot be read (a value this
-    /// build does not know) is left out with a warning; so is an unreadable
-    /// item, so one odd row never fails the search.
+    /// runs and items. Runs this build cannot read (a value it does not know)
+    /// are excluded in SQL, from this page and from [`Self::count_parsed`]
+    /// alike; one that still fails to read is left out with a warning, and so
+    /// is an unreadable item, so one odd row never fails the search.
     pub async fn search_parsed(
         &self,
         filter: &ParsedSearchFilter<'_>,

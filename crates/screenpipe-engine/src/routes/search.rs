@@ -81,6 +81,12 @@ pub const SEARCH_MAX_CONCURRENT: usize = 8;
 /// How long a search waits for a free slot before answering "busy".
 pub const SEARCH_QUEUE_WAIT: Duration = Duration::from_secs(5);
 
+/// Longest a search waits for the lookup behind the `starred` flags. The flags
+/// are a decoration of results already in hand (often a cache hit), so a
+/// saturated read pool must not hold the response for the pool's own acquire
+/// timeout.
+pub const STARRED_FLAGS_BUDGET: Duration = Duration::from_millis(1500);
+
 /// Most disjoint starred intervals a starred filter may span.
 pub const MAX_STARRED_INTERVALS: usize = 100;
 
@@ -713,13 +719,17 @@ fn has_data_restrictions(perms: &PipePermissions) -> bool {
 }
 
 /// The stores a related-tags map is computed over for a content type; the
-/// same stores the search itself reads tags from.
+/// same stores the search itself reads tags from. `ocr_only` (a `focused` or
+/// `browser_url` filter) mirrors the database layer, which then searches
+/// frames for every content type except `parsed`.
 fn related_sources(content_type: &ContentType, ocr_only: bool) -> RelatedTagSources {
-    match content_type {
-        ContentType::All if ocr_only => RelatedTagSources {
+    if ocr_only && *content_type != ContentType::Parsed {
+        return RelatedTagSources {
             frames: true,
             ..Default::default()
-        },
+        };
+    }
+    match content_type {
         ContentType::All => RelatedTagSources {
             frames: true,
             audio: true,
@@ -814,15 +824,17 @@ async fn starred_windows(
 }
 
 /// Set `starred` on every hit whose capture time lies inside a starred
-/// session, with one lookup over the time span the hits cover. A failed or
-/// late lookup leaves the flags unset and is logged; it never fails a search
-/// whose results are already in hand.
+/// session, with one lookup over the time span the hits cover. The lookup
+/// gets at most [`STARRED_FLAGS_BUDGET`] (and never runs past `deadline`). A
+/// failed or late lookup leaves the flags unset and is logged; it never fails
+/// or holds up a search whose results are already in hand.
 async fn mark_starred_hits(db: &DatabaseManager, hits: &mut [StarredSearchHit], deadline: Instant) {
     let mut times = hits.iter().filter_map(StarredSearchHit::capture_time);
     let Some(first) = times.next() else { return };
     let (min, max) = times.fold((first, first), |(lo, hi), t| (lo.min(t), hi.max(t)));
     let lookup = db.starred_coverage_islands(min, max + chrono::Duration::milliseconds(1), None);
-    match timeout_at(deadline, lookup).await {
+    let flags_deadline = (Instant::now() + STARRED_FLAGS_BUDGET).min(deadline);
+    match timeout_at(flags_deadline, lookup).await {
         Ok(Ok(islands)) => {
             let windows = SearchWindows::new(islands.into_iter().map(|i| (i.start, i.end)));
             for hit in hits.iter_mut() {
@@ -1839,7 +1851,6 @@ mod tests {
     fn related_sources_follow_the_content_type() {
         let s = related_sources(&ContentType::All, false);
         assert!(s.frames && s.audio && !s.memories);
-        assert!(!related_sources(&ContentType::All, true).audio);
         assert!(related_sources(&ContentType::Memory, false).memories);
         let parsed = related_sources(&ContentType::Parsed, false);
         assert!(parsed.frames && parsed.parsed_frames_only);
@@ -1847,6 +1858,23 @@ mod tests {
             related_sources(&ContentType::Input, false),
             RelatedTagSources::default()
         );
+        // `focused` / `browser_url` make the database search frames for
+        // every content type but `parsed`; the map follows it.
+        let frames_only = RelatedTagSources {
+            frames: true,
+            ..Default::default()
+        };
+        for ct in [
+            ContentType::All,
+            ContentType::OCR,
+            ContentType::Audio,
+            ContentType::Memory,
+            ContentType::Input,
+            ContentType::Accessibility,
+        ] {
+            assert_eq!(related_sources(&ct, true), frames_only, "{ct:?}");
+        }
+        assert_eq!(related_sources(&ContentType::Parsed, true), parsed);
     }
 
     #[test]

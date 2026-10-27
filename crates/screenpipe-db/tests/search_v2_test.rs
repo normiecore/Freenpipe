@@ -708,6 +708,77 @@ async fn parsed_filters_by_frame_actor_and_windows() {
     assert_eq!(count(&db, "", ContentType::Parsed, &windows).await, 1);
 }
 
+/// A run whose `app_platform` this build does not know (as a newer
+/// screenpipe could write) is left out of the page and the count alike, so
+/// `pagination.total` never promises hits the pages cannot return.
+#[tokio::test]
+async fn parsed_runs_from_a_newer_writer_are_left_out_of_page_and_count() {
+    let (_dir, db) = open_db().await;
+    let fx = parsed_fixture(&db).await;
+    let newer = frame(&db, at(5), "Chat", "newer frame").await;
+    db.store_semantic_run_for_frame(
+        newer,
+        &run(
+            "newer",
+            vec![item(
+                "m",
+                None,
+                SemanticItemKind::Message,
+                "newer",
+                None,
+                Some("ship the newer build"),
+                Some("Ada"),
+            )],
+        ),
+    )
+    .await
+    .unwrap()
+    .expect("newer run stored");
+    let none = SearchScope::default();
+    assert_eq!(count(&db, "", ContentType::Parsed, &none).await, 3);
+
+    // The schema's CHECK forbids the value; a newer schema could allow it.
+    let mut conn = db.write_pool().acquire().await.unwrap();
+    sqlx::query("PRAGMA ignore_check_constraints = ON")
+        .execute(&mut *conn)
+        .await
+        .unwrap();
+    sqlx::query(
+        "UPDATE semantic_runs SET app_platform = 'android' \
+         WHERE id = (SELECT semantic_run_id FROM frames WHERE id = ?1)",
+    )
+    .bind(newer)
+    .execute(&mut *conn)
+    .await
+    .unwrap();
+    sqlx::query("PRAGMA ignore_check_constraints = OFF")
+        .execute(&mut *conn)
+        .await
+        .unwrap();
+    drop(conn);
+
+    let browse = search(&db, "", ContentType::Parsed, 20, 0, &none).await;
+    assert_eq!(
+        parsed(&browse)
+            .iter()
+            .map(|p| p.frame_id)
+            .collect::<Vec<_>>(),
+        vec![fx.notes, fx.chat]
+    );
+    assert_eq!(count(&db, "", ContentType::Parsed, &none).await, 2);
+    let ship = search(&db, "ship", ContentType::Parsed, 20, 0, &none).await;
+    assert_eq!(
+        parsed(&ship).iter().map(|p| p.frame_id).collect::<Vec<_>>(),
+        vec![fx.chat]
+    );
+    assert_eq!(count(&db, "ship", ContentType::Parsed, &none).await, 1);
+    let by_ada = SearchScope {
+        actor_id: Some(fx.ada),
+        ..Default::default()
+    };
+    assert_eq!(count(&db, "", ContentType::Parsed, &by_ada).await, 1);
+}
+
 // ── related tags ────────────────────────────────────────────────────────
 
 #[tokio::test]
