@@ -945,13 +945,16 @@ fn capture_and_send(
     *last_capture_time = capture_start;
 
     // Get window info
-    let (app_name, window_title, pid) = get_window_info(hwnd);
+    let (identity, window_title, pid) = get_window_info(hwnd);
 
     // Check exclusions before making UIA tree calls. Some apps expose slow or
     // buggy providers, so the guard needs to happen before ElementFromHandle.
-    if !config.should_capture_target(&app_name, window_title.as_deref()) {
+    // Rules naming a UWP app's frame host still exclude the app.
+    if !super::window_identity::should_capture_identity(config, &identity, window_title.as_deref())
+    {
         return;
     }
+    let app_name = identity.app_name;
 
     // Capture the tree
     let root = match uia.capture_window_tree(hwnd, config.tree_max_elements) {
@@ -1025,8 +1028,8 @@ fn hash_node(node: &AccessibilityNode, hasher: &mut DefaultHasher) {
     }
 }
 
-/// Get window info (app name, title, pid) from HWND
-fn get_window_info(hwnd: HWND) -> (String, Option<String>, u32) {
+/// Get window info (app identity, title, pid) from HWND
+fn get_window_info(hwnd: HWND) -> (super::window_identity::WindowIdentity, Option<String>, u32) {
     unsafe {
         let mut title_buf = [0u16; 512];
         let len = GetWindowTextW(hwnd, &mut title_buf);
@@ -1039,10 +1042,11 @@ fn get_window_info(hwnd: HWND) -> (String, Option<String>, u32) {
         let mut pid: u32 = 0;
         GetWindowThreadProcessId(hwnd, Some(&mut pid));
 
-        let app_name =
-            super::windows::get_process_name(pid).unwrap_or_else(|| "Unknown".to_string());
+        // Same identity as frames and app switches (UWP apps resolved
+        // behind ApplicationFrameHost, Edge hosts folded into msedge.exe).
+        let identity = super::windows::get_window_identity(hwnd, pid);
 
-        (app_name, title, pid)
+        (identity, title, pid)
     }
 }
 

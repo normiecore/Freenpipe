@@ -32,6 +32,10 @@ pub struct VisionManagerConfig {
     pub ignored_windows: Vec<String>,
     pub included_windows: Vec<String>,
     pub ignored_urls: Vec<String>,
+    /// Website policy built from `ignoredUrls` (structured domain rules
+    /// included) and the `includedUrls` allow list. `ignored_urls` above is
+    /// the same block list as plain patterns for the title heuristics.
+    pub url_policy: screenpipe_a11y::url_filter::UrlPolicy,
     pub vision_metrics: Arc<PipelineMetrics>,
     pub use_pii_removal: bool,
     /// Stable IDs of monitors the user selected for recording (e.g. "MSI G271_1920x1080_2002,-1080").
@@ -605,6 +609,7 @@ impl VisionManager {
             ignored_windows: self.config.ignored_windows.clone(),
             included_windows: self.config.included_windows.clone(),
             ignored_urls: self.config.ignored_urls.clone(),
+            url_policy: self.config.url_policy.clone(),
             monitor_x: monitor.x() as f64,
             monitor_y: monitor.y() as f64,
             monitor_width: monitor.width() as f64,
@@ -668,6 +673,7 @@ impl VisionManager {
                 ignored_windows: self.config.ignored_windows.clone(),
                 included_windows: self.config.included_windows.clone(),
                 ignored_urls: self.config.ignored_urls.clone(),
+                url_policy: self.config.url_policy.clone(),
             };
             let hd_handle = self
                 .vision_handle
@@ -1308,6 +1314,7 @@ mod tests {
             ignored_windows: vec![],
             included_windows: vec![],
             ignored_urls: vec![],
+            url_policy: Default::default(),
             vision_metrics: Arc::new(PipelineMetrics::default()),
             use_pii_removal: false,
             monitor_ids,

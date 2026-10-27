@@ -1,5 +1,6 @@
 use image::DynamicImage;
 use once_cell::sync::Lazy;
+use screenpipe_a11y::url_filter::{is_policy_browser, UrlDecision, UrlPolicy};
 use screenpipe_core::window_pattern::{self, WindowPattern};
 use std::collections::HashSet;
 use std::error::Error;
@@ -235,6 +236,10 @@ pub struct WindowFilters {
     ignore_patterns: Vec<WindowPattern>,
     include_patterns: Vec<WindowPattern>,
     ignored_urls: Vec<String>,
+    /// The structured website policy (block list with domain rules, plus
+    /// the `includedUrls` allow list). Empty = the plain `ignored_urls`
+    /// patterns decide on their own.
+    url_policy: UrlPolicy,
 }
 
 impl WindowFilters {
@@ -243,7 +248,40 @@ impl WindowFilters {
             ignore_patterns: WindowPattern::parse_list(ignore_list),
             include_patterns: WindowPattern::parse_list(include_list),
             ignored_urls: ignored_urls.iter().map(|s| s.to_lowercase()).collect(),
+            url_policy: UrlPolicy::default(),
         }
+    }
+
+    /// Use the full website policy for URL decisions. `ignored_urls` (the
+    /// same block list as plain patterns) still drives the title heuristic
+    /// for windows whose URL cannot be read.
+    pub fn with_url_policy(mut self, url_policy: UrlPolicy) -> Self {
+        self.url_policy = url_policy;
+        self
+    }
+
+    /// The website policy in effect (empty when only plain patterns are set).
+    pub fn url_policy(&self) -> &UrlPolicy {
+        &self.url_policy
+    }
+
+    /// Website policy decision for a window of `app_name` showing `url`
+    /// (`None` when its URL is not known).
+    pub fn url_decision(&self, app_name: &str, url: Option<&str>) -> UrlDecision {
+        if !self.url_policy.is_empty() {
+            return self.url_policy.decide(app_name, url);
+        }
+        match url {
+            Some(url) if self.is_url_blocked(url) => UrlDecision::Blocked,
+            _ => UrlDecision::Allowed,
+        }
+    }
+
+    /// True when a window of `app_name` whose URL cannot be checked must be
+    /// kept out of captured pixels: a website allow list is set and the app
+    /// is a browser.
+    pub fn withholds_unverified_window(&self, app_name: &str) -> bool {
+        self.url_policy.needs_verified_url(app_name)
     }
 
     /// Apps that are always excluded — system lock screen processes.
@@ -280,9 +318,13 @@ impl WindowFilters {
     /// Uses domain-level matching to avoid false positives (e.g., "chase" won't match "purchase.com")
     /// Returns true if the URL is blocked (should be skipped)
     ///
-    /// Delegates to [`screenpipe_a11y::url_filter::is_url_blocked`] so the
-    /// vision path and the a11y tree walker agree on what "blocked" means.
+    /// Delegates to [`screenpipe_a11y::url_filter`] (the website policy when
+    /// one is set, else [`screenpipe_a11y::url_filter::is_url_blocked`]) so
+    /// the vision path and the a11y tree walker agree on what "blocked" means.
     pub fn is_url_blocked(&self, url: &str) -> bool {
+        if !self.url_policy.is_empty() {
+            return self.url_policy.is_blocked(url);
+        }
         screenpipe_a11y::url_filter::is_url_blocked(url, &self.ignored_urls)
     }
 
@@ -931,6 +973,22 @@ pub fn window_filters_are_empty(window_filters: &WindowFilters) -> bool {
     window_filters.ignore_patterns.is_empty()
         && window_filters.include_patterns.is_empty()
         && window_filters.ignored_urls.is_empty()
+        && window_filters.url_policy.is_empty()
+}
+
+/// Whether a window found by the exclusion enumeration has to be left out of
+/// the capture: its app or title fails the window rules, or (with a website
+/// allow list) it is a browser window that is not focused. Only the focused
+/// window's URL is read and checked, so the URL of any other browser window
+/// is unverifiable and its pixels are withheld.
+pub fn window_excluded_from_capture(
+    window_filters: &WindowFilters,
+    app_name: &str,
+    title: &str,
+    is_focused: bool,
+) -> bool {
+    !window_filters.is_valid(app_name, title)
+        || (!is_focused && window_filters.withholds_unverified_window(app_name))
 }
 
 /// Like [`get_excluded_sck_window_ids`], but a failed window enumeration is an
@@ -953,7 +1011,10 @@ pub fn try_get_excluded_sck_window_ids(window_filters: &WindowFilters) -> Result
             continue;
         }
 
-        if !window_filters.is_valid(&app_name, &title) {
+        // An unknown focus state counts as unfocused, so an unverifiable
+        // browser window is withheld rather than shown.
+        let is_focused = w.is_focused().unwrap_or(false);
+        if window_excluded_from_capture(window_filters, &app_name, &title, is_focused) {
             if let Ok(id) = w.id() {
                 excluded.push(id);
             }
@@ -1108,9 +1169,10 @@ pub async fn capture_all_visible_windows(
             // Fetch browser URL atomically with screenshot for focused browser windows
             // This prevents timing mismatches where URL is fetched after navigation
             let browser_url = if is_focused
-                && BROWSER_NAMES
+                && (BROWSER_NAMES
                     .iter()
                     .any(|&browser| app_name.to_lowercase().contains(browser))
+                    || is_policy_browser(&app_name))
             {
                 let detector = create_url_detector();
                 match detector.get_active_url(&app_name, process_id, &window_name) {
@@ -1124,15 +1186,19 @@ pub async fn capture_all_visible_windows(
                 None
             };
 
-            // Check if URL should be blocked for privacy (e.g., banking sites)
-            if let Some(ref url) = browser_url {
-                if window_filters.is_url_blocked(url) {
-                    tracing::info!(
-                        "Privacy filter: Skipping window due to blocked URL: {}",
-                        url
-                    );
-                    continue;
-                }
+            // Website policy: the block list (e.g. banking sites) and, when
+            // set, the allow list. With an allow list an unfocused browser
+            // window has no URL to check and is skipped as unverifiable.
+            let decision = window_filters.url_decision(&app_name, browser_url.as_deref());
+            if !decision.is_allowed() {
+                // The URL itself is not logged: it is what the user asked to
+                // keep out of the record.
+                tracing::info!(
+                    "Privacy filter: skipping {} window refused by the URL policy ({})",
+                    app_name,
+                    decision.as_str()
+                );
+                continue;
             }
 
             // Fallback: For unfocused browser windows where we can't get URL,
@@ -2025,5 +2091,110 @@ mod tests {
                 Some(100)
             );
         }
+    }
+
+    // ==================== website policy (W3-13) ====================
+
+    fn domain(domain: &str, include_subdomains: bool) -> screenpipe_a11y::url_filter::DomainRule {
+        screenpipe_a11y::url_filter::DomainRule {
+            domain: domain.to_string(),
+            include_subdomains,
+            excluded_subdomains: vec![],
+        }
+    }
+
+    fn allow_list_filters(allowed: &str) -> WindowFilters {
+        WindowFilters::new(&[], &[], &[])
+            .with_url_policy(UrlPolicy::new(&[], &[domain(allowed, true)]))
+    }
+
+    #[test]
+    fn allow_list_withholds_unfocused_browser_windows() {
+        let filters = allow_list_filters("example.org");
+        assert!(!window_filters_are_empty(&filters));
+        // Unfocused browser windows cannot be verified: excluded.
+        assert!(window_excluded_from_capture(
+            &filters,
+            "Google Chrome",
+            "News",
+            false
+        ));
+        assert!(window_excluded_from_capture(
+            &filters,
+            "msedge.exe",
+            "",
+            false
+        ));
+        // The focused one is checked by the accessibility walk instead.
+        assert!(!window_excluded_from_capture(
+            &filters,
+            "Google Chrome",
+            "News",
+            true
+        ));
+        // Native apps are governed by the window rules only.
+        assert!(!window_excluded_from_capture(
+            &filters, "Code", "main.rs", false
+        ));
+    }
+
+    #[test]
+    fn window_rules_still_exclude_without_an_allow_list() {
+        let filters = WindowFilters::new(&["1Password".to_string()], &[], &[]);
+        assert!(window_excluded_from_capture(
+            &filters,
+            "1Password",
+            "Vault",
+            true
+        ));
+        assert!(!window_excluded_from_capture(
+            &filters,
+            "Google Chrome",
+            "News",
+            false
+        ));
+    }
+
+    #[test]
+    fn url_decision_uses_the_policy_when_set() {
+        let filters = WindowFilters::new(&[], &[], &["bank.com".to_string()]).with_url_policy(
+            UrlPolicy::new(
+                &[screenpipe_a11y::url_filter::UrlRule::from(domain(
+                    "bank.com", false,
+                ))],
+                &[domain("example.org", true)],
+            ),
+        );
+        assert_eq!(
+            filters.url_decision("chrome.exe", Some("https://bank.com")),
+            UrlDecision::Blocked
+        );
+        // A structured rule without subdomains leaves www.bank.com to the allow list.
+        assert_eq!(
+            filters.url_decision("chrome.exe", Some("https://www.bank.com")),
+            UrlDecision::NotAllowed
+        );
+        assert!(filters.is_url_blocked("https://bank.com/login"));
+        assert!(!filters.is_url_blocked("https://notbank.com"));
+        assert!(filters
+            .url_decision("chrome.exe", Some("https://docs.example.org"))
+            .is_allowed());
+        assert_eq!(
+            filters.url_decision("chrome.exe", None),
+            UrlDecision::Pending
+        );
+    }
+
+    #[test]
+    fn url_decision_without_policy_keeps_legacy_matching() {
+        let filters = WindowFilters::new(&[], &[], &["chase".to_string()]);
+        assert_eq!(
+            filters.url_decision("chrome.exe", Some("https://www.chase.co.uk")),
+            UrlDecision::Blocked
+        );
+        assert!(filters.url_decision("chrome.exe", None).is_allowed());
+        assert!(filters
+            .url_decision("chrome.exe", Some("https://purchase.com"))
+            .is_allowed());
     }
 }

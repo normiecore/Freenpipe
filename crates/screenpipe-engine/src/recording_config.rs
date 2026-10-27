@@ -539,6 +539,10 @@ impl RecordingConfig {
             ignored_windows: self.ignored_windows.clone(),
             included_windows: self.included_windows.clone(),
             ignored_urls: self.ignored_urls.clone(),
+            url_policy: screenpipe_a11y::url_filter::UrlPolicy::new(
+                &self.ignored_url_rules,
+                &self.included_urls,
+            ),
             vision_metrics,
             use_pii_removal: self.use_pii_removal,
             monitor_ids: self.monitor_ids.clone(),
@@ -842,6 +846,49 @@ mod tests {
             Some(&["browser_url".to_string()][..])
         );
         assert!(c.pii_redaction_pseudonyms);
+    }
+
+    #[test]
+    fn website_rules_reach_the_vision_policy() {
+        use screenpipe_a11y::url_filter::UrlDecision;
+        let settings: screenpipe_config::RecordingSettings =
+            serde_json::from_value(serde_json::json!({
+                "ignoredUrls": [
+                    "bank.example",
+                    {"domain": "mail.example.com", "includeSubdomains": false}
+                ],
+                "includedUrls": [{"domain": "example.com", "includeSubdomains": true}]
+            }))
+            .unwrap();
+        let vision = build(&settings).to_vision_manager_config(
+            "capture-output".to_string(),
+            std::sync::Arc::new(PipelineMetrics::new()),
+        );
+        let policy = &vision.url_policy;
+        assert!(policy.has_allow_list());
+        // Block beats allow.
+        assert_eq!(
+            policy.decide("chrome.exe", Some("https://mail.example.com/inbox")),
+            UrlDecision::Blocked
+        );
+        assert!(policy
+            .decide("chrome.exe", Some("https://docs.example.com"))
+            .is_allowed());
+        assert_eq!(
+            policy.decide("chrome.exe", Some("https://other.org")),
+            UrlDecision::NotAllowed
+        );
+        assert_eq!(policy.decide("chrome.exe", None), UrlDecision::Pending);
+        // The legacy string keeps its broad match.
+        assert_eq!(
+            policy.decide("chrome.exe", Some("https://online.bank.example")),
+            UrlDecision::Blocked
+        );
+        // Plain patterns stay available for the title heuristics.
+        assert_eq!(
+            vision.ignored_urls,
+            vec!["bank.example", "mail.example.com"]
+        );
     }
 
     #[test]
