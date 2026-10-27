@@ -852,6 +852,9 @@ pub trait PipeStore: Send + Sync {
     /// Transition an execution to 'running' and record its PID. Only a row
     /// that is still queued or running and not finished moves; returns
     /// whether it did, so a run whose row was cancelled meanwhile can stop.
+    /// A row leaving 'queued' gets the current time as `started_at` (it held
+    /// the queue time), so time spent waiting for the execution semaphore is
+    /// not counted as run time.
     async fn set_execution_running(&self, id: i64, pid: Option<u32>) -> Result<bool>;
 
     /// Mark an execution as finished (completed/failed/cancelled/timed_out).
@@ -1615,6 +1618,16 @@ async fn remove_run_slot(
     }
 }
 
+/// Event instances whose run was stopped, shared by `stop_pipe` and the
+/// scheduler (see `PipeManager::stopped_instances`).
+type StoppedInstances = Arc<std::sync::Mutex<std::collections::HashSet<event_runs::EventClaim>>>;
+
+fn lock_stopped_instances(
+    set: &StoppedInstances,
+) -> std::sync::MutexGuard<'_, std::collections::HashSet<event_runs::EventClaim>> {
+    set.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
 /// An event run for `name` cannot start this pass (a run of the pipe is
 /// already queued or running, the agent is not ready, setup mode, ...).
 ///
@@ -1719,6 +1732,11 @@ pub struct PipeManager {
     /// event claim, so `stop_pipe` can cancel a run that has not started
     /// and give its claim back.
     run_slots: Arc<Mutex<HashMap<String, event_runs::RunSlot>>>,
+    /// Event instances whose run `stop_pipe` stopped since the scheduler's
+    /// last pass. The scheduler drops copies of them it kept for later (a
+    /// second delivery that arrived while the run was going), so a stop is
+    /// not undone a pass later now that the claim was given back.
+    stopped_instances: StoppedInstances,
     /// Optional check an event passes before it may start pipes.
     event_gate: Option<EventGate>,
     /// Pause between scheduler passes.
@@ -1764,6 +1782,7 @@ impl PipeManager {
             fallback_registry: registry,
             run_hooks: hooks::PipeHooks::new(),
             run_slots: Arc::new(Mutex::new(HashMap::new())),
+            stopped_instances: StoppedInstances::default(),
             event_gate: None,
             scheduler_tick: std::time::Duration::from_secs(30),
         }
@@ -3713,6 +3732,9 @@ impl PipeManager {
         if let Some(slot) = slot {
             slot.cancel();
             if let Some(ref claim) = slot.claim {
+                // Before the claim is given back, so the scheduler cannot
+                // start a kept copy of this instance in between.
+                lock_stopped_instances(&self.stopped_instances).insert(claim.clone());
                 release_claim(self.store.as_ref(), claim, "run cancelled").await;
             }
             if !slot.started {
@@ -3793,6 +3815,7 @@ impl PipeManager {
         let local_api_key = self.local_api_key.clone();
         let run_hooks = self.run_hooks.clone();
         let run_slots = self.run_slots.clone();
+        let stopped_instances = self.stopped_instances.clone();
         let event_gate = self.event_gate.clone();
         let scheduler_tick = self.scheduler_tick;
 
@@ -3895,8 +3918,10 @@ impl PipeManager {
                 // last_run values cleared for event runs, restored when the
                 // run turns out to be a duplicate.
                 let mut cleared_last_run: HashMap<String, Option<DateTime<Utc>>> = HashMap::new();
-                // When each directed run of this pass was first asked for.
-                let mut directed_since: HashMap<String, Instant> = HashMap::new();
+                // When each directed run of this pass was first asked for,
+                // by (pipe, instance key): two pipes kept for the same
+                // meeting each keep their own deadline.
+                let mut directed_since: HashMap<(String, String), Instant> = HashMap::new();
                 // Directed runs that cannot start this pass.
                 let mut to_defer: Vec<event_runs::EventRun> = Vec::new();
                 {
@@ -3928,8 +3953,20 @@ impl PipeManager {
                     }
 
                     // Directed runs: refresh requests deferred earlier, then new ones.
+                    // Copies of an event instance whose run was stopped
+                    // since the last pass are dropped (see `stop_pipe`).
+                    let stopped: std::collections::HashSet<event_runs::EventClaim> =
+                        std::mem::take(&mut *lock_stopped_instances(&stopped_instances));
                     let mut directed: Vec<event_runs::EventRun> = Vec::new();
                     for (run, since) in deferred_directed.drain(..) {
+                        if run.claim().is_some_and(|c| stopped.contains(&c)) {
+                            info!(
+                                "scheduler: dropping the kept run of pipe '{}' for {}: that run was stopped",
+                                run.pipe,
+                                run.key.as_deref().unwrap_or("?")
+                            );
+                            continue;
+                        }
                         if since.elapsed() >= event_runs::DEFERRED_REQUEST_TTL {
                             warn!(
                                 "scheduler: dropping request to run pipe '{}' for {} (could not start for {}s)",
@@ -3940,7 +3977,7 @@ impl PipeManager {
                             continue;
                         }
                         if let Some(key) = &run.key {
-                            directed_since.insert(key.clone(), since);
+                            directed_since.insert((run.pipe.clone(), key.clone()), since);
                         }
                         directed.push(run);
                     }
@@ -4897,7 +4934,7 @@ impl PipeManager {
                     let since = run
                         .key
                         .as_ref()
-                        .and_then(|k| directed_since.get(k).copied())
+                        .and_then(|k| directed_since.get(&(run.pipe.clone(), k.clone())).copied())
                         .unwrap_or_else(Instant::now);
                     debug!(
                         "scheduler: run of pipe '{}' for {} deferred to a later pass",

@@ -26,8 +26,10 @@ pub struct NewPipeExecution<'a> {
     pub trigger_type: &'a str,
     pub model: &'a str,
     pub provider: Option<&'a str>,
-    /// When the run was queued (RFC 3339); stored as `started_at`, which the
-    /// running transition keeps.
+    /// When the run was queued (RFC 3339); stored as `started_at` until the
+    /// running transition replaces it with the time the run really started
+    /// (a scheduled run can wait behind other pipes first). A run cancelled
+    /// while queued keeps it.
     pub queued_at: &'a str,
     pub trigger_event: Option<&'a str>,
     pub trigger_key: Option<&'a str>,
@@ -143,8 +145,10 @@ impl DatabaseManager {
     /// Move an execution to `running`. Only a row still `queued` or
     /// `running` with no `finished_at` moves, so a late call from a stale
     /// worker never reopens a cancelled or finished run. The PID is kept
-    /// when `pid` is `None`, and an existing `started_at` is kept. Returns
-    /// whether the row moved.
+    /// when `pid` is `None`. `started_at` becomes `now` when the row leaves
+    /// `queued` (it held the queue time, and `duration_ms` is measured from
+    /// it); a row already `running` keeps its start. Returns whether the row
+    /// moved.
     pub async fn mark_pipe_execution_running(
         &self,
         id: i64,
@@ -152,9 +156,13 @@ impl DatabaseManager {
         now: &str,
     ) -> Result<bool, SqlxError> {
         let mut tx = self.begin_immediate_with_retry().await?;
+        // SET expressions read the row as it was before the update, so
+        // `status = 'queued'` here is the old status.
         let moved = sqlx::query(
             "UPDATE pipe_executions \
-             SET status = 'running', pid = COALESCE(?1, pid), started_at = COALESCE(started_at, ?2) \
+             SET status = 'running', pid = COALESCE(?1, pid), \
+                 started_at = CASE WHEN status = 'queued' OR started_at IS NULL THEN ?2 \
+                                   ELSE started_at END \
              WHERE id = ?3 AND status IN ('queued', 'running') AND finished_at IS NULL",
         )
         .bind(pid)
@@ -411,6 +419,65 @@ mod tests {
         );
         // A running row is not "queued", so the queued cancel leaves it alone.
         assert!(!db.cancel_queued_pipe_execution(id, &now).await.unwrap());
+    }
+
+    async fn started_at(db: &DatabaseManager, id: i64) -> Option<String> {
+        let row: (Option<String>,) =
+            sqlx::query_as("SELECT started_at FROM pipe_executions WHERE id = ?1")
+                .bind(id)
+                .fetch_one(&db.pool)
+                .await
+                .unwrap();
+        row.0
+    }
+
+    #[tokio::test]
+    async fn started_at_is_the_time_the_run_left_the_queue() {
+        let db = db().await;
+        let queued_at = (Utc::now() - Duration::minutes(7)).to_rfc3339();
+        let id = db
+            .insert_pipe_execution(new_exec(None, &queued_at))
+            .await
+            .unwrap();
+        assert_eq!(
+            started_at(&db, id).await.as_deref(),
+            Some(queued_at.as_str())
+        );
+
+        // Leaving the queue (after waiting behind other pipes) records the
+        // real start ...
+        let began = Utc::now().to_rfc3339();
+        assert!(db
+            .mark_pipe_execution_running(id, None, &began)
+            .await
+            .unwrap());
+        assert_eq!(started_at(&db, id).await.as_deref(), Some(began.as_str()));
+
+        // ... and a later update of the running row (the PID arriving) keeps
+        // it.
+        let later = (Utc::now() + Duration::seconds(3)).to_rfc3339();
+        assert!(db
+            .mark_pipe_execution_running(id, Some(77), &later)
+            .await
+            .unwrap());
+        assert_eq!(started_at(&db, id).await.as_deref(), Some(began.as_str()));
+
+        // A run cancelled while queued keeps the queue time.
+        let cancelled = db
+            .insert_pipe_execution(new_exec(None, &queued_at))
+            .await
+            .unwrap();
+        assert!(db
+            .cancel_queued_pipe_execution(cancelled, &began)
+            .await
+            .unwrap());
+        let row: (Option<String>, Option<i64>) =
+            sqlx::query_as("SELECT started_at, duration_ms FROM pipe_executions WHERE id = ?1")
+                .bind(cancelled)
+                .fetch_one(&db.pool)
+                .await
+                .unwrap();
+        assert_eq!(row, (Some(queued_at.clone()), Some(0)));
     }
 
     #[tokio::test]

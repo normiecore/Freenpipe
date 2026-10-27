@@ -340,6 +340,70 @@ async fn cancelling_a_queued_run_releases_its_claim() {
     manager.stop_scheduler().await;
 }
 
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_stop_also_drops_a_second_delivery_kept_for_later() {
+    let dir = tempfile::tempdir().unwrap();
+    let pipe = format!("w306-stopkept-{}", unique_id());
+    let store = Arc::new(MemoryPipeStore::default());
+    let agent = Arc::new(ScriptedAgent::new(&finished_answer("Saved."), true));
+    let meeting = unique_id();
+    let key = meeting.to_string();
+    let needle = format!("instance `{key}`");
+    let mut manager = scheduler(
+        dir.path(),
+        &pipe,
+        store.clone(),
+        agent.clone(),
+        &[meeting],
+        |_| {},
+    )
+    .await;
+
+    // Hold the run in its queued state, then deliver the meeting again:
+    // the pipe is busy, so the second delivery is kept for a later pass.
+    let gate = store.running_gate.write().await;
+    meeting_ended(meeting);
+    let slots = manager.run_slots.clone();
+    let queued = wait_until(Duration::from_secs(10), || {
+        !store.executions_for_key(&key).is_empty()
+            && slots
+                .try_lock()
+                .map(|s| s.contains_key(&pipe))
+                .unwrap_or(false)
+    })
+    .await;
+    assert!(queued, "run never queued");
+    meeting_ended(meeting);
+    tokio::time::sleep(Duration::from_millis(300)).await;
+
+    manager.stop_pipe(&pipe).await.unwrap();
+    assert!(!store.is_claimed(&pipe, "meeting_ended", &key));
+    drop(gate);
+
+    // The kept copy does not start on the claim the stop gave back.
+    tokio::time::sleep(Duration::from_millis(600)).await;
+    let rows = store.executions_for_key(&key);
+    assert_eq!(rows.len(), 1, "{rows:?}");
+    assert_eq!(rows[0].status, "cancelled");
+    assert_eq!(agent.runs_mentioning(&needle), 0, "the stopped meeting ran");
+    assert!(!store.is_claimed(&pipe, "meeting_ended", &key));
+
+    // A delivery after the stop still runs the meeting.
+    meeting_ended(meeting);
+    assert!(
+        wait_until(Duration::from_secs(10), || {
+            store
+                .executions_for_key(&key)
+                .iter()
+                .any(|e| e.status == "completed")
+        })
+        .await
+    );
+    assert_eq!(agent.runs_mentioning(&needle), 1);
+
+    manager.stop_scheduler().await;
+}
+
 #[tokio::test]
 async fn stopping_a_slot_that_has_not_started_cancels_its_row() {
     let dir = tempfile::tempdir().unwrap();

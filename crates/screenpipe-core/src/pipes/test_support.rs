@@ -139,6 +139,10 @@ impl PipeStore for MemoryPipeStore {
                 let open =
                     matches!(r.status.as_str(), "queued" | "running") && r.finished_at.is_none();
                 if open {
+                    // Leaving the queue records the real start time.
+                    if r.status == "queued" || r.started_at.is_none() {
+                        r.started_at = Some(Utc::now().to_rfc3339());
+                    }
                     r.status = "running".to_string();
                     if pid.is_some() {
                         r.pid = pid;

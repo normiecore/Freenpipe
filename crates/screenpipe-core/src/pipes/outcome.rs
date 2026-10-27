@@ -20,6 +20,10 @@
 //! - and the older text-matched classes (`rate_limited`, `auth_failed`,
 //!   `model_not_found`, `network`, `context_overflow`).
 //!
+//! A context overflow is recognised before the newer classes, so an error
+//! text that also mentions compaction or a refusal still clears the pipe's
+//! agent session the way the base does after `context_overflow`.
+//!
 //! Refusal and content-filter markers are only looked for in error texts
 //! (stderr, provider error messages and stop reasons), never in what the
 //! assistant wrote as its answer.
@@ -283,15 +287,28 @@ pub fn assess_run(exit_ok: bool, stdout: &str, stderr: &str) -> RunOutcome {
         error_texts.push(e);
     }
 
+    // An overflow is checked first: it keeps the older class, for which
+    // the run's Pi session is cleared so the next run of a `history: true`
+    // pipe starts fresh instead of failing on the same session again. Pi
+    // reports a failed overflow recovery through the compaction event; an
+    // overflow can also show up only as text, next to compaction, refusal
+    // or preset wording.
     if let Some(failure) = digest.compaction_failure.as_deref() {
-        // Pi reports a failed overflow recovery through the same event; it
-        // keeps the older class, which also starts the next run fresh.
-        if failure.to_lowercase().contains("overflow") {
+        if failure.to_lowercase().contains("overflow") || mentions_context_overflow(failure) {
             return RunOutcome::failed(
                 Some(ERROR_CONTEXT_OVERFLOW),
                 format!("the context overflowed and could not be recovered: {failure}"),
             );
         }
+    }
+    if error_texts.iter().any(|t| mentions_context_overflow(t)) {
+        return RunOutcome::failed(
+            Some(ERROR_CONTEXT_OVERFLOW),
+            "the prompt no longer fits in the model's context window",
+        );
+    }
+
+    if let Some(failure) = digest.compaction_failure.as_deref() {
         return RunOutcome::failed(
             Some(ERROR_CONTEXT_COMPACTION),
             format!("context compaction failed before a final answer: {failure}"),
@@ -400,6 +417,15 @@ fn refusal_kind(texts: &[&str]) -> Option<Refusal> {
         }
     }
     refused.then_some(Refusal::Refused)
+}
+
+/// The overflow phrases the base classifier (`parse_error_type`) maps to
+/// `context_overflow`.
+fn mentions_context_overflow(text: &str) -> bool {
+    let lower = text.to_lowercase();
+    lower.contains("prompt is too long")
+        || lower.contains("context_length_exceeded")
+        || lower.contains("maximum context length")
 }
 
 fn mentions_compaction_failure(text: &str) -> bool {
@@ -568,6 +594,56 @@ mod tests {
         let overflow = r#"{"type":"compaction_end","reason":"overflow","aborted":false,"willRetry":false,"errorMessage":"Context overflow recovery failed after one compact-and-retry attempt."}"#;
         assert_eq!(
             assess_run(false, overflow, "").error_type.as_deref(),
+            Some(ERROR_CONTEXT_OVERFLOW)
+        );
+    }
+
+    #[test]
+    fn an_overflow_wins_over_compaction_refusal_and_preset_wording() {
+        // The base overflow phrases keep `context_overflow` (which clears
+        // the Pi session) even when the same error text also matches a
+        // newer class.
+        for stderr in [
+            "auto compaction failed: prompt is too long: 214000 tokens > 200000 maximum",
+            "error code context_length_exceeded; the provider refused the request",
+            "content filter check skipped: this model's maximum context length is 128000 tokens",
+            "no ai preset fallback left after: prompt is too long",
+        ] {
+            for exit_ok in [true, false] {
+                let outcome = assess_run(exit_ok, "", stderr);
+                assert_eq!(
+                    outcome.error_type.as_deref(),
+                    Some(ERROR_CONTEXT_OVERFLOW),
+                    "{stderr} (exit_ok {exit_ok})"
+                );
+            }
+        }
+
+        // The same through a provider error in the stream.
+        let errored = serde_json::json!({
+            "type": "message_end",
+            "message": {"role": "assistant", "content": [], "stopReason": "error",
+                "errorMessage": "Context compaction failed: prompt is too long"}
+        })
+        .to_string();
+        assert_eq!(
+            assess_run(false, &errored, "").error_type.as_deref(),
+            Some(ERROR_CONTEXT_OVERFLOW)
+        );
+
+        // A compaction event whose error is an overflow phrase.
+        let event = r#"{"type":"compaction_end","reason":"threshold","aborted":false,"willRetry":false,"errorMessage":"summary request failed: prompt is too long"}"#;
+        assert_eq!(
+            assess_run(true, event, "").error_type.as_deref(),
+            Some(ERROR_CONTEXT_OVERFLOW)
+        );
+
+        // A compaction event with another error, but an overflow on stderr.
+        let event = r#"{"type":"compaction_end","reason":"threshold","aborted":false,"willRetry":false,"errorMessage":"Compaction failed: summary too short"}"#;
+        assert_eq!(
+            assess_run(false, event, "400: context_length_exceeded")
+                .error_type
+                .as_deref(),
             Some(ERROR_CONTEXT_OVERFLOW)
         );
     }
