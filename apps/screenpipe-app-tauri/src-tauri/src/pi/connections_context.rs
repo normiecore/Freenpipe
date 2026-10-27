@@ -364,10 +364,11 @@ async fn engine_location(app: &AppHandle) -> (PathBuf, u16) {
     let running = match app.try_state::<crate::recording::RecordingState>() {
         Some(state) => {
             let server = state.server.clone();
-            match tokio::time::timeout(ENGINE_LOOKUP_TIMEOUT, server.lock()).await {
+            let dir = match tokio::time::timeout(ENGINE_LOOKUP_TIMEOUT, server.lock()).await {
                 Ok(guard) => guard.as_ref().map(|core| core.data_dir.clone()),
                 Err(_) => None,
-            }
+            };
+            dir
         }
         None => None,
     };
