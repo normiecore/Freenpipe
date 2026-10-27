@@ -321,7 +321,8 @@ pub struct PiPool {
     pub sessions: HashMap<String, PiManager>,
     /// One lock per session id. Starts of the same session run one after the
     /// other (a second start sees the first one's process), while starts of
-    /// different sessions prepare their config in parallel.
+    /// different sessions prepare in parallel; only their writes to files
+    /// they share take turns (`SHARED_START_FILES`).
     start_locks: HashMap<String, Arc<Mutex<()>>>,
     /// Thinking level chosen per session (`pi_set_thinking_level`), passed
     /// as `--thinking` whenever that session's process is (re)started.
