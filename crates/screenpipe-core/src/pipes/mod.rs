@@ -4501,12 +4501,15 @@ impl PipeManager {
                             backlog.note_inactive();
                             continue;
                         }
-                        if let Some((current, _)) = event_triggered.get(name) {
+                        if let Some((current, _)) = event_triggered.get_mut(name) {
                             if current.event == run.event && current.key == run.key {
+                                // The later copy is the newer one: its
+                                // payload goes with the run.
                                 debug!(
                                     "scheduler: '{}' for pipe '{}' folded into the run starting now",
                                     run.event, name
                                 );
+                                current.data = run.data;
                                 backlog.note_coalesced();
                             } else {
                                 pass.to_defer.push((run, origin));
@@ -4564,13 +4567,15 @@ impl PipeManager {
                                 recent_chain.insert(chain_key, Instant::now());
                             }
 
-                            if let Some((current, _)) = event_triggered.get(name) {
-                                // The same trigger twice in one pass runs once.
+                            if let Some((current, _)) = event_triggered.get_mut(name) {
+                                // The same trigger twice in one pass runs
+                                // once, with the newest payload.
                                 if current.event == *event_name && current.key == key {
                                     debug!(
                                         "scheduler: repeated '{}' for pipe '{}' folded into the run starting now",
                                         event_name, name
                                     );
+                                    current.data = data.clone();
                                     backlog.note_coalesced();
                                 } else {
                                     busy.push(name.clone());

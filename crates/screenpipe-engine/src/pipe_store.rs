@@ -1224,6 +1224,31 @@ mod tests {
     // -- W3-06: event claims, trigger records, paging -------------------------
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn skipped_runs_are_stored_finished_with_their_reason() {
+        let (store, _tmp) = setup_test_store().await;
+        let id = store
+            .record_skipped_execution(
+                "meeting-summary",
+                "event",
+                Some("meeting_ended"),
+                Some("77"),
+                "deferred_backlog_full",
+                "pipe was busy",
+            )
+            .await
+            .unwrap();
+        let exec = store.get_execution(id).await.unwrap().unwrap();
+        assert_eq!(exec.status, "skipped");
+        assert_eq!(exec.trigger_type, "event");
+        assert_eq!(exec.trigger_key.as_deref(), Some("77"));
+        assert_eq!(exec.error_type.as_deref(), Some("deferred_backlog_full"));
+        assert_eq!(exec.error_message.as_deref(), Some("pipe was busy"));
+        assert!(exec.finished_at.is_some());
+        // Finished rows are not orphans.
+        assert_eq!(store.mark_orphaned_running().await.unwrap(), 0);
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn executions_record_their_trigger_event_and_key() {
         let (store, _tmp) = setup_test_store().await;
         let id = store

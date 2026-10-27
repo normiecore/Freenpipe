@@ -126,8 +126,8 @@ services used are left out.
 
 | Variable | Meaning |
 |---|---|
-| `SCREENPIPE_TRAJECTORIES_DIR` | Directory pipe trajectories are written to (JSONL, opt-in). |
-| `SCREENPIPE_TRAJECTORIES_MAX_RUNS` | How many trajectory runs to keep. |
+| `SCREENPIPE_TRAJECTORIES_DIR` | Directory pipe trajectories are written to (JSONL, opt-in). Unset means off; `1`, `true`, `on` or `yes` use `<data dir>/trajectories`; a relative path is taken from the data directory. |
+| `SCREENPIPE_TRAJECTORIES_MAX_RUNS` | How many trajectory runs to keep (default 100). |
 | `SCREENPIPE_TOOLS_HTTP_PORT` | Port of the tools HTTP server offered to ACP agents. |
 | `SCREENPIPE_SESSION_ID` | Session id of the agent run. |
 | `SCREENPIPE_SUBAGENT` | Set when the process is a sub-agent. |
