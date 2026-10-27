@@ -12,13 +12,16 @@ use oasgen::{oasgen, OaSchema};
 use screenpipe_audio::core::engine::AudioTranscriptionEngine;
 use screenpipe_audio::transcription::engine::TranscriptionEngine;
 use screenpipe_audio::transcription::VocabularyEntry;
-use screenpipe_db::{AudioChunkInfo, NewMeetingTranscriptSegment};
+use screenpipe_core::pipes::meeting_summary::{
+    refresh_trigger_key, SummaryRefreshRequest, REFRESH_REASON_RETRANSCRIBED, SUMMARY_REFRESH_EVENT,
+};
+use screenpipe_db::{AudioChunkInfo, DatabaseManager, NewMeetingTranscriptSegment};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::collections::HashSet;
 use std::path::Path as StdPath;
 use std::sync::Arc;
-use tracing::{error, info};
+use tracing::{error, info, warn};
 
 use crate::server::AppState;
 
@@ -83,6 +86,65 @@ pub struct MeetingRetranscribeResponse {
     pub batches_processed: usize,
     pub seconds_processed: f64,
     pub replaced_segments: u64,
+    /// When the meeting's transcript was replaced (RFC 3339); `null` when
+    /// this pass produced no new transcript and nothing changed.
+    pub transcript_updated_at: Option<String>,
+    /// A `meeting_summary_refresh_requested` event went out after the
+    /// replacement, so the meeting-summary pipe (when it is on) writes a new
+    /// summary from the new transcript.
+    pub summary_refresh_event_emitted: bool,
+}
+
+/// What replacing a meeting's transcript did.
+#[derive(Debug, Clone, PartialEq)]
+pub struct MeetingTranscriptReplaced {
+    pub replaced_segments: u64,
+    pub inserted: usize,
+    pub transcript_updated_at: String,
+    pub summary_refresh_event_emitted: bool,
+}
+
+/// Replace a stopped meeting's transcript segments, then ask for a summary
+/// refresh. The refresh is a request: the scheduler runs the summary pipe
+/// only when it is enabled and triggered by `meeting_ended`, through the
+/// user's own AI preset.
+pub async fn replace_meeting_transcript_and_request_summary(
+    db: &DatabaseManager,
+    meeting_id: i64,
+    segments: &[NewMeetingTranscriptSegment],
+) -> Result<MeetingTranscriptReplaced, sqlx::Error> {
+    let (replaced_segments, inserted) = db
+        .replace_meeting_transcript_segments(meeting_id, segments)
+        .await?;
+    let updated_at = Utc::now();
+    let transcript_updated_at = updated_at.to_rfc3339();
+    let request = SummaryRefreshRequest {
+        meeting_id,
+        reason: REFRESH_REASON_RETRANSCRIBED.to_string(),
+        trigger_key: Some(refresh_trigger_key(
+            meeting_id,
+            updated_at.timestamp_millis(),
+        )),
+        pipe: None,
+        transcript_updated_at: Some(transcript_updated_at.clone()),
+    };
+    let summary_refresh_event_emitted =
+        match screenpipe_events::send_event(SUMMARY_REFRESH_EVENT, request) {
+            Ok(()) => true,
+            Err(e) => {
+                warn!(
+                    "meeting retranscribe: could not request a summary refresh for meeting {}: {}",
+                    meeting_id, e
+                );
+                false
+            }
+        };
+    Ok(MeetingTranscriptReplaced {
+        replaced_segments,
+        inserted,
+        transcript_updated_at,
+        summary_refresh_event_emitted,
+    })
 }
 
 #[derive(Debug, Serialize)]
@@ -532,6 +594,8 @@ pub async fn retranscribe_meeting_handler(
             batches_processed: 0,
             seconds_processed: 0.0,
             replaced_segments: 0,
+            transcript_updated_at: None,
+            summary_refresh_event_emitted: false,
         }));
     }
 
@@ -674,6 +738,8 @@ pub async fn retranscribe_meeting_handler(
             batches_processed: 0,
             seconds_processed,
             replaced_segments: 0,
+            transcript_updated_at: None,
+            summary_refresh_event_emitted: false,
         }));
     }
 
@@ -702,10 +768,12 @@ pub async fn retranscribe_meeting_handler(
         })
         .collect();
 
-    let (replaced_segments, inserted) = match state
-        .db
-        .replace_meeting_transcript_segments(meeting_id, &replacement_segments)
-        .await
+    let replaced = match replace_meeting_transcript_and_request_summary(
+        &state.db,
+        meeting_id,
+        &replacement_segments,
+    )
+    .await
     {
         Ok(result) => result,
         Err(e) => {
@@ -718,11 +786,12 @@ pub async fn retranscribe_meeting_handler(
     };
 
     info!(
-        "meeting retranscribe complete: meeting={}, chunks={}, batches={}, inserted={}",
+        "meeting retranscribe complete: meeting={}, chunks={}, batches={}, inserted={}, summary refresh requested={}",
         meeting_id,
         chunks_processed,
         pending.len(),
-        inserted
+        replaced.inserted,
+        replaced.summary_refresh_event_emitted
     );
 
     Ok(JsonResponse(MeetingRetranscribeResponse {
@@ -730,9 +799,11 @@ pub async fn retranscribe_meeting_handler(
         engine: engine_name,
         chunks_found: chunks.len(),
         chunks_processed,
-        batches_processed: inserted,
+        batches_processed: replaced.inserted,
         seconds_processed,
-        replaced_segments,
+        replaced_segments: replaced.replaced_segments,
+        transcript_updated_at: Some(replaced.transcript_updated_at),
+        summary_refresh_event_emitted: replaced.summary_refresh_event_emitted,
     }))
 }
 
@@ -902,6 +973,75 @@ fn looks_like_capture_timestamp(value: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn replacing_a_transcript_requests_a_summary_refresh() {
+        use futures::StreamExt;
+
+        let db = DatabaseManager::new("sqlite::memory:", Default::default())
+            .await
+            .unwrap();
+        let meeting_id = db
+            .insert_meeting("zoom", "manual", None, None)
+            .await
+            .unwrap();
+        let mut refresh_rx = screenpipe_events::subscribe_to_event::<Value>(SUMMARY_REFRESH_EVENT);
+
+        let segment = NewMeetingTranscriptSegment {
+            provider: "retranscribe".to_string(),
+            model: Some("whisper-large".to_string()),
+            item_id: "meeting-retranscribe:input:1:1".to_string(),
+            device_name: "mic".to_string(),
+            device_type: "input".to_string(),
+            stream_id: None,
+            session_speaker_id: None,
+            speaker_name: None,
+            transcript: "we agreed to ship on friday".to_string(),
+            captured_at: Utc::now(),
+        };
+        let replaced = replace_meeting_transcript_and_request_summary(&db, meeting_id, &[segment])
+            .await
+            .unwrap();
+        assert_eq!(replaced.inserted, 1);
+        assert!(replaced.summary_refresh_event_emitted);
+        assert!(DateTime::parse_from_rfc3339(&replaced.transcript_updated_at).is_ok());
+
+        // The request names this meeting and a refresh key under its id.
+        let event = loop {
+            let event = tokio::time::timeout(std::time::Duration::from_secs(5), refresh_rx.next())
+                .await
+                .expect("refresh event")
+                .expect("event stream open");
+            if event.data["meeting_id"] == json!(meeting_id) {
+                break event;
+            }
+        };
+        assert_eq!(event.data["reason"], json!(REFRESH_REASON_RETRANSCRIBED));
+        let key = event.data["trigger_key"].as_str().unwrap();
+        assert!(key.starts_with(&format!("{meeting_id}:summary-refresh-")));
+        assert_eq!(
+            event.data["transcript_updated_at"],
+            json!(replaced.transcript_updated_at)
+        );
+    }
+
+    #[test]
+    fn response_always_carries_the_refresh_fields() {
+        let response = MeetingRetranscribeResponse {
+            meeting_id: 1,
+            engine: "none".to_string(),
+            chunks_found: 0,
+            chunks_processed: 0,
+            batches_processed: 0,
+            seconds_processed: 0.0,
+            replaced_segments: 0,
+            transcript_updated_at: None,
+            summary_refresh_event_emitted: false,
+        };
+        let value = serde_json::to_value(&response).unwrap();
+        assert_eq!(value["transcript_updated_at"], Value::Null);
+        assert_eq!(value["summary_refresh_event_emitted"], json!(false));
+    }
 
     fn chunk(id: i64, path: &str, seconds: i64) -> AudioChunkInfo {
         AudioChunkInfo {
