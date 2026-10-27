@@ -107,7 +107,9 @@ import {
   parseRateLimitWaitSeconds,
   PI_MAX_RATE_LIMIT_RETRIES,
 } from "@/lib/chat/quota-errors";
-import { buildSystemPrompt, buildConnectionsContext } from "@/lib/chat/system-prompt";
+import { buildSystemPrompt } from "@/lib/chat/system-prompt";
+import { stripConnectionsContext } from "@/lib/chat/strip-connections-context";
+import { isPiBusyRefusal, waitForPiIdle } from "@/lib/chat/pi-busy";
 import {
   classifyCurl,
   endpointFamily,
@@ -1973,6 +1975,9 @@ function MessageContent({
   onRetry?: (prompt: string) => void;
 }) {
   const isUser = message.role === "user";
+  // A user turn may carry the runtime's per-turn <connections_context>
+  // block (Pi's echo, older or imported chats); it is for the model only.
+  const userText = isUser ? stripConnectionsContext(message.content) : message.content;
   const { settings } = useSettings();
   const hideThinkingBlocks = settings?.hideThinkingBlocks ?? true;
   const sourceCitations = isUser ? [] : sourceCitationsFromMessage(message);
@@ -2154,14 +2159,14 @@ function MessageContent({
         {attachmentsRow}
         {hasDocs
           ? <div className="text-sm font-medium">{message.displayContent}</div>
-          : <CollapsibleUserMessage label={message.displayContent} fullContent={message.content} />}
+          : <CollapsibleUserMessage label={message.displayContent} fullContent={userText} />}
       </div>
     );
   }
   // Strip raw "Error:" prefix that leaks from backend — show only the human part
   const displayText = !isUser && message.content.startsWith("Error: ")
     ? message.content.slice("Error: ".length)
-    : message.content;
+    : userText;
 
   return (
     <div className="space-y-2">
@@ -4705,10 +4710,11 @@ export function StandaloneChat({
     if (!p) return null;
     // Combine the screenpipe search instructions with the user's preset prompt.
     // This is passed via --append-system-prompt to Pi, enabling Anthropic prompt
-    // caching (90% input cost reduction on subsequent messages).
+    // caching (90% input cost reduction on subsequent messages). Connected
+    // integrations are not part of it: the runtime prefixes every user turn
+    // with a fresh <connections_context> block instead.
     const presetPrompt = p.prompt || "";
-    const connectionsCtx = buildConnectionsContext(connections);
-    const systemPrompt = `${buildSystemPrompt()}\n\n${presetPrompt}${connectionsCtx}`.trim() || null;
+    const systemPrompt = `${buildSystemPrompt()}\n\n${presetPrompt}`.trim() || null;
     return {
       provider: p.provider,
       url: p.url || "",
@@ -4718,7 +4724,7 @@ export function StandaloneChat({
       systemPrompt,
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [activePreset?.provider, activePreset?.url, activePreset?.model, activePreset?.apiKey, (activePreset as any)?.maxTokens, activePreset?.prompt, connections]);
+  }, [activePreset?.provider, activePreset?.url, activePreset?.model, activePreset?.apiKey, (activePreset as any)?.maxTokens, activePreset?.prompt]);
 
   const setRunningConfigFromProviderConfig = useCallback((providerConfig: NonNullable<ReturnType<typeof buildProviderConfig>>) => {
     piRunningConfigRef.current = {
@@ -4732,7 +4738,14 @@ export function StandaloneChat({
     };
   }, [settings.user?.token]);
 
-  const restartCurrentPiSession = useCallback(async (providerConfig: NonNullable<ReturnType<typeof buildProviderConfig>>) => {
+  // `stopFirst` is for callers that mean to cut the current turn short: the
+  // runtime refuses to restart a session that is still busy, so they stop
+  // it explicitly first. Without it a busy session makes the restart fail
+  // (see `isPiBusyRefusal`).
+  const restartCurrentPiSession = useCallback(async (
+    providerConfig: NonNullable<ReturnType<typeof buildProviderConfig>>,
+    options?: { stopFirst?: boolean },
+  ) => {
     let currentPid = piInfo?.pid;
     if (typeof currentPid !== "number") {
       try {
@@ -4751,6 +4764,13 @@ export function StandaloneChat({
       piStoppedIntentionallyRef.current = true;
     }
 
+    if (options?.stopFirst) {
+      const stopped = await commands.piStop(piSessionIdRef.current);
+      if (stopped.status === "error") {
+        console.warn("[Pi] Stop before restart failed:", stopped.error);
+      }
+    }
+
     const home = await homeDir();
     const dir = await join(home, ".screenpipe", "pi-chat");
     const result = await commands.piStart(
@@ -4767,24 +4787,8 @@ export function StandaloneChat({
     setRunningConfigFromProviderConfig(providerConfig);
   }, [piInfo?.pid, piInfo?.running, setRunningConfigFromProviderConfig, settings.user?.token]);
 
-  // When connections change (e.g., user connected Google Calendar in Settings),
-  // silently restart Pi if the system prompt changed and no message is in-flight.
-  useEffect(() => {
-    if (connections.length === 0) return;
-    const config = buildProviderConfig();
-    if (!config) return;
-    const running = piRunningConfigRef.current;
-    if (!running || running.systemPrompt === config.systemPrompt) return;
-    if (piMessageIdRef.current) return; // don't interrupt an active turn
-    restartCurrentPiSession(config)
-      .then(() => {
-        if (piRunningConfigRef.current) {
-          piRunningConfigRef.current = { ...piRunningConfigRef.current, systemPrompt: config.systemPrompt };
-        }
-      })
-      .catch(() => {});
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [connections]);
+  // Connecting or removing an integration needs no Pi restart: the runtime
+  // sends the current list with every user turn (<connections_context>).
 
   // Check Pi status on mount — Pi is auto-started at app boot by Rust
   useEffect(() => {
@@ -4821,12 +4825,52 @@ export function StandaloneChat({
   //   and models.json, so the subprocess has to be respawned to see them.
   //
   // Called directly from the AIPresetsSelector onPresetSaved callback.
-  const handlePiRestart = useCallback((preset: AIPreset) => {
+  //
+  // The runtime refuses to restart a session it still counts as busy
+  // (queued follow-ups, a compaction after the reply, an open extension
+  // dialog), even after the reply stopped streaming here. Such a refused
+  // switch waits until `pi_request_state` reports the session idle and is
+  // tried once more (`retried`); every other failure is shown to the user.
+  // `handlePiRestartRef` holds the latest version for that later retry.
+  const handlePiRestartRef = useRef<(preset: AIPreset, retried?: boolean) => void>(() => {});
+  const handlePiRestart = useCallback((preset: AIPreset, retried: boolean = false) => {
     if (isStreamingRef.current) {
       pendingPresetRef.current = preset;
       toast({ title: "model will switch after this response finishes" });
       return;
     }
+
+    const reportSwitchFailure = (error: unknown) => {
+      const message = error instanceof Error ? error.message : String(error);
+      if (isPiBusyRefusal(message) && retried !== true) {
+        // The newest choice wins: a later preset replaces this one.
+        pendingPresetRef.current = preset;
+        toast({ title: "model will switch once the assistant is idle" });
+        const sessionId = piSessionIdRef.current;
+        void waitForPiIdle(async () => {
+          const state = await commands.piRequestState(sessionId);
+          return state.status === "ok" ? state.data : null;
+        }).then((idle) => {
+          // Replaced by a newer preset, or applied when a reply ended.
+          if (pendingPresetRef.current !== preset) return;
+          // A reply is streaming again: the effect below applies it after.
+          if (isStreamingRef.current) return;
+          pendingPresetRef.current = null;
+          if (idle) {
+            handlePiRestartRef.current(preset, true);
+          } else {
+            toast({
+              title: "could not switch model",
+              description: "the assistant stayed busy; pick the preset again once it is idle",
+              variant: "destructive",
+            });
+          }
+        });
+        return;
+      }
+      console.error("[Pi] Preset switch failed:", error);
+      toast({ title: "could not switch model", description: message, variant: "destructive" });
+    };
 
     const providerConfig = buildProviderConfig(preset);
     if (!providerConfig) return;
@@ -4879,7 +4923,7 @@ export function StandaloneChat({
           try {
             await restartCurrentPiSession(providerConfig);
           } catch (err) {
-            console.error("[Pi] Fallback restart also failed:", err);
+            reportSwitchFailure(err);
           }
         }
       });
@@ -4892,11 +4936,15 @@ export function StandaloneChat({
       try {
         await restartCurrentPiSession(providerConfig);
       } catch (e) {
-        console.error("[Pi] Preset switch failed:", e);
+        reportSwitchFailure(e);
       }
     });
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [settings.user?.token, setRunningConfigFromProviderConfig, restartCurrentPiSession]);
+
+  useEffect(() => {
+    handlePiRestartRef.current = handlePiRestart;
+  }, [handlePiRestart]);
 
   useEffect(() => {
     if (!isStreaming && pendingPresetRef.current) {
@@ -5294,7 +5342,8 @@ export function StandaloneChat({
             }
             return "";
           })();
-          const text = extractConversationHistorySyncUserText(rawText) ?? rawText;
+          const visibleText = stripConnectionsContext(rawText);
+          const text = extractConversationHistorySyncUserText(visibleText) ?? visibleText;
           const eventImages = imageDataUrlsFromPiContent(data.message?.content);
           const pendingOptimisticSteer = optimisticSteerRef.current;
           const isPendingOptimisticSteerEcho = Boolean(
@@ -6478,7 +6527,9 @@ export function StandaloneChat({
       if (!providerConfig) {
         throw new Error("No AI preset selected");
       }
-      await restartCurrentPiSession(providerConfig);
+      // The abort did not land, so the turn is cut short by stopping the
+      // session: a plain restart is refused while it still counts as busy.
+      await restartCurrentPiSession(providerConfig, { stopFirst: true });
     }
 
     clearActivePiTurnState();

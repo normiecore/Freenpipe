@@ -240,6 +240,29 @@ describe("pi-event-router: background content accumulation (the parallel-chat re
     expect(session.streamingMessageId).toBe((session.messages![1] as any).id);
   });
 
+  it("drops the runtime's connections block from echoed user turns", async () => {
+    seed("A");
+    useChatStore.setState({ currentId: "B" });
+    await handlePiEvent(
+      piEvt("A", {
+        type: "message_start",
+        message: {
+          role: "user",
+          content: [
+            {
+              type: "text",
+              text:
+                "<connections_context>\nCurrent connected integrations.\n\n## Notion (notion)\n</connections_context>\n\n" +
+                "<conversation_history>\nuser: x\nassistant: y\n</conversation_history>\n\nqueued follow-up",
+            },
+          ],
+        },
+      }),
+    );
+    const session = useChatStore.getState().sessions.A;
+    expect((session.messages![0] as any).content).toBe("queued follow-up");
+  });
+
   it("keeps one assistant message across turn_end + assistant restart after switch-away", async () => {
     // Reproduces the user's bug: switch away while a tool-using reply is
     // mid-stream, then background routing takes over and sees an internal
