@@ -11,8 +11,12 @@
 //! the raw input and push it onto a soft-capped queue, so they return well
 //! inside `LowLevelHooksTimeout`, and its message loop runs a watchdog that
 //! reinstalls hooks Windows removed silently. The input worker
-//! (`a11y-input-worker`) turns raw input into UI events: window lookups,
-//! exclusions, text and scroll aggregation, clipboard reads and PII removal.
+//! (`a11y-input-worker`) turns raw input into UI events: exclusions, text and
+//! scroll aggregation and PII removal. Each raw input carries the focus epoch
+//! of the moment it was typed, so the worker judges it against the window it
+//! went to however late it gets to it (see `input_focus`). Clipboard contents
+//! are read on a third thread (`a11y-clipboard`), because a read can wait on
+//! the app that owns the clipboard and the worker must never wait.
 
 use crate::activity_feed::{ActivityFeed, ActivityKind};
 use crate::config::{ExtractionThreadPriority, UiCaptureConfig};
@@ -30,10 +34,11 @@ use std::time::{Duration, Instant};
 use tracing::{debug, error, info, warn};
 
 use super::hook_watchdog::{self, HookReinstaller, HookWatchdog, HookWatchdogConfig, InputTarget};
+use super::input_focus::{FocusTarget, FocusTracker};
 use super::input_queue::{
     input_queue, DropReporter, InputPriority, InputQueueReceiver, InputQueueSender,
 };
-use super::window_identity::{self, FrameChild};
+use super::window_identity::{self, FrameChild, WindowIdentity};
 use super::windows_uia::{self, ClickElementRequest};
 
 use windows::Win32::Foundation::{
@@ -222,9 +227,15 @@ impl UiRecorder {
 
         let mut threads = Vec::new();
 
-        // Shared state for current app/window between threads
-        let current_app = Arc::new(Mutex::new(None::<String>));
-        let current_window = Arc::new(Mutex::new(None::<String>));
+        // The focused window by epoch: published by the app observer,
+        // stamped on raw input by the hook callbacks, looked up by the
+        // input worker. Until the observer's first check nothing is known
+        // about the window (the base judged such input the same way).
+        let focus = Arc::new(FocusTracker::new(FocusTarget {
+            app_name: None,
+            window_title: None,
+            capture: self.config.should_capture_target("", None),
+        }));
 
         // Shared state for UIA thread
         let click_queue = Arc::new(Mutex::new(Vec::<ClickElementRequest>::new()));
@@ -242,6 +253,7 @@ impl UiRecorder {
         let stop_hooks = stop.clone();
         let hook_feed = activity_feed.clone();
         let hook_last_input = last_input_at_ms.clone();
+        let hook_focus = focus.clone();
         let capture_mouse_move = self.config.capture_mouse_move;
         let hook_thread = thread::Builder::new()
             .name("a11y-input-hooks".to_string())
@@ -252,10 +264,32 @@ impl UiRecorder {
                     start_time,
                     hook_feed,
                     hook_last_input,
+                    hook_focus,
                     capture_mouse_move,
                 );
             })?;
         threads.push(hook_thread);
+
+        // Thread 1c: clipboard reader, only when clipboard contents are
+        // recorded. Not joined on stop: a read stuck on an unresponsive
+        // clipboard owner must not hold up stopping; the thread ends once
+        // the worker is gone and its current read returns.
+        let clipboard_reader = if self.config.capture_clipboard
+            && self.config.capture_clipboard_content
+        {
+            match ClipboardReader::spawn(tx.clone(), self.config.apply_pii_removal) {
+                Ok(reader) => Some(reader),
+                Err(e) => {
+                    warn!(
+                        "could not start the clipboard reader thread ({}); clipboard events are recorded without their content",
+                        e
+                    );
+                    None
+                }
+            }
+        } else {
+            None
+        };
 
         // Thread 1b: input worker. Turns raw input into UI events, off the
         // hook thread so nothing it does can delay a hook callback.
@@ -263,11 +297,11 @@ impl UiRecorder {
             tx.clone(),
             start_time,
             self.config.clone(),
-            current_app.clone(),
-            current_window.clone(),
+            focus.clone(),
             activity_feed.clone(),
             click_queue.clone(),
             focused_element.clone(),
+            clipboard_reader,
         );
         let stop_worker = stop.clone();
         let worker_thread = thread::Builder::new()
@@ -280,19 +314,10 @@ impl UiRecorder {
         let tx2 = tx.clone();
         let stop2 = stop.clone();
         let config2 = self.config.clone();
-        let app2 = current_app.clone();
-        let window2 = current_window.clone();
+        let focus2 = focus.clone();
         let focused_element2 = focused_element.clone();
         threads.push(thread::spawn(move || {
-            run_app_observer(
-                tx2,
-                stop2,
-                start_time,
-                config2,
-                app2,
-                window2,
-                focused_element2,
-            );
+            run_app_observer(tx2, stop2, start_time, config2, focus2, focused_element2);
         }));
 
         // Thread 3: UI Automation worker (tree capture, element context, clipboard)
@@ -393,6 +418,9 @@ struct RawInput {
     timestamp: chrono::DateTime<Utc>,
     /// Milliseconds since recording started.
     relative_ms: u64,
+    /// Focus epoch (see `input_focus`) current when the callback ran: the
+    /// window this input went to.
+    focus_epoch: u64,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -420,6 +448,68 @@ struct PendingClipboard {
     app_name: Option<String>,
     window_title: Option<String>,
     due: Instant,
+}
+
+impl PendingClipboard {
+    /// The clipboard event for this shortcut, with the content read for it
+    /// (`None` when contents are not recorded or could not be read).
+    fn into_event(self, content: Option<String>) -> UiEvent {
+        UiEvent {
+            id: None,
+            timestamp: self.timestamp,
+            relative_ms: self.relative_ms,
+            data: EventData::Clipboard {
+                operation: self.operation,
+                content,
+            },
+            app_name: self.app_name,
+            window_title: self.window_title,
+            browser_url: None,
+            element: None,
+            frame_id: None,
+        }
+    }
+}
+
+/// Clipboard reads that may wait for the reader thread. When the reader is
+/// stuck this many deep, later shortcuts are recorded without their content.
+const CLIPBOARD_READ_QUEUE: usize = 8;
+
+/// Hands clipboard reads to the `a11y-clipboard` thread.
+///
+/// Reading the clipboard can wait on the app that owns it: an owner that
+/// renders its data only when asked (spreadsheets, remote-desktop and VM
+/// clipboards) or a hung one can keep the read waiting for seconds. On the
+/// input worker that wait would hold up all queued input, so reads happen
+/// here and the worker only queues them, never blocking.
+struct ClipboardReader {
+    requests: Sender<PendingClipboard>,
+}
+
+impl ClipboardReader {
+    /// Start the reader thread. It sends each finished read to `events`
+    /// (with PII removed when `apply_pii` is set) and ends once the
+    /// `ClipboardReader` is dropped and its queue is empty.
+    fn spawn(events: Sender<UiEvent>, apply_pii: bool) -> std::io::Result<Self> {
+        let (requests, queue) = bounded::<PendingClipboard>(CLIPBOARD_READ_QUEUE);
+        thread::Builder::new()
+            .name("a11y-clipboard".to_string())
+            .spawn(move || {
+                for pending in queue {
+                    let content =
+                        get_clipboard_text().map(|c| if apply_pii { remove_pii(&c) } else { c });
+                    let _ = events.try_send(pending.into_event(content));
+                }
+                debug!("clipboard reader stopped");
+            })?;
+        Ok(Self { requests })
+    }
+
+    /// Queue a read without waiting. The operation comes back when the
+    /// reader is still busy with earlier reads (or gone).
+    fn request(&self, pending: PendingClipboard) -> std::result::Result<(), PendingClipboard> {
+        self.requests.try_send(pending).map_err(|e| e.into_inner())
+    }
 }
 
 /// Consecutive `WM_MOUSEWHEEL` ticks within this window are coalesced into a
@@ -467,20 +557,27 @@ fn emit_aggregated_scroll(tx: &Sender<UiEvent>, agg: ScrollAggregator) {
 }
 
 /// Turns raw input into UI events on the `a11y-input-worker` thread, where
-/// locks, clipboard reads and PII scrubbing cannot delay a hook callback.
+/// locks and PII scrubbing cannot delay a hook callback.
 struct InputWorker {
     tx: Sender<UiEvent>,
     start: Instant,
     config: UiCaptureConfig,
     text_buf: String,
     last_text_time: Option<Instant>,
-    current_app: Arc<Mutex<Option<String>>>,
-    current_window: Arc<Mutex<Option<String>>>,
+    /// Focused window by epoch; each raw input is judged against the
+    /// window of its own epoch.
+    focus: Arc<FocusTracker>,
+    /// The last epoch looked up, so a run of input to one window takes the
+    /// history lock once.
+    last_focus: Option<(u64, Arc<FocusTarget>)>,
     activity_feed: Option<ActivityFeed>,
     click_queue: Arc<Mutex<Vec<ClickElementRequest>>>,
     focused_element: Arc<Mutex<Option<ElementContext>>>,
     /// Clipboard shortcuts waiting for their read.
     pending_clipboard: Vec<PendingClipboard>,
+    /// Reads clipboard contents off this thread (`None` when contents are
+    /// not recorded, or the reader could not start).
+    clipboard_reader: Option<ClipboardReader>,
     /// In-flight scroll aggregator (None = not currently scrolling).
     scroll_aggregator: Option<ScrollAggregator>,
 }
@@ -491,11 +588,11 @@ impl InputWorker {
         tx: Sender<UiEvent>,
         start: Instant,
         config: UiCaptureConfig,
-        current_app: Arc<Mutex<Option<String>>>,
-        current_window: Arc<Mutex<Option<String>>>,
+        focus: Arc<FocusTracker>,
         activity_feed: Option<ActivityFeed>,
         click_queue: Arc<Mutex<Vec<ClickElementRequest>>>,
         focused_element: Arc<Mutex<Option<ElementContext>>>,
+        clipboard_reader: Option<ClipboardReader>,
     ) -> Self {
         Self {
             tx,
@@ -503,12 +600,13 @@ impl InputWorker {
             config,
             text_buf: String::new(),
             last_text_time: None,
-            current_app,
-            current_window,
+            focus,
+            last_focus: None,
             activity_feed,
             click_queue,
             focused_element,
             pending_clipboard: Vec::new(),
+            clipboard_reader,
             scroll_aggregator: None,
         }
     }
@@ -518,12 +616,29 @@ impl InputWorker {
         self.start + Duration::from_millis(raw.relative_ms)
     }
 
-    /// App and window the input goes to (kept current by the app observer).
-    fn current_target(&self) -> (Option<String>, Option<String>) {
-        (
-            self.current_app.lock().clone(),
-            self.current_window.lock().clone(),
-        )
+    /// The window this input went to: the one focused when the hook saw
+    /// it, not the one focused now. `None` when that window is no longer
+    /// known (the worker fell behind by more focus changes than the
+    /// history keeps).
+    fn target_of(&mut self, raw: &RawInput) -> Option<Arc<FocusTarget>> {
+        if let Some((epoch, target)) = &self.last_focus {
+            if *epoch == raw.focus_epoch {
+                return Some(target.clone());
+            }
+        }
+        let target = self.focus.lookup(raw.focus_epoch)?;
+        self.last_focus = Some((raw.focus_epoch, target.clone()));
+        Some(target)
+    }
+
+    /// App and window for this input when it may be recorded; `None` when
+    /// its window is excluded or no longer known.
+    fn capture_target(&mut self, raw: &RawInput) -> Option<(Option<String>, Option<String>)> {
+        let target = self.target_of(raw)?;
+        if !target.capture {
+            return None;
+        }
+        Some((target.app_name.clone(), target.window_title.clone()))
     }
 
     fn handle(&mut self, raw: RawInput) {
@@ -540,13 +655,9 @@ impl InputWorker {
     }
 
     fn handle_key_down(&mut self, raw: &RawInput, vk_code: u16, mods: u8, caps_lock: bool) {
-        let (app_name, window_title) = self.current_target();
-        if !self.config.should_capture_target(
-            app_name.as_deref().unwrap_or_default(),
-            window_title.as_deref(),
-        ) {
+        let Some((app_name, window_title)) = self.capture_target(raw) else {
             return;
-        }
+        };
 
         // Clipboard operations (Ctrl+C, Ctrl+X, Ctrl+V) are read a moment
         // later, once the app has handled the shortcut.
@@ -614,13 +725,9 @@ impl InputWorker {
         if !self.config.capture_mouse_move {
             return;
         }
-        let (app_name, window_title) = self.current_target();
-        if !self.config.should_capture_target(
-            app_name.as_deref().unwrap_or_default(),
-            window_title.as_deref(),
-        ) {
+        let Some((app_name, window_title)) = self.capture_target(raw) else {
             return;
-        }
+        };
         let event = UiEvent {
             id: None,
             timestamp: raw.timestamp,
@@ -636,13 +743,9 @@ impl InputWorker {
     }
 
     fn handle_button(&mut self, raw: &RawInput, button: u8, mods: u8) {
-        let (app_name, window_title) = self.current_target();
-        if !self.config.should_capture_target(
-            app_name.as_deref().unwrap_or_default(),
-            window_title.as_deref(),
-        ) {
+        let Some((app_name, window_title)) = self.capture_target(raw) else {
             return;
-        }
+        };
 
         // A click right after scrolling ends the scroll run, so the buffered
         // scroll is not held until the next wheel tick or the idle flush.
@@ -657,12 +760,15 @@ impl InputWorker {
             return;
         }
 
-        // Attach focused element context (approximate, fast).
-        let element = if self.config.capture_context {
-            self.focused_element.lock().clone()
-        } else {
-            None
-        };
+        // Attach focused element context (approximate, fast). It describes
+        // the window in front now, so it is only attached while that is
+        // still the window the click went to.
+        let element =
+            if self.config.capture_context && raw.focus_epoch == self.focus.current_epoch() {
+                self.focused_element.lock().clone()
+            } else {
+                None
+            };
 
         let mut event = UiEvent::click(
             raw.timestamp,
@@ -689,13 +795,9 @@ impl InputWorker {
     }
 
     fn handle_wheel(&mut self, raw: &RawInput, delta: i32) {
-        let (app_name, window_title) = self.current_target();
-        if !self.config.should_capture_target(
-            app_name.as_deref().unwrap_or_default(),
-            window_title.as_deref(),
-        ) {
+        let Some((app_name, window_title)) = self.capture_target(raw) else {
             return;
-        }
+        };
 
         // Record activity for adaptive FPS even when scroll capture is off
         if let Some(ref feed) = self.activity_feed {
@@ -765,31 +867,33 @@ impl InputWorker {
         }
     }
 
-    /// Read the clipboard for each operation and emit its event.
+    /// Emit each due clipboard operation. When contents are recorded the
+    /// read is handed to the clipboard reader thread, which emits the event;
+    /// the worker itself never touches the clipboard, so it cannot be held
+    /// up by the app that owns it. An operation the reader has no room for
+    /// is recorded without its content.
     fn emit_clipboard(&mut self, operations: Vec<PendingClipboard>) {
-        let capture_content = self.config.capture_clipboard_content;
-        let apply_pii = self.config.apply_pii_removal;
-        for p in operations {
-            let content = if capture_content {
-                get_clipboard_text().map(|c| if apply_pii { remove_pii(&c) } else { c })
-            } else {
-                None
+        let mut without_content = 0u32;
+        for pending in operations {
+            let pending = match &self.clipboard_reader {
+                Some(reader) if self.config.capture_clipboard_content => {
+                    match reader.request(pending) {
+                        Ok(()) => continue,
+                        Err(pending) => {
+                            without_content += 1;
+                            pending
+                        }
+                    }
+                }
+                _ => pending,
             };
-            let event = UiEvent {
-                id: None,
-                timestamp: p.timestamp,
-                relative_ms: p.relative_ms,
-                data: EventData::Clipboard {
-                    operation: p.operation,
-                    content,
-                },
-                app_name: p.app_name,
-                window_title: p.window_title,
-                browser_url: None,
-                element: None,
-                frame_id: None,
-            };
-            let _ = self.tx.try_send(event);
+            let _ = self.tx.try_send(pending.into_event(None));
+        }
+        if without_content > 0 {
+            debug!(
+                without_content,
+                "clipboard reader is still busy; recorded clipboard shortcuts without their content"
+            );
         }
     }
 
@@ -808,13 +912,19 @@ impl InputWorker {
     }
 
     /// Final flush when recording stops, so buffered input is not lost.
+    /// Clipboard shortcuts whose read was not due yet are recorded without
+    /// their content: stopping never waits on the clipboard.
     fn finish(&mut self) {
         self.flush_text_buffer();
         if let Some(agg) = self.scroll_aggregator.take() {
             emit_aggregated_scroll(&self.tx, agg);
         }
-        let pending = std::mem::take(&mut self.pending_clipboard);
-        self.emit_clipboard(pending);
+        for pending in std::mem::take(&mut self.pending_clipboard) {
+            let _ = self.tx.try_send(pending.into_event(None));
+        }
+        // Dropping the reader's queue lets its thread end after any read
+        // already in progress.
+        self.clipboard_reader = None;
     }
 }
 
@@ -873,6 +983,8 @@ struct HookThreadState {
     /// Updated at the top of both callbacks so the UIA worker can defer tree
     /// captures while the user is actively typing/clicking/scrolling.
     last_input_at_ms: Arc<AtomicU64>,
+    /// Source of the focus epoch stamped on each raw input.
+    focus: Arc<FocusTracker>,
     last_mouse_pos: (i32, i32),
     capture_mouse_move: bool,
 }
@@ -1153,6 +1265,7 @@ fn run_native_hooks(
     start: Instant,
     activity_feed: Option<ActivityFeed>,
     last_input_at_ms: Arc<AtomicU64>,
+    focus: Arc<FocusTracker>,
     capture_mouse_move: bool,
 ) {
     debug!("Starting native Windows hooks");
@@ -1164,6 +1277,7 @@ fn run_native_hooks(
             start,
             activity_feed,
             last_input_at_ms,
+            focus,
             last_mouse_pos: (0, 0),
             capture_mouse_move,
         }));
@@ -1221,6 +1335,7 @@ unsafe extern "system" fn keyboard_hook_proc(code: i32, wparam: WPARAM, lparam: 
                 y: 0,
                 timestamp: Utc::now(),
                 relative_ms: t,
+                focus_epoch: s.focus.current_epoch(),
             };
             s.queue.push(raw, InputPriority::Normal);
         });
@@ -1297,6 +1412,7 @@ unsafe extern "system" fn mouse_hook_proc(code: i32, wparam: WPARAM, lparam: LPA
                 y,
                 timestamp: Utc::now(),
                 relative_ms: t,
+                focus_epoch: s.focus.current_epoch(),
             };
             s.queue.push(raw, priority);
         });
@@ -1425,15 +1541,18 @@ fn get_modifier_state() -> u8 {
 }
 
 /// Character for a virtual key. `caps_lock` is the toggle state read in the
-/// hook callback (the worker thread has no keyboard state of its own).
+/// hook callback (the worker thread has no keyboard state of its own). Caps
+/// lock only changes letters, and inverts Shift for them (Shift with caps
+/// lock on types a lowercase letter); digits and punctuation follow Shift
+/// alone.
 fn vk_to_char(vk: u16, mods: u8, caps_lock: bool) -> Option<char> {
-    let shift = mods & 0x01 != 0 || caps_lock;
+    let shift = mods & 0x01 != 0;
 
     let c = match vk {
         // Letters (A-Z are 0x41-0x5A)
         0x41..=0x5A => {
             let base = (vk - 0x41) as u8 + b'a';
-            if shift {
+            if shift != caps_lock {
                 (base - 32) as char
             } else {
                 base as char
@@ -1611,8 +1730,8 @@ struct AppObserverState {
     tx: Sender<UiEvent>,
     start: Instant,
     config: UiCaptureConfig,
-    current_app: Arc<Mutex<Option<String>>>,
-    current_window: Arc<Mutex<Option<String>>>,
+    /// Where each focus change is published for input attribution.
+    focus: Arc<FocusTracker>,
     focused_element: Arc<Mutex<Option<ElementContext>>>,
     last_hwnd: isize,
     last_title: Option<String>,
@@ -1656,19 +1775,23 @@ fn process_foreground_change(state: &mut AppObserverState) {
         let mut pid: u32 = 0;
         GetWindowThreadProcessId(hwnd, Some(&mut pid));
 
-        // Resolve the logical app name (handles WebView2 and shell-hosted Edge).
-        let app_name = get_effective_app_name(hwnd, pid);
+        // Resolve the logical app name (handles WebView2, shell-hosted Edge
+        // and UWP apps behind their frame host).
+        let identity = get_window_identity(hwnd, pid);
+        let capture =
+            window_identity::should_capture_identity(&state.config, &identity, title.as_deref());
+        let app_name = identity.app_name;
 
-        // Update shared state before exclusions so input hooks do not keep
-        // attributing keystrokes/clicks to the previously focused app.
-        *state.current_app.lock() = Some(app_name.clone());
-        *state.current_window.lock() = title.clone();
+        // Publish the change before anything else, excluded or not, so
+        // input from now on is attributed to (and judged by) this window.
+        state.focus.publish(FocusTarget {
+            app_name: Some(app_name.clone()),
+            window_title: title.clone(),
+            capture,
+        });
 
         // Check exclusions
-        if !state
-            .config
-            .should_capture_target(&app_name, title.as_deref())
-        {
+        if !capture {
             debug!(app = %app_name, pid, title = ?title, "a11y: foreground change excluded");
             *state.focused_element.lock() = None;
             state.last_hwnd = hwnd_val;
@@ -1745,8 +1868,7 @@ fn run_app_observer(
     stop: Arc<AtomicBool>,
     start: Instant,
     config: UiCaptureConfig,
-    current_app: Arc<Mutex<Option<String>>>,
-    current_window: Arc<Mutex<Option<String>>>,
+    focus: Arc<FocusTracker>,
     focused_element: Arc<Mutex<Option<ElementContext>>>,
 ) {
     // Lower OS thread priority so user input threads can preempt. The app observer
@@ -1761,8 +1883,7 @@ fn run_app_observer(
             tx,
             start,
             config,
-            current_app,
-            current_window,
+            focus,
             focused_element,
             last_hwnd: 0,
             last_title: None,
@@ -1955,6 +2076,14 @@ pub(crate) fn normalize_app_name(raw_process: &str, window_class: &str) -> Strin
 ///
 /// Never returns an empty name.
 pub(crate) fn get_effective_app_name(hwnd: HWND, pid: u32) -> String {
+    get_window_identity(hwnd, pid).app_name
+}
+
+/// The window's identity: its app name as [`get_effective_app_name`]
+/// resolves it, plus, for a UWP app resolved behind its frame, the frame
+/// host's name, which exclusion rules are also checked against
+/// ([`window_identity::should_capture_identity`]).
+pub(crate) fn get_window_identity(hwnd: HWND, pid: u32) -> WindowIdentity {
     let raw = window_identity::non_empty_app_name(
         &get_process_name(pid).unwrap_or_else(|| window_identity::UNKNOWN_APP_NAME.to_string()),
     );
@@ -1962,8 +2091,9 @@ pub(crate) fn get_effective_app_name(hwnd: HWND, pid: u32) -> String {
 
     if window_identity::is_uwp_frame(&raw, &window_class) {
         let hosted = hosted_uwp_app(hwnd, pid);
-        let effective =
-            window_identity::frame_app_name(&raw, hosted.as_ref().map(|(_, name)| name.as_str()));
+        let identity =
+            window_identity::frame_identity(&raw, hosted.as_ref().map(|(_, name)| name.as_str()));
+        let effective = &identity.app_name;
         match hosted {
             Some((hosted_pid, _)) => debug!(
                 pid,
@@ -1981,7 +2111,7 @@ pub(crate) fn get_effective_app_name(hwnd: HWND, pid: u32) -> String {
                 "a11y: frame host shows no app window yet; keeping the host name"
             ),
         }
-        return effective;
+        return identity;
     }
 
     let effective = normalize_app_name(&raw, &window_class);
@@ -1994,7 +2124,7 @@ pub(crate) fn get_effective_app_name(hwnd: HWND, pid: u32) -> String {
             "a11y: app name normalised"
         );
     }
-    effective
+    WindowIdentity::plain(effective)
 }
 
 /// App owning the foreground window, named like frames and app switches
@@ -2179,6 +2309,14 @@ mod tests {
         assert_eq!(0x08, 8); // Win
     }
 
+    fn focus_target(app: &str, capture: bool) -> FocusTarget {
+        FocusTarget {
+            app_name: Some(app.to_string()),
+            window_title: Some(format!("{app} window")),
+            capture,
+        }
+    }
+
     fn make_worker(
         tx: crossbeam_channel::Sender<UiEvent>,
         config: crate::config::UiCaptureConfig,
@@ -2187,11 +2325,11 @@ mod tests {
             tx,
             std::time::Instant::now(),
             config,
-            Arc::new(parking_lot::Mutex::new(Some("test".into()))),
-            Arc::new(parking_lot::Mutex::new(Some("test window".into()))),
+            Arc::new(FocusTracker::new(focus_target("test", true))),
             None,
             Arc::new(parking_lot::Mutex::new(Vec::new())),
             Arc::new(parking_lot::Mutex::new(None)),
+            None,
         )
     }
 
@@ -2213,7 +2351,23 @@ mod tests {
             y: 20,
             timestamp: Utc::now(),
             relative_ms,
+            focus_epoch: 0,
         }
+    }
+
+    fn ctrl(vk: u16, relative_ms: u64) -> RawInput {
+        raw(
+            RawInputKind::KeyDown {
+                vk,
+                mods: 0x02,
+                caps_lock: false,
+            },
+            relative_ms,
+        )
+    }
+
+    fn drain(rx: &crossbeam_channel::Receiver<UiEvent>) -> Vec<UiEvent> {
+        std::iter::from_fn(|| rx.try_recv().ok()).collect()
     }
 
     fn key(vk: u16, relative_ms: u64) -> RawInput {
@@ -2344,17 +2498,183 @@ mod tests {
         let config = crate::config::UiCaptureConfig {
             capture_text: true,
             capture_scroll: true,
+            capture_clipboard: true,
+            capture_clipboard_content: false,
             apply_pii_removal: false,
             ..Default::default()
         };
         let mut worker = make_worker(tx, config);
         worker.handle(key(0x41, 0));
         worker.handle(raw(RawInputKind::Wheel { delta: 120 }, 5));
+        worker.handle(ctrl(0x43, 6));
         worker.finish();
-        let kinds: Vec<_> = std::iter::from_fn(|| rx.try_recv().ok())
-            .map(|e| e.event_type())
+        let kinds: Vec<_> = drain(&rx).into_iter().map(|e| e.event_type()).collect();
+        assert_eq!(kinds.len(), 3, "{kinds:?}");
+    }
+
+    #[test]
+    fn keys_queued_for_an_excluded_app_stay_excluded_after_a_switch() {
+        let (tx, rx) = crossbeam_channel::bounded(64);
+        let config = crate::config::UiCaptureConfig {
+            capture_text: true,
+            capture_keystrokes: true,
+            capture_clicks: true,
+            capture_context: false,
+            apply_pii_removal: false,
+            ..Default::default()
+        };
+        let timeout = config.text_timeout_ms;
+        let mut worker = make_worker(tx, config);
+        let focus = worker.focus.clone();
+
+        // The password manager is in front: the hook stamps its epoch on
+        // the master password and a click, which wait in the queue ...
+        let vault = focus.publish(focus_target("KeePassXC.exe", false));
+        let queued: Vec<RawInput> = [0x53u16, 0x33, 0x43, 0x52, 0x45, 0x54]
+            .into_iter()
+            .enumerate()
+            .map(|(i, vk)| RawInput {
+                focus_epoch: vault,
+                ..key(vk, i as u64 * 10)
+            })
+            .chain(std::iter::once(RawInput {
+                focus_epoch: vault,
+                ..raw(RawInputKind::ButtonDown { button: 0, mods: 0 }, 70)
+            }))
             .collect();
-        assert_eq!(kinds.len(), 2, "{kinds:?}");
+        // ... while the worker is held up and the user switches back to
+        // the browser before it gets to them.
+        focus.publish(focus_target("chrome.exe", true));
+        for input in queued {
+            worker.handle(input);
+        }
+        worker.tick(worker.start + Duration::from_millis(100 + timeout));
+        worker.finish();
+        assert!(
+            drain(&rx).is_empty(),
+            "input to the excluded app was recorded"
+        );
+
+        // Input stamped with the browser's epoch is recorded for it.
+        let browser = focus.current_epoch();
+        worker.handle(RawInput {
+            focus_epoch: browser,
+            ..raw(RawInputKind::ButtonDown { button: 0, mods: 0 }, 200)
+        });
+        let events = drain(&rx);
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].app_name.as_deref(), Some("chrome.exe"));
+    }
+
+    #[test]
+    fn input_is_attributed_to_the_window_it_was_typed_in() {
+        let (tx, rx) = crossbeam_channel::bounded(64);
+        let config = crate::config::UiCaptureConfig {
+            capture_clicks: true,
+            capture_context: false,
+            ..Default::default()
+        };
+        let mut worker = make_worker(tx, config);
+        let focus = worker.focus.clone();
+        let editor = focus.publish(focus_target("Code.exe", true));
+        focus.publish(focus_target("slack.exe", true));
+        worker.handle(RawInput {
+            focus_epoch: editor,
+            ..raw(RawInputKind::ButtonDown { button: 0, mods: 0 }, 0)
+        });
+        let events = drain(&rx);
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].app_name.as_deref(), Some("Code.exe"));
+        assert_eq!(events[0].window_title.as_deref(), Some("Code.exe window"));
+    }
+
+    #[test]
+    fn input_whose_window_is_no_longer_known_is_dropped() {
+        let (tx, rx) = crossbeam_channel::bounded(64);
+        let config = crate::config::UiCaptureConfig {
+            capture_text: true,
+            capture_keystrokes: true,
+            ..Default::default()
+        };
+        let mut worker = make_worker(tx, config);
+        let focus = worker.focus.clone();
+        let old = focus.publish(focus_target("notepad.exe", true));
+        for i in 0..crate::platform::input_focus::FOCUS_HISTORY_LEN {
+            focus.publish(focus_target(&format!("app{i}"), true));
+        }
+        worker.handle(RawInput {
+            focus_epoch: old,
+            ..key(0x41, 0)
+        });
+        worker.finish();
+        assert!(drain(&rx).is_empty());
+    }
+
+    #[test]
+    fn a_stuck_clipboard_reader_never_holds_up_the_worker() {
+        let (tx, rx) = crossbeam_channel::bounded(64);
+        let config = crate::config::UiCaptureConfig {
+            capture_clipboard: true,
+            capture_clipboard_content: true,
+            ..Default::default()
+        };
+        let mut worker = make_worker(tx, config);
+        // A reader whose thread is stuck on a clipboard owner: its queue is
+        // never drained.
+        let (requests, stuck_queue) = bounded(CLIPBOARD_READ_QUEUE);
+        worker.clipboard_reader = Some(ClipboardReader { requests });
+
+        let extra = 3;
+        for i in 0..(CLIPBOARD_READ_QUEUE + extra) {
+            worker.handle(ctrl(0x43, i as u64));
+        }
+        let started = Instant::now();
+        worker.tick(worker.start + Duration::from_secs(1));
+        assert!(started.elapsed() < Duration::from_millis(500));
+        // The reader holds as many reads as it has room for; the rest are
+        // recorded right away, without content.
+        assert_eq!(stuck_queue.len(), CLIPBOARD_READ_QUEUE);
+        let events = drain(&rx);
+        assert_eq!(events.len(), extra);
+        for event in events {
+            assert!(matches!(
+                event.data,
+                EventData::Clipboard {
+                    operation: 'c',
+                    content: None
+                }
+            ));
+        }
+    }
+
+    #[test]
+    fn stopping_never_reads_the_clipboard() {
+        let (tx, rx) = crossbeam_channel::bounded(64);
+        let config = crate::config::UiCaptureConfig {
+            capture_clipboard: true,
+            capture_clipboard_content: true,
+            ..Default::default()
+        };
+        let mut worker = make_worker(tx, config);
+        let (requests, reader_queue) = bounded(CLIPBOARD_READ_QUEUE);
+        worker.clipboard_reader = Some(ClipboardReader { requests });
+
+        // Ctrl+V just before the stop: its read is not due yet.
+        worker.handle(ctrl(0x56, 0));
+        worker.finish();
+        assert!(reader_queue.is_empty());
+        // The reader's queue is closed, so its thread can end.
+        assert!(worker.clipboard_reader.is_none());
+        assert!(reader_queue.recv().is_err());
+        let events = drain(&rx);
+        assert_eq!(events.len(), 1);
+        assert!(matches!(
+            events[0].data,
+            EventData::Clipboard {
+                operation: 'v',
+                content: None
+            }
+        ));
     }
 
     #[test]
@@ -2372,8 +2692,13 @@ mod tests {
     #[test]
     fn test_vk_to_char_caps_lock() {
         assert_eq!(vk_to_char(0x41, 0, true), Some('A'));
-        // Caps lock does not shift digits in this simple mapping either way.
-        assert_eq!(vk_to_char(0x31, 0, false), Some('1'));
+        // Shift with caps lock on types a lowercase letter.
+        assert_eq!(vk_to_char(0x41, 1, true), Some('a'));
+        // Caps lock leaves digits and punctuation alone; Shift still applies.
+        assert_eq!(vk_to_char(0x31, 0, true), Some('1'));
+        assert_eq!(vk_to_char(0x31, 1, true), Some('!'));
+        assert_eq!(vk_to_char(0xBA, 0, true), Some(';'));
+        assert_eq!(vk_to_char(0x20, 0, true), Some(' '));
     }
 
     #[test]

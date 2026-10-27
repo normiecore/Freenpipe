@@ -205,8 +205,10 @@ impl TreeWalkerPlatform for WindowsTreeWalker {
         // Get process info
         let mut pid: u32 = 0;
         unsafe { GetWindowThreadProcessId(hwnd, Some(&mut pid)) };
-        // Resolve logical app name — handles WebView2 and shell-hosted Edge.
-        let app_name = crate::platform::windows::get_effective_app_name(hwnd, pid);
+        // Resolve logical app name — handles WebView2, shell-hosted Edge and
+        // UWP apps behind their frame host.
+        let identity = crate::platform::windows::get_window_identity(hwnd, pid);
+        let app_name = identity.app_name.clone();
 
         // Skip excluded apps
         let app_lower = app_name.to_lowercase();
@@ -241,7 +243,16 @@ impl TreeWalkerPlatform for WindowsTreeWalker {
         let window_lower = window_name.to_lowercase();
         let ignored_patterns = WindowPattern::parse_list(&self.config.ignored_windows);
         let included_patterns = WindowPattern::parse_list(&self.config.included_windows);
-        if window_pattern::matches_any(&ignored_patterns, &app_lower, &window_lower) {
+        // A rule written for a UWP app's frame host (the name such apps
+        // had before they were resolved) still excludes the app.
+        if window_pattern::matches_any(&ignored_patterns, &app_lower, &window_lower)
+            || crate::platform::window_identity::frame_host_excluded(
+                &identity,
+                Some(window_name.as_str()),
+                &[],
+                &ignored_patterns,
+            )
+        {
             debug!(
                 app = %app_name,
                 title = %window_name,
