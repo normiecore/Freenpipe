@@ -256,7 +256,8 @@ mod tests {
         let all_events: Vec<_> = unique_events.into_values().collect();
 
         assert_eq!(all_events.len(), 1);
-        assert_eq!(all_events[0].id, "ics-12345");
+        // The id names this occurrence: the UID plus its start.
+        assert_eq!(all_events[0].id, format!("ics-12345_{}", start_str));
         assert_eq!(all_events[0].title, "Test Event");
     }
 

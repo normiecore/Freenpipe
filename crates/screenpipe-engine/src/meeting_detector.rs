@@ -3195,7 +3195,7 @@ pub async fn run_meeting_detection_loop(
                     // so `meeting_started` carries the entry's title.
                     let mut tracker =
                         CalendarBindTracker::for_meeting(&db, meeting_id, profile_index).await;
-                    let attach = if meeting_id >= 0 && !tracker.settled {
+                    let attach = if meeting_id >= 0 && tracker.due(Instant::now()) {
                         let attach =
                             attach_calendar_event(&db, meeting_id, &calendar, &call_urls, now_utc)
                                 .await;
@@ -3763,8 +3763,16 @@ impl CalendarBindTracker {
         tracker
     }
 
+    /// An attempt is worth making: the outcome is still open, the call's
+    /// detection profile is known and the last attempt is old enough.
+    ///
+    /// Until a scan has seen the call's controls (a meeting re-attached at
+    /// startup, or one kept alive by output audio alone) the call's service
+    /// is unknown, so none of its URLs can be looked up and an attempt could
+    /// only report a time-only match that was never really checked.
     fn due(&self, now: Instant) -> bool {
         !self.settled
+            && self.profile_index.is_some()
             && self
                 .last_attempt
                 .is_none_or(|t| now.saturating_duration_since(t) >= CALENDAR_BIND_RETRY)
@@ -6480,6 +6488,70 @@ mod w3_08_tests {
     }
 
     #[tokio::test]
+    async fn each_occurrence_of_a_recurring_entry_binds_its_own_meeting() {
+        use screenpipe_connect::calendar_occurrence::occurrence_event_id;
+
+        let db = setup_db().await;
+        // A weekly OS-calendar meeting with a fixed link: EventKit and Windows
+        // give both occurrences the same series id; the publishers turn it
+        // into one id per occurrence.
+        let last_week = Utc::now() - chrono::Duration::days(7);
+        let today = Utc::now();
+        let occurrence = |at: DateTime<Utc>| {
+            let mut signal = entry_signal(
+                &occurrence_event_id("EK-WEEKLY-SYNC", at - chrono::Duration::minutes(5)),
+                Some(MEET_URL),
+                at,
+            );
+            signal.source = Some("native".into());
+            signal
+        };
+        let calendar = book(vec![occurrence(last_week), occurrence(today)]);
+        let call = vec![conference_identity(MEET_URL).unwrap()];
+
+        let first = db
+            .insert_meeting("Google Chrome", "ui_scan", None, None)
+            .await
+            .unwrap();
+        let outcome = attach_calendar_event(&db, first, &calendar, &call, last_week).await;
+        let CalendarAttach::Bound {
+            event_id: first_event,
+            ..
+        } = outcome
+        else {
+            panic!("last week's occurrence did not bind: {outcome:?}");
+        };
+        db.end_meeting(first, &Utc::now().to_rfc3339(), None)
+            .await
+            .unwrap();
+
+        let second = db
+            .insert_meeting("Google Chrome", "ui_scan", None, None)
+            .await
+            .unwrap();
+        let outcome = attach_calendar_event(&db, second, &calendar, &call, today).await;
+        let CalendarAttach::Bound {
+            event_id: second_event,
+            title_applied,
+        } = outcome
+        else {
+            panic!("today's occurrence did not bind: {outcome:?}");
+        };
+        assert_ne!(first_event, second_event);
+        assert!(first_event.starts_with("EK-WEEKLY-SYNC_"));
+        assert!(second_event.starts_with("EK-WEEKLY-SYNC_"));
+        assert!(title_applied.is_some());
+        assert_eq!(
+            db.get_meeting_calendar_event_id(first).await.unwrap(),
+            Some(first_event)
+        );
+        assert_eq!(
+            db.get_meeting_calendar_event_id(second).await.unwrap(),
+            Some(second_event)
+        );
+    }
+
+    #[tokio::test]
     async fn excluded_calendar_entry_is_ignored_entirely() {
         let db = setup_db().await;
         let now = Utc::now();
@@ -6565,6 +6637,19 @@ mod w3_08_tests {
         );
         assert!(tracker.settled);
         assert!(!tracker.due(t0 + CALENDAR_BIND_RETRY * 10));
+    }
+
+    #[test]
+    fn calendar_bind_tracker_waits_for_the_call_profile() {
+        // A re-attached meeting, or one kept alive by output audio alone,
+        // has no known profile yet: no attempt, so no time-only report.
+        let t0 = Instant::now();
+        let mut tracker = CalendarBindTracker::new(5, None);
+        assert!(!tracker.due(t0));
+        assert!(!tracker.due(t0 + CALENDAR_BIND_RETRY * 3));
+        assert!(!tracker.time_only_reported);
+        tracker.profile_index = Some(2);
+        assert!(tracker.due(t0 + CALENDAR_BIND_RETRY * 3));
     }
 
     #[tokio::test]

@@ -319,9 +319,13 @@ pub fn parse_ics_to_events(
         let meeting_url = normalize_meeting_url(event.get_url().map(str::to_string))
             .or_else(|| extract_meeting_url(location.as_deref()))
             .or_else(|| extract_meeting_url(event.get_description()));
+        // A UID is shared by every RECURRENCE-ID instance of a series, so
+        // the start is added to name this occurrence.
         let uid = event
             .get_uid()
-            .map(|u| format!("ics-{}", u))
+            .map(|u| {
+                crate::calendar_occurrence::occurrence_event_id(&format!("ics-{}", u), start_utc)
+            })
             .unwrap_or_else(|| format!("ics-{}-{}", feed_name, start_utc.timestamp()));
 
         let attendees: Vec<String> = event
@@ -540,5 +544,36 @@ mod tests {
 
         assert!(parse_ics_to_events(&ics_data, "test", now, 0, 8).is_empty());
         assert_eq!(parse_ics_to_events(&ics_data, "test", now, 0, 72).len(), 1);
+    }
+
+    #[test]
+    fn instances_of_one_series_get_their_own_ids() {
+        // A feed that lists two instances of one weekly series: same UID,
+        // different RECURRENCE-ID and start.
+        let now = Utc::now();
+        let first = now + chrono::Duration::hours(1);
+        let second = first + chrono::Duration::days(7);
+        let vevent = |start: DateTime<Utc>| {
+            format!(
+                "BEGIN:VEVENT\r\nUID:weekly-sync\r\nRECURRENCE-ID:{s}\r\nDTSTAMP:20241010T101010Z\r\nDTSTART:{s}\r\nDTEND:{e}\r\nSUMMARY:Weekly sync\r\nURL:https://meet.google.com/abc-defg-hij\r\nEND:VEVENT\r\n",
+                s = start.format("%Y%m%dT%H%M%SZ"),
+                e = (start + chrono::Duration::minutes(30)).format("%Y%m%dT%H%M%SZ"),
+            )
+        };
+        let ics_data = format!(
+            "BEGIN:VCALENDAR\r\nVERSION:2.0\r\n{}{}END:VCALENDAR",
+            vevent(first),
+            vevent(second)
+        );
+
+        let events = parse_ics_to_events(&ics_data, "team", now, 0, 24 * 9);
+        let ids: Vec<&str> = events.iter().map(|e| e.id.as_str()).collect();
+        assert_eq!(
+            ids,
+            vec![
+                format!("ics-weekly-sync_{}", first.format("%Y%m%dT%H%M%SZ")),
+                format!("ics-weekly-sync_{}", second.format("%Y%m%dT%H%M%SZ")),
+            ]
+        );
     }
 }
