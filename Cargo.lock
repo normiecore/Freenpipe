@@ -8274,6 +8274,7 @@ dependencies = [
  "cron",
  "dirs 5.0.1",
  "ffmpeg-sidecar",
+ "flate2",
  "futures",
  "hex",
  "hmac 0.12.1",

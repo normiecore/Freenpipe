@@ -396,6 +396,124 @@ fn now_epoch() -> u64 {
 }
 
 // ---------------------------------------------------------------------------
+// Preset chains: `"*"` and unavailable presets
+// ---------------------------------------------------------------------------
+
+/// Entry of a pipe's `preset` list that stands for the user's own presets.
+pub const WILDCARD_PRESET: &str = "*";
+
+/// `error_type` of a run that has no usable AI preset: every preset the
+/// pipe names is missing from the user's AI settings. Such a run fails; it
+/// never falls back to a provider the pipe does not name.
+pub const ERROR_AI_PRESET_UNAVAILABLE: &str = "ai_preset_unavailable";
+
+/// A preset in the user's AI settings, as chain building needs it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct UserPreset {
+    pub id: String,
+    /// `defaultPreset: true`.
+    pub is_default: bool,
+}
+
+/// The presets a run may use, in the order it tries them.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct PresetChain {
+    /// Ids of presets that exist in the user's settings, without repeats.
+    pub slots: Vec<String>,
+    /// Entries of the pipe's list that name no preset of the user's, as
+    /// written.
+    pub missing: Vec<String>,
+}
+
+impl PresetChain {
+    /// Build the chain for a pipe's `preset` list.
+    ///
+    /// - Entries keep their order. `"*"` stands for the user's own presets:
+    ///   the default preset first, then the others in the order the
+    ///   settings list them, leaving out any the list already names.
+    /// - `default` / `auto` mean the user's default preset; the legacy id
+    ///   `pi-agent` means `screenpipe-cloud`.
+    /// - An entry that names no preset of the user's goes to `missing` and
+    ///   is skipped; the next entry of the list is used instead. Nothing
+    ///   outside the list is ever added.
+    pub fn build(listed: &[String], user: &[UserPreset]) -> Self {
+        let mut chain = PresetChain::default();
+        let default_id = user.iter().find(|p| p.is_default).map(|p| p.id.as_str());
+        let push = |chain: &mut PresetChain, id: &str| {
+            if !chain.slots.iter().any(|s| s == id) {
+                chain.slots.push(id.to_string());
+            }
+        };
+        for entry in listed {
+            let entry = entry.trim();
+            if entry.is_empty() {
+                continue;
+            }
+            if entry == WILDCARD_PRESET {
+                if let Some(id) = default_id {
+                    push(&mut chain, id);
+                }
+                for preset in user.iter().filter(|p| !p.is_default) {
+                    push(&mut chain, &preset.id);
+                }
+                continue;
+            }
+            let wanted = match entry {
+                "default" | "auto" => default_id,
+                other => {
+                    let alias = if other == "pi-agent" {
+                        "screenpipe-cloud"
+                    } else {
+                        other
+                    };
+                    user.iter()
+                        .find(|p| p.id == alias)
+                        .or_else(|| user.iter().find(|p| p.id == other))
+                        .map(|p| p.id.as_str())
+                }
+            };
+            match wanted {
+                Some(id) => push(&mut chain, id),
+                None => {
+                    if !chain.missing.iter().any(|m| m == entry) {
+                        chain.missing.push(entry.to_string());
+                    }
+                }
+            }
+        }
+        chain
+    }
+
+    /// The reason a run with this chain cannot start, for a chain without
+    /// any usable preset. `available` lists the user's preset ids; `store`
+    /// says whether the AI settings could be read at all.
+    pub fn unavailable_reason(&self, pipe: &str, available: &[String], store_readable: bool) -> String {
+        let named = if self.missing.is_empty() {
+            "the pipe's preset list is empty".to_string()
+        } else {
+            let quoted: Vec<String> = self.missing.iter().map(|m| format!("'{m}'")).collect();
+            format!(
+                "{} {} not in your AI settings",
+                quoted.join(", "),
+                if quoted.len() == 1 { "is" } else { "are" }
+            )
+        };
+        let hint = if !store_readable {
+            "the AI settings (store.bin) could not be read".to_string()
+        } else if available.is_empty() {
+            "no AI presets are configured".to_string()
+        } else {
+            format!("available presets: {}", available.join(", "))
+        };
+        format!(
+            "pipe '{pipe}': no usable AI preset: {named} ({hint}). The run was not sent to any \
+             other provider. Pick an existing preset in the pipe's `preset:` field, add \
+             \"{WILDCARD_PRESET}\" to use your own presets, or create the missing preset."
+        )
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Preset list parsing (backward-compatible)
 // ---------------------------------------------------------------------------
 
@@ -586,6 +704,68 @@ mod tests {
             registry.pick_preset_with_floor(&presets, 1),
             Some(("third", 2))
         );
+    }
+
+    fn user(ids: &[&str], default: Option<&str>) -> Vec<UserPreset> {
+        ids.iter()
+            .map(|id| UserPreset {
+                id: id.to_string(),
+                is_default: Some(*id) == default,
+            })
+            .collect()
+    }
+
+    fn list(items: &[&str]) -> Vec<String> {
+        items.iter().map(|s| s.to_string()).collect()
+    }
+
+    #[test]
+    fn wildcard_expands_to_the_users_presets_default_first() {
+        let presets = user(&["work", "local", "cloud"], Some("local"));
+        let chain = PresetChain::build(&list(&["*"]), &presets);
+        assert_eq!(chain.slots, list(&["local", "work", "cloud"]));
+        assert!(chain.missing.is_empty());
+
+        // Explicit entries keep their place and are not repeated.
+        let chain = PresetChain::build(&list(&["cloud", "*"]), &presets);
+        assert_eq!(chain.slots, list(&["cloud", "local", "work"]));
+
+        // `default` is the default preset; `*` adds the rest.
+        let chain = PresetChain::build(&list(&["default", "*"]), &presets);
+        assert_eq!(chain.slots, list(&["local", "work", "cloud"]));
+
+        // No default preset: stored order.
+        let chain = PresetChain::build(&list(&["*"]), &user(&["a", "b"], None));
+        assert_eq!(chain.slots, list(&["a", "b"]));
+    }
+
+    #[test]
+    fn missing_named_presets_are_reported_never_replaced() {
+        let presets = user(&["work", "local"], Some("local"));
+        // The only named preset is gone: nothing to run with.
+        let chain = PresetChain::build(&list(&["deleted"]), &presets);
+        assert!(chain.slots.is_empty());
+        assert_eq!(chain.missing, list(&["deleted"]));
+        let reason = chain.unavailable_reason("digest", &list(&["work", "local"]), true);
+        assert!(reason.contains("'deleted' is not in your AI settings"), "{reason}");
+        assert!(reason.contains("available presets: work, local"), "{reason}");
+
+        // The list's own next entry is used; nothing else is added.
+        let chain = PresetChain::build(&list(&["screenpipe-cloud", "*"]), &presets);
+        assert_eq!(chain.slots, list(&["local", "work"]));
+        assert_eq!(chain.missing, list(&["screenpipe-cloud"]));
+        let chain = PresetChain::build(&list(&["gone", "work"]), &presets);
+        assert_eq!(chain.slots, list(&["work"]));
+
+        // `*` with no presets at all.
+        let chain = PresetChain::build(&list(&["*"]), &[]);
+        assert!(chain.slots.is_empty());
+        let reason = chain.unavailable_reason("digest", &[], false);
+        assert!(reason.contains("could not be read"), "{reason}");
+
+        // Legacy ids still resolve.
+        let chain = PresetChain::build(&list(&["pi-agent"]), &user(&["screenpipe-cloud"], None));
+        assert_eq!(chain.slots, list(&["screenpipe-cloud"]));
     }
 
     #[test]

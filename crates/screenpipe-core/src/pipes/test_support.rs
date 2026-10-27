@@ -38,6 +38,17 @@ impl MemoryPipeStore {
             .collect()
     }
 
+    /// Every row of one pipe, oldest first.
+    pub fn executions_for_pipe(&self, pipe: &str) -> Vec<PipeExecution> {
+        self.executions
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|e| e.pipe_name == pipe)
+            .cloned()
+            .collect()
+    }
+
     pub fn is_claimed(&self, pipe: &str, event: &str, key: &str) -> bool {
         self.claims.lock().unwrap().contains(&(
             pipe.to_string(),
@@ -359,6 +370,10 @@ impl PipeStore for MemoryPipeStore {
 pub(crate) struct ScriptedAgent {
     pub output: AgentOutput,
     pub prompts: StdMutex<Vec<String>>,
+    /// Model and provider of each run, in order.
+    pub models: StdMutex<Vec<(String, Option<String>)>>,
+    /// Runs on these models fail with a provider error.
+    pub failing_models: StdMutex<HashSet<String>>,
     pub delay: std::time::Duration,
     /// What `is_available` reports; a test clears it to stand for an agent
     /// that is still being installed.
@@ -375,6 +390,8 @@ impl ScriptedAgent {
                 pid: None,
             },
             prompts: StdMutex::new(Vec::new()),
+            models: StdMutex::new(Vec::new()),
+            failing_models: StdMutex::new(HashSet::new()),
             delay: std::time::Duration::from_millis(20),
             available: AtomicBool::new(true),
         }
@@ -396,16 +413,28 @@ impl AgentExecutor for ScriptedAgent {
     async fn run(
         &self,
         prompt: &str,
-        _model: &str,
+        model: &str,
         _working_dir: &Path,
-        _provider: Option<&str>,
+        provider: Option<&str>,
         _provider_url: Option<&str>,
         _provider_api_key: Option<&str>,
         _shared_pid: Option<SharedPid>,
         _continue_session: bool,
     ) -> Result<AgentOutput> {
         self.prompts.lock().unwrap().push(prompt.to_string());
+        self.models
+            .lock()
+            .unwrap()
+            .push((model.to_string(), provider.map(str::to_string)));
         tokio::time::sleep(self.delay).await;
+        if self.failing_models.lock().unwrap().contains(model) {
+            return Ok(AgentOutput {
+                stdout: String::new(),
+                stderr: "upstream provider returned an error".to_string(),
+                success: false,
+                pid: None,
+            });
+        }
         Ok(self.output.clone())
     }
 

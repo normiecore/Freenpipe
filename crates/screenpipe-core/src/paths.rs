@@ -103,6 +103,9 @@ pub const CHATGPT_OAUTH_FILE: &str = "chatgpt-oauth.json";
 pub const ACP_SESSIONS_FILE: &str = ".screenpipe-acp-sessions.json";
 /// Resolved permissions of a pipe run, inside that pipe's directory.
 pub const PIPE_PERMISSIONS_FILE: &str = ".screenpipe-permissions.json";
+/// The event behind an event-triggered pipe run, inside that pipe's
+/// directory.
+pub const PIPE_TRIGGER_CONTEXT_FILE: &str = ".trigger-context.json";
 /// Entry point of the workflows feature.
 pub const WORKFLOWS_ENTRY_FILE: &str = "workflows-entry.bin";
 /// State of the SQLite planner maintenance job.
@@ -161,6 +164,7 @@ pub const DATA_DIR_NAMES: &[&str] = &[
     CHATGPT_OAUTH_FILE,
     ACP_SESSIONS_FILE,
     PIPE_PERMISSIONS_FILE,
+    PIPE_TRIGGER_CONTEXT_FILE,
     WORKFLOWS_ENTRY_FILE,
     SQLITE_PLANNER_MAINTENANCE_FILE,
     DB_OWNER_FILE,

@@ -65,6 +65,8 @@ chrono = { version = "0.4", features = ["serde"] }
 # IANA zone names for structured pipe schedules (`schedule_config.timezone`).
 chrono-tz = "0.10"
 tempfile = "3"
+# Month archives of old per-run pipe logs (`pipes/log_archive.rs`).
+flate2 = "1"
 
 [features]
 default = ["security"]
