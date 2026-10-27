@@ -2060,17 +2060,42 @@ async fn start_session(
     Ok(snapshot)
 }
 
-/// Hand a `response` event to the `rpc_call` waiting for its id. Returns
-/// whether it was such a reply.
+/// The id prefix of `rpc_call`s for `command`. The command is part of the
+/// id so an answer that comes back without the id can still be matched.
+fn rpc_id_prefix(command: &str) -> String {
+    format!("rpc_{}_", command)
+}
+
+/// Hand a `response` event to the `rpc_call` waiting for it. Returns whether
+/// it was such a reply.
+///
+/// Pi answers a command it does not know (an older Pi without
+/// `get_available_thinking_levels`, say) with a refusal that carries no id.
+/// Such a refusal goes to a waiting call for that command, so the caller
+/// hears at once instead of after its timeout, and the refusal never counts
+/// as the end of a queued command.
 fn route_direct_reply(pending: &PendingResponses, event: &Value) -> bool {
-    let Some(id) = event.get("id").and_then(|v| v.as_str()) else {
-        return false;
-    };
     let sender = match pending.lock() {
-        Ok(mut pending) => pending.remove(id),
+        Ok(mut pending) => {
+            let key = match event.get("id").and_then(|v| v.as_str()) {
+                Some(id) => Some(id.to_string()),
+                None => {
+                    let refused = event.get("success").and_then(|s| s.as_bool()) == Some(false);
+                    let command = event.get("command").and_then(|c| c.as_str());
+                    match (refused, command) {
+                        (true, Some(command)) => {
+                            let prefix = rpc_id_prefix(command);
+                            pending.keys().find(|k| k.starts_with(&prefix)).cloned()
+                        }
+                        _ => None,
+                    }
+                }
+            };
+            key.and_then(|key| pending.remove(&key).map(|tx| (key, tx)))
+        }
         Err(_) => None,
     };
-    let Some(sender) = sender else {
+    let Some((id, sender)) = sender else {
         return false;
     };
     match serde_json::from_value::<RpcResponse>(event.clone()) {
@@ -2629,12 +2654,16 @@ async fn rpc_call(
     pending: &PendingResponses,
     mut payload: Value,
 ) -> Result<Option<Value>, String> {
-    let id = format!("rpc_{}", uuid::Uuid::new_v4().simple());
     let command = payload
         .get("type")
         .and_then(|t| t.as_str())
         .unwrap_or("?")
         .to_string();
+    let id = format!(
+        "{}{}",
+        rpc_id_prefix(&command),
+        uuid::Uuid::new_v4().simple()
+    );
     if let Some(obj) = payload.as_object_mut() {
         obj.insert("id".to_string(), json!(&id));
     }
@@ -4371,5 +4400,42 @@ error: InstallFailed extracting tarball"#;
             !super::route_direct_reply(&pending, &reply),
             "answered once"
         );
+    }
+
+    #[tokio::test]
+    async fn an_unknown_command_refusal_without_id_reaches_its_caller() {
+        let pending: super::PendingResponses =
+            std::sync::Arc::new(std::sync::Mutex::new(std::collections::HashMap::new()));
+        let (state_tx, _state_rx) = tokio::sync::oneshot::channel();
+        let (levels_tx, levels_rx) = tokio::sync::oneshot::channel();
+        let levels_id = format!(
+            "{}0123abcd",
+            super::rpc_id_prefix("get_available_thinking_levels")
+        );
+        pending.lock().unwrap().insert(
+            format!("{}9999", super::rpc_id_prefix("get_state")),
+            state_tx,
+        );
+        pending.lock().unwrap().insert(levels_id, levels_tx);
+
+        // What Pi prints for a command it does not know: no id.
+        let refusal = json!({
+            "type": "response", "command": "get_available_thinking_levels",
+            "success": false, "error": "Unknown command: get_available_thinking_levels"
+        });
+        assert!(super::route_direct_reply(&pending, &refusal));
+        let got = levels_rx.await.unwrap();
+        assert_eq!(got.success, Some(false));
+        assert_eq!(
+            pending.lock().unwrap().len(),
+            1,
+            "the other call still waits"
+        );
+
+        // An id-less success, or a refusal nobody waits for, stays with the queue.
+        let ack = json!({"type": "response", "command": "get_state", "success": true});
+        assert!(!super::route_direct_reply(&pending, &ack));
+        let stray = json!({"type": "response", "command": "parse", "success": false, "error": "x"});
+        assert!(!super::route_direct_reply(&pending, &stray));
     }
 }
