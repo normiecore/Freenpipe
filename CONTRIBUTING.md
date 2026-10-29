@@ -1,13 +1,15 @@
 # Contributing to Freenpipe
 
-Thank you for considering a contribution. Freenpipe is an MIT fork of screenpipe at commit `892199f`, working toward feature parity with screenpipe v2.7.104 through clean-room work. That origin puts a few rules on every contribution, so read the first section before you write code.
+Thank you for considering a contribution. Freenpipe is an MIT fork of screenpipe at commit `892199f`. It stays compatible with screenpipe's data, API, pipes and MCP configurations, and builds its own features beyond that. That origin puts a few rules on every contribution, so read the first section before you write code.
 
 ## Clean-room rules (read first)
 
 The rules are in [CLAUDE.md](CLAUDE.md), section "Provenance and clean-room rules". In short:
 
-- Never consult post-relicense upstream material: screenpipe source, commits, diffs, pull requests, issues, docs or changelogs dated after 2026-06-10, the upstream `main` branch, or anything under upstream's `ee/` directory. Do not clone, fetch or browse them.
-- Behaviour added upstream after the base comes only from evidence about the shipped binary, written up as specs in [docs/clean-room/](docs/clean-room/README.md). Implement from those specs.
+- Never consult post-relicense upstream material: screenpipe source, commits, diffs, pull requests, issues, docs or changelogs dated after 2026-06-10, the upstream `main` branch, or anything under upstream's `ee/` directory. Do not clone, fetch or browse them. The only exception is for behaviour authors, under the public-source rules in [SOURCING.md](docs/clean-room/SOURCING.md).
+- Never examine, run or extract anything from a screenpipe binary, installer or bundled frontend. Binary analysis was frozen on 2026-10-29 (owner decision 8).
+- Implement only from re-sourced items in [docs/clean-room/specs/](docs/clean-room/specs/README.md). Never read `docs/clean-room/legacy-specs/`. Redacting identifiers and writing behaviour are separate jobs with their own rules, described in [SOURCING.md](docs/clean-room/SOURCING.md); whoever does one of them for an item does not implement it.
+- Add a provenance record for your work package: copy [docs/clean-room/provenance/TEMPLATE.md](docs/clean-room/provenance/TEMPLATE.md) to `docs/clean-room/provenance/<WP>.md`. CI checks for it (`bun test scripts/ci/clean-room-guard.test.ts`).
 - Write original code and prose. Do not paste decompiled code, extracted frontend code, or extracted UI text and prompts.
 - Interoperability identifiers may match upstream exactly: HTTP routes, JSON fields, SQL names, CLI flags, settings keys, environment variables, and file and directory layout.
 - No phoning home: never send data to the upstream vendor's services or embed their keys. Telemetry stays off. Cloud features get a local or bring-your-own-key equivalent.
@@ -304,7 +306,7 @@ cargo install sqlx-cli
 sqlx migrate add <migration_name>
 ```
 
-Schema names are interoperability identifiers: a migration must keep Freenpipe able to read data written by screenpipe. See [docs/clean-room/specs/db.md](docs/clean-room/specs/db.md).
+Schema names are interoperability identifiers: a migration must keep Freenpipe able to read data written by screenpipe. The schema identifiers are the `interop` items of `db.md` in [docs/clean-room/specs/](docs/clean-room/specs/README.md).
 
 ### Fixing migration errors
 

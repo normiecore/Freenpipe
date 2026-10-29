@@ -1,0 +1,7 @@
+# Clean-room controls (owner decision 8): changes need the owner's review.
+/docs/clean-room/ @normiecore
+/.claude/settings.json @normiecore
+/scripts/ci/clean-room-guard.test.ts @normiecore
+/tools/clean-room/ @normiecore
+/NOTICE.md @normiecore
+/LICENSE.md @normiecore

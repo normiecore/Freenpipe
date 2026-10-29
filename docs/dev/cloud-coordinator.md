@@ -70,6 +70,12 @@ or a brand-new coordinator session continues from there with nothing else.
   `--verification-file`/`--compliance-file` notes that name the reviewed head and state that the only
   change since is a conflict-free merge of main verified by CI. Use `sync-resolve.js` only when code
   conflicts.
+- Owner decision 8: schedule a WP only when every item it lists is in `docs/clean-room/specs/`
+  with a source tag (`docs/clean-room/SOURCING.md`), and merge it only with a filled-in
+  `docs/clean-room/provenance/<WP>.md`. Redaction and behaviour writing are separate jobs, each in a
+  different session from the implementer. Never put descriptions of legacy behaviour into any prompt
+  or brief: give item ids and file paths only. W4-02 and W4-05 were opened before the freeze and are
+  grandfathered; say so in their PRs.
 - Spec decisions and Windows smoke checks go to per-WP files (`docs/clean-room/open-questions/<WP>.md`,
   `docs/dev/smoke/<WP>.md`), so parallel WPs no longer conflict in the two shared logs.
 

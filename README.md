@@ -2,7 +2,7 @@
 
 Freenpipe records what is on your screen and what is said through your microphone and speakers, stores it on your own machine, and makes it searchable by you and by the AI tools you connect to it.
 
-It is a fork of screenpipe at commit `892199f` (2026-06-10), the last upstream commit released under the MIT licence. Upstream moved to a commercial licence after that commit. Freenpipe stays MIT and is working toward feature parity with screenpipe v2.7.104 through clean-room work: the later behaviour is specified from analysis of the shipped binary, never from post-relicense source. The method and the specifications are in [docs/clean-room/README.md](docs/clean-room/README.md).
+It is a fork of screenpipe at commit `892199f` (2026-06-10), the last upstream commit released under the MIT licence. Upstream moved to a commercial licence after that commit. Freenpipe stays MIT. It stays compatible with screenpipe's data, API, pipes and MCP configurations, and builds its own features beyond that. Specs for some later behaviour were first written from static analysis of the shipped v2.7.104 binary, never from post-relicense source. That analysis stopped on 2026-10-29, and those specs are being rewritten from public material and Freenpipe's own design. The method, the sourcing policy and the specifications are in [docs/clean-room/README.md](docs/clean-room/README.md).
 
 Freenpipe is not affiliated with or endorsed by the screenpipe project or its owners. See [NOTICE.md](NOTICE.md).
 

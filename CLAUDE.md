@@ -1,13 +1,14 @@
 # CLAUDE.md
 
-Freenpipe captures accessibility trees (OCR as fallback), audio and conversations, and indexes them locally for AI consumption. It is a fork of screenpipe's last MIT-licensed commit, extended to feature parity with screenpipe v2.7.104 through clean-room reverse engineering.
+Freenpipe captures accessibility trees (OCR as fallback), audio and conversations, and indexes them locally for AI consumption. It is a fork of screenpipe's last MIT-licensed commit. It stays compatible with screenpipe's data, API, pipes and MCP configurations; features beyond that are Freenpipe's own design.
 
 ## Provenance and clean-room rules (read first)
 
 - **Base:** upstream commit `892199f` (2026-06-10), the last commit before screenpipe moved from MIT to the Screenpipe Commercial License. Everything imported in the first commit is MIT, Copyright (c) 2024-2026 louis030195. Keep `LICENSE.md` and `NOTICE.md` intact.
-- **Never consult post-relicense upstream material.** That covers screenpipe source, commits, diffs, PRs, issues, docs or changelogs dated after 2026-06-10, the `main` branch of github.com/screenpipe/screenpipe (or mediar-ai/screenpipe), and anything under upstream's `ee/` directory (proprietary, excluded). Do not clone, fetch or web-browse them.
-- **Delta features (v2.5.27 → v2.7.104) come only from REA evidence** about the installed shipped binary, never from upstream source. That evidence is binary strings, embedded schema text, recovered frontend behaviour, and API/route/flag inventories.
-- **Write original code.** Do not paste decompiled code, extracted frontend JavaScript, or extracted prose/LLM-prompt text verbatim. Turn the evidence into a spec, then implement it in your own words.
+- **Never consult post-relicense upstream material.** That covers screenpipe source, commits, diffs, PRs, issues, docs or changelogs dated after 2026-06-10, the `main` branch of github.com/screenpipe/screenpipe (or mediar-ai/screenpipe), and anything under upstream's `ee/` directory (proprietary, excluded). Do not clone, fetch or web-browse them. The one exception is for behaviour authors, who may use the public sources listed in `docs/clean-room/SOURCING.md` (third-party descriptions, and the vendor's own website read signed out; never anything served from the upstream GitHub repository).
+- **Binary analysis is frozen (owner decision 8, 2026-10-29).** Never examine, run or extract anything from a screenpipe binary, installer or bundled frontend, and never read the private analysis workspace (including `C:\sp`). `.claude/settings.json` denies those reads.
+- **Implement only from re-sourced items** in `docs/clean-room/specs/`. Never read `docs/clean-room/legacy-specs/` (the pre-freeze specs); only a redactor does, under `docs/clean-room/SOURCING.md`. The session or person that redacted or wrote an item never implements it. Use PLAN.md only for item ids, dependencies, owner paths and acceptance checks. Every work package adds a provenance record (`docs/clean-room/provenance/<WP>.md`), checked by `scripts/ci/clean-room-guard.test.ts`.
+- **Write original code.** Do not paste decompiled code, extracted frontend JavaScript, or extracted prose/LLM-prompt text verbatim. Implement from the spec in your own words.
 - **Interoperability identifiers may match exactly:** HTTP route paths, JSON field names, SQL table/column/index names, CLI flag names, settings keys, environment variable names, and file/directory layout. Freenpipe should be able to read data written by screenpipe.
 - **No phoning home.** Never send data to screenpi.pe / Mediar / Negentropy services, and never embed their API keys, PostHog keys or Sentry DSNs. Telemetry stays off. Cloud-only features get a local or bring-your-own-key equivalent.
 

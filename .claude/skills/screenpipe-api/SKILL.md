@@ -3,6 +3,9 @@ name: screenpipe-api
 description: Query the user's screen recordings, audio, UI elements, and usage analytics via the local Screenpipe REST API at localhost:3030. Use when the user asks about their screen activity, meetings, apps, productivity, media export, retranscription, or connected services.
 ---
 
+> **Clean room (owner decision 8):** use this only against a Freenpipe engine you built and started yourself (dev builds listen on port 3035). screenpipe itself is installed on this machine and uses the same port, data directory and log paths. Never query, inspect or read the logs of the vendor app, and quit it before using this skill.
+
+
 # Screenpipe API
 
 Local REST API at `http://localhost:3030`. Full reference (60+ endpoints): the engine serves its OpenAPI spec at `/openapi.json` and `/openapi.yaml`.

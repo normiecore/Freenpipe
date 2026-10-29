@@ -7,6 +7,9 @@ tools:
   - Grep
 ---
 
+> **Clean room (owner decision 8):** use this only against a Freenpipe engine you built and started yourself (dev builds listen on port 3035). screenpipe itself is installed on this machine and uses the same port, data directory and log paths. Never query, inspect or read the logs of the vendor app, and quit it before using this skill.
+
+
 # Screenpipe Logs Agent
 
 You are a specialized agent for retrieving and analyzing Screenpipe logs. Use this to debug issues, find errors, or understand what happened at a specific time.

@@ -358,9 +358,18 @@ jobs:
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
 
+      # Owner decision 8: no evidence pointers outside the pre-freeze specs,
+      # and a wp/<WP-ID> branch must carry docs/clean-room/provenance/<WP-ID>.md.
+      - name: Clean-room guard
+        if: ${{ !cancelled() }}
+        env:
+          FP_BRANCH: ${{ github.head_ref || github.ref_name }}
+        run: bun test scripts/ci/clean-room-guard.test.ts
+
       # Report-only: hits become warnings and a summary table; reviewers
       # justify each one in the PR description.
       - name: Clean-room verbatim gate (added lines)
+        if: ${{ !cancelled() }}
         run: bash scripts/ci/verbatim-diff.sh
 
       # Vendor-owned git dependencies stay vendored in third_party/ and listed
