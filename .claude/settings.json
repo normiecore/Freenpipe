@@ -1,0 +1,19 @@
+{
+  "permissions": {
+    "deny": [
+      "Read(//c/sp/**)",
+      "Read(//c/SP/**)",
+      "Edit(//c/sp/**)",
+      "Read(**/app_strings.tsv)",
+      "Read(**/chunk_*.js)",
+      "Read(docs/clean-room/legacy-specs/**)",
+      "Read(//c/Program Files/screenpipe*/**)",
+      "Read(//c/Users/*/AppData/Local/screenpipe*/**)",
+      "Read(//c/Users/*/AppData/Local/Programs/screenpipe*/**)",
+      "WebFetch(domain:screenpi.pe)",
+      "WebFetch(domain:docs.screenpi.pe)",
+      "WebFetch(domain:screenpipe.com)",
+      "WebFetch(domain:docs.screenpipe.com)"
+    ]
+  }
+}

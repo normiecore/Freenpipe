@@ -10,7 +10,7 @@ The screen is the universal interface, about 10M bits per second and the highest
 
 Not a memory tool. Not an assistant you prompt. An ambient automation layer that works in the background without prompting.
 
-Freenpipe is an MIT fork of screenpipe at commit `892199f`. It keeps the base's direction and works toward feature parity with screenpipe v2.7.104 through clean-room work, without the upstream vendor's services (see [docs/clean-room/README.md](docs/clean-room/README.md)).
+Freenpipe is an MIT fork of screenpipe at commit `892199f`. It keeps the base's direction and stays compatible with screenpipe's data, API, pipes and MCP configurations, without the upstream vendor's services. Beyond compatibility, Freenpipe designs its own features (see [docs/clean-room/README.md](docs/clean-room/README.md)).
 
 ## Why it exists
 

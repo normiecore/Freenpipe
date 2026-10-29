@@ -16,7 +16,7 @@ Read first:
 - docs/clean-room/PLAN.md, section "#### <WP-ID> ..." (items, depends_on, specs, owner paths,
   acceptance checks) and sections 2, 5 and 6 (ground rules, integration seams, shared hotspot files)
 - docs/clean-room/DECISIONS.md (binding; it wins over PLAN.md)
-- the referenced sections of docs/clean-room/specs/*.md
+- the referenced items in docs/clean-room/specs/*.md (never docs/clean-room/legacy-specs/)
 - CLAUDE.md
 - the change itself: `git diff origin/main...<sha>` and `git log --stat origin/main..<sha>`
   <for a re-review: "only the commits since <reviewed-sha>: git diff <reviewed-sha>..<sha>">
@@ -76,7 +76,10 @@ Your job: does the change respect the clean-room, de-cloud, scope and security r
    UI copy, prompts or comments shared with the target are blockers. Look for code that reads like
    decompiled output or bundled frontend JavaScript (minified names, odd control flow) and for text
    that may come from post-relicense upstream material (anything after 2026-06-10 or from upstream's
-   ee/). Built-in pipes, skills and prompts must be original writing.
+   ee/). Built-in pipes, skills and prompts must be original writing. Owner decision 8: the PR must
+   add `docs/clean-room/provenance/<WP>.md`, every item it implements must be in `docs/clean-room/specs/` with a source
+   tag, its implementer must differ from each item's redactor and behaviour author (`SOURCING.md`), and `bun test scripts/ci/clean-room-guard.test.ts` must pass. A
+   missing or inaccurate provenance record is a blocker.
 2. Interop identifiers (routes, JSON fields, SQL names, CLI flags, settings keys, env vars, event
    and file names) must match the spec exactly; everything else must be original.
 3. De-cloud. No vendor host (screenpi.pe, screenpipe.com, mediar, PostHog, Sentry and the hosts the

@@ -2,10 +2,29 @@
 
 Freenpipe is an MIT-licensed fork of screenpipe. It starts from upstream commit `892199f`, the last
 commit released under the MIT licence (about v2.5.27, with the `ee/` directory removed). The goal is
-feature parity with screenpipe v2.7.104, reached through clean-room work. This directory holds the
-specifications, the implementation plan and the owner decisions behind that work.
+compatibility with screenpipe's data, API, pipes and MCP configurations, with features beyond that of
+Freenpipe's own design. This directory holds the specifications, the implementation plan and the owner
+decisions behind that work.
 
-## Method
+## Since 2026-10-29: evidence freeze
+
+Owner decision 8 ([DECISIONS.md](DECISIONS.md)) stopped all analysis of the shipped binary. From then on:
+
+- The specs written before the freeze moved, unchanged, to `legacy-specs/`. `specs/` holds only
+  re-sourced items written under [SOURCING.md](SOURCING.md): identifiers redacted from the legacy specs,
+  and behaviour from Freenpipe's own design, the MIT base, and public descriptions of what a feature does.
+- Redactors, behaviour authors and implementers are separate. Implementers read only `specs/` and never
+  `legacy-specs/` or the analysis workspace.
+- Every work package carries a provenance record in [provenance/](provenance/README.md).
+- `scripts/ci/clean-room-guard.test.ts` keeps evidence pointers out of everything except `legacy-specs/`,
+  requires a source tag on every item in `specs/`, and checks that work-package branches have a
+  filled-in record.
+
+The index below lists the pre-freeze specs, now under `legacy-specs/`.
+
+## Method before the freeze
+
+The rest of this section describes how the specs below were first written.
 
 - **Evidence comes from the shipped product only.** The installed screenpipe v2.7.104 Windows build was
   examined statically with the REA reverse-engineering toolkit: its string table, embedded SQL and
@@ -47,6 +66,8 @@ any hand edits to the file.
 | File | Contents |
 |---|---|
 | `DECISIONS.md` | Owner decisions that bind every work package and override `PLAN.md` |
+| `SOURCING.md` | Where spec items may come from after the freeze, how they are tagged, and the re-sourcing tracker |
+| `provenance/` | One provenance record per work package merged after the freeze, and the template |
 | `PLAN.md` | Implementation plan: ground rules, acceptance harness, waves, 154 work packages, item index, risks |
 | `specs/api.md` | HTTP and WebSocket API surface: route inventory and changes |
 | `specs/db.md` | Database schema, migrations, storage layout and hybrid Parquet storage |

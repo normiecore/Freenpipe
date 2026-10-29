@@ -1,8 +1,8 @@
 # Clean-room verbatim gate
 
-Freenpipe reaches parity with screenpipe v2.7.104 through clean-room work: behaviour is specified
-from the shipped binary, then implemented in new words (see `docs/clean-room/README.md` and
-`CLAUDE.md`). This directory holds the tripwire that catches text copied from that binary.
+Freenpipe's earlier specs were written from the shipped screenpipe v2.7.104 binary and implemented in
+new words. Binary analysis stopped on 2026-10-29 (owner decision 8, `docs/clean-room/SOURCING.md`),
+but text written before then, and text written since, can still echo that binary by accident. This directory holds the tripwire that catches text copied from that binary.
 
 | File | What it is |
 |---|---|
@@ -81,6 +81,6 @@ is a tripwire, not proof: shorter shared runs pass it, so writing in your own wo
 
 ## Rebuilding the index
 
-Only the owner can rebuild the index, from the private reverse-engineering workspace, and the
-builder is deliberately not published. A rebuild must keep the tokenisation above, N = 8 and the
-key, or existing checks change meaning.
+The index is frozen as built in commit `c71c132` (2026-10-15) and will not be rebuilt: owner
+decision 8 stopped all use of the analysis workspace. Its SHA-256 is
+`5721def0dbf28a392bb1fa2a7425f1caf5d6dc9a24e5bb601bd304010c8a78ca`. The builder is not published.

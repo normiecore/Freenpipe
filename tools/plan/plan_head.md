@@ -1,17 +1,19 @@
-# Freenpipe implementation plan: BASE 892199f to parity with screenpipe v2.7.104
+# Freenpipe implementation plan: BASE 892199f to compatibility with screenpipe
+
+> **Owner decision 8 (2026-10-29) overrides this plan where they conflict.** Binary analysis is frozen, the goal is compatibility rather than parity, and implementers work only from re-sourced items in `docs/clean-room/specs/` (see `docs/clean-room/SOURCING.md`). The work-package descriptions below were written from the pre-freeze specs: implementers use them only for item ids, dependencies, owner paths and acceptance checks.
 
 First generated 2026-10-15 from the verified delta in `docs/clean-room/specs/*.md` by `python3 tools/plan/plan_build.py` (data in `tools/plan/plan_data.py`, `plan_head.md` and `plan_tail.md`). Edit those files and regenerate rather than editing this file by hand. Spec paths written `specs/<name>.md` below refer to `docs/clean-room/specs/<name>.md`.
 
 ## 1. Inputs and scope
 
 - **BASE:** `<repo>` at upstream 892199f (about v2.5.27, last MIT commit, `ee/` removed). It is untouched: the three `#[path]` shims still point into the missing `ee/`, and branding, telemetry, updater and gates are still vendor.
-- **TARGET:** screenpipe v2.7.104 Windows build, known only through static evidence in `<re-workspace>` (strings, crates list, extracted frontend, REA summaries). Never execute it.
+- **TARGET (historical):** before the freeze, screenpipe v2.7.104 Windows build, known only through static evidence (strings, crates list, extracted frontend, REA summaries). That analysis is frozen; nobody reads that evidence or runs the target.
 - **Delta:** 13 dimension specs. The verifiers kept every item marked confirmed, partially_in_base, gap-unverified or verifier-found as live; items marked already_in_base, unsupported or duplicate are dropped, and section 9 records where their remaining notes land.
 - **Shape of the plan:** wave 0 is the foundation (build, `ee/` stubs, de-cloud, rebrand). Wave 1 is cross-cutting foundations: the full 117-migration schema, the settings schema, and integration seams. Waves 2 to 8 are features ordered schema, then engine API, then app backend, then UI. WPs in one wave run in parallel. Wave 0 has an internal order: W0-01 first, W0-02..W0-11 in parallel, W0-12 last. Every WP lists its depends_on explicitly.
 
 ## 2. Ground rules for every WP
 
-1. **Clean room (binding, see `Freenpipe/CLAUDE.md`).** Work only from `specs/*.md`, the local RE artifacts and BASE source. Do not consult post-relicense upstream material, browse vendor sites, or execute the target. Write original code. Do not paste decompiled code, extracted frontend JS, UI copy paragraphs or LLM prompt text; paraphrase behaviour. Interoperability identifiers (routes, JSON fields, SQL DDL and names, CLI flags, settings keys, env vars, file names) may match exactly. Built-in pipes, starter skills, the meeting-summary prompt, activity-history prompts and workflow agent prompts must be written fresh.
+1. **Clean room (binding, see `Freenpipe/CLAUDE.md`).** Work only from re-sourced items in `specs/*.md` (DECISIONS.md decision 8, SOURCING.md) and BASE source; never `legacy-specs/` or the analysis workspace. Do not consult post-relicense upstream material, browse vendor sites, or execute the target. Write original code. Do not paste decompiled code, extracted frontend JS, UI copy paragraphs or LLM prompt text; paraphrase behaviour. Interoperability identifiers (routes, JSON fields, SQL DDL and names, CLI flags, settings keys, env vars, file names) may match exactly. Built-in pipes, starter skills, the meeting-summary prompt, activity-history prompts and workflow agent prompts must be written fresh.
 2. **No phoning home.** No vendor host, PostHog key, Sentry DSN or vendor OAuth client id may appear in request-building code. All new network features are user-configured (BYO) or third-party and user-initiated. The vendor guard test (W0-01 scaffolds it, W0-12 makes it fail the build) enforces this.
 3. **New file header.** Every new .rs/.ts/.tsx/.js/.py file starts with the two-line Freenpipe header from CLAUDE.md. Upstream headers on edited files stay.
 4. **Dev isolation.** screenpipe v2.7.104 is installed on the dev machine and may be running. It owns port 3030, the :11435 control server, `~/.screenpipe` and the `screenpipe://` scheme. Rules:
@@ -27,7 +29,7 @@ First generated 2026-10-15 from the verified delta in `docs/clean-room/specs/*.m
 
 ## 3. Build environment status (as of 2026-10-15)
 
-- Toolchain: Rust 1.93.1 (`rust-toolchain.toml`), MSVC 2022 BuildTools 14.44 + Windows SDK 10.0.26100, LLVM (for `LIBCLANG_PATH`), CMake, bun. `source <re-workspace>/tools/devenv.sh` exports the vcvars environment for Git Bash.
+- Toolchain: Rust 1.93.1 (`rust-toolchain.toml`), MSVC 2022 BuildTools 14.44 + Windows SDK 10.0.26100, LLVM (for `LIBCLANG_PATH`), CMake, bun. `source scripts/dev/msvc-env.sh` exports the vcvars environment for Git Bash.
 - `cargo build -p screenpipe-engine --profile release-dev` **succeeds** (`build-logs/engine-build-6.log`, about 7 minutes).
 - Prerequisites:
   - User env `CMAKE_GENERATOR=Visual Studio 17 2022` is required. An empty "VS 18" BuildTools shell otherwise makes CMake pick the wrong generator. If CMake reports "Does not match the generator used previously", delete `target/*/build/<crate>-*/out/build`.
@@ -44,7 +46,7 @@ First generated 2026-10-15 from the verified delta in `docs/clean-room/specs/*.m
 Every WP's acceptance checks assume this shell setup (Git Bash). Keep commands short: Git Bash on this machine fails under heavy pipelines.
 
 ```bash
-source <re-workspace>/tools/devenv.sh
+source scripts/dev/msvc-env.sh
 export FP_ROOT=<repo>
 export FP_DD="$LOCALAPPDATA/freenpipe-dev"     # never ~/.screenpipe
 export FP_PORT=3035                              # never 3030 on this machine

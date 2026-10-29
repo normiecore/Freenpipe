@@ -21,6 +21,11 @@ a screen recording of the app/cli before this change
 
 a screen recording of the app/cli after this change
 
+## clean room (owner decision 8)
+
+- [ ] I did not access any screenpipe binary, installer, bundled frontend, the analysis workspace, `docs/clean-room/legacy-specs/`, or post-relicense screenpipe source while making this change.
+- [ ] Work-package PRs: `docs/clean-room/provenance/<WP>.md` is filled in and accurate.
+
 ## how to test
 
 add a few steps to test the pr in the most time efficient way.

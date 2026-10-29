@@ -56,13 +56,13 @@ wp("W0-01", 0, "L", "Build bootstrap, ee/ stubs, endpoint switchboard and dev is
    [],
    "Make the untouched BASE compile on Windows with ee/ absent: write original stubs for the three #[path] shims, drop the "
    "enterprise-build feature, add a local app-update-policy.ts and remove the @ee aliases and ee CI jobs. Document the MSVC/LLVM/"
-   "CMake environment (<re-workspace>/tools/devenv.sh) and the debug-profile CRT mismatch (knf-rs-sys vs whisper-rs-sys; use the "
+   "CMake environment (scripts/dev/msvc-env.sh) and the debug-profile CRT mismatch (knf-rs-sys vs whisper-rs-sys; use the "
    "release-dev profile or force one MSVC runtime). Add the empty-by-default endpoint switchboard (Rust endpoints.rs + TS web-url.ts "
    "returning null) that every later de-cloud WP routes through, strip the vendor gateway hosts from capabilities and the UA, and "
    "scaffold a vendor-host guard test in report mode. Dev isolation before any app run: the owner machine runs screenpipe v2.7.104, "
    "so neutralise the base blind taskkill of foreign port holders (log and refuse instead), make dev runs use a separate data dir, "
    "port and SCREENPIPE_API_KEY, and audit hard-coded ~/.screenpipe paths (auth.json) that bypass --data-dir.",
-   ["source <re-workspace>/tools/devenv.sh && cargo build -p screenpipe-engine --profile release-dev exits 0",
+   ["source scripts/dev/msvc-env.sh && cargo build -p screenpipe-engine --profile release-dev exits 0",
     "cargo build --manifest-path apps/screenpipe-app-tauri/src-tauri/Cargo.toml --profile release-dev exits 0 with no ee/ directory; grep -rn 'ee/desktop' apps Cargo.toml returns nothing",
     "cd apps/screenpipe-app-tauri && bun install && bun run build && bun run bindings:check all pass",
     "Harness smoke (PLAN.md section 4): engine started on port 3035 with FP_DD answers `api /health` with JSON; ~/.screenpipe is not touched (mtime of ~/.screenpipe/auth.json unchanged)",
