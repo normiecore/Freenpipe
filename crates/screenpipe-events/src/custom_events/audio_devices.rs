@@ -89,7 +89,7 @@ impl AudioDeviceFallbackEvent {
     }
 }
 
-/// Why a device's recording state changed. Freenpipe addition to the
+/// Why a device's recording state changed. Handvel addition to the
 /// `audio_device_status_changed` payload: subscribers use it to tell a lost
 /// stream (worth telling the user about) from a deliberate stop.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

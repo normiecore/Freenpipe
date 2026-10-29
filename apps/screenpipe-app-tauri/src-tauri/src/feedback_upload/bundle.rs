@@ -1,5 +1,5 @@
-// Freenpipe — local-first screen & audio memory (fork of screenpipe @ 892199f, MIT)
-// https://github.com/normiecore/Freenpipe
+// Handvel — local-first screen & audio memory (fork of screenpipe @ 892199f, MIT)
+// https://github.com/normiecore/Handvel
 
 //! Writes the diagnostics zip.
 //!
@@ -618,7 +618,7 @@ fn write_into(
     let report = json!({
         "format": 1,
         "createdAt": input.created_at.to_rfc3339(),
-        "app": { "name": "Freenpipe", "version": input.app_version },
+        "app": { "name": "Handvel", "version": input.app_version },
         "os": {
             "platform": input.os_platform,
             "version": input.os_version,
@@ -640,15 +640,15 @@ fn write_into(
 
 fn readme(input: &BundleInput) -> String {
     format!(
-        "Freenpipe diagnostics bundle\n\
+        "Handvel diagnostics bundle\n\
          ============================\n\
          \n\
-         Created {created} by Freenpipe {version} on {platform} {os_version} ({arch}).\n\
+         Created {created} by Handvel {version} on {platform} {os_version} ({arch}).\n\
          Reason: {source}.\n\
          \n\
          This file was written on your computer and has not been sent anywhere.\n\
          Share it only if you choose to, for example by attaching it to an issue at\n\
-         https://github.com/normiecore/Freenpipe/issues\n\
+         https://github.com/normiecore/Handvel/issues\n\
          \n\
          What is inside\n\
          - feedback.txt: what you wrote, if anything.\n\

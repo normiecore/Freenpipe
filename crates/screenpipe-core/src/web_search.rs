@@ -1,10 +1,10 @@
-// Freenpipe — local-first screen & audio memory (fork of screenpipe @ 892199f, MIT)
-// https://github.com/normiecore/Freenpipe
+// Handvel — local-first screen & audio memory (fork of screenpipe @ 892199f, MIT)
+// https://github.com/normiecore/Handvel
 
 //! Bring-your-own web search: which provider the engine's `/v1/web-search`
 //! route talks to.
 //!
-//! screenpipe sent agent web searches to its hosted API. Freenpipe has no
+//! screenpipe sent agent web searches to its hosted API. Handvel has no
 //! hosted search and no default provider. A search provider exists only when
 //! the user configured one, and the engine route, the `sp_web_search` agent
 //! tool and its Pi extension are all off otherwise.
@@ -164,7 +164,7 @@ impl ConfigProblem {
             ConfigProblem::NotConfigured => format!(
                 "web search is not configured. Point {URL_ENV} at a SearXNG instance, or set \
                  {PROVIDER_ENV} to brave or tavily together with {API_KEY_ENV}, then restart \
-                 Freenpipe. {PROVIDER_ENV}=gateway uses an AI gateway that serves /web-search."
+                 Handvel. {PROVIDER_ENV}=gateway uses an AI gateway that serves /web-search."
             ),
             ConfigProblem::Disabled => {
                 format!("web search is turned off ({PROVIDER_ENV}=off).")

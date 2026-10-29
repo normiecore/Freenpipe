@@ -6,7 +6,7 @@
  * Team membership as the desktop app sees it.
  *
  * The base app managed teams through the vendor's hosted service (create,
- * invite, join, encrypted config sharing). Freenpipe has no hosted service,
+ * invite, join, encrypted config sharing). Handvel has no hosted service,
  * so this hook always reports that the user is not in a team and never
  * touches the network. Callers keep working unchanged: every team affordance
  * is gated on `team` being non-null and therefore stays hidden.
@@ -40,7 +40,7 @@ export interface TeamState {
 }
 
 export const TEAM_UNAVAILABLE_MESSAGE =
-  "teams are not available: Freenpipe has no hosted team service";
+  "teams are not available: Handvel has no hosted team service";
 
 const NO_TEAM: TeamState = Object.freeze({
   team: null,

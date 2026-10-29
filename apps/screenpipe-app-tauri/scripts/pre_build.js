@@ -802,7 +802,7 @@ if (process.env.GITHUB_ENV) {
 // Near the end of the script, call these functions
 await copyBunBinary();
 
-// Freenpipe: CLI, MCP server and speaker models shipped as bundle resources.
+// Handvel: CLI, MCP server and speaker models shipped as bundle resources.
 await stageBundledRuntime({ srcTauriDir: cwd, platform });
 
 // --dev or --build

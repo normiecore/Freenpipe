@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# Freenpipe — local-first screen & audio memory (fork of screenpipe @ 892199f, MIT)
-# https://github.com/normiecore/Freenpipe
+# Handvel — local-first screen & audio memory (fork of screenpipe @ 892199f, MIT)
+# https://github.com/normiecore/Handvel
 #
 # Run the desktop app in development mode on a machine that also has
 # screenpipe installed (docs/dev/windows-build.md, "App dev run").

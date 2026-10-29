@@ -1,5 +1,5 @@
-# Freenpipe — local-first screen & audio memory (fork of screenpipe @ 892199f, MIT)
-# https://github.com/normiecore/Freenpipe
+# Handvel — local-first screen & audio memory (fork of screenpipe @ 892199f, MIT)
+# https://github.com/normiecore/Handvel
 #
 # Work-package status for the cloud workflow (docs/dev/cloud-runbook.md).
 #
@@ -66,7 +66,7 @@ STATUS_COMMIT = "status:"
 TRUSTED_ASSOCIATIONS = {"OWNER", "MEMBER", "COLLABORATOR"}
 
 # The merge gate (docs/dev/ci.md, "Merge gate"): every check run on the head commit completed with
-# success/skipped/neutral, and these check runs are among them: Freenpipe CI's windows, linux and
+# success/skipped/neutral, and these check runs are among them: Handvel CI's windows, linux and
 # gates jobs, Secret Scan (job trufflehog) and the Windows CLI Integration Test (job test-windows).
 REQUIRED_CHECKS = [c for c in os.environ.get(
     "FP_REQUIRED_CHECKS", "windows,linux,gates,trufflehog,test-windows").split(",") if c]
@@ -615,7 +615,7 @@ def ci_note(ci):
 def render_md(doc):
     s = doc["summary"]
     gh = doc["github"]
-    L = ["# Freenpipe work-package status", "",
+    L = ["# Handvel work-package status", "",
          "> Generated file: the merger routine regenerates it with `python3 tools/plan/status.py --write`. "
          "Do not edit it by hand. The plan is [PLAN.md](PLAN.md); the process is "
          "[docs/dev/cloud-runbook.md](../dev/cloud-runbook.md).", "",
@@ -763,7 +763,7 @@ def print_summary(doc):
 
 
 def main():
-    ap = argparse.ArgumentParser(description="Derive Freenpipe work-package status from git and GitHub.")
+    ap = argparse.ArgumentParser(description="Derive Handvel work-package status from git and GitHub.")
     ap.add_argument("--remote", default="origin")
     ap.add_argument("--offline", action="store_true", help="no network: local refs only, no GitHub API")
     ap.add_argument("--no-fetch", action="store_true", help="skip `git fetch` (ls-remote and the API still run)")

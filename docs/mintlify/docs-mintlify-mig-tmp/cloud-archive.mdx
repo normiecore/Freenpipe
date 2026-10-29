@@ -1,15 +1,15 @@
 ---
 title: "archive to your own storage"
 sidebarTitle: "archive"
-description: "How Freenpipe handles archiving old recordings: the vendor cloud archive is not used, and archive to storage you control is planned."
+description: "How Handvel handles archiving old recordings: the vendor cloud archive is not used, and archive to storage you control is planned."
 icon: "box-archive"
 ---
 
-Upstream's cloud archive uploaded encrypted copies of old recordings to the vendor's servers under a paid plan, then deleted the local copies. Freenpipe does not use the vendor's servers, so that service is not available.
+Upstream's cloud archive uploaded encrypted copies of old recordings to the vendor's servers under a paid plan, then deleted the local copies. Handvel does not use the vendor's servers, so that service is not available.
 
 ## what replaces it
 
-Archive and cross-device sync come back as work package WR-02 (owner decision 5 in [DECISIONS.md](https://github.com/normiecore/Freenpipe/blob/main/docs/clean-room/DECISIONS.md)), using storage you control:
+Archive and cross-device sync come back as work package WR-02 (owner decision 5 in [DECISIONS.md](https://github.com/normiecore/Handvel/blob/main/docs/clean-room/DECISIONS.md)), using storage you control:
 
 - S3-compatible storage (AWS, Cloudflare R2, Backblaze B2, MinIO)
 - WebDAV (Nextcloud and similar)
@@ -17,10 +17,10 @@ Archive and cross-device sync come back as work package WR-02 (owner decision 5 
 
 Data is encrypted on your device before upload, with a key derived from your passphrase, so the storage provider never sees plaintext. Credentials are kept in the local secret store. Archive moves aged media to the chosen backend according to your retention settings and can restore it on demand.
 
-Progress is tracked in [STATUS.md](https://github.com/normiecore/Freenpipe/blob/main/docs/clean-room/STATUS.md).
+Progress is tracked in [STATUS.md](https://github.com/normiecore/Handvel/blob/main/docs/clean-room/STATUS.md).
 
 ## until then
 
 All data stays in your data directory (`~/.screenpipe/` by default). To manage disk use, lower the capture rate, exclude apps you do not need, or delete old media from `~/.screenpipe/data/`. See [troubleshooting](/troubleshooting).
 
-questions? open a [GitHub issue](https://github.com/normiecore/Freenpipe/issues).
+questions? open a [GitHub issue](https://github.com/normiecore/Handvel/issues).

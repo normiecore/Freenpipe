@@ -137,7 +137,7 @@ function discoverApiKey(): string {
       "  - no screenpipe CLI found ($SCREENPIPE_CLI, the app install folder, PATH)",
       "  - direct sqlite3 read of ~/.screenpipe/db.sqlite failed",
       "Fix: set SCREENPIPE_LOCAL_API_KEY in your MCP launcher's env block, or",
-      "reconnect this tool from the Freenpipe app (Settings > Connections).",
+      "reconnect this tool from the Handvel app (Settings > Connections).",
       "",
     ].join("\n"),
   );

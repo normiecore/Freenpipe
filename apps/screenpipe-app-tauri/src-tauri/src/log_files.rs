@@ -125,7 +125,7 @@ pub fn get_screenpipe_data_dir(_app: &AppHandle) -> anyhow::Result<PathBuf> {
 }
 
 // ---------------------------------------------------------------------------
-// Log tails (Freenpipe): `read_log_tail` and the shared tail reader used by the
+// Log tails (Handvel): `read_log_tail` and the shared tail reader used by the
 // diagnostics bundle in `feedback_upload`.
 // ---------------------------------------------------------------------------
 
@@ -237,7 +237,7 @@ pub fn resolve_log_path(requested: &Path, roots: &[PathBuf]) -> Result<PathBuf, 
         .any(|root| resolved.starts_with(&root));
     if !inside {
         return Err(format!(
-            "{} is outside the Freenpipe data directory",
+            "{} is outside the Handvel data directory",
             requested.display()
         ));
     }

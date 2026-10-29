@@ -1,4 +1,4 @@
-# Building and running Freenpipe on Windows
+# Building and running Handvel on Windows
 
 Windows (x86_64-pc-windows-msvc) is the primary platform. This page is the
 working recipe for a Git Bash shell on Windows 11. It covers the toolchain,
@@ -250,7 +250,7 @@ install root by `tauri.windows.conf.json`):
 
 ## 6. Dev isolation
 
-Freenpipe keeps screenpipe's drop-in defaults: data in `~/.screenpipe`, API
+Handvel keeps screenpipe's drop-in defaults: data in `~/.screenpipe`, API
 on port 3030, the app control server on 11435, CLI binary `screenpipe`. A
 development machine may also run a real screenpipe, so a dev build must never
 use any of those. Load the isolation variables in every dev shell:
@@ -351,7 +351,7 @@ question 19.
   on its API and control-server ports before binding, which would terminate
   an installed screenpipe. `port_conflict::resolve_before_bind` now classifies
   each listener first (PID from `netstat -ano -p tcp` or `lsof`, image path
-  from the OS) and terminates only one kind: another copy of Freenpipe's own
+  from the OS) and terminates only one kind: another copy of Handvel's own
   executable that is the port's only listener and fails two `/health` probes
   2 s apart, re-checked right before `taskkill /F` (or `kill`) so a reused
   PID is never hit. A healthy instance, the installed screenpipe, any other

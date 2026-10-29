@@ -1,7 +1,7 @@
 name: Test CLI npm e2e
 
 on:
-  # Freenpipe: dispatch-only; a macOS-only test of the npm CLI wrapper, which the fork does not publish yet.
+  # Handvel: dispatch-only; a macOS-only test of the npm CLI wrapper, which the fork does not publish yet.
   workflow_dispatch:
 
 concurrency:

@@ -1,5 +1,5 @@
-// Freenpipe — local-first screen & audio memory (fork of screenpipe @ 892199f, MIT)
-// https://github.com/normiecore/Freenpipe
+// Handvel — local-first screen & audio memory (fork of screenpipe @ 892199f, MIT)
+// https://github.com/normiecore/Handvel
 
 //! Tag autocomplete (`ext/tags.rs`) against a real schema: counts merged
 //! across frame tags, audio tags and memory JSON tags, matching, ranking,

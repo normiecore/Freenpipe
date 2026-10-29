@@ -4,7 +4,7 @@
 
 //! Meeting-detection diagnostics: which signals fired, which app and source,
 //! and coarse duration/age buckets, with meeting ids hashed. Upstream sent
-//! these records to a hosted analytics service; Freenpipe only writes them to
+//! these records to a hosted analytics service; Handvel only writes them to
 //! the local DEBUG log (`meeting_telemetry` target).
 
 use chrono::{DateTime, Utc};

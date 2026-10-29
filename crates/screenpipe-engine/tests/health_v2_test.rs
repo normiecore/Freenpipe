@@ -1,5 +1,5 @@
-// Freenpipe — local-first screen & audio memory (fork of screenpipe @ 892199f, MIT)
-// https://github.com/normiecore/Freenpipe
+// Handvel — local-first screen & audio memory (fork of screenpipe @ 892199f, MIT)
+// https://github.com/normiecore/Handvel
 
 //! `/health` v2 and `/vision/metrics` served through the real router (no
 //! port is bound; requests go straight into the axum service).

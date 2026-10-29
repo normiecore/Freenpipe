@@ -560,7 +560,7 @@
       "criticality": "high",
       "confidence": "strong",
       "ux": "real-user-flow",
-      "notes": "Freenpipe has no billing gate: with screenpipe's old force-gate flag set, the app chrome stays visible, no paywall or sign-in screen appears, and the local API keeps answering."
+      "notes": "Handvel has no billing gate: with screenpipe's old force-gate flag set, the app chrome stays visible, no paywall or sign-in screen appears, and the local API keeps answering."
     }
   ]
 }

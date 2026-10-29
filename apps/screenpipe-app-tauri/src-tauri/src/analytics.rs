@@ -6,14 +6,14 @@
 //!
 //! Upstream screenpipe ran a background reporter here that posted app-health,
 //! feature-settings and attribution events to a hosted analytics service.
-//! Freenpipe has no telemetry, so only the command the frontend can ask about
+//! Handvel has no telemetry, so only the command the frontend can ask about
 //! it remains.
 
 /// Whether telemetry is switched off by the environment.
 ///
 /// screenpipe v2.7 exposes this so its settings page can show telemetry as
 /// forced off (it honours `SCREENPIPE_DISABLE_TELEMETRY` and CI variables).
-/// Freenpipe never sends telemetry, so the answer is always `true`.
+/// Handvel never sends telemetry, so the answer is always `true`.
 #[tauri::command]
 #[specta::specta]
 pub fn is_telemetry_disabled_by_env() -> bool {

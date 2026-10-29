@@ -1,6 +1,6 @@
 name: Windows CLI Integration Test
 
-# Freenpipe: kept as a merge check. It is the only CI job that runs the engine
+# Handvel: kept as a merge check. It is the only CI job that runs the engine
 # on real Windows (screen capture, Scream virtual audio, data written to disk).
 on:
   push:

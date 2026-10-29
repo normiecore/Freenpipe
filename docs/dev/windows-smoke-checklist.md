@@ -70,7 +70,7 @@ Wave 0 ran on the PC before the cloud phase. Tick anything you already checked t
 - [ ] **SMK-W0-01-2** (Runtime) No blind kill of an installed screenpipe
   - Setup: installed screenpipe running (ports 3030 and 11435 in use).
   - Steps: 1. `FP_ALLOW_SCREENPIPE_RUNNING=1 scripts/dev/app-dev.sh`. 2. Let the dev app start, then quit it.
-  - Expected: the Freenpipe log reports the port holders and does not kill them; the installed screenpipe engine and app are still running afterwards.
+  - Expected: the Handvel log reports the port holders and does not kill them; the installed screenpipe engine and app are still running afterwards.
   - Result:
 
 ### W0-02 Remove telemetry and crash reporting (PostHog, Sentry)
@@ -86,7 +86,7 @@ Wave 0 ran on the PC before the cloud phase. Tick anything you already checked t
 - [ ] **SMK-W0-03-1** (UI smoke) The updater is off by default, and the manual check opens the releases page
   - Setup: `scripts/dev/app-dev.sh` with a fresh `FP_DD`.
   - Steps: 1. Start the app and wait one minute. 2. Use the manual update-check action (Settings or tray).
-  - Expected: no automatic update request at start; the manual action opens https://github.com/normiecore/Freenpipe/releases in the browser (DECISIONS.md 3).
+  - Expected: no automatic update request at start; the manual action opens https://github.com/normiecore/Handvel/releases in the browser (DECISIONS.md 3).
   - Result:
 
 ### W0-04 Remove entitlement, login and plan gates
@@ -112,7 +112,7 @@ Wave 0 ran on the PC before the cloud phase. Tick anything you already checked t
 - [ ] **SMK-W0-05-3** (UI smoke) Help links and the changelog go to GitHub
   - Setup: app dev run; network available.
   - Steps: 1. Home > Help. 2. Click Documentation, Discussions, Feature ideas, Bug reports and Changelog in turn. 3. Open the changelog dialog (overlay window, or a `screenpipe://changelog` deep link). 4. Disconnect the network, clear `freenpipe:changelog-cache` from the webview's localStorage (devtools) and open the dialog again.
-  - Expected: every Help link opens a page under github.com/normiecore/Freenpipe; there is no Discord, YouTube or booking link. The dialog lists GitHub releases (or the empty-state link to the releases page when none are published); offline with no cache it shows the bundled CHANGELOG.md.
+  - Expected: every Help link opens a page under github.com/normiecore/Handvel; there is no Discord, YouTube or booking link. The dialog lists GitHub releases (or the empty-state link to the releases page when none are published); offline with no cache it shows the bundled CHANGELOG.md.
   - Result:
 - [ ] **SMK-W0-05-4** (UI smoke) No plan lock or upgrade prompt on connections and onboarding
   - Setup: fresh `FP_DD`; app dev run through onboarding.
@@ -122,7 +122,7 @@ Wave 0 ran on the PC before the cloud phase. Tick anything you already checked t
 - [ ] **SMK-W0-05-5** (Runtime) The CLI has no team command and no vendor links
   - Setup: release-dev engine build.
   - Steps: 1. `screenpipe.exe team devices`. 2. `screenpipe.exe survey`. 3. Run `screenpipe.exe record --port 3035 --data-dir "$FP_DD"` for 6 minutes with a network monitor (Resource Monitor) open.
-  - Expected: 1 fails with a clap "unrecognized subcommand" error. 2 prints the GitHub Discussions and new-issue links and opens nothing. 3 prints at most a tip pointing at github.com/normiecore/Freenpipe; no connection to registry.npmjs.org or any vendor host.
+  - Expected: 1 fails with a clap "unrecognized subcommand" error. 2 prints the GitHub Discussions and new-issue links and opens nothing. 3 prints at most a tip pointing at github.com/normiecore/Handvel; no connection to registry.npmjs.org or any vendor host.
   - Result:
 
 ### W0-06 AI gateway, transcription, PII backend and media analysis to bring-your-own
@@ -261,7 +261,7 @@ Wave 0 ran on the PC before the cloud phase. Tick anything you already checked t
 - [ ] **SMK-W0-10-3** (UI smoke) Completion actions: show in folder and the prefilled GitHub issue
   - Setup: as SMK-W0-10-1, after a bundle was saved.
   - Steps: 1. Click "show in folder". 2. Click "open github issue".
-  - Expected: 1. Explorer opens with the zip selected. 2. The browser opens `https://github.com/normiecore/Freenpipe/issues/new` with the title and body filled in (note, Freenpipe version, Windows version, bundle file name) and no full local path; nothing is attached or submitted automatically.
+  - Expected: 1. Explorer opens with the zip selected. 2. The browser opens `https://github.com/normiecore/Handvel/issues/new` with the title and body filled in (note, Handvel version, Windows version, bundle file name) and no full local path; nothing is attached or submitted automatically.
   - Result:
 - [ ] **SMK-W0-10-4** (UI smoke) "Save logs" on the engine-down and onboarding-stuck screens
   - Setup: app dev run; make the engine fail to start (for example, occupy the dev port first with `python -m http.server 3035`).
@@ -269,7 +269,7 @@ Wave 0 ran on the PC before the cloud phase. Tick anything you already checked t
   - Expected: each first click writes a new zip under `<FP_DD>\feedback\` whose `report.json` `source` is `server-not-running` and `onboarding-stuck` respectively; a second click opens Explorer on the saved zip instead of writing another.
   - Result:
 - [ ] **SMK-W0-10-5** (Runtime) Saving a bundle makes no outbound connection
-  - Setup: app dev run; Resource Monitor > Network > TCP Connections, filtered to the Freenpipe dev process.
+  - Setup: app dev run; Resource Monitor > Network > TCP Connections, filtered to the Handvel dev process.
   - Steps: save a bundle from Help > share logs with a screenshot attached.
   - Expected: no connection to any host other than 127.0.0.1 appears while the bundle is written.
   - Result:
@@ -287,42 +287,42 @@ Wave 0 ran on the PC before the cloud phase. Tick anything you already checked t
   - Expected: the app and its engine start, the timeline and search load, and neither the app log nor the engine log shows SQLite or sqlx errors.
   - Result:
 
-### W0-12 Rebrand user-visible identity to Freenpipe
+### W0-12 Rebrand user-visible identity to Handvel
 
-- [ ] **SMK-W0-12-1** (UI smoke) The installer and the running app say Freenpipe
+- [ ] **SMK-W0-12-1** (UI smoke) The installer and the running app say Handvel
   - Setup: a Windows installer built from `main` (the NSIS bundle; see windows-build.md), installed screenpipe left installed.
-  - Steps: 1. Run the installer. 2. Start Freenpipe and check the tray tooltip and every window title.
-  - Expected: the installer is named Freenpipe; tray tooltip and window titles say Freenpipe; the installed screenpipe still starts and works.
+  - Steps: 1. Run the installer. 2. Start Handvel and check the tray tooltip and every window title.
+  - Expected: the installer is named Handvel; tray tooltip and window titles say Handvel; the installed screenpipe still starts and works.
   - Result:
 - [ ] **SMK-W0-12-2** (Manual) Deep-link registration leaves screenpipe's scheme alone
   - Setup: `reg export HKCU\Software\Classes\screenpipe before.reg` before installing.
-  - Steps: 1. Install Freenpipe. 2. `reg query HKCU\Software\Classes\freenpipe`. 3. Export the screenpipe key again and compare.
-  - Expected: the `freenpipe` key exists; the `screenpipe` key is byte-identical to before.
+  - Steps: 1. Install Handvel. 2. `reg query HKCU\Software\Classes\handvel`. 3. Export the screenpipe key again and compare.
+  - Expected: the `handvel` key exists; the `screenpipe` key is byte-identical to before.
   - Result:
-- [ ] **SMK-W0-12-3** (UI smoke) Both link schemes open inside Freenpipe
+- [ ] **SMK-W0-12-3** (UI smoke) Both link schemes open inside Handvel
   - Setup: the installed build from SMK-W0-12-1, with at least a few minutes of recording; screenpipe quit.
-  - Steps: 1. Close every Freenpipe window (leave it in the tray), then Win+R, run `freenpipe://settings`. 2. Close Settings; from cmd, run `"%LOCALAPPDATA%\Freenpipe\screenpipe-app.exe" screenpipe://home` while Freenpipe is running. 3. In the timeline, right-click a frame, "copy deeplink", and paste it into Notepad. 4. Win+R, run `screenpipe://timeline`.
-  - Expected: 1. Freenpipe opens Settings. 2. The running Freenpipe comes to the front and opens Settings again (no second instance). 3. The copied link starts with `freenpipe://frame/`. 4. Windows opens the installed screenpipe (or reports no handler if screenpipe is not installed), never Freenpipe.
+  - Steps: 1. Close every Handvel window (leave it in the tray), then Win+R, run `handvel://settings`. 2. Close Settings; from cmd, run `"%LOCALAPPDATA%\Handvel\screenpipe-app.exe" screenpipe://home` while Handvel is running. 3. In the timeline, right-click a frame, "copy deeplink", and paste it into Notepad. 4. Win+R, run `screenpipe://timeline`.
+  - Expected: 1. Handvel opens Settings. 2. The running Handvel comes to the front and opens Settings again (no second instance). 3. The copied link starts with `handvel://frame/`. 4. Windows opens the installed screenpipe (or reports no handler if screenpipe is not installed), never Handvel.
   - Result:
-- [ ] **SMK-W0-12-4** (Runtime) Freenpipe does not record its own windows
+- [ ] **SMK-W0-12-4** (Runtime) Handvel does not record its own windows
   - Setup: installed build, recording on, screenpipe quit.
-  - Steps: 1. Keep the Freenpipe Home window focused for two minutes, then switch to Notepad for a minute. 2. Search the timeline and `GET /search?app_name=Freenpipe&limit=5` on the API port.
-  - Expected: no frames or search results whose app name is `Freenpipe` (Task Manager shows the app as "Freenpipe"); Notepad frames are there.
+  - Steps: 1. Keep the Handvel Home window focused for two minutes, then switch to Notepad for a minute. 2. Search the timeline and `GET /search?app_name=Handvel&limit=5` on the API port.
+  - Expected: no frames or search results whose app name is `Handvel` (Task Manager shows the app as "Handvel"); Notepad frames are there.
   - Result:
 - [ ] **SMK-W0-12-5** (Manual) The installer stops only its own processes
-  - Setup: screenpipe installed and running; a Freenpipe installer from `main`.
-  - Steps: 1. Run the Freenpipe installer (upgrade over an existing Freenpipe install if there is one). 2. Check Task Manager during and after the install. 3. Uninstall Freenpipe from Settings > Apps.
-  - Expected: screenpipe's `screenpipe.exe` and `screenpipe-app.exe` keep running throughout; the Freenpipe processes in its install folder are stopped before files are replaced; after uninstall `HKCU\Software\Classes\freenpipe` is gone and `HKCU\Software\Classes\screenpipe` is unchanged.
+  - Setup: screenpipe installed and running; a Handvel installer from `main`.
+  - Steps: 1. Run the Handvel installer (upgrade over an existing Handvel install if there is one). 2. Check Task Manager during and after the install. 3. Uninstall Handvel from Settings > Apps.
+  - Expected: screenpipe's `screenpipe.exe` and `screenpipe-app.exe` keep running throughout; the Handvel processes in its install folder are stopped before files are replaced; after uninstall `HKCU\Software\Classes\handvel` is gone and `HKCU\Software\Classes\screenpipe` is unchanged.
   - Result:
-- [ ] **SMK-W0-12-6** (UI smoke) Tray, menu and icons are Freenpipe's own
+- [ ] **SMK-W0-12-6** (UI smoke) Tray, menu and icons are Handvel's own
   - Setup: installed build; light and dark taskbar themes.
   - Steps: 1. Look at the tray icon in both themes and open its menu. 2. Pause recording for 15 minutes and hover the icon. 3. Check the Start menu entry, the taskbar icon, the installer's header and side images, and Settings > Apps.
-  - Expected: the green "f." mark everywhere (white or black glyph in the tray, no pipe-shaped logo); menu items read "Open Freenpipe", "Quit Freenpipe" and "Freenpipe v<version>"; the tooltip reads "Freenpipe — paused, resumes in 15m"; Settings > Apps lists "Freenpipe" by normiecore.
+  - Expected: the green "f." mark everywhere (white or black glyph in the tray, no pipe-shaped logo); menu items read "Open Handvel", "Quit Handvel" and "Handvel v<version>"; the tooltip reads "Handvel — paused, resumes in 15m"; Settings > Apps lists "Handvel" by normiecore.
   - Result:
 - [ ] **SMK-W0-12-7** (Runtime) The web view keeps its state apart from screenpipe's
   - Setup: installed build; screenpipe installed and used at least once.
-  - Steps: 1. Start Freenpipe, change the theme, quit. 2. Look in `%LOCALAPPDATA%`.
-  - Expected: Freenpipe's profile is `%LOCALAPPDATA%\Freenpipe\WebView2`; screenpipe's `%LOCALAPPDATA%\ScreenPipe\WebView2` was not modified (timestamps unchanged); app-level files, if any, are under `%APPDATA%\com.normiecore.freenpipe`, and nothing under `%APPDATA%\screenpi.pe` changed.
+  - Steps: 1. Start Handvel, change the theme, quit. 2. Look in `%LOCALAPPDATA%`.
+  - Expected: Handvel's profile is `%LOCALAPPDATA%\Handvel\WebView2`; screenpipe's `%LOCALAPPDATA%\ScreenPipe\WebView2` was not modified (timestamps unchanged); app-level files, if any, are under `%APPDATA%\com.normiecore.handvel`, and nothing under `%APPDATA%\screenpi.pe` changed.
   - Result:
 
 ### W0-13 Vendor git dependencies into third_party/
@@ -349,6 +349,19 @@ Wave 0 ran on the PC before the cloud phase. Tick anything you already checked t
   - Setup: engine builds from the commit before W1-03 and from main.
   - Steps: for each build, `GET /openapi.json` and count `paths`.
   - Expected: the same count for both builds.
+  - Result:
+
+### Decision 9 Rename to Handvel
+
+- [ ] **SMK-RENAME-1** (Runtime) Upgrading a Freenpipe dev install keeps the app's browser state
+  - Setup: a machine that ran a Freenpipe build (so `%LOCALAPPDATA%\Freenpipe\WebView2` exists, with a theme or font size changed in settings).
+  - Steps: 1. Quit Freenpipe. 2. Start the Handvel build. 3. Open settings.
+  - Expected: the log shows `moved webview2 profile from …\Freenpipe\WebView2 to …\Handvel\WebView2`; the theme and font size are kept; `%LOCALAPPDATA%\Freenpipe\WebView2` no longer exists.
+  - Result:
+- [ ] **SMK-RENAME-2** (Runtime) Leftovers from the old install
+  - Setup: same machine.
+  - Steps: 1. Check `HKCU\Software\Microsoft\Windows\CurrentVersion\Run` for a `Freenpipe` value. 2. Click an old `freenpipe://frame/N` link in a stored chat. 3. Check MCP entries in Claude Desktop or Cursor.
+  - Expected: uninstall the old Freenpipe build first, or delete its Run value by hand (Handvel does not remove it yet). The old link opens inside Handvel. MCP entries that point under the old install folder must be reconnected.
   - Result:
 
 ## Failures to fix

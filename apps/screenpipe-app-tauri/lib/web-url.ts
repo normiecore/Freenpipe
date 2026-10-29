@@ -6,7 +6,7 @@
  * Frontend half of the endpoint switchboard (the Rust half is
  * `screenpipe_core::endpoints`).
  *
- * Freenpipe has no hosted website, so there is no default origin:
+ * Handvel has no hosted website, so there is no default origin:
  * `screenpipeWebBase()` and `screenpipeWebUrl()` return `null` unless
  * `NEXT_PUBLIC_SCREENPIPE_WEB_URL` was set when the frontend was built
  * (`NEXT_PUBLIC_*` values are inlined by `next dev` / `next build`).
@@ -46,7 +46,7 @@ export function screenpipeWebUrl(path: string): string | null {
   return base ? joinUrl(base, path) : null;
 }
 
-export const FREENPIPE_REPO_URL = "https://github.com/normiecore/Freenpipe";
+export const FREENPIPE_REPO_URL = "https://github.com/normiecore/Handvel";
 
 export type FreenpipeLinkKind =
   | "repo"
@@ -67,7 +67,7 @@ const LINK_SUFFIX: Record<FreenpipeLinkKind, string> = {
   docs: "/tree/main/docs",
 };
 
-/** User-facing link into the Freenpipe repository. */
+/** User-facing link into the Handvel repository. */
 export function freenpipeLink(kind: FreenpipeLinkKind): string {
   return `${FREENPIPE_REPO_URL}${LINK_SUFFIX[kind]}`;
 }

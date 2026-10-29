@@ -1,6 +1,6 @@
 ---
 name: question
-about: ask a question about Freenpipe
+about: ask a question about Handvel
 title: "[question] "
 labels: question
 assignees: ''

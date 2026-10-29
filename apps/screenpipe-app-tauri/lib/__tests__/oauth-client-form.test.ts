@@ -1,5 +1,5 @@
-// Freenpipe — local-first screen & audio memory (fork of screenpipe @ 892199f, MIT)
-// https://github.com/normiecore/Freenpipe
+// Handvel — local-first screen & audio memory (fork of screenpipe @ 892199f, MIT)
+// https://github.com/normiecore/Handvel
 
 import { describe, expect, it } from "vitest";
 import {
@@ -60,7 +60,7 @@ describe("redirectUriProblem", () => {
   it("rejects remote http, other schemes, fragments and junk", () => {
     for (const bad of [
       "http://relay.example.com/cb",
-      "freenpipe://oauth",
+      "handvel://oauth",
       "https://relay.example.com/cb#x",
       "https://u:p@relay.example.com/cb",
       "relay.example.com/cb",

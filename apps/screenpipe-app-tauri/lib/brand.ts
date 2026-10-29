@@ -1,10 +1,10 @@
-// Freenpipe — local-first screen & audio memory (fork of screenpipe @ 892199f, MIT)
-// https://github.com/normiecore/Freenpipe
+// Handvel — local-first screen & audio memory (fork of screenpipe @ 892199f, MIT)
+// https://github.com/normiecore/Handvel
 
 /**
  * User-visible identity of the app and the deep-link schemes it understands.
  *
- * The OS routes only `freenpipe://` (or `freenpipe-beta://` on the beta
+ * The OS routes only `handvel://` (or `handvel-beta://` on the beta
  * channel) to this app; that list lives in the Tauri config. Links in
  * screenpipe's `screenpipe://` scheme still work once they are inside the
  * app (pipe notifications, skill-written chat answers, command-line
@@ -13,16 +13,20 @@
  * defined here and keep their upstream spelling.
  */
 
-export const PRODUCT_NAME = "Freenpipe";
+export const PRODUCT_NAME = "Handvel";
 
 /** Scheme of links the app builds itself (copy-link actions and the like). */
-export const DEEP_LINK_SCHEME = "freenpipe";
+export const DEEP_LINK_SCHEME = "handvel";
 
 /** Every scheme the in-app link handling accepts, lowercase, primary first. */
 export const ACCEPTED_DEEP_LINK_SCHEMES: readonly string[] = [
+  "handvel",
+  "handvel-beta",
+  "screenpipe",
+  // Pre-rename schemes (decision 9): links already stored in chats, notes and
+  // notifications keep working. Never registered with the OS.
   "freenpipe",
   "freenpipe-beta",
-  "screenpipe",
 ];
 
 function schemeOf(url: string): string | null {
@@ -30,7 +34,7 @@ function schemeOf(url: string): string | null {
   return match ? match[1].toLowerCase() : null;
 }
 
-/** True for `freenpipe://…` and the `screenpipe://…` alias. Not a type
+/** True for `handvel://…` and the `screenpipe://…` alias. Not a type
  *  guard on purpose: a `false` must not narrow a string to `never`. */
 export function isAppDeepLink(url: unknown): boolean {
   if (typeof url !== "string") return false;
@@ -38,7 +42,7 @@ export function isAppDeepLink(url: unknown): boolean {
   return scheme !== null && ACCEPTED_DEEP_LINK_SCHEMES.includes(scheme);
 }
 
-/** True when a parsed URL's `protocol` (`"freenpipe:"`) is an in-app scheme. */
+/** True when a parsed URL's `protocol` (`"handvel:"`) is an in-app scheme. */
 export function isAppDeepLinkProtocol(protocol: string): boolean {
   return ACCEPTED_DEEP_LINK_SCHEMES.includes(protocol.replace(/:$/, "").toLowerCase());
 }

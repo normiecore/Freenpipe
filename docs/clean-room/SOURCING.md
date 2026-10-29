@@ -15,7 +15,7 @@ Each role is a different person or a different Claude Code session. Nobody does 
 |---|---|---|---|
 | **Redactor** | `legacy-specs/` | Interop items in `specs/`, tagged `interop`: identifiers only | Writes behaviour text, implements |
 | **Behaviour author** | `specs/` (the redacted identifiers), the MIT base, the public sources below | Behaviour items in `specs/`, tagged `own`, `mit` or `public` | Reads `legacy-specs/`, PLAN.md behaviour summaries, or any summary of legacy behaviour; implements |
-| **Implementer** | `specs/`, PLAN.md (dependencies, owner paths, acceptance checks), DECISIONS.md, Freenpipe code | Code, tests, the provenance record | Reads `legacy-specs/`, the analysis workspace, or any outside material about screenpipe |
+| **Implementer** | `specs/`, PLAN.md (dependencies, owner paths, acceptance checks), DECISIONS.md, Handvel code | Code, tests, the provenance record | Reads `legacy-specs/`, the analysis workspace, or any outside material about screenpipe |
 
 Contamination between AI sessions travels through what goes into their context, so a coordinator never summarises legacy behaviour in a prompt or brief. Behaviour authors and implementers get item ids and file paths, not descriptions taken from `legacy-specs/`.
 
@@ -25,7 +25,7 @@ Contamination between AI sessions travels through what goes into their context, 
 
 | Tag | Source | Use it for |
 |---|---|---|
-| `own` | Freenpipe's own design | Any behaviour. This is the default whenever the other sources say nothing. |
+| `own` | Handvel's own design | Any behaviour. This is the default whenever the other sources say nothing. |
 | `mit` | The MIT base at `892199f` and its history | Behaviour and identifiers the base already had |
 | `public` | See "Public sources" below | *What* a feature does, in one or two sentences. Never how it was implemented and never its wording. Record the URL and the date read. |
 | `interop` | Identifiers redacted from `legacy-specs/` | HTTP routes and methods, JSON field names and types, SQL table, column, index and trigger names, CLI flags, settings keys, environment variables, event names, deep-link forms, and file and directory layout. A numeric constant counts only when the item names the client or stored format that depends on it. |
@@ -52,7 +52,7 @@ Claude Code sessions in this repository cannot fetch the vendor's domains (`.cla
 ## Writing rules
 
 - **Paraphrase.** Describe behaviour in your own words. Run the verbatim gate on every spec file you add or change (`python3 -I tools/clean-room/verbatim_gate.py <file>`).
-- **Prefer your own design.** Where the vendor's choice is not needed for compatibility, write Freenpipe's own choice and tag it `own`.
+- **Prefer your own design.** Where the vendor's choice is not needed for compatibility, write Handvel's own choice and tag it `own`.
 - **No evidence pointers.** No hex offsets, `ev_…` ids, frontend chunk names or workspace paths in `specs/`. CI fails on them.
 
 ## Tagging

@@ -6,7 +6,7 @@
 // the product ships (crates/screenpipe-core/assets/skills, the same files every
 // agent session gets), so the agent-card "copy / save SKILL.md" content is always
 // the source of truth from the repo (no hand-maintained drift). Wired into prebuild.
-// Freenpipe: .claude/skills is the repository's developer mirror and is not read.
+// Handvel: .claude/skills is the repository's developer mirror and is not read.
 //
 // Defensive by design: if the source files can't be read but a generated file
 // already exists, it keeps the existing one and warns rather than failing the build.
@@ -18,7 +18,7 @@ const repoRoot = path.resolve(__dirname, '../../..')
 const outFile = path.resolve(__dirname, '../lib/generated/screenpipe-skills.ts')
 
 // export name -> canonical SKILL.md (the same folders the agent cards'
-// `... skills install github:normiecore/Freenpipe/...` one-liners install from).
+// `... skills install github:normiecore/Handvel/...` one-liners install from).
 const SKILLS_DIR = 'crates/screenpipe-core/assets/skills'
 const SOURCES = {
 	SCREENPIPE_API_SKILL_MD: path.join(repoRoot, SKILLS_DIR, 'screenpipe-api/SKILL.md'),

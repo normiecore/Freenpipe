@@ -240,7 +240,7 @@ pub enum Command {
         allow_untrusted: bool,
     },
 
-    /// Hosted sign-in (not available in Freenpipe; use SCREENPIPE_API_KEY)
+    /// Hosted sign-in (not available in Handvel; use SCREENPIPE_API_KEY)
     Login,
 
     /// Sign out of screenpipe cloud (clears the auth token from store.bin)

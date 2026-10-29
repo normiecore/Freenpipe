@@ -1,5 +1,5 @@
 !macro NSIS_HOOK_PREINSTALL
-  ; Stop Freenpipe processes that run from this install directory (the app,
+  ; Stop Handvel processes that run from this install directory (the app,
   ; the bundled screenpipe CLI/engine and the Bun sidecar) so their files can
   ; be replaced. Processes are matched by path, not by image name: an
   ; installed screenpipe uses the same executable names from its own folder

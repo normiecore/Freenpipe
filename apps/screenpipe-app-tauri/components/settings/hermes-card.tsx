@@ -12,14 +12,14 @@ import { hermesYaml } from "@/lib/mcp-config";
 
 // Skills are read from this repository's product copies (the same files
 // the app installs into its own agent sessions).
-const SKILLS_SOURCE = "github:normiecore/Freenpipe/crates/screenpipe-core/assets/skills";
+const SKILLS_SOURCE = "github:normiecore/Handvel/crates/screenpipe-core/assets/skills";
 
 export function HermesCard() {
   return (
     <AgentCard
       name="Hermes"
       iconSrc="/images/hermes.png"
-      description="Self-improving agent with messaging gateways (Telegram, Discord, Slack, WhatsApp). Three ways to wire it to Freenpipe."
+      description="Self-improving agent with messaging gateways (Telegram, Discord, Slack, WhatsApp). Three ways to wire it to Handvel."
       homepage="https://hermes-agent.nousresearch.com"
       mcp={{
         format: "yaml",

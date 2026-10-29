@@ -1,5 +1,5 @@
-// Freenpipe — local-first screen & audio memory (fork of screenpipe @ 892199f, MIT)
-// https://github.com/normiecore/Freenpipe
+// Handvel — local-first screen & audio memory (fork of screenpipe @ 892199f, MIT)
+// https://github.com/normiecore/Handvel
 
 /**
  * Where the MCP server looks for the `screenpipe` CLI it uses to read the
@@ -30,15 +30,15 @@ export function cliCandidates(opts: {
   }
   if (platform === "darwin") {
     out.push(
-      "/Applications/Freenpipe.app/Contents/MacOS/screenpipe",
-      p.join(home, "Applications", "Freenpipe.app", "Contents", "MacOS", "screenpipe"),
+      "/Applications/Handvel.app/Contents/MacOS/screenpipe",
+      p.join(home, "Applications", "Handvel.app", "Contents", "MacOS", "screenpipe"),
     );
   } else if (win) {
     const localAppData = env.LOCALAPPDATA || p.join(home, "AppData", "Local");
     const programFiles = env.ProgramFiles || "C:\\Program Files";
     out.push(
-      p.join(localAppData, "Freenpipe", exe),
-      p.join(programFiles, "Freenpipe", exe),
+      p.join(localAppData, "Handvel", exe),
+      p.join(programFiles, "Handvel", exe),
     );
   }
   return [...new Set(out.map((c) => p.normalize(c)))];

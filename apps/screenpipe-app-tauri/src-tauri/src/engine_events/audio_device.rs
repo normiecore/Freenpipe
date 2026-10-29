@@ -110,7 +110,7 @@ pub(super) fn notice_for(
                 key: format!("engaged:{pinned}"),
                 title: "Microphone switched".to_string(),
                 body: format!(
-                    "{} is offline. Freenpipe records from {} until it is back.",
+                    "{} is offline. Handvel records from {} until it is back.",
                     display_name(pinned),
                     display_name(fallback)
                 ),

@@ -48,11 +48,11 @@ describe("screenpipeViewerPathFromHref", () => {
     ).toBe("C:\\screenpipe\\data\\frame.jpg");
   });
 
-  it("accepts the freenpipe:// primary scheme as well as the screenpipe:// alias", () => {
+  it("accepts the handvel:// primary scheme as well as the screenpipe:// alias", () => {
     expect(
-      screenpipeViewerPathFromHref("freenpipe://view?path=/Users/me/notes/a.md"),
+      screenpipeViewerPathFromHref("handvel://view?path=/Users/me/notes/a.md"),
     ).toBe("/Users/me/notes/a.md");
-    expect(screenpipeViewerPathFromHref("freenpipe://frame/12345")).toBeNull();
+    expect(screenpipeViewerPathFromHref("handvel://frame/12345")).toBeNull();
   });
 
   it("returns null for non-screenpipe protocols", () => {
@@ -126,7 +126,7 @@ describe("rewriteLocalMarkdownLinksForChat", () => {
     expect(
       rewriteLocalMarkdownLinksForChat("[doc](file:///Users/me/test%20note.md)"),
     ).toBe(
-      "[doc](freenpipe://view?path=%2FUsers%2Fme%2Ftest%20note.md)",
+      "[doc](handvel://view?path=%2FUsers%2Fme%2Ftest%20note.md)",
     );
   });
 

@@ -61,7 +61,7 @@ pub async fn export_recording(
         let guard = state.server.lock().await;
         let core = guard
             .as_ref()
-            .ok_or("recording isn't running yet — start Freenpipe, then export")?;
+            .ok_or("recording isn't running yet — start Handvel, then export")?;
         core.db.clone()
     };
 

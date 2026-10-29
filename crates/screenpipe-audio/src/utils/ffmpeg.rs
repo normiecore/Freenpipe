@@ -176,7 +176,7 @@ pub fn read_audio_from_file(path: &Path) -> Result<(Vec<f32>, u32)> {
     Ok((samples, sample_rate))
 }
 
-// Freenpipe (W2-16, audio-005): windowed decode for the speaker sample route.
+// Handvel (W2-16, audio-005): windowed decode for the speaker sample route.
 
 /// Decode `duration_secs` of audio that starts `start_secs` into the file, as
 /// 16 kHz mono f32 PCM, using the discovered ffmpeg binary.

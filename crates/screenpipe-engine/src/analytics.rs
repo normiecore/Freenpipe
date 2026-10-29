@@ -1,7 +1,7 @@
 //! Product analytics: removed.
 //!
 //! Upstream screenpipe posted usage events from the engine to a hosted
-//! analytics service. Freenpipe never sends telemetry, so this module keeps
+//! analytics service. Handvel never sends telemetry, so this module keeps
 //! only the call surface the rest of the engine still uses:
 //!
 //! - every capture function is a no-op, so existing call sites compile and
@@ -30,7 +30,7 @@ static DISTINCT_ID: Lazy<String> = Lazy::new(|| {
 /// Whether telemetry is turned off by the environment.
 ///
 /// screenpipe v2.7 lets `SCREENPIPE_DISABLE_TELEMETRY` (or a CI environment)
-/// switch telemetry off. Freenpipe has no telemetry to switch, so the answer
+/// switch telemetry off. Handvel has no telemetry to switch, so the answer
 /// is always `true` whatever the environment says.
 pub fn is_telemetry_disabled_by_env() -> bool {
     true
@@ -50,7 +50,7 @@ pub fn get_distinct_id() -> &'static str {
     &DISTINCT_ID
 }
 
-/// No-op. Upstream fired a usage event here; Freenpipe drops it unread.
+/// No-op. Upstream fired a usage event here; Handvel drops it unread.
 pub fn capture_event_nonblocking(event: &'static str, properties: Value) {
     let _ = (event, properties);
 }

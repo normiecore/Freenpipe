@@ -4,7 +4,7 @@
 name: Frontend Tests
 
 on:
-  # Freenpipe: dispatch-only; freenpipe-ci.yml runs these suites and the type-checked next build on Windows and Linux.
+  # Handvel: dispatch-only; freenpipe-ci.yml runs these suites and the type-checked next build on Windows and Linux.
   workflow_dispatch:
 
 concurrency:

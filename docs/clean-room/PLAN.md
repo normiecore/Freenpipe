@@ -1,4 +1,4 @@
-# Freenpipe implementation plan: BASE 892199f to compatibility with screenpipe
+# Handvel implementation plan: BASE 892199f to compatibility with screenpipe
 
 > **Owner decision 8 (2026-10-29) overrides this plan where they conflict.** Binary analysis is frozen, the goal is compatibility rather than parity, and implementers work only from re-sourced items in `docs/clean-room/specs/` (see `docs/clean-room/SOURCING.md`). The work-package descriptions below were written from the pre-freeze specs: implementers use them only for item ids, dependencies, owner paths and acceptance checks.
 
@@ -13,11 +13,11 @@ First generated 2026-10-15 from the verified delta in `docs/clean-room/specs/*.m
 
 ## 2. Ground rules for every WP
 
-1. **Clean room (binding, see `Freenpipe/CLAUDE.md`).** Work only from re-sourced items in `specs/*.md` (DECISIONS.md decision 8, SOURCING.md) and BASE source; never `legacy-specs/` or the analysis workspace. Do not consult post-relicense upstream material, browse vendor sites, or execute the target. Write original code. Do not paste decompiled code, extracted frontend JS, UI copy paragraphs or LLM prompt text; paraphrase behaviour. Interoperability identifiers (routes, JSON fields, SQL DDL and names, CLI flags, settings keys, env vars, file names) may match exactly. Built-in pipes, starter skills, the meeting-summary prompt, activity-history prompts and workflow agent prompts must be written fresh.
+1. **Clean room (binding, see the repository-root `CLAUDE.md`).** Work only from re-sourced items in `specs/*.md` (DECISIONS.md decision 8, SOURCING.md) and BASE source; never `legacy-specs/` or the analysis workspace. Do not consult post-relicense upstream material, browse vendor sites, or execute the target. Write original code. Do not paste decompiled code, extracted frontend JS, UI copy paragraphs or LLM prompt text; paraphrase behaviour. Interoperability identifiers (routes, JSON fields, SQL DDL and names, CLI flags, settings keys, env vars, file names) may match exactly. Built-in pipes, starter skills, the meeting-summary prompt, activity-history prompts and workflow agent prompts must be written fresh.
 2. **No phoning home.** No vendor host, PostHog key, Sentry DSN or vendor OAuth client id may appear in request-building code. All new network features are user-configured (BYO) or third-party and user-initiated. The vendor guard test (W0-01 scaffolds it, W0-12 makes it fail the build) enforces this.
-3. **New file header.** Every new .rs/.ts/.tsx/.js/.py file starts with the two-line Freenpipe header from CLAUDE.md. Upstream headers on edited files stay.
+3. **New file header.** Every new .rs/.ts/.tsx/.js/.py file starts with the two-line Handvel header from CLAUDE.md. Upstream headers on edited files stay.
 4. **Dev isolation.** screenpipe v2.7.104 is installed on the dev machine and may be running. It owns port 3030, the :11435 control server, `~/.screenpipe` and the `screenpipe://` scheme. Rules:
-   - Never point a Freenpipe build at `~/.screenpipe`. Use `FP_DD` (section 4).
+   - Never point a Handvel build at `~/.screenpipe`. Use `FP_DD` (section 4).
    - Never use port 3030 for dev engines. Use 3035.
    - Set `SCREENPIPE_API_KEY`, so the engine does not read or delete `~/.screenpipe/auth.json` (base `auth_key.rs` falls back to it).
    - Before any `bun run tauri dev`, quit the installed screenpipe app, because the base app control server binds :11435 unconditionally. W0-01 also removes the base blind `taskkill` of other port holders, which would otherwise kill the installed screenpipe engine.
@@ -74,7 +74,7 @@ These seams keep parallel WPs in their own files:
 - **App modules:** W1-03 pre-declares `mod` lines and empty files in `src-tauri/src/` for every planned app module, for example activity_history, first_run_summary, brain_views, workflow_video, workflows_media, coding_workspace, chat_control, storage_migration, db_self_heal, overlay_health, port_conflict, disk_pressure, power_awake, search_only and calendar/reminders.
 - **Background workers:** a registry in `crates/screenpipe-engine/src/core.rs`. Workers register there instead of editing the startup sequence.
 - **Shared constants:** data-dir file names in `crates/screenpipe-core/src/paths.rs` and `SCREENPIPE_*` env names in `crates/screenpipe-core/src/env.rs`.
-- **Migrations:** W1-01 adds all 28 target migrations at once under the exact target versions, with DDL as recorded in db.md. Later WPs never add migrations. A WP that finds a schema gap stops and raises it, because a Freenpipe-only migration would break checksum interop.
+- **Migrations:** W1-01 adds all 28 target migrations at once under the exact target versions, with DDL as recorded in db.md. Later WPs never add migrations. A WP that finds a schema gap stops and raises it, because a Handvel-only migration would break checksum interop.
 
 ## 6. Shared hotspot files and region ownership
 
@@ -134,7 +134,7 @@ Coverage: 412 live delta items, each in exactly one WP (checked by `python3 tool
 | W0-09 | M | Bundled CLI/MCP runtime and self-hosted model sources | W0-01 | cloud-024, cloud-046, cloud-M02, agents_pipes-040 |
 | W0-10 | M | Logs and feedback upload replaced by a local diagnostics bundle | W0-01 | cloud-036, frontend-046, meetings_memory-009 |
 | W0-11 | L | SQLite toolchain upgrade (sqlx 0.9, libsqlite3-sys 0.37, rusqlite vtab) | W0-01 | db-029 |
-| W0-12 | M | Rebrand user-visible identity to Freenpipe | W0-02, W0-03, W0-04, W0-05, W0-06, W0-07, W0-08, W0-09, W0-10, W0-11 | (no delta id) rebrand: product name, identifier, deep-link scheme, tray, icons, window titles, installer |
+| W0-12 | M | Rebrand user-visible identity to Handvel | W0-02, W0-03, W0-04, W0-05, W0-06, W0-07, W0-08, W0-09, W0-10, W0-11 | (no delta id) rebrand: product name, identifier, deep-link scheme, tray, icons, window titles, installer |
 | W0-13 | M | Vendor git dependencies into third_party/ | W0-11 | (owner decision 2) vendor git deps |
 
 #### W0-01 Build bootstrap, ee/ stubs, endpoint switchboard and dev isolation (L)
@@ -217,7 +217,7 @@ Acceptance:
 - **Depends on:** W0-01
 - **Specs:** specs/cloud.md cloud-012, cloud-041, cloud-V02; specs/shell.md shell-016 (merged)
 
-Point the Tauri updater at github.com/normiecore/Freenpipe releases with a new minisign public key; stable reads releases/latest/download/latest.json, pre-release (beta maps to it) reads a fixed-tag manifest; drop bearer auth and the auth_required flow; rollback uses per-tag manifests with allowDowngrades. Add restart_for_update(timeout_secs) wrapping the base restart gate, writing the local update-attempt marker and update-install/update-recovery logs (refuse symlinks). In CI replace the R2 upload with a GitHub release plus a generated latest.json, delete Sentry symbol uploads, strip the npm postinstall PostHog ping, the docs analytics block and any job that pulls from the upstream repo.
+Point the Tauri updater at github.com/normiecore/Handvel releases with a new minisign public key; stable reads releases/latest/download/latest.json, pre-release (beta maps to it) reads a fixed-tag manifest; drop bearer auth and the auth_required flow; rollback uses per-tag manifests with allowDowngrades. Add restart_for_update(timeout_secs) wrapping the base restart gate, writing the local update-attempt marker and update-install/update-recovery logs (refuse symlinks). In CI replace the R2 upload with a GitHub release plus a generated latest.json, delete Sentry symbol uploads, strip the npm postinstall PostHog ping, the docs analytics block and any job that pulls from the upstream repo.
 
 Owner paths:
 - `apps/screenpipe-app-tauri/src-tauri/src/updates.rs`
@@ -391,7 +391,7 @@ Acceptance:
 - **Depends on:** W0-01
 - **Specs:** specs/cloud.md cloud-024, cloud-046, cloud-M02; specs/agents_pipes.md agents_pipes-040
 
-Stop resolving vendor npm packages at runtime: build packages/screenpipe-mcp and the engine CLI locally, ship them as app resources and reference them by absolute path (SCREENPIPE_CLI / PATH shim) in skills, MCP configs and agent cards. Pyannote models are bundled or fetched from a Freenpipe-controlled mirror; HuggingFace screenpipe/* PII weights stay opt-in and repo-overridable.
+Stop resolving vendor npm packages at runtime: build packages/screenpipe-mcp and the engine CLI locally, ship them as app resources and reference them by absolute path (SCREENPIPE_CLI / PATH shim) in skills, MCP configs and agent cards. Pyannote models are bundled or fetched from a Handvel-controlled mirror; HuggingFace screenpipe/* PII weights stay opt-in and repo-overridable.
 
 Owner paths:
 - `crates/screenpipe-audio/src/speaker/models.rs (download source)`
@@ -457,13 +457,13 @@ Acceptance:
 - [ ] A migrator test applies a pending version older than the newest applied one (out-of-order) without error
 - [ ] Engine and app build (release-dev)
 
-#### W0-12 Rebrand user-visible identity to Freenpipe (M)
+#### W0-12 Rebrand user-visible identity to Handvel (M)
 
 - **Items:** (no delta id) rebrand: product name, identifier, deep-link scheme, tray, icons, window titles, installer
 - **Depends on:** W0-02, W0-03, W0-04, W0-05, W0-06, W0-07, W0-08, W0-09, W0-10, W0-11
 - **Specs:** CLAUDE.md (interop identifiers); specs/shell.md (identifier, scheme)
 
-Last WP of wave 0, after all de-cloud work. Rename user-visible identity to Freenpipe: productName, bundle identifier (com.normiecore.freenpipe and a .dev variant), installer/NSIS names, tray tooltip and menu title, window titles, icons and logos, About text, outbound user agent and user-facing copy that names the product. Register the freenpipe:// deep-link scheme (see open question on a screenpipe:// alias). Keep crate names, route paths, JSON fields, settings keys, env var names, CLI flags and data file names unchanged. Flip the vendor guard to failing mode.
+Last WP of wave 0, after all de-cloud work. Rename user-visible identity to Handvel: productName, bundle identifier (com.normiecore.handvel and a .dev variant), installer/NSIS names, tray tooltip and menu title, window titles, icons and logos, About text, outbound user agent and user-facing copy that names the product. Register the handvel:// deep-link scheme (see open question on a screenpipe:// alias). Keep crate names, route paths, JSON fields, settings keys, env var names, CLI flags and data file names unchanged. Flip the vendor guard to failing mode.
 
 Owner paths:
 - `apps/screenpipe-app-tauri/src-tauri/tauri*.conf.json (productName, identifier, deep-link schemes, window titles, bundle names)`
@@ -479,8 +479,8 @@ Owner paths:
 - `scripts/ci/vendor-guard.test.ts (switch to failing mode)`
 
 Acceptance:
-- [ ] Release-dev bundle builds an installer named Freenpipe; installed app shows Freenpipe in tray tooltip and window titles (UI smoke)
-- [ ] reg query HKCU\Software\Classes\freenpipe exists after install and HKCU\Software\Classes\screenpipe is untouched
+- [ ] Release-dev bundle builds an installer named Handvel; installed app shows Handvel in tray tooltip and window titles (UI smoke)
+- [ ] reg query HKCU\Software\Classes\handvel exists after install and HKCU\Software\Classes\screenpipe is untouched
 - [ ] bun test scripts/ci/vendor-guard.test.ts passes in failing mode
 - [ ] git diff of this WP changes no route string, settings key or SQL identifier (reviewer check with grep on '/\w' route literals)
 
@@ -1038,7 +1038,7 @@ Acceptance:
 - **Depends on:** W0-12
 - **Specs:** specs/audio.md audio-019, 020, 022; specs/shell.md shell-029, shell-030 (merged)
 
-Compile whisper with ggml-vulkan on Windows and ship vulkan-1.dll; a failed GPU state or inference rebuilds a shared CPU context and retries once. Parakeet/Qwen3 pick a non-software, non-remote D3D12 adapter, honour SCREENPIPE_DIRECTML, recycle DML sessions and retry on CPU (implemented in Freenpipe code unless the newer audiopipe revision's licence is cleared). Bundle segmentation, embedding and VAD models plus DirectML/ORT/OpenBLAS/Vulkan DLLs; resolve models from the exe dir, then cache, then download.
+Compile whisper with ggml-vulkan on Windows and ship vulkan-1.dll; a failed GPU state or inference rebuilds a shared CPU context and retries once. Parakeet/Qwen3 pick a non-software, non-remote D3D12 adapter, honour SCREENPIPE_DIRECTML, recycle DML sessions and retry on CPU (implemented in Handvel code unless the newer audiopipe revision's licence is cleared). Bundle segmentation, embedding and VAD models plus DirectML/ORT/OpenBLAS/Vulkan DLLs; resolve models from the exe dir, then cache, then download.
 
 Owner paths:
 - `crates/screenpipe-audio/Cargo.toml (features region)`
@@ -1942,7 +1942,7 @@ Owner paths:
 - `apps/screenpipe-app-tauri/src-tauri/src/main.rs (argv table entries only)`
 
 Acceptance:
-- [ ] Freenpipe.exe --screenpipe-acp-runtime starts and answers an ACP initialize over stdio (test harness)
+- [ ] Handvel.exe --screenpipe-acp-runtime starts and answers an ACP initialize over stdio (test harness)
 - [ ] screenpipe-tools MCP lists its tools over stdio; an ACP session with the pi agent answers a prompt (UI smoke)
 - [ ] Approval mode ask raises a permission request event
 
@@ -1952,7 +1952,7 @@ Acceptance:
 - **Depends on:** W2-22
 - **Specs:** specs/agents_pipes.md agents_pipes-028; specs/api.md api-027
 
-Pipes with agent: cloud-agent and CloudAgentConfig; /cloud-agents/status, /:provider/connect, /:provider/codebases, /cursor-agents, PUT /cursor-key (secret cloud_agents.cursor.api_key, never returned); opt-in bounded context capsule; snapshot commits use a Freenpipe identity. Third-party, user-initiated only.
+Pipes with agent: cloud-agent and CloudAgentConfig; /cloud-agents/status, /:provider/connect, /:provider/codebases, /cursor-agents, PUT /cursor-key (secret cloud_agents.cursor.api_key, never returned); opt-in bounded context capsule; snapshot commits use a Handvel identity. Third-party, user-initiated only.
 
 Owner paths:
 - `crates/screenpipe-core/src/agents/cloud.rs (new)`
@@ -2792,7 +2792,7 @@ Acceptance:
 | W6-18 | L | Right sidebar: multi-tab owned browser, files, connections | W5-15 | frontend-013 |
 | W6-19 | L | Shortcut overlay v2 (webview) | W5-14, W3-07, W3-29 | frontend-032 |
 | WR-01 | L | Pipe store on a GitHub-hosted registry | W0-08, W2-22, W5-01 | (restore) cloud-021, (restore) agents_pipes-037 |
-| WR-03 | XL | Freenpipe Hub: self-hostable team server and team client | W0-05, W3-02, W4-10, W5-16 | (restore) cloud-022, (restore) team memory |
+| WR-03 | XL | Handvel Hub: self-hostable team server and team client | W0-05, W3-02, W4-10, W5-16 | (restore) cloud-022, (restore) team memory |
 
 #### W6-01 ACP presets and coding-agent chat UI (XL)
 
@@ -2955,7 +2955,7 @@ Owner paths:
 - `apps/screenpipe-app-tauri/src-tauri/src/pi_extensions_manifest.rs (entry)`
 
 Acceptance:
-- [ ] Freenpipe.exe --render-workflow-video <fixture dir> writes rendered/video.mp4 and NDJSON progress, exit 0; closing stdin cancels with non-zero exit
+- [ ] Handvel.exe --render-workflow-video <fixture dir> writes rendered/video.mp4 and NDJSON progress, exit 0; closing stdin cancels with non-zero exit
 - [ ] bun test: VideoEdit validation limits (50 changes, pace range, focus requires image)
 
 #### W6-10 Workflow-to-skill drafting (M)
@@ -2987,7 +2987,7 @@ Owner paths:
 
 Acceptance:
 - [ ] cd packages/screenpipe-mcp && bun test; tools/list over stdio includes the new tool names
-- [ ] Freenpipe.exe --screenpipe-portable-mcp with SCREENPIPE_MCP_TRANSPORT=http listens on SCREENPIPE_MCP_PORT
+- [ ] Handvel.exe --screenpipe-portable-mcp with SCREENPIPE_MCP_TRANSPORT=http listens on SCREENPIPE_MCP_PORT
 
 #### W6-12 Live Views dashboards UI (XL)
 
@@ -3132,7 +3132,7 @@ Acceptance:
 - **Depends on:** W0-08, W2-22, W5-01
 - **Specs:** specs/cloud.md cloud-021; specs/agents_pipes.md agents_pipes-037
 
-Make the pipe store work out of the box without vendor servers. Define a static registry format (index.json listing id, name, description, author, version, permissions, sha256, source path) served from raw.githubusercontent.com of normiecore/Freenpipe (registry/ directory on main) as the DEFAULT registry URL, overridable by SCREENPIPE_API_BASE_URL or a settings key. Implement list/search/detail/install/update against it with sha256 verification and the existing typed registry_* errors. 'Publish' produces a ready-to-PR pipe folder plus instructions (opens the GitHub new-PR page); a CI workflow validates registry PRs (schema, sha256, frontmatter, no vendor hosts). Seed the registry with the built-in pipe catalogue once W7-08 lands (until then, with 3 sample pipes written fresh).
+Make the pipe store work out of the box without vendor servers. Define a static registry format (index.json listing id, name, description, author, version, permissions, sha256, source path) served from raw.githubusercontent.com of normiecore/Handvel (registry/ directory on main) as the DEFAULT registry URL, overridable by SCREENPIPE_API_BASE_URL or a settings key. Implement list/search/detail/install/update against it with sha256 verification and the existing typed registry_* errors. 'Publish' produces a ready-to-PR pipe folder plus instructions (opens the GitHub new-PR page); a CI workflow validates registry PRs (schema, sha256, frontmatter, no vendor hosts). Seed the registry with the built-in pipe catalogue once W7-08 lands (until then, with 3 sample pipes written fresh).
 
 Owner paths:
 - `registry/ (new: index.json, pipes/<id>/pipe.md, schema.json, README.md)`
@@ -3148,16 +3148,16 @@ Acceptance:
 - [ ] A tampered sha256 yields the typed registry error; SCREENPIPE_API_BASE_URL override points the store at a local static server
 - [ ] bun run build + UI smoke: store tab lists, installs and updates a pipe; publish produces a valid registry folder
 
-#### WR-03 Freenpipe Hub: self-hostable team server and team client (XL)
+#### WR-03 Handvel Hub: self-hostable team server and team client (XL)
 
 - **Items:** (restore) cloud-022, (restore) team memory
 - **Depends on:** W0-05, W3-02, W4-10, W5-16
 - **Specs:** specs/cloud.md cloud-022; specs/meetings_memory.md (team memory, if present)
 
-Restore Team as a self-hostable product. New crate freenpipe-hub: a small axum server (single binary + Dockerfile, SQLite or Postgres) implementing the team API surface the client expects (recorded in specs/cloud.md cloud-022 and the base client code): org/team creation, invite links, seats and admin roles, per-member API tokens, opt-in sharing policies, shared team memory (reuse crates/screenpipe-team-memory), and admin query of teammates' shared history (search over data members explicitly publish; never raw unshared data). Members' engines push only what their sharing policy allows, end-to-end over TLS with per-member tokens. Client side: restore the team settings UI, the `screenpipe team` CLI and MCP TEAM_API from the MIT base history (W0-05 removed their vendor wiring) and point them at a configurable hub URL (settings + SCREENPIPE_TEAM_HUB_URL). No hub configured = Team hidden. Document deployment (Docker, Windows service) in docs/hub.md.
+Restore Team as a self-hostable product. New crate handvel-hub: a small axum server (single binary + Dockerfile, SQLite or Postgres) implementing the team API surface the client expects (recorded in specs/cloud.md cloud-022 and the base client code): org/team creation, invite links, seats and admin roles, per-member API tokens, opt-in sharing policies, shared team memory (reuse crates/screenpipe-team-memory), and admin query of teammates' shared history (search over data members explicitly publish; never raw unshared data). Members' engines push only what their sharing policy allows, end-to-end over TLS with per-member tokens. Client side: restore the team settings UI, the `screenpipe team` CLI and MCP TEAM_API from the MIT base history (W0-05 removed their vendor wiring) and point them at a configurable hub URL (settings + SCREENPIPE_TEAM_HUB_URL). No hub configured = Team hidden. Document deployment (Docker, Windows service) in docs/hub.md.
 
 Owner paths:
-- `crates/freenpipe-hub/ (new server crate + Dockerfile)`
+- `crates/handvel-hub/ (new server crate + Dockerfile)`
 - `crates/screenpipe-team-memory/`
 - `crates/screenpipe-engine/src/cli/team.rs (restore + rewire)`
 - `apps/screenpipe-app-tauri/components/settings/team-section.tsx (restore + rewire)`
@@ -3166,7 +3166,7 @@ Owner paths:
 - `docs/hub.md (new)`
 
 Acceptance:
-- [ ] cargo test -p freenpipe-hub: invite/join/roles/token auth; a member's search does not return another member's unshared data
+- [ ] cargo test -p handvel-hub: invite/join/roles/token auth; a member's search does not return another member's unshared data
 - [ ] Harness: hub on :4040 + two engines on isolated data dirs; member A shares memories, admin queries them via `screenpipe team search`
 - [ ] UI smoke: team section joins a hub via invite link and lists members; with no hub URL the section is hidden
 
@@ -3330,7 +3330,7 @@ Acceptance:
 - **Depends on:** W2-20, W6-07, WR-01
 - **Specs:** specs/cloud.md cloud-035, cloud-038
 
-Composio: restore the Composio-brokered integrations using the user's own Composio API key (stored in the secret store), calling Composio's public API directly; list available toolkits, connect accounts via Composio's hosted auth links, and expose connected tools to the agent like other connections. Workflow sharing: export a workflow (definition, steps, optional SOP video, redacted by default) as a signed .fpworkflow bundle, import it with a preview and permission review, and browse/publish to a gallery index under registry/workflows/ on normiecore/Freenpipe (publish = generated PR folder, like WR-01). Training-data contribution remains removed.
+Composio: restore the Composio-brokered integrations using the user's own Composio API key (stored in the secret store), calling Composio's public API directly; list available toolkits, connect accounts via Composio's hosted auth links, and expose connected tools to the agent like other connections. Workflow sharing: export a workflow (definition, steps, optional SOP video, redacted by default) as a signed .fpworkflow bundle, import it with a preview and permission review, and browse/publish to a gallery index under registry/workflows/ on normiecore/Handvel (publish = generated PR folder, like WR-01). Training-data contribution remains removed.
 
 Owner paths:
 - `crates/screenpipe-connect/src/connections/composio.rs (new)`
@@ -3883,11 +3883,11 @@ Acceptance:
 
 **Coexistence and data safety (owner machine)**
 - The installed screenpipe v2.7.104 shares port 3030, the :11435 control server, `~/.screenpipe`, `~/.screenpipe/auth.json` and the `screenpipe://` scheme. The base app's blind port-kill would terminate it, and base auth code can delete its auth.json. W0-01 and the section-2 rules must land before any app run.
-- W1-01 runs an irreversible migration that drops ocr_text. Opening a real screenpipe DB with a Freenpipe build is one-way:
+- W1-01 runs an irreversible migration that drops ocr_text. Opening a real screenpipe DB with a Handvel build is one-way:
   - A v2.7.104 DB is already migrated, so versions match.
   - A W0-state build (89 migrations) opening a v2.7 DB fails at runtime, because ocr_text is gone.
   Neither build may touch real data during development.
-- Freenpipe's migration files differ in text from the target's: upstream header comments are inside the checksummed bodies. Interop relies on the checksum-rewrite path on both sides. If a DB alternates between the two apps, each one rewrites checksums on open.
+- Handvel's migration files differ in text from the target's: upstream header comments are inside the checksummed bodies. Interop relies on the checksum-rewrite path on both sides. If a DB alternates between the two apps, each one rewrites checksums on open.
 
 **Scale and overlap**
 - Huge single items: the semantic parser crate (W2-06), workflows core (W4-01), the ACP runtime (W4-03), the audio-process detector (W4-12), the retained UIA tree (W4-13), the SOP renderer (W4-21), hybrid storage (W5-07, W6-06, W7-01, W7-02), meeting piggyback (W6-05), and the Live Views, Workflows and chat-blocks UIs. Each is XL and may need internal phasing within one agent's session.
@@ -3911,19 +3911,19 @@ Implementers must choose sensible values and document them in code comments.
 
 ## 12. Open questions for the owner
 
-1. **Default data dir and coexistence.** Option A: keep `~/.screenpipe` and port 3030/11435 for drop-in interop with existing data, pipes and MCP clients, at the cost of never running beside screenpipe. Option B: default to a Freenpipe dir and port, with an "import from screenpipe" path. Which one?
-2. **Deep-link scheme.** Register only `freenpipe://`, or also `screenpipe://` (and `screenpipe-enterprise:`) as an opt-in alias for external links (frontend-M01)? An alias would collide with an installed screenpipe.
-3. **CLI binary name.** Keep `screenpipe` (pipes, skills and MCP configs invoke it), rename to `freenpipe`, or ship both?
+1. **Default data dir and coexistence.** Option A: keep `~/.screenpipe` and port 3030/11435 for drop-in interop with existing data, pipes and MCP clients, at the cost of never running beside screenpipe. Option B: default to a Handvel dir and port, with an "import from screenpipe" path. Which one?
+2. **Deep-link scheme.** Register only `handvel://`, or also `screenpipe://` (and `screenpipe-enterprise:`) as an opt-in alias for external links (frontend-M01)? An alias would collide with an installed screenpipe.
+3. **CLI binary name.** Keep `screenpipe` (pipes, skills and MCP configs invoke it), rename to `handvel`, or ship both?
 4. **Hybrid Parquet storage** (db-021..024, retention-008, parts of frontend-039/044). It is opt-in in the target, and it is five XL/L WPs with real data-loss risk. Is it required for parity, or should it be deferred and the waves after W5 trimmed?
 5. **SQLite toolchain jump** (W0-11). Is the move to sqlx 0.9 / libsqlite3-sys 0.37 acceptable? The alternative is to stay on 0.7 and give up the 3.51.3 guard, embedded recovery and the vtab.
 6. **Git dependencies under the vendor's orgs.** Should they be mirrored under normiecore after the date and licence check? May the target's newer audiopipe revision be used if its licence is clearly MIT or Apache?
-7. **Updater and releases.** Who creates the minisign key and the GitHub release secrets for normiecore/Freenpipe? Is `autoUpdate` defaulting to true (as in the target) acceptable for Freenpipe?
+7. **Updater and releases.** Who creates the minisign key and the GitHub release secrets for normiecore/Handvel? Is `autoUpdate` defaulting to true (as in the target) acceptable for Handvel?
 8. **Localization.** Ship English only with the ja catalogue scaffolded, or commission a Japanese translation?
 9. **Third-party, user-initiated network features.** Are these acceptable to keep: the MCP registry search (registry.modelcontextprotocol.io), ACP agent npm installs, Cursor Cloud (api.cursor.com), the GitHub skill install and the Bee pairing service? The Bee pairing app id would have to be supplied by the user.
 10. **Default narration provider** for SOP videos. Captions-only (silent) unless the user configures TTS, or local Windows SAPI?
 11. **React version.** Follow the target to React 19 now (W2-25), or stay on React 18 until the feature UIs land?
 12. **Built-in pipe and skill content.** 21 pipes and 20 starter skills need fresh prose. Should all of them be written for parity, or a curated subset?
-13. **CI.** Does normiecore/Freenpipe have Windows GitHub Actions runners for the build, test and installer pipeline that W0-03 produces?
+13. **CI.** Does normiecore/Handvel have Windows GitHub Actions runners for the build, test and installer pipeline that W0-03 produces?
 
 ## 13. Regenerating this plan
 

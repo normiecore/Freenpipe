@@ -1,6 +1,6 @@
 ---
 name: feature request
-about: suggest an idea for Freenpipe
+about: suggest an idea for Handvel
 title: "[feature] "
 labels: enhancement
 assignees: ''

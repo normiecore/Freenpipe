@@ -1,20 +1,20 @@
-# Freenpipe
+# Handvel
 
-Freenpipe records what is on your screen and what is said through your microphone and speakers, stores it on your own machine, and makes it searchable by you and by the AI tools you connect to it.
+Handvel records what is on your screen and what is said through your microphone and speakers, stores it on your own machine, and makes it searchable by you and by the AI tools you connect to it.
 
-It is a fork of screenpipe at commit `892199f` (2026-06-10), the last upstream commit released under the MIT licence. Upstream moved to a commercial licence after that commit. Freenpipe stays MIT. It stays compatible with screenpipe's data, API, pipes and MCP configurations, and builds its own features beyond that. Specs for some later behaviour were first written from static analysis of the shipped v2.7.104 binary, never from post-relicense source. That analysis stopped on 2026-10-29, and those specs are being rewritten from public material and Freenpipe's own design. The method, the sourcing policy and the specifications are in [docs/clean-room/README.md](docs/clean-room/README.md).
+It is a fork of screenpipe at commit `892199f` (2026-06-10), the last upstream commit released under the MIT licence. Upstream moved to a commercial licence after that commit. Handvel stays MIT. It stays compatible with screenpipe's data, API, pipes and MCP configurations, and builds its own features beyond that. Specs for some later behaviour were first written from static analysis of the shipped v2.7.104 binary, never from post-relicense source. That analysis stopped on 2026-10-29, and those specs are being rewritten from public material and Handvel's own design. The method, the sourcing policy and the specifications are in [docs/clean-room/README.md](docs/clean-room/README.md).
 
-Freenpipe is not affiliated with or endorsed by the screenpipe project or its owners. See [NOTICE.md](NOTICE.md).
+Handvel is not affiliated with or endorsed by the screenpipe project or its owners. See [NOTICE.md](NOTICE.md).
 
 ## Status
 
-Freenpipe is in active development and has no release yet. Work is organised in numbered waves of work packages:
+Handvel is in active development and has no release yet. Work is organised in numbered waves of work packages:
 
 - [docs/clean-room/PLAN.md](docs/clean-room/PLAN.md) is the plan: waves 0 to 8, each work package with its dependencies, owned files and acceptance checks.
 - [docs/clean-room/STATUS.md](docs/clean-room/STATUS.md) is the generated progress board.
 - [docs/clean-room/DECISIONS.md](docs/clean-room/DECISIONS.md) records the owner decisions that bind every work package.
 
-Wave 0 removed the upstream vendor's services, telemetry and paid-plan gates and renamed the product. The desktop app is called Freenpipe, has its own bundle identifier (`com.normiecore.freenpipe`, and `com.normiecore.freenpipe.dev` for development builds), and opens `freenpipe://` links.
+Wave 0 removed the upstream vendor's services, telemetry and paid-plan gates and renamed the product. The desktop app is called Handvel, has its own bundle identifier (`com.normiecore.handvel`, and `com.normiecore.handvel.dev` for development builds), and opens `handvel://` links.
 
 ## What works from the base
 
@@ -30,15 +30,15 @@ The MIT base already provides:
 
 ## Drop-in compatibility
 
-Freenpipe keeps screenpipe's defaults so that existing setups keep working (decision 1 in [DECISIONS.md](docs/clean-room/DECISIONS.md)):
+Handvel keeps screenpipe's defaults so that existing setups keep working (decision 1 in [DECISIONS.md](docs/clean-room/DECISIONS.md)):
 
 - The CLI binary is still named `screenpipe`.
 - Data lives in `~/.screenpipe`.
 - The API listens on `localhost:3030`, and the app's control server on port 11435.
 - Existing pipes, skills and MCP client configurations work unchanged.
-- Links in screenpipe's `screenpipe://` form (from pipes, skills or notifications) still open inside Freenpipe. Freenpipe registers only `freenpipe://` with the operating system, so an installed screenpipe keeps its own link handler.
+- Links in screenpipe's `screenpipe://` form (from pipes, skills or notifications) still open inside Handvel. Handvel registers only `handvel://` with the operating system, so an installed screenpipe keeps its own link handler.
 
-Because it uses the same paths and ports, Freenpipe does not run alongside an installed screenpipe. Quit one before starting the other. Crate names, package names, HTTP routes, JSON fields, settings keys and `SCREENPIPE_*` environment variables keep their upstream names for the same reason.
+Because it uses the same paths and ports, Handvel does not run alongside an installed screenpipe. Quit one before starting the other. Crate names, package names, HTTP routes, JSON fields, settings keys and `SCREENPIPE_*` environment variables keep their upstream names for the same reason.
 
 ## Building from source
 
@@ -67,7 +67,7 @@ Tests: `cargo test` for Rust and `bun test` for TypeScript. [TESTING.md](TESTING
 
 - Captured data stays on your machine, in the data directory.
 - There is no telemetry and no crash reporting. Both were removed in wave 0.
-- Freenpipe does not use the upstream vendor's services. Remote service URLs go through an endpoint switchboard (`crates/screenpipe-core/src/endpoints.rs`) in which every entry is unset until you configure it. A CI check (`scripts/ci/vendor-guard.test.ts`) fails the build if a vendor host, key or the upstream identity comes back.
+- Handvel does not use the upstream vendor's services. Remote service URLs go through an endpoint switchboard (`crates/screenpipe-core/src/endpoints.rs`) in which every entry is unset until you configure it. A CI check (`scripts/ci/vendor-guard.test.ts`) fails the build if a vendor host, key or the upstream identity comes back.
 - Cloud AI features use your own API keys, or a local model server such as Ollama. Features that upstream ran on its own servers (sync, archive, pipe store, team management) come back as bring-your-own or self-hosted options (decision 5 in [DECISIONS.md](docs/clean-room/DECISIONS.md)).
 
 ## Licence
@@ -78,4 +78,4 @@ MIT. See [LICENSE.md](LICENSE.md) for the licence and the upstream copyright, an
 
 Read [CONTRIBUTING.md](CONTRIBUTING.md) first. Contributions follow the clean-room rules in [CLAUDE.md](CLAUDE.md): no post-relicense upstream material, original code, and upstream names only for interoperability identifiers.
 
-Report bugs and propose changes through [GitHub issues](https://github.com/normiecore/Freenpipe/issues).
+Report bugs and propose changes through [GitHub issues](https://github.com/normiecore/Handvel/issues).

@@ -1,11 +1,11 @@
-// Freenpipe — local-first screen & audio memory (fork of screenpipe @ 892199f, MIT)
-// https://github.com/normiecore/Freenpipe
+// Handvel — local-first screen & audio memory (fork of screenpipe @ 892199f, MIT)
+// https://github.com/normiecore/Handvel
 
 //! How this copy of the app was installed, as far as update management is
 //! concerned.
 //!
 //! The base app compiled this module from a proprietary directory that is
-//! not part of the fork. Freenpipe keeps the same type (the frontend and
+//! not part of the fork. Handvel keeps the same type (the frontend and
 //! `updates.rs` read it) but reports an unmanaged install with no detection
 //! evidence. Nothing here leaves the machine.
 
@@ -44,7 +44,7 @@ impl Default for EnterpriseInstallMetadata {
 }
 
 // Also called directly as a plain function: updates.rs reads `.managed`.
-/// How this install is updated. Freenpipe always reports an unmanaged,
+/// How this install is updated. Handvel always reports an unmanaged,
 /// self-updating install.
 #[tauri::command]
 #[specta::specta]

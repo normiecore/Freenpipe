@@ -1,5 +1,5 @@
-// Freenpipe — local-first screen & audio memory (fork of screenpipe @ 892199f, MIT)
-// https://github.com/normiecore/Freenpipe
+// Handvel — local-first screen & audio memory (fork of screenpipe @ 892199f, MIT)
+// https://github.com/normiecore/Handvel
 
 //! Keep the computer awake (`keepComputerAwake`, `set_keep_awake`).
 //!
@@ -16,7 +16,7 @@
 //! display may still turn off.
 //! - Windows: a power request (`PowerCreateRequest`, then `PowerSetRequest`
 //!   with `PowerRequestSystemRequired`). `powercfg /requests` lists it under
-//!   SYSTEM with Freenpipe's reason text. If no request can be made, the
+//!   SYSTEM with Handvel's reason text. If no request can be made, the
 //!   thread sets `ES_CONTINUOUS | ES_SYSTEM_REQUIRED` with
 //!   `SetThreadExecutionState` instead.
 //! - macOS: a `caffeinate -i -w <pid>` child, which also ends if this
@@ -42,7 +42,7 @@ pub const THREAD_NAME: &str = "screenpipe-keep-awake";
 /// How long a caller waits for the thread to confirm a change.
 pub const CONFIRM_TIMEOUT: Duration = Duration::from_secs(3);
 /// Reason shown by the OS next to the hold, where it shows one.
-pub const HOLD_REASON: &str = "Freenpipe keeps this computer awake (Keep computer awake is on)";
+pub const HOLD_REASON: &str = "Handvel keeps this computer awake (Keep computer awake is on)";
 
 /// The OS side of the hold. Created and used only on the keep-awake thread.
 pub trait AwakeBackend {

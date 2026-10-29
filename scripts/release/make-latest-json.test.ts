@@ -1,5 +1,5 @@
-// Freenpipe — local-first screen & audio memory (fork of screenpipe @ 892199f, MIT)
-// https://github.com/normiecore/Freenpipe
+// Handvel — local-first screen & audio memory (fork of screenpipe @ 892199f, MIT)
+// https://github.com/normiecore/Handvel
 
 /**
  * Tests for the release manifest generator. Run from the repository root:
@@ -32,7 +32,7 @@ import {
 
 const FIXTURES = join(import.meta.dir, "fixtures");
 const BUNDLES = join(FIXTURES, "bundle");
-const BASE_URL = "https://github.com/normiecore/Freenpipe/releases/download/v1.2.3";
+const BASE_URL = "https://github.com/normiecore/Handvel/releases/download/v1.2.3";
 
 const GOLDEN_ARGS = [
   "--version", "v1.2.3",
@@ -96,9 +96,9 @@ describe("make-latest-json", () => {
     ]);
     const win = manifest.platforms["windows-x86_64"];
     expect(win).toEqual(manifest.platforms["windows-x86_64-nsis"]);
-    expect(win.url).toBe(`${BASE_URL}/Freenpipe_1.2.3_x64-setup.exe`);
+    expect(win.url).toBe(`${BASE_URL}/Handvel_1.2.3_x64-setup.exe`);
     expect(win.signature).toBe(
-      readFileSync(join(BUNDLES, "x86_64-pc-windows-msvc/nsis/Freenpipe_1.2.3_x64-setup.exe.sig"), "utf8").trim(),
+      readFileSync(join(BUNDLES, "x86_64-pc-windows-msvc/nsis/Handvel_1.2.3_x64-setup.exe.sig"), "utf8").trim(),
     );
   });
 
@@ -112,25 +112,25 @@ describe("make-latest-json", () => {
   });
 
   test("classifies updater artifacts by name", () => {
-    expect(classifyArtifact("Freenpipe_1.0.0_x64-setup.exe")).toBe("nsis");
-    expect(classifyArtifact("Freenpipe_1.0.0_x64-setup.nsis.zip")).toBe("nsis");
-    expect(classifyArtifact("Freenpipe_1.0.0_x64_en-US.msi")).toBe("msi");
-    expect(classifyArtifact("Freenpipe.app.tar.gz")).toBe("app");
-    expect(classifyArtifact("Freenpipe_1.0.0_amd64.AppImage")).toBe("appimage");
-    expect(classifyArtifact("freenpipe_1.0.0_amd64.deb")).toBe("deb");
-    expect(classifyArtifact("Freenpipe.dmg")).toBeNull();
+    expect(classifyArtifact("Handvel_1.0.0_x64-setup.exe")).toBe("nsis");
+    expect(classifyArtifact("Handvel_1.0.0_x64-setup.nsis.zip")).toBe("nsis");
+    expect(classifyArtifact("Handvel_1.0.0_x64_en-US.msi")).toBe("msi");
+    expect(classifyArtifact("Handvel.app.tar.gz")).toBe("app");
+    expect(classifyArtifact("Handvel_1.0.0_amd64.AppImage")).toBe("appimage");
+    expect(classifyArtifact("handvel_1.0.0_amd64.deb")).toBe("deb");
+    expect(classifyArtifact("Handvel.dmg")).toBeNull();
   });
 
   test("asset names survive a GitHub upload unchanged", () => {
-    expect(releaseAssetName("Freenpipe beta_1.0.0_x64-setup.exe")).toBe("Freenpipe.beta_1.0.0_x64-setup.exe");
-    expect(releaseAssetName("Freenpipe_1.0.0+build.7_x64-setup.exe")).toBe("Freenpipe_1.0.0.build.7_x64-setup.exe");
+    expect(releaseAssetName("Handvel beta_1.0.0_x64-setup.exe")).toBe("Handvel.beta_1.0.0_x64-setup.exe");
+    expect(releaseAssetName("Handvel_1.0.0+build.7_x64-setup.exe")).toBe("Handvel_1.0.0.build.7_x64-setup.exe");
     expect(releaseAssetName("plain-name_1.0.tar.gz")).toBe("plain-name_1.0.tar.gz");
   });
 
   test("--stage copies artifacts and signatures under their asset names", () => {
     const dir = bundle({
-      "nsis/Freenpipe beta_2.0.0_x64-setup.exe": "installer bytes",
-      "nsis/Freenpipe beta_2.0.0_x64-setup.exe.sig": fakeSig("Freenpipe beta_2.0.0_x64-setup.exe"),
+      "nsis/Handvel beta_2.0.0_x64-setup.exe": "installer bytes",
+      "nsis/Handvel beta_2.0.0_x64-setup.exe.sig": fakeSig("Handvel beta_2.0.0_x64-setup.exe"),
     });
     const stage = join(tempDir(), "stage");
     const manifest = buildManifest({
@@ -140,7 +140,7 @@ describe("make-latest-json", () => {
       artifacts: scanBundle("x86_64-pc-windows-msvc", dir),
       stageDir: stage,
     });
-    const asset = "Freenpipe.beta_2.0.0_x64-setup.exe";
+    const asset = "Handvel.beta_2.0.0_x64-setup.exe";
     expect(manifest.platforms["windows-x86_64"].url).toBe(`https://github.com/o/r/releases/download/v2.0.0/${asset}`);
     expect(readFileSync(join(stage, asset), "utf8")).toBe("installer bytes");
     expect(existsSync(join(stage, `${asset}.sig`))).toBe(true);

@@ -889,8 +889,8 @@ export function BrowserSidebar({ conversationId }: BrowserSidebarProps) {
                   </div>
                   <p className="text-xs leading-5 text-muted-foreground">
                     {sessionAccessRequest.alreadyGranted
-                      ? "Freenpipe is about to copy browser session cookies. macOS may ask for browser Safe Storage access next."
-                      : "Freenpipe can use your browser sessions so the agent opens sites already signed in. This applies to all sites. It does not read saved passwords."}
+                      ? "Handvel is about to copy browser session cookies. macOS may ask for browser Safe Storage access next."
+                      : "Handvel can use your browser sessions so the agent opens sites already signed in. This applies to all sites. It does not read saved passwords."}
                   </p>
                   {isMac && !sessionAccessRequest.alreadyGranted && (
                     <p className="mt-2 text-xs leading-5 text-muted-foreground">
@@ -947,11 +947,11 @@ export function BrowserSidebar({ conversationId }: BrowserSidebarProps) {
                           ? v20CookieBlock.sources.join(", ")
                           : "Your browser"}{" "}
                         is running and holds an exclusive lock on its cookie
-                        database. Freenpipe cannot read it while the browser is
+                        database. Handvel cannot read it while the browser is
                         open.
                       </p>
                       <p className="mt-2 text-xs leading-5 text-muted-foreground">
-                        Connect the Freenpipe Browser Bridge extension to share
+                        Connect the Handvel Browser Bridge extension to share
                         this login directly — no passwords, no closing your
                         browser.
                       </p>
@@ -960,11 +960,11 @@ export function BrowserSidebar({ conversationId }: BrowserSidebarProps) {
                     <>
                       <p className="text-xs leading-5 text-muted-foreground">
                         Chrome or Edge has matching session cookies, but Windows
-                        app-bound encryption prevents Freenpipe from reusing
+                        app-bound encryption prevents Handvel from reusing
                         them directly.
                       </p>
                       <p className="mt-2 text-xs leading-5 text-muted-foreground">
-                        Connect the Freenpipe Browser Bridge extension to reuse
+                        Connect the Handvel Browser Bridge extension to reuse
                         this login without sharing passwords.
                       </p>
                       <div className="mt-3 text-[11px] leading-4 text-muted-foreground">

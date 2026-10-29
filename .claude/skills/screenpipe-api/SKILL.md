@@ -3,7 +3,7 @@ name: screenpipe-api
 description: Query the user's screen recordings, audio, UI elements, and usage analytics via the local Screenpipe REST API at localhost:3030. Use when the user asks about their screen activity, meetings, apps, productivity, media export, retranscription, or connected services.
 ---
 
-> **Clean room (owner decision 8):** use this only against a Freenpipe engine you built and started yourself (dev builds listen on port 3035). screenpipe itself is installed on this machine and uses the same port, data directory and log paths. Never query, inspect or read the logs of the vendor app, and quit it before using this skill.
+> **Clean room (owner decision 8):** use this only against a Handvel engine you built and started yourself (dev builds listen on port 3035). screenpipe itself is installed on this machine and uses the same port, data directory and log paths. Never query, inspect or read the logs of the vendor app, and quit it before using this skill.
 
 
 # Screenpipe API
@@ -480,7 +480,7 @@ curl -X POST http://localhost:11435/notify \
 | `actions` | array | No | Action buttons |
 
 **Supported link types in body markdown:**
-- Web URLs: `[repo](https://github.com/normiecore/Freenpipe)`: opens in browser
+- Web URLs: `[repo](https://github.com/normiecore/Handvel)`: opens in browser
 - File paths: `[notes](~/notes/file.md)` or `[log](/var/log/app.log)` — opens in default app
 - Deeplinks: `[timeline](screenpipe://timeline)` — navigates within screenpipe
 

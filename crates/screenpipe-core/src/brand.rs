@@ -1,5 +1,5 @@
-// Freenpipe — local-first screen & audio memory (fork of screenpipe @ 892199f, MIT)
-// https://github.com/normiecore/Freenpipe
+// Handvel — local-first screen & audio memory (fork of screenpipe @ 892199f, MIT)
+// https://github.com/normiecore/Handvel
 
 //! Product identity shared by the engine and the desktop app.
 //!
@@ -8,15 +8,16 @@
 //! names and are not defined here.
 
 /// Product name shown to people.
-pub const PRODUCT_NAME: &str = "Freenpipe";
+pub const PRODUCT_NAME: &str = "Handvel";
 
 /// Lowercase markers that identify this product's own processes and windows
 /// in captured app names. On Windows the captured app name is the
 /// executable's file description, which the bundler sets to the product name
-/// ("Freenpipe", "Freenpipe Dev", "Freenpipe Beta"); the bare CLI and the app
+/// ("Handvel", "Handvel Dev", "Handvel Beta"); the bare CLI and the app
 /// binary are still called `screenpipe` / `screenpipe-app`, and data captured
-/// by screenpipe itself carries its name. Both spellings are matched.
-pub const OWN_APP_NAME_MARKERS: &[&str] = &["freenpipe", "screenpipe"];
+/// by screenpipe itself carries its name. Frames recorded before the rename
+/// (decision 9) carry "Freenpipe". All three are matched.
+pub const OWN_APP_NAME_MARKERS: &[&str] = &["handvel", "freenpipe", "screenpipe"];
 
 /// True when `app_name` belongs to this product's own UI or processes, so
 /// capture and search can leave it out. Case-insensitive substring match.
@@ -32,10 +33,12 @@ mod tests {
     #[test]
     fn matches_every_product_variant() {
         for name in [
+            "Handvel",
+            "Handvel Dev",
+            "Handvel Beta",
+            "handvel",
             "Freenpipe",
             "Freenpipe Dev",
-            "Freenpipe Beta",
-            "freenpipe",
             "screenpipe",
             "screenpipe-app",
             "screenpipe - Development",

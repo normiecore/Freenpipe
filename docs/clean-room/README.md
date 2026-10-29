@@ -1,9 +1,9 @@
-# Freenpipe clean-room documentation
+# Handvel clean-room documentation
 
-Freenpipe is an MIT-licensed fork of screenpipe. It starts from upstream commit `892199f`, the last
+Handvel is an MIT-licensed fork of screenpipe. It starts from upstream commit `892199f`, the last
 commit released under the MIT licence (about v2.5.27, with the `ee/` directory removed). The goal is
 compatibility with screenpipe's data, API, pipes and MCP configurations, with features beyond that of
-Freenpipe's own design. This directory holds the specifications, the implementation plan and the owner
+Handvel's own design. This directory holds the specifications, the implementation plan and the owner
 decisions behind that work.
 
 ## Since 2026-10-29: evidence freeze
@@ -12,7 +12,7 @@ Owner decision 8 ([DECISIONS.md](DECISIONS.md)) stopped all analysis of the ship
 
 - The specs written before the freeze moved, unchanged, to `legacy-specs/`. `specs/` holds only
   re-sourced items written under [SOURCING.md](SOURCING.md): identifiers redacted from the legacy specs,
-  and behaviour from Freenpipe's own design, the MIT base, and public descriptions of what a feature does.
+  and behaviour from Handvel's own design, the MIT base, and public descriptions of what a feature does.
 - Redactors, behaviour authors and implementers are separate. Implementers read only `specs/` and never
   `legacy-specs/` or the analysis workspace.
 - Every work package carries a provenance record in [provenance/](provenance/README.md).
@@ -39,7 +39,7 @@ The rest of this section describes how the specs below were first written.
 - **Raw extracted material is never published.** String dumps, the extracted frontend and REA graph
   dumps stay in a private workspace. Evidence references in the specs (hex offsets such as `0x5a42a38`,
   REA ids such as `ev_…`, frontend chunk positions) point into that workspace. Path placeholders:
-  `<re-workspace>` is the private analysis workspace, `<repo>` is a Freenpipe checkout and
+  `<re-workspace>` is the private analysis workspace, `<repo>` is a Handvel checkout and
   `<screenpipe-install>` is the installed target.
 - **Publication is gated by an n-gram check.** Every document is compared against the extracted corpus,
   and no run of 8 or more ordinary words may appear in both. The few matches that remain are SQL

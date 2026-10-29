@@ -1,5 +1,5 @@
-// Freenpipe — local-first screen & audio memory (fork of screenpipe @ 892199f, MIT)
-// https://github.com/normiecore/Freenpipe
+// Handvel — local-first screen & audio memory (fork of screenpipe @ 892199f, MIT)
+// https://github.com/normiecore/Handvel
 
 //! Names of the environment variables the engine, the desktop app and the
 //! agent children read or set.
@@ -54,7 +54,7 @@ pub const SCREENPIPE_PLANNER_MAINTENANCE_INTERVAL_SECS: &str =
 /// Encrypts the settings store at rest.
 pub const SCREENPIPE_ENCRYPT_STORE: &str = "SCREENPIPE_ENCRYPT_STORE";
 /// How the app's startup account check resolved: `authenticated`,
-/// `logged_out` or `not_required` (Freenpipe always sets `not_required`).
+/// `logged_out` or `not_required` (Handvel always sets `not_required`).
 pub const SCREENPIPE_STARTUP_AUTHENTICATION_STATUS: &str =
     "SCREENPIPE_STARTUP_AUTHENTICATION_STATUS";
 
@@ -92,7 +92,7 @@ pub const SCREENPIPE_FFMPEG_PATH: &str = "SCREENPIPE_FFMPEG_PATH";
 pub const SCREENPIPE_ENABLE_MDNS: &str = "SCREENPIPE_ENABLE_MDNS";
 
 // ---------------------------------------------------------------------------
-// Telemetry, diagnostics and identity tags (telemetry stays off in Freenpipe)
+// Telemetry, diagnostics and identity tags (telemetry stays off in Handvel)
 // ---------------------------------------------------------------------------
 
 /// Disables engine analytics. `CI` and `GITHUB_ACTIONS` do the same.
@@ -263,10 +263,10 @@ pub const SCREENPIPE_CHAT_CONTROL_DISABLED: &str = "SCREENPIPE_CHAT_CONTROL_DISA
 /// Pi's configuration directory (default `<data dir>/pi-agent/pi-config`).
 /// Read to override the default and given to Pi processes.
 pub const SCREENPIPE_PI_AGENT_DIR: &str = "SCREENPIPE_PI_AGENT_DIR";
-/// Freenpipe addition: `1` makes Windows x64 run Pi with bun's baseline
+/// Handvel addition: `1` makes Windows x64 run Pi with bun's baseline
 /// (non-AVX2) build even when the CPU has AVX2. For testing that path.
 pub const SCREENPIPE_FORCE_BASELINE_BUN: &str = "SCREENPIPE_FORCE_BASELINE_BUN";
-/// Freenpipe addition: `1` leaves the installed Pi runtime unpatched and
+/// Handvel addition: `1` leaves the installed Pi runtime unpatched and
 /// removes the runtime patch if it was applied.
 pub const SCREENPIPE_DISABLE_PI_PATCHES: &str = "SCREENPIPE_DISABLE_PI_PATCHES";
 /// Home directory searched for AI tool configs (`.claude`, `.codex`,

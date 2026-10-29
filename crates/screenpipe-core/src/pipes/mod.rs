@@ -5110,7 +5110,7 @@ pub fn is_bundled_builtin(name: &str) -> bool {
     BUILTIN_PIPES.iter().any(|(builtin, _)| *builtin == name)
 }
 
-/// Refuse to change a pipe an organisation manages. Freenpipe has no
+/// Refuse to change a pipe an organisation manages. Handvel has no
 /// organisations, so this never refuses; the check keeps the call sites in
 /// place.
 fn ensure_not_managed(name: &str) -> Result<()> {
@@ -6104,7 +6104,7 @@ fn copy_dir_recursive(src: &Path, dst: &Path) -> Result<()> {
 
 /// Encode a working-directory path the same way Pi does for session storage.
 /// Pi keys sessions by CWD: `<pi config dir>/sessions/<encoded-cwd>/`, where
-/// the config dir is Freenpipe's own (`<data dir>/pi-agent/pi-config`, see
+/// the config dir is Handvel's own (`<data dir>/pi-agent/pi-config`, see
 /// `agents::pi_runtime`).
 fn encode_pi_session_dir(working_dir: &Path) -> Option<PathBuf> {
     let sessions_base = crate::agents::pi_runtime::config_dir().join("sessions");

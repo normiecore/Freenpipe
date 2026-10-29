@@ -1,5 +1,5 @@
-// Freenpipe — local-first screen & audio memory (fork of screenpipe @ 892199f, MIT)
-// https://github.com/normiecore/Freenpipe
+// Handvel — local-first screen & audio memory (fork of screenpipe @ 892199f, MIT)
+// https://github.com/normiecore/Handvel
 
 //! Audio capture health events: forwards the engine's
 //! `audio_capture_health_*` events to kebab-case Tauri events and tells the
@@ -96,10 +96,10 @@ pub(super) fn notice_for(
         "audio_capture_health_mic_capture_failed" => {
             let body = match device {
                 Some(d) => format!(
-                    "{} could not be opened, so your side of the meeting is not recorded. Freenpipe keeps retrying; restarting recording often helps.",
+                    "{} could not be opened, so your side of the meeting is not recorded. Handvel keeps retrying; restarting recording often helps.",
                     display_name(d)
                 ),
-                None => "The microphone could not be opened, so your side of the meeting is not recorded. Freenpipe keeps retrying; restarting recording often helps.".to_string(),
+                None => "The microphone could not be opened, so your side of the meeting is not recorded. Handvel keeps retrying; restarting recording often helps.".to_string(),
             };
             Some(HealthNotice {
                 key: format!("mic_capture_failed:{}", device.unwrap_or("")),

@@ -1,7 +1,7 @@
 ---
 title: "privacy filter - strip personal info before AI sees it"
 sidebarTitle: "privacy filter"
-description: "Strip names, emails, phone numbers, addresses, and secrets from Freenpipe data before AI sees it, using local redaction or a filter endpoint you choose."
+description: "Strip names, emails, phone numbers, addresses, and secrets from Handvel data before AI sees it, using local redaction or a filter endpoint you choose."
 icon: "shield-halved"
 ---
 
@@ -19,12 +19,12 @@ for the full local/cloud data-flow model, see [privacy data flow](/privacy-data-
 | --- | --- | --- |
 | local text redaction | keeping text processing on-device | a local PII model redacts text before selected AI workflows use it |
 | local image redaction | protecting screenshots before image workflows | a local image model redacts visual secrets when image PII is enabled |
-| enclave endpoint you configure | high-accuracy redaction in confidential compute you choose | text is sent to an attested enclave at an endpoint you set; Freenpipe has no default |
+| enclave endpoint you configure | high-accuracy redaction in confidential compute you choose | text is sent to an attested enclave at an endpoint you set; Handvel has no default |
 | cloud media analysis off | strict local-only media handling | cloud audio, video, and image analysis calls are blocked |
 
 the shield in chat uses the configured privacy filter path for AI searches. local modes keep processing on your machine; enclave mode processes inside confidential compute.
 
-<Note>upstream ran a hosted enclave for this as a paid feature. Freenpipe does not use it. work package W0-06 makes local redaction the default and uses an enclave only at an endpoint you configure yourself. the enclave sections below describe how such an endpoint works.</Note>
+<Note>upstream ran a hosted enclave for this as a paid feature. Handvel does not use it. work package W0-06 makes local redaction the default and uses an enclave only at an endpoint you configure yourself. the enclave sections below describe how such an endpoint works.</Note>
 
 ## how enclave mode works
 
@@ -32,7 +32,7 @@ the shield in chat uses the configured privacy filter path for AI searches. loca
   <Step title="you flip the shield in chat">
     in the chat composer, click the shield icon above the send button. the toggle is saved between sessions.
   </Step>
-  <Step title="Freenpipe runs on your machine">
+  <Step title="Handvel runs on your machine">
     when the AI asks for screen data (accessibility text, OCR fallback text, audio transcripts, etc.), the engine on your computer sends selected text to the privacy filter enclave you configured.
   </Step>
   <Step title="the enclave strips personal info">
@@ -111,7 +111,7 @@ what that gives you:
 - **you**: you flip the toggle, you see the original data on your own screen.
 - **the engine (local)**: sends raw text to the enclave, gets redacted text back. runs on your computer.
 - **the enclave**: decrypts the text, runs the model, returns the redacted version. destroys the memory immediately.
-- **Freenpipe's developers**: _not in the path._ Freenpipe has no backend.
+- **Handvel's developers**: _not in the path._ Handvel has no backend.
 - **the AI (claude, gpt, gemini, your local llama, whichever)**: only ever sees the redacted version.
 
 in local mode, the enclave is not in the path: redaction happens on your machine before selected context reaches the AI workflow.
@@ -139,8 +139,8 @@ in local mode, the enclave is not in the path: redaction happens on your machine
 
 ## source
 
-- **client integration in the engine:** [crates/screenpipe-engine/src/privacy_filter.rs](https://github.com/normiecore/Freenpipe/blob/main/crates/screenpipe-engine/src/privacy_filter.rs)
-- **local redaction:** [crates/screenpipe-redact](https://github.com/normiecore/Freenpipe/tree/main/crates/screenpipe-redact)
+- **client integration in the engine:** [crates/screenpipe-engine/src/privacy_filter.rs](https://github.com/normiecore/Handvel/blob/main/crates/screenpipe-engine/src/privacy_filter.rs)
+- **local redaction:** [crates/screenpipe-redact](https://github.com/normiecore/Handvel/tree/main/crates/screenpipe-redact)
 - **Tinfoil attestation SDK** for independently verifying a running enclave: [docs.tinfoil.sh](https://docs.tinfoil.sh)
 
-if you find a way to make the filter leak data, report it in a [GitHub issue](https://github.com/normiecore/Freenpipe/issues) (leave out the sensitive details and ask for a private contact).
+if you find a way to make the filter leak data, report it in a [GitHub issue](https://github.com/normiecore/Handvel/issues) (leave out the sensitive details and ask for a private contact).

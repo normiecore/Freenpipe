@@ -5,11 +5,11 @@ description: "Give Claude, Cursor, Ollama, and other LLMs persistent memory of e
 icon: "brain"
 ---
 
-Freenpipe acts as a memory layer for AI — it gives LLMs context about what you've been doing on your computer.
+Handvel acts as a memory layer for AI — it gives LLMs context about what you've been doing on your computer.
 
 ## why AI needs memory
 
-LLMs are stateless — they don't know what you were working on 5 minutes ago. Freenpipe bridges this by:
+LLMs are stateless — they don't know what you were working on 5 minutes ago. Handvel bridges this by:
 
 - capturing everything on your screen 24/7
 - extracting app text primarily via accessibility APIs, with OCR fallback for visual-only surfaces
@@ -19,7 +19,7 @@ LLMs are stateless — they don't know what you were working on 5 minutes ago. F
 
 ### MCP (recommended)
 
-Freenpipe has a built-in MCP server that works with Claude Desktop, Cursor, and other MCP-compatible tools:
+Handvel has a built-in MCP server that works with Claude Desktop, Cursor, and other MCP-compatible tools:
 
 ```json
 {
@@ -40,7 +40,7 @@ see [MCP server setup](/mcp-server) for details.
 
 ### direct API
 
-any tool that can make HTTP requests can query Freenpipe:
+any tool that can make HTTP requests can query Handvel:
 
 ```bash
 # get recent screen activity
@@ -72,8 +72,8 @@ curl "http://localhost:3030/search?q=meeting+notes&app_name=Slack&limit=10"
 - [set up MCP server](/mcp-server) — connect to Claude, Cursor
 - [set up pipes](/pipes) — scheduled AI agents
 - [API reference](/cli-reference) — search parameters and API endpoints
-- [GitHub issues](https://github.com/normiecore/Freenpipe/issues): questions and bug reports
+- [GitHub issues](https://github.com/normiecore/Handvel/issues): questions and bug reports
 
-## get Freenpipe
+## get Handvel
 
-Freenpipe is built from source: see [getting started](/getting-started).
+Handvel is built from source: see [getting started](/getting-started).

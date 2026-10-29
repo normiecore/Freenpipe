@@ -24,7 +24,7 @@ on:
         description: "Force GitHub-hosted runners (skip self-hosted even if online)"
         type: boolean
         default: false
-  # Freenpipe: releases are dispatch-only; the main-push trigger (commit-message gated) is removed.
+  # Handvel: releases are dispatch-only; the main-push trigger (commit-message gated) is removed.
 
 concurrency:
   group: release-app-${{ github.event_name }}-${{ github.sha }}
@@ -1500,7 +1500,7 @@ jobs:
             bun scripts/release/make-latest-json.ts \
               --version "$VERSION" \
               --base-url "https://github.com/${GITHUB_REPOSITORY}/releases/download/${TAG}" \
-              --notes "Freenpipe ${TAG}: https://github.com/${GITHUB_REPOSITORY}/releases/tag/${TAG}" \
+              --notes "Handvel ${TAG}: https://github.com/${GITHUB_REPOSITORY}/releases/tag/${TAG}" \
               "${ARGS[@]}" \
               --stage dist \
               --out dist/latest.json

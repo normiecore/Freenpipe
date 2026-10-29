@@ -1,5 +1,5 @@
-// Freenpipe — local-first screen & audio memory (fork of screenpipe @ 892199f, MIT)
-// https://github.com/normiecore/Freenpipe
+// Handvel — local-first screen & audio memory (fork of screenpipe @ 892199f, MIT)
+// https://github.com/normiecore/Handvel
 
 //! User-visible identity of the desktop app and its deep-link schemes.
 //!
@@ -9,22 +9,31 @@
 //! `SCREENPIPE_*` variables, settings keys, routes and the tray id.
 //!
 //! Deep links: the installer and `register_all()` claim only the schemes in
-//! the `deep-link` section of the Tauri config (`freenpipe`, or
-//! `freenpipe-beta` for the beta channel). URLs that use screenpipe's
+//! the `deep-link` section of the Tauri config (`handvel`, or
+//! `handvel-beta` for the beta channel). URLs that use screenpipe's
 //! `screenpipe://` scheme are still accepted once they reach the app, for
 //! example from a pipe notification, a skill-generated chat link or a command
 //! line argument, so existing pipes keep working. The app never registers
 //! `screenpipe://` with the OS: an installed screenpipe owns it.
 
 /// Product name shown to people.
-pub const PRODUCT_NAME: &str = "Freenpipe";
+pub const PRODUCT_NAME: &str = "Handvel";
 
 /// Scheme of the links this app builds (copy-link actions and the like).
-pub const DEEP_LINK_SCHEME: &str = "freenpipe";
+pub const DEEP_LINK_SCHEME: &str = "handvel";
 
 /// Every scheme the in-app deep-link parser accepts: this app's own schemes
-/// first, then the screenpipe compatibility alias. Lowercase.
-pub const ACCEPTED_DEEP_LINK_SCHEMES: &[&str] = &["freenpipe", "freenpipe-beta", "screenpipe"];
+/// first, then the screenpipe compatibility alias, then the pre-rename
+/// schemes (decision 9) so links already stored in chats, notes and
+/// notifications keep working. Only the first two are registered with the OS.
+/// Lowercase.
+pub const ACCEPTED_DEEP_LINK_SCHEMES: &[&str] = &[
+    "handvel",
+    "handvel-beta",
+    "screenpipe",
+    "freenpipe",
+    "freenpipe-beta",
+];
 
 /// Scheme part of `url` (before `://`), lowercased, when it is one this app
 /// accepts.
@@ -36,7 +45,7 @@ pub fn deep_link_scheme(url: &str) -> Option<String> {
         .then_some(scheme)
 }
 
-/// True when `url` is an in-app deep link (`freenpipe://…` or the
+/// True when `url` is an in-app deep link (`handvel://…` or the
 /// `screenpipe://…` alias), as opposed to a web or file URL.
 pub fn is_app_deep_link(url: &str) -> bool {
     deep_link_scheme(url).is_some()
@@ -58,7 +67,7 @@ pub fn find_deep_link_arg(args: &[String]) -> Option<String> {
 }
 
 /// Build a link into the app with the primary scheme, e.g.
-/// `app_deep_link("frame/42")` gives `freenpipe://frame/42`.
+/// `app_deep_link("frame/42")` gives `handvel://frame/42`.
 pub fn app_deep_link(route: &str) -> String {
     format!(
         "{DEEP_LINK_SCHEME}://{}",
@@ -80,10 +89,10 @@ mod tests {
 
     #[test]
     fn accepts_primary_and_alias_schemes() {
-        assert!(is_app_deep_link("freenpipe://frame/1"));
-        assert!(is_app_deep_link("freenpipe-beta://timeline"));
+        assert!(is_app_deep_link("handvel://frame/1"));
+        assert!(is_app_deep_link("handvel-beta://timeline"));
         assert!(is_app_deep_link("screenpipe://meeting/12"));
-        assert!(is_app_deep_link("  FreenPipe://settings"));
+        assert!(is_app_deep_link("  HandVel://settings"));
         assert_eq!(
             deep_link_scheme("ScreenPipe://view?path=x").as_deref(),
             Some("screenpipe")
@@ -93,11 +102,11 @@ mod tests {
     #[test]
     fn rejects_other_urls() {
         for url in [
-            "https://example.test/freenpipe://x",
-            "file:///C:/freenpipe",
-            "freenpipe:frame/1",
+            "https://example.test/handvel://x",
+            "file:///C:/handvel",
+            "handvel:frame/1",
             "screenpipe-beta://frame/1",
-            "freenpipe",
+            "handvel",
             "",
         ] {
             assert!(!is_app_deep_link(url), "{url}");
@@ -108,7 +117,7 @@ mod tests {
     #[test]
     fn route_is_scheme_independent() {
         assert_eq!(
-            deep_link_route("freenpipe://meeting/12?live=1"),
+            deep_link_route("handvel://meeting/12?live=1"),
             Some("meeting/12?live=1")
         );
         assert_eq!(
@@ -119,7 +128,7 @@ mod tests {
 
     #[test]
     fn finds_a_deep_link_in_argv() {
-        let args: Vec<String> = ["C:\\Freenpipe\\screenpipe-app.exe", "--autostart", "screenpipe://frame/9"]
+        let args: Vec<String> = ["C:\\Handvel\\screenpipe-app.exe", "--autostart", "screenpipe://frame/9"]
             .iter()
             .map(|s| s.to_string())
             .collect();
@@ -130,8 +139,8 @@ mod tests {
 
     #[test]
     fn builds_links_with_the_primary_scheme() {
-        assert_eq!(app_deep_link("frame/42"), "freenpipe://frame/42");
-        assert_eq!(app_deep_link("/timeline"), "freenpipe://timeline");
+        assert_eq!(app_deep_link("frame/42"), "handvel://frame/42");
+        assert_eq!(app_deep_link("/timeline"), "handvel://timeline");
         assert!(is_app_deep_link(&app_deep_link("view?path=a")));
     }
 
@@ -155,7 +164,7 @@ mod tests {
                 .collect();
             assert!(!schemes.is_empty(), "{file}: no desktop scheme");
             for scheme in &schemes {
-                assert!(scheme.starts_with("freenpipe"), "{file}: registers {scheme}");
+                assert!(scheme.starts_with("handvel"), "{file}: registers {scheme}");
                 assert!(ACCEPTED_DEEP_LINK_SCHEMES.contains(scheme), "{file}: {scheme}");
             }
         }
@@ -163,8 +172,8 @@ mod tests {
 
     #[test]
     fn window_titles_carry_the_product_name() {
-        assert_eq!(window_title(None), "Freenpipe");
-        assert_eq!(window_title(Some("  ")), "Freenpipe");
-        assert_eq!(window_title(Some("search")), "Freenpipe — search");
+        assert_eq!(window_title(None), "Handvel");
+        assert_eq!(window_title(Some("  ")), "Handvel");
+        assert_eq!(window_title(Some("search")), "Handvel — search");
     }
 }

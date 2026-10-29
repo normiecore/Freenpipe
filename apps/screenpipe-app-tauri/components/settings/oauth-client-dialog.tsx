@@ -1,12 +1,12 @@
 "use client";
 
-// Freenpipe — local-first screen & audio memory (fork of screenpipe @ 892199f, MIT)
-// https://github.com/normiecore/Freenpipe
+// Handvel — local-first screen & audio memory (fork of screenpipe @ 892199f, MIT)
+// https://github.com/normiecore/Handvel
 
 /**
  * "OAuth app" setup for native OAuth connections.
  *
- * Freenpipe ships no OAuth client of its own: the user registers an app with
+ * Handvel ships no OAuth client of its own: the user registers an app with
  * the provider and enters its client ID (and secret, and an HTTPS relay for
  * providers that refuse loopback redirects) here. The values go straight to
  * the SecretStore through the `oauth_client_*` commands; the stored secret is

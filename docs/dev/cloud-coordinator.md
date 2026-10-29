@@ -17,7 +17,7 @@ or a brand-new coordinator session continues from there with nothing else.
 2. State:
    ```bash
    . ~/.freenpipe-env.sh && git fetch -q origin && python3 tools/plan/status.py
-   gh api 'repos/normiecore/Freenpipe/pulls?state=open&per_page=100' --jq '.[] | [.number, .head.ref, .draft, .head.sha[0:8]] | @tsv'
+   gh api 'repos/normiecore/Handvel/pulls?state=open&per_page=100' --jq '.[] | [.number, .head.ref, .draft, .head.sha[0:8]] | @tsv'
    ```
    Also check the session's own background work (`/workflows`, task notifications). A workflow that
    is still running owns its WPs; do not start a second one for them.
@@ -84,7 +84,7 @@ or a brand-new coordinator session continues from there with nothing else.
 The workflow script lives at `tools/cloud/workflows/wp-batch.js`. Start it with the Workflow tool:
 
 ```text
-Workflow({scriptPath: "/home/user/Freenpipe/tools/cloud/workflows/wp-batch.js",
+Workflow({scriptPath: "/home/user/Handvel/tools/cloud/workflows/wp-batch.js",
           args: {base: "<origin/main sha>", session_url: "<this session's URL>",
                  wps: [{id: "W2-01", title: "<title from PLAN.md>"},
                        {id: "W2-02", title: "...", mode: "ci-fix", ci_failure: "..."}]}})
@@ -110,7 +110,7 @@ Workflow({scriptPath: "/home/user/Freenpipe/tools/cloud/workflows/wp-batch.js",
   `debug/incremental`. Remove a WP's worktree (`git worktree remove`) once its PR is merged, then run
   `python3 tools/cloud/prune-target.py --delete` (add `--stale-hours 6` when space is short). It deletes
   a removed worktree's own builds and old linked test executables, so it is safe while other builds run.
-- Worktrees share one target dir, and cargo would let one worktree link another's build of a Freenpipe
+- Worktrees share one target dir, and cargo would let one worktree link another's build of a Handvel
   crate (artifact names no longer depend on the source path, and freshness is judged by mtime).
   bootstrap.sh therefore puts `tools/cloud/cargo-wt.py` first on PATH as `cargo`: inside
   `$FP_STATE/wt/<WP>` it gives every crate that differs from origin/main a per-worktree profile, so that
@@ -127,14 +127,14 @@ branch.
 ## Starting a fresh coordinator session
 
 If the coordinator session itself is gone (archived, or its conversation is unusable), start a new
-Claude Code cloud session on `normiecore/Freenpipe` in the Freenpipe environment with this prompt:
+Claude Code cloud session on `normiecore/Handvel` in the Handvel environment with this prompt:
 
 ```text
-You are the Freenpipe COORDINATOR. Read docs/dev/cloud-coordinator.md and follow it exactly:
+You are the Handvel COORDINATOR. Read docs/dev/cloud-coordinator.md and follow it exactly:
 bootstrap, read the state from git and GitHub, work the queue, and keep going wave by wave
 toward the full plan in docs/clean-room/PLAN.md. Use the Workflow tool with
 tools/cloud/workflows/wp-batch.js for all WP work. Create an hourly check-in routine into this
-session (create_trigger, default target) named "freenpipe coordinator check-in" if none exists,
+session (create_trigger, default target) named "freenpipe coordinator check-in" if none exists (the routine keeps its pre-rename name, decision 9),
 with the prompt: "Coordinator check-in: follow docs/dev/cloud-coordinator.md from 'Start or
 resume'." Delete any check-in routine that fires into a different, archived session.
 ```

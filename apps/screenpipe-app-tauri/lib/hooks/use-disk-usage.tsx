@@ -86,7 +86,7 @@ export function useDiskUsage() {
       if (errorMessage.includes("permission") || errorMessage.includes("access")) {
         errorMessage = "Permission denied. Please check file access permissions.";
       } else if (errorMessage.includes("not found") || errorMessage.includes("directory")) {
-        errorMessage = "Freenpipe data directory not found. Make sure Freenpipe has been initialized.";
+        errorMessage = "Handvel data directory not found. Make sure Handvel has been initialized.";
       } else if (errorMessage.includes("timeout")) {
         errorMessage = "Calculation timed out. Try again or check for very large datasets.";
       }

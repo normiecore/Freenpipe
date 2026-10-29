@@ -1,5 +1,5 @@
-// Freenpipe — local-first screen & audio memory (fork of screenpipe @ 892199f, MIT)
-// https://github.com/normiecore/Freenpipe
+// Handvel — local-first screen & audio memory (fork of screenpipe @ 892199f, MIT)
+// https://github.com/normiecore/Handvel
 
 import { describe, expect, test } from "bun:test";
 import { MAX_SPEAKER_SAMPLE_SECONDS, buildSpeakerSampleUrl } from "../speaker-sample";

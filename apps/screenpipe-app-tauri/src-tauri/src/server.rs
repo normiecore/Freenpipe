@@ -245,7 +245,7 @@ impl FocusRejection {
 }
 
 /// The kind of a refusal, as the `reason` field of a `/focus` 403 names it,
-/// so the refused launch can word its message (Freenpipe's own field; a
+/// so the refused launch can word its message (Handvel's own field; a
 /// caller that ignores it still gets `{success, message}`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RefusalKind {
@@ -535,7 +535,7 @@ pub fn is_local_origin(origin: &str) -> bool {
     }
 }
 
-/// An `Origin` of a browser extension page (Freenpipe's extension asks the
+/// An `Origin` of a browser extension page (Handvel's extension asks the
 /// app to show its pairing window through `/focus`).
 pub fn is_extension_origin(origin: &str) -> bool {
     let Some((scheme, id)) = origin.trim().split_once("://") else {
@@ -1136,7 +1136,7 @@ mod tests {
     fn identity(exe: Option<PathBuf>) -> FocusIdentity {
         FocusIdentity {
             current_exe: exe,
-            schemes: vec!["freenpipe".to_string()],
+            schemes: vec!["handvel".to_string()],
         }
     }
 
@@ -1262,22 +1262,22 @@ mod tests {
 
     #[test]
     fn schemes_come_from_the_deep_link_config() {
-        let stable = serde_json::json!({ "desktop": { "schemes": ["freenpipe"] } });
-        assert_eq!(registered_schemes(Some(&stable)), vec!["freenpipe"]);
-        let list = serde_json::json!({ "desktop": [{ "schemes": ["Freenpipe-Beta"] }, { "schemes": ["freenpipe-beta", "x"] }] });
-        assert_eq!(registered_schemes(Some(&list)), vec!["freenpipe-beta", "x"]);
-        assert_eq!(registered_schemes(None), vec!["freenpipe"]);
+        let stable = serde_json::json!({ "desktop": { "schemes": ["handvel"] } });
+        assert_eq!(registered_schemes(Some(&stable)), vec!["handvel"]);
+        let list = serde_json::json!({ "desktop": [{ "schemes": ["Handvel-Beta"] }, { "schemes": ["handvel-beta", "x"] }] });
+        assert_eq!(registered_schemes(Some(&list)), vec!["handvel-beta", "x"]);
+        assert_eq!(registered_schemes(None), vec!["handvel"]);
         assert_eq!(
             registered_schemes(Some(&serde_json::json!({}))),
-            vec!["freenpipe"]
+            vec!["handvel"]
         );
     }
 
     #[test]
     fn handoff_from_another_executable_is_refused() {
-        let me = identity(Some(PathBuf::from("/opt/Freenpipe/freenpipe")));
+        let me = identity(Some(PathBuf::from("/opt/Handvel/handvel")));
         let payload = FocusPayload {
-            launch_exe: Some("/opt/Freenpipe Beta/freenpipe".into()),
+            launch_exe: Some("/opt/Handvel Beta/handvel".into()),
             ..Default::default()
         };
         assert!(matches!(
@@ -1286,7 +1286,7 @@ mod tests {
         ));
         // No current executable known: nothing can match.
         let payload = FocusPayload {
-            launch_exe: Some("/opt/Freenpipe/freenpipe".into()),
+            launch_exe: Some("/opt/Handvel/handvel".into()),
             ..Default::default()
         };
         assert!(matches!(
@@ -1298,19 +1298,19 @@ mod tests {
     #[test]
     fn appimage_runs_from_different_mounts_are_one_install() {
         use std::ffi::OsStr;
-        let image = OsStr::new("/home/ada/Apps/Freenpipe.AppImage");
+        let image = OsStr::new("/home/ada/Apps/Handvel.AppImage");
         // The running copy and a second launch of the same AppImage, each
         // mounted at its own random directory.
         let running = install_executable(
-            Some("/tmp/.mount_FreenpAbC123/usr/bin/freenpipe".into()),
+            Some("/tmp/.mount_HandveAbC123/usr/bin/handvel".into()),
             Some(image),
-            Some(OsStr::new("/tmp/.mount_FreenpAbC123")),
+            Some(OsStr::new("/tmp/.mount_HandveAbC123")),
             resolve_as_is,
         );
         let second = install_executable(
-            Some("/tmp/.mount_FreenpXyZ789/usr/bin/freenpipe".into()),
+            Some("/tmp/.mount_HandveXyZ789/usr/bin/handvel".into()),
             Some(image),
-            Some(OsStr::new("/tmp/.mount_FreenpXyZ789")),
+            Some(OsStr::new("/tmp/.mount_HandveXyZ789")),
             resolve_as_is,
         );
         assert_eq!(running, Some(PathBuf::from(image)));
@@ -1326,9 +1326,9 @@ mod tests {
 
         // Another AppImage (another version or channel) is another install.
         let other = install_executable(
-            Some("/tmp/.mount_FreenpQqQ000/usr/bin/freenpipe".into()),
-            Some(OsStr::new("/home/ada/Apps/Freenpipe-beta.AppImage")),
-            Some(OsStr::new("/tmp/.mount_FreenpQqQ000")),
+            Some("/tmp/.mount_HandveQqQ000/usr/bin/handvel".into()),
+            Some(OsStr::new("/home/ada/Apps/Handvel-beta.AppImage")),
+            Some(OsStr::new("/tmp/.mount_HandveQqQ000")),
             resolve_as_is,
         );
         let payload = FocusPayload {
@@ -1344,14 +1344,14 @@ mod tests {
     #[test]
     fn appimage_variables_only_apply_inside_the_mount() {
         use std::ffi::OsStr;
-        let exe = PathBuf::from("/usr/bin/freenpipe");
+        let exe = PathBuf::from("/usr/bin/handvel");
         // Inherited from an AppImage parent, but this binary is not in its
         // mount: the executable itself names the install.
         assert_eq!(
             install_executable(
                 Some(exe.clone()),
-                Some(OsStr::new("/home/ada/Freenpipe.AppImage")),
-                Some(OsStr::new("/tmp/.mount_FreenpAbC123")),
+                Some(OsStr::new("/home/ada/Handvel.AppImage")),
+                Some(OsStr::new("/tmp/.mount_HandveAbC123")),
                 resolve_as_is,
             ),
             Some(exe.clone())
@@ -1359,7 +1359,7 @@ mod tests {
         // No AppImage, or only half of its variables.
         for (image, mount) in [
             (None, None),
-            (Some(OsStr::new("/home/ada/Freenpipe.AppImage")), None),
+            (Some(OsStr::new("/home/ada/Handvel.AppImage")), None),
             (Some(OsStr::new("")), Some(OsStr::new("/usr"))),
         ] {
             assert_eq!(
@@ -1371,9 +1371,9 @@ mod tests {
         // Resolution applies to the executable as before.
         assert_eq!(
             install_executable(Some(exe.clone()), None, None, |_| Some(PathBuf::from(
-                "/real/freenpipe"
+                "/real/handvel"
             ))),
-            Some(PathBuf::from("/real/freenpipe"))
+            Some(PathBuf::from("/real/handvel"))
         );
         assert_eq!(install_executable(None, None, None, resolve_as_is), None);
     }
@@ -1452,13 +1452,13 @@ mod tests {
     #[test]
     fn handoff_from_an_unresolvable_executable_is_refused() {
         let payload = FocusPayload {
-            launch_exe: Some("/gone/freenpipe".into()),
+            launch_exe: Some("/gone/handvel".into()),
             ..Default::default()
         };
         assert_eq!(
             decide_focus(&payload, &identity(Some("/opt/f".into())), |_| None),
             FocusDecision::Reject(FocusRejection::UnverifiableExecutable {
-                launch_exe: "/gone/freenpipe".into()
+                launch_exe: "/gone/handvel".into()
             })
         );
     }
@@ -1467,7 +1467,7 @@ mod tests {
     fn deep_links_of_other_builds_are_refused() {
         let me = identity(Some(PathBuf::from("/opt/f")));
         for url in [
-            "freenpipe-beta://settings",
+            "handvel-beta://settings",
             "https://example.test",
             "not a url",
         ] {
@@ -1484,7 +1484,7 @@ mod tests {
             );
         }
         let in_args = FocusPayload {
-            args: vec!["app".into(), "freenpipe-beta://frame/1".into()],
+            args: vec!["app".into(), "handvel-beta://frame/1".into()],
             ..Default::default()
         };
         assert!(matches!(
@@ -1492,8 +1492,8 @@ mod tests {
             FocusDecision::Reject(FocusRejection::ForeignDeepLink { .. })
         ));
         for url in [
-            "freenpipe://frame/1",
-            "FREENPIPE://x",
+            "handvel://frame/1",
+            "HANDVEL://x",
             "screenpipe://meeting/2",
         ] {
             let payload = FocusPayload {
@@ -1543,12 +1543,12 @@ mod tests {
 
     #[test]
     fn handoff_payload_names_this_executable() {
-        let args = vec!["app".to_string(), "freenpipe://frame/3".to_string()];
+        let args = vec!["app".to_string(), "handvel://frame/3".to_string()];
         let payload = handoff_payload(&args);
         assert_eq!(payload.args, args);
         assert_eq!(
             payload.deep_link_url.as_deref(),
-            Some("freenpipe://frame/3")
+            Some("handvel://frame/3")
         );
         assert_eq!(
             payload.launch_exe,
@@ -1603,7 +1603,7 @@ mod tests {
 
     async fn control_server() -> TestServer {
         let dir = tempfile::tempdir().unwrap();
-        let exe = dir.path().join("Freenpipe.exe");
+        let exe = dir.path().join("Handvel.exe");
         std::fs::write(&exe, b"stand-in").unwrap();
         let exe = std::fs::canonicalize(&exe).unwrap();
         let sink = RecordingSink::default();
@@ -1646,13 +1646,13 @@ mod tests {
     async fn focus_from_this_executable_shows_and_forwards() {
         let server = control_server().await;
         // A different spelling of the same file still matches.
-        let same = server.exe.parent().unwrap().join(".").join("Freenpipe.exe");
+        let same = server.exe.parent().unwrap().join(".").join("Handvel.exe");
         let resp = client()
             .post(format!("http://{}/focus", server.addr))
             .header("Origin", "tauri://localhost")
             .json(&FocusPayload {
-                args: vec!["app".into(), "freenpipe://frame/7".into()],
-                deep_link_url: Some("freenpipe://frame/7".into()),
+                args: vec!["app".into(), "handvel://frame/7".into()],
+                deep_link_url: Some("handvel://frame/7".into()),
                 launch_exe: Some(same.display().to_string()),
                 ..Default::default()
             })
@@ -1664,7 +1664,7 @@ mod tests {
             server.sink.calls(),
             vec![
                 "show None".to_string(),
-                r#"forward Some("freenpipe://frame/7") ["app", "freenpipe://frame/7"]"#.to_string()
+                r#"forward Some("handvel://frame/7") ["app", "handvel://frame/7"]"#.to_string()
             ]
         );
     }

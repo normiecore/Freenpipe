@@ -1,13 +1,13 @@
 #!/usr/bin/env python3
-# Freenpipe — local-first screen & audio memory (fork of screenpipe @ 892199f, MIT)
-# https://github.com/normiecore/Freenpipe
+# Handvel — local-first screen & audio memory (fork of screenpipe @ 892199f, MIT)
+# https://github.com/normiecore/Handvel
 """Free disk in the shared cargo target dir without disturbing running builds.
 
-A worktree's own builds of the Freenpipe crates (see cargo-wt.py) are dead once the worktree is
+A worktree's own builds of the Handvel crates (see cargo-wt.py) are dead once the worktree is
 removed. Builds of the app workspace name their sources by absolute path, so their dep-info files show
 which worktree made them; this script deletes those whose worktree is gone. It also deletes linked test
 and binary executables older than --exe-age minutes, which nothing links against, and with
---stale-hours H the Freenpipe crate artifacts nobody has rebuilt for H hours (a build that still needs
+--stale-hours H the Handvel crate artifacts nobody has rebuilt for H hours (a build that still needs
 one rebuilds it).
 
     python3 tools/cloud/prune-target.py            # report only
@@ -25,7 +25,7 @@ ap = argparse.ArgumentParser()
 ap.add_argument("--delete", action="store_true")
 ap.add_argument("--exe-age", type=int, default=45, help="minutes since an executable was last linked")
 ap.add_argument("--target", default=os.environ.get("CARGO_TARGET_DIR", os.path.join(state, "target")))
-ap.add_argument("--stale-hours", type=float, default=0, help="also drop Freenpipe crate artifacts older than this")
+ap.add_argument("--stale-hours", type=float, default=0, help="also drop Handvel crate artifacts older than this")
 a = ap.parse_args()
 
 debug = os.path.join(a.target, "debug")

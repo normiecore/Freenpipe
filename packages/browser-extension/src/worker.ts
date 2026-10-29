@@ -156,8 +156,8 @@ async function connect(): Promise<void> {
       if (closeWithoutOpen >= AUTH_FAIL_THRESHOLD) {
         setBadge("!", "#dc2626");
         notifyOnce(
-          "Freenpipe extension needs a token",
-          "Open the extension options to paste your Freenpipe API token."
+          "Handvel extension needs a token",
+          "Open the extension options to paste your Handvel API token."
         );
       }
     }

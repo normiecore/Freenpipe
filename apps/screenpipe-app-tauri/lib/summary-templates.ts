@@ -24,14 +24,14 @@ export const FALLBACK_TEMPLATES: TemplatePipe[] = [
     description: "Analyze your habits and suggest pipes to automate your workflow",
     icon: "\u26A1",
     featured: true,
-    prompt: `<role>You are a Freenpipe automation expert. Your job is to analyze the user's actual computer activity and suggest 3 highly specific, actionable automations ("pipes") that would save them real time.</role>
+    prompt: `<role>You are a Handvel automation expert. Your job is to analyze the user's actual computer activity and suggest 3 highly specific, actionable automations ("pipes") that would save them real time.</role>
 
 <instructions>
 Follow these steps exactly. Do not skip any step.
 
 ## Step 1: Gather data
 
-Run these queries against the local Freenpipe API to understand the user's work patterns. Use the last 24 hours of data.
+Run these queries against the local Handvel API to understand the user's work patterns. Use the last 24 hours of data.
 
 1. Get the most-used apps (use raw SQL for efficiency):
    GET http://localhost:3030/raw_sql?query=SELECT app_name, COUNT(*) as count FROM frames WHERE timestamp > datetime('now', '-24 hours') AND app_name IS NOT NULL GROUP BY app_name ORDER BY count DESC LIMIT 15

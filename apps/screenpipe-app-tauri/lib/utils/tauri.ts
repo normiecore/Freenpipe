@@ -7,7 +7,7 @@
 export const commands = {
 /**
  * Re-applies a managed policy's window and tray visibility, then reports
- * whether the app UI ended up hidden. Freenpipe has no policy, so nothing
+ * whether the app UI ended up hidden. Handvel has no policy, so nothing
  * changes and the answer is always false.
  */
 async applyEnterpriseUiVisibility() : Promise<boolean> {
@@ -251,7 +251,7 @@ async confirmBrowserCookieAccessForSession() : Promise<Result<null, string>> {
 }
 },
 /**
- * Copy a frame deeplink (freenpipe://frame/N) to clipboard. Native API only.
+ * Copy a frame deeplink (handvel://frame/N) to clipboard. Native API only.
  */
 async copyDeeplinkToClipboard(frameId: number) : Promise<Result<null, string>> {
     try {
@@ -583,7 +583,7 @@ async getCachedSuggestions() : Promise<Result<CachedSuggestions, string>> {
  * first, then the legacy `auth.json` under the data dir. Returns None when
  * neither holds a non-empty token.
  *
- * Freenpipe never signs in to a hosted account, so nothing here comes from
+ * Handvel never signs in to a hosted account, so nothing here comes from
  * a login flow. A token only exists when a store came over from screenpipe
  * (moved out of `store.bin` at startup, see `store::migrate_cloud_token`)
  * or was placed in `auth.json` by hand.
@@ -613,7 +613,7 @@ async getEnterpriseHostIdentity() : Promise<EnterpriseHostIdentity> {
     return await TAURI_INVOKE("get_enterprise_host_identity");
 },
 /**
- * How this install is updated. Freenpipe always reports an unmanaged,
+ * How this install is updated. Handvel always reports an unmanaged,
  * self-updating install.
  */
 async getEnterpriseInstallMetadata() : Promise<EnterpriseInstallMetadata> {
@@ -922,7 +922,7 @@ async isServerRunning() : Promise<Result<boolean, string>> {
  *
  * screenpipe v2.7 exposes this so its settings page can show telemetry as
  * forced off (it honours `SCREENPIPE_DISABLE_TELEMETRY` and CI variables).
- * Freenpipe never sends telemetry, so the answer is always `true`.
+ * Handvel never sends telemetry, so the answer is always `true`.
  */
 async isTelemetryDisabledByEnv() : Promise<boolean> {
     return await TAURI_INVOKE("is_telemetry_disabled_by_env");
@@ -947,7 +947,7 @@ async listImportedSkills() : Promise<Result<ImportedSkill[], string>> {
 }
 },
 /**
- * Skills an organisation manages on this machine. Freenpipe has no
+ * Skills an organisation manages on this machine. Handvel has no
  * organisations, so the list is always empty.
  */
 async listManagedTeamSkills() : Promise<ManagedTeamSkill[]> {
@@ -1167,7 +1167,7 @@ async openGoogleCalendarAuthWindow(authUrl: string) : Promise<Result<null, strin
 }
 },
 /**
- * Formerly opened screenpipe's hosted sign-in page. Freenpipe has no
+ * Formerly opened screenpipe's hosted sign-in page. Handvel has no
  * accounts, so the command stays registered for binding stability but never
  * opens a window or contacts a website; it always returns an error.
  */
@@ -1926,7 +1926,7 @@ async searchNavigateToTimeline(timestamp: string, frameId: number | null, search
 }
 },
 /**
- * Turns the managed activity upload on or off. Freenpipe has no upload
+ * Turns the managed activity upload on or off. Handvel has no upload
  * worker, so the switch is ignored and nothing leaves the machine.
  */
 async setActivitySyncEnabled(enabled: boolean) : Promise<Result<null, string>> {
@@ -1990,7 +1990,7 @@ async setBrowserCookieAccessState(granted: boolean, disabled: boolean) : Promise
  * Mechanism: `PiExecutor::ensure_screenpipe_skill` (screenpipe-core) checks
  * marker files in the data dir at install time and appends the media
  * analysis section only when the user opted in *and* an AI gateway is
- * configured. Freenpipe defaults to off: a missing marker means no. The
+ * configured. Handvel defaults to off: a missing marker means no. The
  * opt-out marker screenpipe used (`cloud_media_analysis.disabled`) is
  * honoured and written on opt-out, so the state stays unambiguous.
  *
@@ -2012,7 +2012,7 @@ async setCloudMediaAnalysisSkill(enabled: boolean) : Promise<Result<null, string
 /**
  * Push a gateway token into the running engine, or clear it with `None`.
  *
- * This is local key plumbing only; Freenpipe has no sign-in that calls it.
+ * This is local key plumbing only; Handvel has no sign-in that calls it.
  * The token is held in memory so the engine does not have to restart to
  * pick up a change: the local `/v1/chat/completions` proxy and the
  * pi-agent's `models.json` apiKey share the same
@@ -2041,14 +2041,14 @@ async setEnhancedAiSuggestions(enabled: boolean, token: string) : Promise<Result
 },
 /**
  * Accepts a list of settings sections a managed policy would hide.
- * Freenpipe has no remote policy source, so the list is ignored.
+ * Handvel has no remote policy source, so the list is ignored.
  */
 async setEnterprisePolicy(hiddenSections: string[]) : Promise<void> {
     await TAURI_INVOKE("set_enterprise_policy", { hiddenSections });
 },
 /**
  * Accepts an admin console's verdict on whether this seat may record,
- * together with the credential it checked. Recording in Freenpipe is
+ * together with the credential it checked. Recording in Handvel is
  * controlled only by the user, so the verdict changes nothing, and the
  * credential is dropped without being stored or logged.
  */
@@ -2099,7 +2099,7 @@ async setSyncEnabled(enabled: boolean) : Promise<Result<null, string>> {
 }
 },
 /**
- * Accepts per-stream switches for a managed upload channel. Freenpipe
+ * Accepts per-stream switches for a managed upload channel. Handvel
  * uploads nothing, so the switches are ignored.
  */
 async setSyncStreams(frames: boolean, audio: boolean, uiEvents: boolean, memories: boolean, snapshots: boolean) : Promise<void> {
@@ -2273,7 +2273,7 @@ async suspendGlobalShortcuts() : Promise<Result<null, string>> {
 },
 /**
  * Accepts an organisation's skill list and whether skills missing from it
- * should be removed. Freenpipe installs nothing from a policy and removes
+ * should be removed. Handvel installs nothing from a policy and removes
  * nothing, so the request is ignored. The entries are taken as plain JSON
  * so a payload in any shape is accepted rather than failing to parse.
  */
@@ -2440,7 +2440,7 @@ async writeBrowserLogs(entries: BrowserLogEntry[]) : Promise<void> {
 export type AIPreset = { id: string; prompt: string; provider: AIProviderType; url?: string; model?: string; defaultPreset: boolean; apiKey: string | null; maxContextChars: number; maxTokens?: number;
 /**
  * Set by screenpipe on presets an enterprise administrator pushed.
- * Kept as stored so the preset round-trips; Freenpipe has no managed
+ * Kept as stored so the preset round-trips; Handvel has no managed
  * presets and never sets it.
  */
 enterpriseManaged?: boolean | null }
@@ -2565,7 +2565,7 @@ export type EmbeddedLLM = { enabled: boolean; model: string; port: number }
 /**
  * Hashed identifiers an admin console would use to tell seats apart.
  *
- * Both fields are always `null` in Freenpipe: it never derives a stable
+ * Both fields are always `null` in Handvel: it never derives a stable
  * machine or OS-user identifier, hashed or not, because nothing it runs
  * needs to recognise this computer from the outside.
  */
@@ -2775,7 +2775,7 @@ firstRunSummaryNotificationId?: string | null;
  */
 firstRunSummaryError?: string | null;
 /**
- * Version marker screenpipe kept for its own analytics. Freenpipe keeps
+ * Version marker screenpipe kept for its own analytics. Handvel keeps
  * the stored value and never reports it.
  */
 firstRunSummaryTelemetryVersion?: number | null;
@@ -2891,7 +2891,7 @@ export type SchedulerStatus = { running: boolean; last_sync: string | null; last
  * Fields follow the order of the settings schema (v2): app keys first, then
  * the flattened recording keys, then `extra`, which keeps every key this
  * version does not model so a store shared with screenpipe or a newer
- * Freenpipe round-trips without losing data. Keys added after the first
+ * Handvel round-trips without losing data. Keys added after the first
  * schema carry a field-level default so they are optional in the generated
  * TypeScript type and absent keys load with their documented default.
  */
@@ -3371,7 +3371,7 @@ keepComputerAwake?: boolean;
 useChineseMirror: boolean;
 /**
  * Legacy telemetry opt-in, kept so an existing store.bin still loads.
- * Defaults to off, and nothing reads it to send data: Freenpipe has no
+ * Defaults to off, and nothing reads it to send data: Handvel has no
  * telemetry.
  */
 analyticsEnabled: boolean;
@@ -3497,7 +3497,7 @@ aiGatewayUrl?: string;
  */
 aiGatewayApiKey?: string;
 /**
- * Remote support-log collection. Freenpipe has no support service: the
+ * Remote support-log collection. Handvel has no support service: the
  * key is kept for stores shared with screenpipe but is always false and
  * never read.
  */
@@ -3636,7 +3636,7 @@ DomainRule
 /**
  * Cached screenpipe account record.
  *
- * Freenpipe has no accounts: it never fetches this record and never gates a
+ * Handvel has no accounts: it never fetches this record and never gates a
  * feature on it. The fields are kept, together with the ones newer screenpipe
  * releases write (`has_payment_method`, `entitlement_source`,
  * `enterprise_account`), so a `store.bin` produced by screenpipe loads and

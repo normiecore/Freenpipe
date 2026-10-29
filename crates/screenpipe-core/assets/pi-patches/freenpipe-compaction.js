@@ -1,10 +1,10 @@
-// Freenpipe — local-first screen & audio memory (fork of screenpipe @ 892199f, MIT)
-// https://github.com/normiecore/Freenpipe
+// Handvel — local-first screen & audio memory (fork of screenpipe @ 892199f, MIT)
+// https://github.com/normiecore/Handvel
 
 /**
- * Freenpipe's changes to Pi's context compaction.
+ * Handvel's changes to Pi's context compaction.
  *
- * The Freenpipe runtime copies this file into the installed Pi package as
+ * The Handvel runtime copies this file into the installed Pi package as
  * `dist/core/compaction/freenpipe-compaction.js` and adds a few one-line
  * calls to it in Pi's own files (see `pi-0.84.1.fpatch` next to this file).
  * Pi stays in charge of compaction; these helpers change when it runs, how

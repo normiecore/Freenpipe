@@ -1,5 +1,5 @@
-// Freenpipe — local-first screen & audio memory (fork of screenpipe @ 892199f, MIT)
-// https://github.com/normiecore/Freenpipe
+// Handvel — local-first screen & audio memory (fork of screenpipe @ 892199f, MIT)
+// https://github.com/normiecore/Handvel
 
 //! Choosing the bash that Pi's bash tool runs on Windows.
 //!
@@ -22,7 +22,7 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 /// Text the probe script prints.
-pub const PROBE_TOKEN: &str = "freenpipe-bash-probe-ok";
+pub const PROBE_TOKEN: &str = "handvel-bash-probe-ok";
 /// How long a candidate may take to answer the probe.
 pub const PROBE_TIMEOUT: Duration = Duration::from_secs(5);
 /// The limit for the one retry of a candidate that timed out: a cold first

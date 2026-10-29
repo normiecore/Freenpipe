@@ -1,6 +1,6 @@
 # Cloud runbook: WORKER and MERGER sessions
 
-This file is the operating manual for Claude Code **cloud sessions** that build Freenpipe. It is
+This file is the operating manual for Claude Code **cloud sessions** that build Handvel. It is
 self-contained: a session that starts with no other context follows it top to bottom for its role.
 The owner's PC is usually off, so nothing here may depend on it.
 
@@ -8,14 +8,14 @@ The owner's PC is usually off, so nothing here may depend on it.
 - **Coordinator mode** (one session plays every role with Workflow batches): [cloud-coordinator.md](cloud-coordinator.md).
 - **Routine prompts and schedules**: [cloud-routines.md](cloud-routines.md).
 - **Reviewer briefs**: [cloud-reviewers.md](cloud-reviewers.md).
-- **CI**: [ci.md](ci.md). The "Freenpipe CI" workflow (`.github/workflows/freenpipe-ci.yml`, jobs
+- **CI**: [ci.md](ci.md). The "Handvel CI" workflow (`.github/workflows/freenpipe-ci.yml`, jobs
   `windows`, `linux`, `gates`) plus Secret Scan and the Windows CLI Integration Test form the **merge
   gate**: every check run on the PR head has completed with success, skipped or neutral, and those five
   checks are among them. "CI green" below always means this gate (`fp.py ci` applies it).
 
 ## 0. Orientation
 
-Freenpipe is a fork of screenpipe's last MIT commit (`892199f`), kept compatible with screenpipe's
+Handvel is a fork of screenpipe's last MIT commit (`892199f`), kept compatible with screenpipe's
 data, API, pipes and MCP configurations (owner decision 8 replaced the earlier goal of parity with
 v2.7.104). The work is cut into **154 work packages (WPs)** in waves 0 to 8:
 
@@ -63,7 +63,7 @@ repository. Only git and GitHub carry state between sessions.
   the harness adds is fine.
 - **Push with `python3 tools/cloud/fp.py push`.** It detects when another session has taken over your
   branch (then you stop and pick other work) and absorbs the merger's sync merges.
-- **PRs, comments, CI and merges go through the REST API** (`fp.py`, or `gh api repos/normiecore/Freenpipe/...`).
+- **PRs, comments, CI and merges go through the REST API** (`fp.py`, or `gh api repos/normiecore/Handvel/...`).
   `gh pr` and `gh issue` use GraphQL, which the proxy blocks.
 - In your VM checkout you may switch branches freely; CLAUDE.md's ban on `git reset --hard`,
   `git clean`, `git checkout -- .` and `git stash` still applies to work you did not write.
@@ -86,7 +86,7 @@ repository. Only git and GitHub carry state between sessions.
   settings keys, environment variables, event names, file and directory names.
 - **No phoning home**: no vendor host, PostHog key, Sentry DSN or vendor OAuth client id in code that
   builds requests. New network features are user-configured (BYO) or third-party and user-initiated.
-- **New source files** start with the two-line Freenpipe header from CLAUDE.md (`#` for Python and
+- **New source files** start with the two-line Handvel header from CLAUDE.md (`#` for Python and
   shell). Leave upstream headers on files you edit.
 - **Run the verbatim gate** before review. Over everything your branch adds (what CI runs):
   `bash scripts/ci/verbatim-diff.sh origin/main HEAD`. Over whole files:
@@ -182,7 +182,7 @@ available to you; pick another). A claim is an empty commit `claim: <WP-ID> by w
 4. Read the code at the owner paths. For a `resume` or `takeover`, read
    `git log --stat origin/main..HEAD` first and continue from there.
 5. If the WP's PR already exists (it can, after a takeover), read its description:
-   `gh api repos/normiecore/Freenpipe/pulls?head=normiecore:wp/<WP-ID>`.
+   `gh api repos/normiecore/Handvel/pulls?head=normiecore:wp/<WP-ID>`.
 
 ### 3.3 Implement and checkpoint
 
@@ -478,7 +478,7 @@ reasons), main CI state, and any wave integration recorded.
 | Windows-only build error | Cannot reproduce in the VM | Fix from the log and annotations, push, let CI judge. |
 | Spec ambiguity | The spec does not settle a detail | Decide, document it in the PR, append it to `docs/clean-room/OPEN-QUESTIONS.md`. |
 | Spec gap or schema gap | The WP cannot be done as specified (for example a needed migration, which later WPs must not add) | Open the PR with what is done, `fp.py block <PR> --reason "..."`, report it, and move on. |
-| WP blocked by another WP | A dependency is merged but incomplete | Comment on the PR (`gh api repos/normiecore/Freenpipe/issues/<PR>/comments -f body=...`), block it, move on. |
+| WP blocked by another WP | A dependency is merged but incomplete | Comment on the PR (`gh api repos/normiecore/Handvel/issues/<PR>/comments -f body=...`), block it, move on. |
 | Merge conflict | GitHub reports `mergeable: false` | The merger runs `fp.py sync-main` (4.3). |
 | Main red after merges | Two PRs passed alone but not together | Merger re-runs once (4.5), then a worker takes `fix-main` (3.10). |
 | `bun install` fails in the VM | Bun and the cloud proxy disagree | Frontend build and tests run only in CI. |

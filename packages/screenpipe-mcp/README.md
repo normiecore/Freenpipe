@@ -1,16 +1,16 @@
-# Freenpipe MCP Server
+# Handvel MCP Server
 
-MCP server for Freenpipe: lets AI assistants search your screen recordings and audio transcriptions, and control your computer.
+MCP server for Handvel: lets AI assistants search your screen recordings and audio transcriptions, and control your computer.
 
-The package keeps its upstream name, `screenpipe-mcp`, and talks to the Freenpipe API on `localhost:3030`, so existing MCP client configurations keep working.
+The package keeps its upstream name, `screenpipe-mcp`, and talks to the Handvel API on `localhost:3030`, so existing MCP client configurations keep working.
 
 ## Installation
 
-Freenpipe does not publish this server to a package registry, and the
+Handvel does not publish this server to a package registry, and the
 `screenpipe-mcp` package on npm belongs to the upstream project. Use the copy that ships
 with the desktop app, or build it from this repository.
 
-### Option 1: The copy bundled with the Freenpipe app (recommended)
+### Option 1: The copy bundled with the Handvel app (recommended)
 
 The app installs the server as one file, `mcp/screenpipe-mcp.js`, in its
 install folder and runs it with the `bun` binary it also ships. Settings >
@@ -25,8 +25,8 @@ hand, edit your Claude Desktop config:
 {
   "mcpServers": {
     "screenpipe": {
-      "command": "C:\\Users\\you\\AppData\\Local\\Freenpipe\\bun.exe",
-      "args": ["C:\\Users\\you\\AppData\\Local\\Freenpipe\\mcp\\screenpipe-mcp.js"],
+      "command": "C:\\Users\\you\\AppData\\Local\\Handvel\\bun.exe",
+      "args": ["C:\\Users\\you\\AppData\\Local\\Handvel\\mcp\\screenpipe-mcp.js"],
       "env": { "SCREENPIPE_LOCAL_API_KEY": "<your local API key>" }
     }
   }
@@ -40,8 +40,8 @@ write the same config: `screenpipe mcp setup`.
 ### Option 2: Build from source
 
 ```bash
-git clone https://github.com/normiecore/Freenpipe
-cd Freenpipe/packages/screenpipe-mcp
+git clone https://github.com/normiecore/Handvel
+cd Handvel/packages/screenpipe-mcp
 bun install
 bun run build
 ```
@@ -90,7 +90,7 @@ The server exposes:
 | Flag | Description | Default |
 |------|-------------|---------|
 | `--port` | Port for the MCP HTTP server | `3031` |
-| `--screenpipe-port` | Port where the Freenpipe API is running | `3030` |
+| `--screenpipe-port` | Port where the Handvel API is running | `3030` |
 | `--listen-on-lan` | Bind `0.0.0.0` so other devices on the LAN can connect. Requires `--api-key`. | off (binds `127.0.0.1`) |
 | `--api-key <secret>` | Bearer token required for non-loopback requests (`Authorization: Bearer <secret>`). Loopback always allowed. | none |
 
@@ -181,7 +181,7 @@ Get accessibility text, parsed tree nodes, and extracted URLs for a specific fra
 
 ## Requirements
 
-- Freenpipe must be running on localhost:3030 (or pass `--port`)
+- Handvel must be running on localhost:3030 (or pass `--port`)
 - bun, or Node.js >= 18.0.0 (the app ships bun)
 
 ## Notes
@@ -192,46 +192,46 @@ Get accessibility text, parsed tree nodes, and extracted URLs for a specific fra
 
 ## Privacy Policy
 
-The Freenpipe MCP server is a local-only bridge between Claude and your
-local Freenpipe instance. It does not collect, transmit, or store any
+The Handvel MCP server is a local-only bridge between Claude and your
+local Handvel instance. It does not collect, transmit, or store any
 data on its own.
 
 ### What this MCP server does
 When Claude invokes a tool (`search-content`, `activity-summary`, etc.)
 the MCP server forwards the request to `http://localhost:3030` (the
-Freenpipe engine running on your machine) and returns the response.
+Handvel engine running on your machine) and returns the response.
 That's the entire data path.
 
 ### Data collection
 **None by this MCP server.** No analytics, no telemetry, no usage tracking.
 
 ### Data usage
-Tool calls are passed straight through to your local Freenpipe engine
+Tool calls are passed straight through to your local Handvel engine
 and the results stream back to Claude. The MCP server doesn't keep
 anything.
 
 ### Data storage
 Nothing is stored by the MCP server itself. Recordings, OCR text,
-audio transcripts, and UI events are stored by Freenpipe in a
+audio transcripts, and UI events are stored by Handvel in a
 SQLite database under `~/.screenpipe/` on your device. Retention is
-whatever you configure in Freenpipe, usually in the storage settings.
+whatever you configure in Handvel, usually in the storage settings.
 
 ### Third-party sharing
 None: the server only talks to `localhost:3030` and does not contact
 Anthropic, the upstream vendor's servers, or any other external service.
 If you configure a cloud AI provider or another remote service in
-Freenpipe itself, that data flow is governed by the provider you chose,
+Handvel itself, that data flow is governed by the provider you chose,
 not by this MCP server.
 
 ### Retention
-The MCP server has no persistent state. The data Freenpipe captures is
-retained according to your Freenpipe storage configuration and is
+The MCP server has no persistent state. The data Handvel captures is
+retained according to your Handvel storage configuration and is
 deletable at any time (`rm -rf ~/.screenpipe` removes everything).
 
 ### Source code
-The Freenpipe MCP server is MIT-licensed and the entire source is
-public at <https://github.com/normiecore/Freenpipe/tree/main/packages/screenpipe-mcp>.
+The Handvel MCP server is MIT-licensed and the entire source is
+public at <https://github.com/normiecore/Handvel/tree/main/packages/screenpipe-mcp>.
 
 ### Contact
 Questions or concerns: open an issue at
-<https://github.com/normiecore/Freenpipe/issues>.
+<https://github.com/normiecore/Handvel/issues>.

@@ -1,5 +1,5 @@
-# Freenpipe — local-first screen & audio memory (fork of screenpipe @ 892199f, MIT)
-# https://github.com/normiecore/Freenpipe
+# Handvel — local-first screen & audio memory (fork of screenpipe @ 892199f, MIT)
+# https://github.com/normiecore/Handvel
 #
 # Work-package data for docs/clean-room/PLAN.md and docs/clean-room/plan_wps.json.
 # Imported by plan_build.py; regenerate with `python3 tools/plan/plan_build.py` after editing.
@@ -94,7 +94,7 @@ wp("W0-03", 0, "M", "Updater on GitHub releases, release pipeline de-vendoring, 
     ".github/workflows/release-cli.yml", ".github/workflows/sync-skills.yml", "packages/cli (npm postinstall scripts)",
     "docs/mintlify/docs-mintlify-mig-tmp/docs.json (analytics block)", "scripts/release/make-latest-json.ts (new)"],
    ["W0-01"],
-   "Point the Tauri updater at github.com/normiecore/Freenpipe releases with a new minisign public key; stable reads "
+   "Point the Tauri updater at github.com/normiecore/Handvel releases with a new minisign public key; stable reads "
    "releases/latest/download/latest.json, pre-release (beta maps to it) reads a fixed-tag manifest; drop bearer auth and the "
    "auth_required flow; rollback uses per-tag manifests with allowDowngrades. Add restart_for_update(timeout_secs) wrapping the base "
    "restart gate, writing the local update-attempt marker and update-install/update-recovery logs (refuse symlinks). In CI replace the "
@@ -211,7 +211,7 @@ wp("W0-09", 0, "M", "Bundled CLI/MCP runtime and self-hosted model sources",
    ["W0-01"],
    "Stop resolving vendor npm packages at runtime: build packages/screenpipe-mcp and the engine CLI locally, ship them as app "
    "resources and reference them by absolute path (SCREENPIPE_CLI / PATH shim) in skills, MCP configs and agent cards. Pyannote "
-   "models are bundled or fetched from a Freenpipe-controlled mirror; HuggingFace screenpipe/* PII weights stay opt-in and "
+   "models are bundled or fetched from a Handvel-controlled mirror; HuggingFace screenpipe/* PII weights stay opt-in and "
    "repo-overridable.",
    ["grep -rnE 'screenpipe@latest|screenpipe-mcp@latest|raw/refs/heads/main' crates apps packages (excluding docs, node_modules) returns nothing",
     "Generated Claude Desktop MCP config points at the bundled MCP entry by absolute path (bun test on the snippet generator)",
@@ -245,20 +245,20 @@ wp("W0-11", 0, "L", "SQLite toolchain upgrade (sqlx 0.9, libsqlite3-sys 0.37, ru
     "Engine and app build (release-dev)"],
    ["specs/db.md db-029"])
 
-wp("W0-12", 0, "M", "Rebrand user-visible identity to Freenpipe",
+wp("W0-12", 0, "M", "Rebrand user-visible identity to Handvel",
    ["(no delta id) rebrand: product name, identifier, deep-link scheme, tray, icons, window titles, installer"],
    [AT + "tauri*.conf.json (productName, identifier, deep-link schemes, window titles, bundle names)", AT + "icons/**",
     AT + "windows/hooks.nsh", AR + "tray.rs (tooltip/labels)", AR + "window/** (titles)", A + "app/layout.tsx (metadata)",
     A + "public/** (logos)", A + "components/** (user-visible product-name strings only)", "README.md", C + "endpoints.rs (user agent)",
     "scripts/ci/vendor-guard.test.ts (switch to failing mode)"],
    W0_MID,
-   "Last WP of wave 0, after all de-cloud work. Rename user-visible identity to Freenpipe: productName, bundle identifier "
-   "(com.normiecore.freenpipe and a .dev variant), installer/NSIS names, tray tooltip and menu title, window titles, icons and logos, "
-   "About text, outbound user agent and user-facing copy that names the product. Register the freenpipe:// deep-link scheme (see open "
+   "Last WP of wave 0, after all de-cloud work. Rename user-visible identity to Handvel: productName, bundle identifier "
+   "(com.normiecore.handvel and a .dev variant), installer/NSIS names, tray tooltip and menu title, window titles, icons and logos, "
+   "About text, outbound user agent and user-facing copy that names the product. Register the handvel:// deep-link scheme (see open "
    "question on a screenpipe:// alias). Keep crate names, route paths, JSON fields, settings keys, env var names, CLI flags and data "
    "file names unchanged. Flip the vendor guard to failing mode.",
-   ["Release-dev bundle builds an installer named Freenpipe; installed app shows Freenpipe in tray tooltip and window titles (UI smoke)",
-    "reg query HKCU\\Software\\Classes\\freenpipe exists after install and HKCU\\Software\\Classes\\screenpipe is untouched",
+   ["Release-dev bundle builds an installer named Handvel; installed app shows Handvel in tray tooltip and window titles (UI smoke)",
+    "reg query HKCU\\Software\\Classes\\handvel exists after install and HKCU\\Software\\Classes\\screenpipe is untouched",
     "bun test scripts/ci/vendor-guard.test.ts passes in failing mode",
     "git diff of this WP changes no route string, settings key or SQL identifier (reviewer check with grep on '/\\w' route literals)"],
    ["CLAUDE.md (interop identifiers)", "specs/shell.md (identifier, scheme)"])
@@ -591,7 +591,7 @@ wp("W2-19", 2, "L", "GPU runtimes and bundled models: Vulkan whisper, DirectML, 
    ["W0-12"],
    "Compile whisper with ggml-vulkan on Windows and ship vulkan-1.dll; a failed GPU state or inference rebuilds a shared CPU context "
    "and retries once. Parakeet/Qwen3 pick a non-software, non-remote D3D12 adapter, honour SCREENPIPE_DIRECTML, recycle DML sessions "
-   "and retry on CPU (implemented in Freenpipe code unless the newer audiopipe revision's licence is cleared). Bundle segmentation, "
+   "and retry on CPU (implemented in Handvel code unless the newer audiopipe revision's licence is cleared). Bundle segmentation, "
    "embedding and VAD models plus DirectML/ORT/OpenBLAS/Vulkan DLLs; resolve models from the exe dir, then cache, then download.",
    ["Release-dev build with the vulkan and directml features succeeds (Vulkan SDK installed per docs/dev/windows-build.md)",
     "Transcribing a fixture wav logs Vulkan; forcing a GPU failure via test env falls back to CPU and still returns text",
@@ -1133,7 +1133,7 @@ wp("W4-03", 4, "XL", "ACP agent runtime and screenpipe-tools MCP",
    "agent-client-protocol, the SCREENPIPE_ACP_* env contract, session config/modes/approval ask|allow-all, install/login commands, ACP "
    "events, a dependency-free screenpipe-tools MCP server (stdio or HTTP) and ACP-backed pipes. Feature flags become local settings; the "
    "vendor /anthropic cloud routing is not offered.",
-   ["Freenpipe.exe --screenpipe-acp-runtime starts and answers an ACP initialize over stdio (test harness)",
+   ["Handvel.exe --screenpipe-acp-runtime starts and answers an ACP initialize over stdio (test harness)",
     "screenpipe-tools MCP lists its tools over stdio; an ACP session with the pi agent answers a prompt (UI smoke)",
     "Approval mode ask raises a permission request event"],
    ["specs/agents_pipes.md agents_pipes-016, 039"])
@@ -1143,7 +1143,7 @@ wp("W4-04", 4, "L", "Cloud coding agents (BYO Cursor/Codex/Claude)",
    [C + "agents/cloud.rs (new)", C + "agents/cloud_context.rs (new)", E + "routes/cloud_agents.rs"],
    ["W2-22"],
    "Pipes with agent: cloud-agent and CloudAgentConfig; /cloud-agents/status, /:provider/connect, /:provider/codebases, /cursor-agents, "
-   "PUT /cursor-key (secret cloud_agents.cursor.api_key, never returned); opt-in bounded context capsule; snapshot commits use a Freenpipe "
+   "PUT /cursor-key (secret cloud_agents.cursor.api_key, never returned); opt-in bounded context capsule; snapshot commits use a Handvel "
    "identity. Third-party, user-initiated only.",
    ["Harness: PUT /cloud-agents/cursor-key {key:'x'} stores it; GET /cloud-agents/status shows connected without the key",
     "wiremock api.cursor.com: a cloud-agent pipe run launches an agent with the bounded context capsule"],
@@ -1736,7 +1736,7 @@ wp("W6-09", 6, "L", "Video render CLI mode and Pi video-sop extension",
    "--render-workflow-video <dir> before single-instance: exclusive render.lock, reads render-scenes.json with caps, renders into "
    "rendered/, NDJSON progress on stdout, stdin EOF cancels, exit 0 only on success. Pi extension read/edit/render_video_sop over "
    "video-project.json with VideoDraft/VideoEdit validation and tool guards.",
-   ["Freenpipe.exe --render-workflow-video <fixture dir> writes rendered/video.mp4 and NDJSON progress, exit 0; closing stdin cancels with non-zero exit",
+   ["Handvel.exe --render-workflow-video <fixture dir> writes rendered/video.mp4 and NDJSON progress, exit 0; closing stdin cancels with non-zero exit",
     "bun test: VideoEdit validation limits (50 changes, pace range, focus requires image)"],
    ["specs/gap_workflow-sop-video-and-media.md render-cli, pi-video-sop-extension"])
 
@@ -1757,7 +1757,7 @@ wp("W6-11", 6, "L", "Built-in MCP server v0.20 and portable MCP launcher",
    "unavailable), list-workflows, get-workflow and screenpipe-skills; --screenpipe-portable-mcp runs the MCP server through bundled bun "
    "with SCREENPIPE_MCP_TRANSPORT/HOST/PORT/PATH.",
    ["cd packages/screenpipe-mcp && bun test; tools/list over stdio includes the new tool names",
-    "Freenpipe.exe --screenpipe-portable-mcp with SCREENPIPE_MCP_TRANSPORT=http listens on SCREENPIPE_MCP_PORT"],
+    "Handvel.exe --screenpipe-portable-mcp with SCREENPIPE_MCP_TRANSPORT=http listens on SCREENPIPE_MCP_PORT"],
    ["specs/agents_pipes.md agents_pipes-030"])
 
 wp("W6-12", 6, "XL", "Live Views dashboards UI",
@@ -1986,7 +1986,7 @@ wp("WR-01", 6, "L", "Pipe store on a GitHub-hosted registry",
     ".github/workflows/registry-validate.yml (new)"],
    ["W0-08", "W2-22", "W5-01"],
    "Make the pipe store work out of the box without vendor servers. Define a static registry format (index.json listing id, name, "
-   "description, author, version, permissions, sha256, source path) served from raw.githubusercontent.com of normiecore/Freenpipe "
+   "description, author, version, permissions, sha256, source path) served from raw.githubusercontent.com of normiecore/Handvel "
    "(registry/ directory on main) as the DEFAULT registry URL, overridable by SCREENPIPE_API_BASE_URL or a settings key. Implement "
    "list/search/detail/install/update against it with sha256 verification and the existing typed registry_* errors. 'Publish' "
    "produces a ready-to-PR pipe folder plus instructions (opens the GitHub new-PR page); a CI workflow validates registry PRs "
@@ -2012,13 +2012,13 @@ wp("WR-02", 5, "L", "Sync and archive to bring-your-own storage",
     "UI smoke: configure a folder backend, sync, then archive and restore a chunk"],
    ["specs/cloud.md cloud-019, cloud-037"])
 
-wp("WR-03", 6, "XL", "Freenpipe Hub: self-hostable team server and team client",
+wp("WR-03", 6, "XL", "Handvel Hub: self-hostable team server and team client",
    ["(restore) cloud-022", "(restore) team memory"],
-   ["crates/freenpipe-hub/ (new server crate + Dockerfile)", "crates/screenpipe-team-memory/", E + "cli/team.rs (restore + rewire)",
+   ["crates/handvel-hub/ (new server crate + Dockerfile)", "crates/screenpipe-team-memory/", E + "cli/team.rs (restore + rewire)",
     A + "components/settings/team-section.tsx (restore + rewire)", A + "lib/hooks/use-team.ts (restore + rewire)",
     "packages/screenpipe-mcp/src/index.ts (TEAM_API -> hub URL)", "docs/hub.md (new)"],
    ["W0-05", "W3-02", "W4-10", "W5-16"],
-   "Restore Team as a self-hostable product. New crate freenpipe-hub: a small axum server (single binary + Dockerfile, SQLite or "
+   "Restore Team as a self-hostable product. New crate handvel-hub: a small axum server (single binary + Dockerfile, SQLite or "
    "Postgres) implementing the team API surface the client expects (recorded in specs/cloud.md cloud-022 and the base client code): "
    "org/team creation, invite links, seats and admin roles, per-member API tokens, opt-in sharing policies, shared team memory "
    "(reuse crates/screenpipe-team-memory), and admin query of teammates' shared history (search over data members explicitly "
@@ -2026,7 +2026,7 @@ wp("WR-03", 6, "XL", "Freenpipe Hub: self-hostable team server and team client",
    "per-member tokens. Client side: restore the team settings UI, the `screenpipe team` CLI and MCP TEAM_API from the MIT base "
    "history (W0-05 removed their vendor wiring) and point them at a configurable hub URL (settings + SCREENPIPE_TEAM_HUB_URL). "
    "No hub configured = Team hidden. Document deployment (Docker, Windows service) in docs/hub.md.",
-   ["cargo test -p freenpipe-hub: invite/join/roles/token auth; a member's search does not return another member's unshared data",
+   ["cargo test -p handvel-hub: invite/join/roles/token auth; a member's search does not return another member's unshared data",
     "Harness: hub on :4040 + two engines on isolated data dirs; member A shares memories, admin queries them via `screenpipe team search`",
     "UI smoke: team section joins a hub via invite link and lists members; with no hub URL the section is hidden"],
    ["specs/cloud.md cloud-022", "specs/meetings_memory.md (team memory, if present)"])
@@ -2041,7 +2041,7 @@ wp("WR-04", 7, "L", "Composio integrations (BYO key) and workflow sharing",
    "Composio's public API directly; list available toolkits, connect accounts via Composio's hosted auth links, and expose connected "
    "tools to the agent like other connections. Workflow sharing: export a workflow (definition, steps, optional SOP video, redacted "
    "by default) as a signed .fpworkflow bundle, import it with a preview and permission review, and browse/publish to a gallery "
-   "index under registry/workflows/ on normiecore/Freenpipe (publish = generated PR folder, like WR-01). Training-data contribution "
+   "index under registry/workflows/ on normiecore/Handvel (publish = generated PR folder, like WR-01). Training-data contribution "
    "remains removed.",
    ["cargo test: Composio client against a wiremock server (toolkit list, connect link, tool call) with key from the secret store",
     "Round-trip: export a workflow, import on a fresh data dir, it runs; the bundle contains no unredacted PII by default",

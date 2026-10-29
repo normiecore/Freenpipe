@@ -169,8 +169,8 @@ mod tests {
 
     fn sample() -> BundledMcp {
         BundledMcp {
-            bun: PathBuf::from("/opt/Freenpipe/bun"),
-            entry: PathBuf::from("/opt/Freenpipe/mcp/screenpipe-mcp.js"),
+            bun: PathBuf::from("/opt/Handvel/bun"),
+            entry: PathBuf::from("/opt/Handvel/mcp/screenpipe-mcp.js"),
         }
     }
 
@@ -178,10 +178,10 @@ mod tests {
     fn config_launches_the_bundled_entry_by_absolute_path() {
         let config = mcp_config(&sample(), 3035);
         let server = &config["mcpServers"]["screenpipe"];
-        assert_eq!(server["command"], "/opt/Freenpipe/bun");
+        assert_eq!(server["command"], "/opt/Handvel/bun");
         assert_eq!(
             server["args"],
-            json!(["/opt/Freenpipe/mcp/screenpipe-mcp.js", "--port", "3035"])
+            json!(["/opt/Handvel/mcp/screenpipe-mcp.js", "--port", "3035"])
         );
         let text = config.to_string();
         assert!(!text.contains("@latest") && !text.contains("npx") && !text.contains("uv"));

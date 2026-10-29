@@ -1,5 +1,5 @@
-// Freenpipe — local-first screen & audio memory (fork of screenpipe @ 892199f, MIT)
-// https://github.com/normiecore/Freenpipe
+// Handvel — local-first screen & audio memory (fork of screenpipe @ 892199f, MIT)
+// https://github.com/normiecore/Handvel
 
 /**
  * Bring-your-own AI gateway: fresh-install defaults, the one-time migrations
@@ -115,7 +115,7 @@ export interface MigrationContext {
 }
 
 /**
- * Apply the one-time Freenpipe migrations to a settings object loaded from a
+ * Apply the one-time Handvel migrations to a settings object loaded from a
  * store. Returns a new object (the input is not modified) and whether
  * anything changed, so the caller knows to persist it.
  *

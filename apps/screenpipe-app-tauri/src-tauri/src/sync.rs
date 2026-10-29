@@ -4,7 +4,7 @@
 
 //! Tauri commands for cloud sync operations.
 //!
-//! Cloud sync and cloud archive need a sync server. Freenpipe has no hosted
+//! Cloud sync and cloud archive need a sync server. Handvel has no hosted
 //! one and no default, so until a server is configured (see
 //! [`sync_server_url`]) every command that would reach one answers
 //! [`CLOUD_SYNC_NOT_CONFIGURED`], status queries report sync as off, and the
@@ -27,7 +27,7 @@ use tracing::{debug, info, warn};
 pub const CLOUD_SYNC_NOT_CONFIGURED: &str = "cloud sync is not configured: there is no sync \
 server to send data to (local network sync is unaffected)";
 
-/// The sync server cloud sync and archive talk to. Freenpipe ships without a
+/// The sync server cloud sync and archive talk to. Handvel ships without a
 /// hosted server and has no setting for a self-hosted one yet, so this is
 /// `None` and cloud sync stays off. Bring-your-own storage plugs in here.
 pub fn sync_server_url() -> Option<String> {

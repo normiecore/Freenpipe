@@ -1,5 +1,5 @@
-// Freenpipe — local-first screen & audio memory (fork of screenpipe @ 892199f, MIT)
-// https://github.com/normiecore/Freenpipe
+// Handvel — local-first screen & audio memory (fork of screenpipe @ 892199f, MIT)
+// https://github.com/normiecore/Handvel
 
 //! Sample-format handling for loopback buffers: describe a WAVEFORMATEX(-
 //! TENSIBLE) layout, turn a raw packet into mono `f32`, and keep a stream's

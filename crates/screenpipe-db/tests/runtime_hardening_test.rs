@@ -1,5 +1,5 @@
-// Freenpipe — local-first screen & audio memory (fork of screenpipe @ 892199f, MIT)
-// https://github.com/normiecore/Freenpipe
+// Handvel — local-first screen & audio memory (fork of screenpipe @ 892199f, MIT)
+// https://github.com/normiecore/Handvel
 
 //! W2-01 acceptance checks through `DatabaseManager`: connection pragmas,
 //! start-up preflight, ownership, the on-demand checkpoint and cancellable

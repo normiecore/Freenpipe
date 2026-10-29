@@ -1169,7 +1169,7 @@ export default function Timeline({ embedded = false }: { embedded?: boolean }) {
 										Building Your Memory
 									</h3>
 									<p className="text-muted-foreground mb-6 leading-relaxed">
-										Freenpipe is recording your screen activity. Your timeline will appear here as frames are captured.
+										Handvel is recording your screen activity. Your timeline will appear here as frames are captured.
 									</p>
 
 									{/* Friendly suggestion */}
@@ -1335,8 +1335,8 @@ export default function Timeline({ embedded = false }: { embedded?: boolean }) {
 								<h3 className="font-medium text-destructive">Connection Error</h3>
 							</div>
 							<p className="text-sm text-foreground">
-								Unable to reach your Freenpipe data. Please verify that the
-								Freenpipe turned on.
+								Unable to reach your Handvel data. Please verify that the
+								Handvel turned on.
 							</p>
 							<button
 								onClick={handleRefresh}

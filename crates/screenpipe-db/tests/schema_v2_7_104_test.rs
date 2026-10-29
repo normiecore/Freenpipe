@@ -1,5 +1,5 @@
-// Freenpipe — local-first screen & audio memory (fork of screenpipe @ 892199f, MIT)
-// https://github.com/normiecore/Freenpipe
+// Handvel — local-first screen & audio memory (fork of screenpipe @ 892199f, MIT)
+// https://github.com/normiecore/Handvel
 
 //! The v2.7.104 schema (W1-01): which migrations a database ends up with, what
 //! they create, how a base-schema database with `ocr_text` rows moves forward,
@@ -605,7 +605,7 @@ async fn checksum_of_our_own_migration_text_is_repaired_to_screenpipes() {
     let path = dir.path().join("db.sqlite");
     drop(open_manager(&path).await);
 
-    // A build that recorded the hash of Freenpipe's own file text instead of
+    // A build that recorded the hash of Handvel's own file text instead of
     // the pinned upstream checksum.
     let file = Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("src/migrations/20260613130000_unify_ocr_text_into_frames.sql");

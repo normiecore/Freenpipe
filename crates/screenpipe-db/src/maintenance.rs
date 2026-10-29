@@ -1,5 +1,5 @@
-// Freenpipe — local-first screen & audio memory (fork of screenpipe @ 892199f, MIT)
-// https://github.com/normiecore/Freenpipe
+// Handvel — local-first screen & audio memory (fork of screenpipe @ 892199f, MIT)
+// https://github.com/normiecore/Handvel
 
 //! Connection pragmas and WAL maintenance.
 //!
@@ -119,7 +119,7 @@ pub fn offline_connect_options(path: &Path, large_index_build: bool) -> SqliteCo
 // Checkpoints
 // ---------------------------------------------------------------------------
 
-/// Checkpoint modes Freenpipe uses. There is deliberately no TRUNCATE.
+/// Checkpoint modes Handvel uses. There is deliberately no TRUNCATE.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "SCREAMING_SNAKE_CASE")]
 pub enum CheckpointMode {

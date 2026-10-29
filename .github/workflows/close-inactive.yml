@@ -1,7 +1,7 @@
 name: Close inactive issues and PRs
 
 on:
-  # Freenpipe: schedule disabled (upstream automation); run manually if needed.
+  # Handvel: schedule disabled (upstream automation); run manually if needed.
   workflow_dispatch:
 
 permissions:

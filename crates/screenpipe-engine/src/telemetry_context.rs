@@ -7,7 +7,7 @@
 //! Embedders can set ids such as `SCREENPIPE_SUPPORT_ID` or
 //! `SCREENPIPE_EMBEDDER` so a crash record can be traced back to the
 //! deployment that produced it. Upstream also attached them to telemetry;
-//! Freenpipe only writes them into the local panic log (`last-panic.log`)
+//! Handvel only writes them into the local panic log (`last-panic.log`)
 //! and never sends them anywhere.
 
 use std::env;

@@ -18,7 +18,7 @@
   "deepgramApiKey": "",
   "filterMusic": true,
   "batchMaxDurationSecs": 900,
-  "vocabularyWords": [{"word": "Freenpipe"}, {"word": "kubectl", "replace_with": "kubectl"}],
+  "vocabularyWords": [{"word": "Handvel"}, {"word": "kubectl", "replace_with": "kubectl"}],
   "disableVision": false,
   "disableScreenshots": true,
   "enableSemanticContext": false,

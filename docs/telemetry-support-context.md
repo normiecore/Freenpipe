@@ -1,6 +1,6 @@
 # Deployment labels (formerly "telemetry support context")
 
-Freenpipe has no telemetry and no crash reporting: nothing about a run is sent
+Handvel has no telemetry and no crash reporting: nothing about a run is sent
 to any analytics or error-tracking service, whatever the settings say.
 
 The environment variables below are still read, for compatibility with

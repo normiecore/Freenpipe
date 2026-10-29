@@ -1,10 +1,10 @@
-# packages/ai-gateway in Freenpipe
+# packages/ai-gateway in Handvel
 
 This directory holds screenpipe's hosted AI gateway (a Cloudflare worker) as it was in the MIT base
-commit. Freenpipe does not build, test, ship or deploy it: no workspace, CI workflow or release job
+commit. Handvel does not build, test, ship or deploy it: no workspace, CI workflow or release job
 references it, and nothing in the app or engine calls it.
 
-Freenpipe talks to an AI gateway only when you configure one:
+Handvel talks to an AI gateway only when you configure one:
 
 - In the app: Settings > AI, choose the **AI gateway** provider and enter its URL (the OpenAI-style
   base including its version path, for example `http://127.0.0.1:4000/v1`) and, if it needs one, a

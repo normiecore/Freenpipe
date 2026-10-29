@@ -6,7 +6,7 @@ name: Secret Scan (trufflehog)
 # TruffleHog gives us the same intent (find leaked credentials in
 # commits) at zero cost and ships its own GitHub Action.
 
-# Freenpipe: kept as a merge check, for PRs into any branch.
+# Handvel: kept as a merge check, for PRs into any branch.
 on:
   pull_request:
   push:

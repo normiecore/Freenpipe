@@ -4,13 +4,13 @@
 
 use serde_json::Value;
 
-/// Error returned by `screenpipe login`; Freenpipe has no hosted account.
-pub const LOGIN_UNAVAILABLE: &str = "not available in Freenpipe";
+/// Error returned by `screenpipe login`; Handvel has no hosted account.
+pub const LOGIN_UNAVAILABLE: &str = "not available in Handvel";
 
 /// Handle `screenpipe login`.
 ///
 /// screenpipe opened its website in a browser and polled it for a session
-/// token. Freenpipe has no hosted account, so the subcommand stays (scripts
+/// token. Handvel has no hosted account, so the subcommand stays (scripts
 /// that call it get a clear answer instead of an unknown-command error) but it
 /// opens nothing, contacts no server and writes nothing. Local API access uses
 /// the `SCREENPIPE_API_KEY` environment variable or `screenpipe auth token`.
@@ -145,7 +145,7 @@ mod tests {
     async fn login_is_unavailable_and_does_nothing() {
         let err = handle_login_command()
             .await
-            .expect_err("login must not succeed in Freenpipe");
+            .expect_err("login must not succeed in Handvel");
         assert_eq!(err.to_string(), LOGIN_UNAVAILABLE);
     }
 }

@@ -26,7 +26,7 @@ export function DiskUsageSection() {
     return (
       <div className="space-y-6">
         <p className="text-muted-foreground text-sm mb-4">
-          Monitor storage usage for your Freenpipe data
+          Monitor storage usage for your Handvel data
         </p>
         <Card>
           <CardContent className="pt-6">

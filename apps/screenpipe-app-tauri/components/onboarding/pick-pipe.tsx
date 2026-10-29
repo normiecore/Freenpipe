@@ -285,7 +285,7 @@ export default function PickPipe() {
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
             title: `🚀 ${slugs.length} pipe${slugs.length === 1 ? "" : "s"} enabled`,
-            body: "Freenpipe is set up. Your first results arrive shortly.",
+            body: "Handvel is set up. Your first results arrive shortly.",
           }),
         });
       } catch {}

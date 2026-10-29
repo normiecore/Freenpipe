@@ -8,7 +8,7 @@ use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::OnceLock;
 use tracing::{debug, info, warn};
 
-// Tesseract discovery (Freenpipe): the binary is looked up once per session,
+// Tesseract discovery (Handvel): the binary is looked up once per session,
 // installed system-wide or bundled beside the engine (including an AppImage's
 // `$APPDIR`). When none is found, OCR through tesseract stays off for the rest
 // of the session instead of failing on every frame. The binary found is run

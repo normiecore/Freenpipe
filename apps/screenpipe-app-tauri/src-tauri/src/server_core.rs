@@ -28,7 +28,7 @@ use tracing::{error, info, warn};
 /// Environment variable screenpipe uses to tell the engine and its child
 /// processes (pipes, agents) how the app's startup account check resolved.
 pub const STARTUP_AUTH_STATUS_ENV: &str = "SCREENPIPE_STARTUP_AUTHENTICATION_STATUS";
-/// Freenpipe has no account check, so the status is always "not required".
+/// Handvel has no account check, so the status is always "not required".
 pub const STARTUP_AUTH_NOT_REQUIRED: &str = "not_required";
 
 /// How long [`ServerCore::shutdown`] waits for the background workers before

@@ -153,7 +153,7 @@ fn native_notif_action_callback_inner(json_ptr: *const std::os::raw::c_char) {
     // URL-opening actions. Two distinct semantics, explicit types so senders
     // can't conflate them:
     //   "link"      → external URL, opened in the user's default browser
-    //   "deeplink"  → freenpipe:// (or screenpipe://) in-app route, dispatched to DeeplinkHandler
+    //   "deeplink"  → handvel:// (or screenpipe://) in-app route, dispatched to DeeplinkHandler
     //
     // Both are handled in Rust rather than via JS emit so clicks work even
     // when the overlay window (which hosts the JS listener in
@@ -234,11 +234,11 @@ mod meeting_deeplink_scheme_tests {
 
     #[test]
     fn meeting_links_match_either_scheme() {
-        assert!(is_meeting_deeplink("freenpipe://meeting/12"));
-        assert!(is_meeting_deeplink("freenpipe://meeting?id=12&live=0"));
+        assert!(is_meeting_deeplink("handvel://meeting/12"));
+        assert!(is_meeting_deeplink("handvel://meeting?id=12&live=0"));
         assert!(is_meeting_deeplink("screenpipe://meeting/12"));
-        assert!(!is_meeting_deeplink("freenpipe://meetings"));
-        assert!(!is_meeting_deeplink("freenpipe://settings"));
+        assert!(!is_meeting_deeplink("handvel://meetings"));
+        assert!(!is_meeting_deeplink("handvel://settings"));
         assert!(!is_meeting_deeplink("https://example.test/meeting/12"));
     }
 }
@@ -322,7 +322,7 @@ mod tests {
     #[test]
     fn parses_meeting_deeplink_with_primary_scheme() {
         assert_eq!(
-            parse_meeting_deeplink("freenpipe://meeting/77?live=0"),
+            parse_meeting_deeplink("handvel://meeting/77?live=0"),
             Some((77, false))
         );
     }
@@ -605,7 +605,7 @@ fn persist_api_auth_key_to_settings(
 /// Mechanism: `PiExecutor::ensure_screenpipe_skill` (screenpipe-core) checks
 /// marker files in the data dir at install time and appends the media
 /// analysis section only when the user opted in *and* an AI gateway is
-/// configured. Freenpipe defaults to off: a missing marker means no. The
+/// configured. Handvel defaults to off: a missing marker means no. The
 /// opt-out marker screenpipe used (`cloud_media_analysis.disabled`) is
 /// honoured and written on opt-out, so the state stays unambiguous.
 ///
@@ -765,7 +765,7 @@ pub fn get_enterprise_team_api_token() -> Option<String> {
 /// first, then the legacy `auth.json` under the data dir. Returns None when
 /// neither holds a non-empty token.
 ///
-/// Freenpipe never signs in to a hosted account, so nothing here comes from
+/// Handvel never signs in to a hosted account, so nothing here comes from
 /// a login flow. A token only exists when a store came over from screenpipe
 /// (moved out of `store.bin` at startup, see `store::migrate_cloud_token`)
 /// or was placed in `auth.json` by hand.
@@ -817,7 +817,7 @@ pub fn get_active_data_dir(app: tauri::AppHandle) -> Result<String, String> {
 
 /// Push a gateway token into the running engine, or clear it with `None`.
 ///
-/// This is local key plumbing only; Freenpipe has no sign-in that calls it.
+/// This is local key plumbing only; Handvel has no sign-in that calls it.
 /// The token is held in memory so the engine does not have to restart to
 /// pick up a change: the local `/v1/chat/completions` proxy and the
 /// pi-agent's `models.json` apiKey share the same
@@ -1496,16 +1496,16 @@ pub async fn get_disk_usage(
     }
 }
 
-/// Error returned by [`open_login_window`]; Freenpipe has no hosted account.
-pub const LOGIN_UNAVAILABLE: &str = "not available in Freenpipe";
+/// Error returned by [`open_login_window`]; Handvel has no hosted account.
+pub const LOGIN_UNAVAILABLE: &str = "not available in Handvel";
 
-/// Formerly opened screenpipe's hosted sign-in page. Freenpipe has no
+/// Formerly opened screenpipe's hosted sign-in page. Handvel has no
 /// accounts, so the command stays registered for binding stability but never
 /// opens a window or contacts a website; it always returns an error.
 #[tauri::command]
 #[specta::specta]
 pub async fn open_login_window(_app_handle: tauri::AppHandle) -> Result<(), String> {
-    info!("open_login_window called; sign-in does not exist in Freenpipe");
+    info!("open_login_window called; sign-in does not exist in Handvel");
     Err(LOGIN_UNAVAILABLE.to_string())
 }
 
@@ -3103,7 +3103,7 @@ pub async fn copy_frame_to_clipboard(app: tauri::AppHandle, frame_id: i64) -> Re
     Ok(())
 }
 
-/// Copy a frame deeplink (freenpipe://frame/N) to clipboard. Native API only.
+/// Copy a frame deeplink (handvel://frame/N) to clipboard. Native API only.
 #[tauri::command]
 #[specta::specta]
 pub async fn copy_deeplink_to_clipboard(frame_id: i64) -> Result<(), String> {

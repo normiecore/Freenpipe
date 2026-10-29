@@ -59,8 +59,8 @@ representative at an online or offline event.
 ## Enforcement
 
 Instances of abusive, harassing, or otherwise unacceptable behavior may be
-reported to the Freenpipe maintainers responsible for enforcement through
-the project's GitHub issues at https://github.com/normiecore/Freenpipe/issues.
+reported to the Handvel maintainers responsible for enforcement through
+the project's GitHub issues at https://github.com/normiecore/Handvel/issues.
 If the report should not be public, open an issue that asks for a private
 contact and leave out the details, or use GitHub's abuse reporting at
 https://docs.github.com/en/communities/maintaining-your-safety-on-github/reporting-abuse-or-spam.

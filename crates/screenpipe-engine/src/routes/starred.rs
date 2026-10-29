@@ -1,5 +1,5 @@
-// Freenpipe — local-first screen & audio memory (fork of screenpipe @ 892199f, MIT)
-// https://github.com/normiecore/Freenpipe
+// Handvel — local-first screen & audio memory (fork of screenpipe @ 892199f, MIT)
+// https://github.com/normiecore/Handvel
 
 //! Starred work session routes (`/starred-sessions`) and their HD binding.
 //!
@@ -61,7 +61,7 @@ pub const HD_SYNC_INTERVAL: Duration = Duration::from_secs(15);
 const HD_SYNC_LIMIT: u32 = crate::high_fps_controller::MAX_STARRED_WINDOWS as u32;
 
 // Client-visible messages. The first five are interoperability strings that
-// clients may match on; the others are Freenpipe's own wording.
+// clients may match on; the others are Handvel's own wording.
 pub const ERR_IDENTITY: &str = "valid UUID and nonnegative revision required";
 pub const ERR_ORDER: &str = "start_time must precede end_time";
 pub const ERR_MISSING: &str = "session no longer exists";

@@ -485,13 +485,13 @@ export function RetentionSettings() {
             <AlertDialogDescription>
               {pendingMode === "media" ? (
                 <>
-                  every day, Freenpipe will delete video and audio files older
+                  every day, Handvel will delete video and audio files older
                   than {retentionDays} days. transcripts, ocr text, and your
                   app/window timeline stay searchable.
                 </>
               ) : (
                 <>
-                  every day, Freenpipe will permanently delete <em>all</em>{" "}
+                  every day, Handvel will permanently delete <em>all</em>{" "}
                   data older than {retentionDays} days — recordings,
                   transcripts, ocr, ui events. search won't find anything past
                   that. this cannot be undone.

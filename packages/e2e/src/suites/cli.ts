@@ -102,7 +102,7 @@ const tests: TestDef[] = [
     fn: async (exec, bin) => {
       const { stdout, exitCode } = await exec(`${bin} survey`);
       if (exitCode !== 0) throw new Error(`exit code ${exitCode}`);
-      if (!stdout.includes("github.com/normiecore/Freenpipe/discussions"))
+      if (!stdout.includes("github.com/normiecore/Handvel/discussions"))
         throw new Error(`missing discussions link: ${stdout.slice(0, 200)}`);
     },
   },

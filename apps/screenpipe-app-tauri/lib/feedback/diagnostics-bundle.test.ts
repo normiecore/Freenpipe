@@ -1,5 +1,5 @@
-// Freenpipe — local-first screen & audio memory (fork of screenpipe @ 892199f, MIT)
-// https://github.com/normiecore/Freenpipe
+// Handvel — local-first screen & audio memory (fork of screenpipe @ 892199f, MIT)
+// https://github.com/normiecore/Handvel
 
 import { describe, expect, it } from "vitest";
 import {
@@ -16,7 +16,7 @@ function completed(jobId: string, extra: Partial<FeedbackUploadCompleted> = {}):
     path: `/data/feedback/${jobId}.zip`,
     fileName: `${jobId}.zip`,
     sizeBytes: 2048,
-    issueUrl: "https://github.com/normiecore/Freenpipe/issues/new?title=x",
+    issueUrl: "https://github.com/normiecore/Handvel/issues/new?title=x",
     error: null,
     ...extra,
   };

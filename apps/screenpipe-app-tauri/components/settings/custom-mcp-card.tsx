@@ -1012,7 +1012,7 @@ function ServerEditor({
       ) : (
         <div className="space-y-1.5">
           <p className="text-[11px] text-muted-foreground">
-            Executable + arguments (space-separated). Freenpipe spawns this
+            Executable + arguments (space-separated). Handvel spawns this
             process locally and speaks JSON-RPC 2.0 over stdin/stdout.
           </p>
         </div>
@@ -1047,7 +1047,7 @@ function ServerEditor({
               </div>
               <p className="text-[11px] text-muted-foreground pt-1">
                 Heads up — when a pipe calls these tools they run with
-                Freenpipe&apos;s grants. Review what each tool can do
+                Handvel&apos;s grants. Review what each tool can do
                 before enabling on a sensitive workspace.
               </p>
             </>

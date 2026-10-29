@@ -475,7 +475,7 @@ impl PiManager {
     }
 }
 
-/// Freenpipe's own Pi config directory (`<data dir>/pi-agent/pi-config`),
+/// Handvel's own Pi config directory (`<data dir>/pi-agent/pi-config`),
 /// seeded once from the user's global Pi config (by the start-up thread; this
 /// never waits for a seed in progress). See `pi_runtime`.
 fn get_pi_config_dir() -> Result<PathBuf, String> {
@@ -1197,7 +1197,7 @@ pub async fn pi_start_inner(
                             .unwrap_or_default();
                         format!("Pi not found after install attempt.{} Try restarting the app or delete ~/.screenpipe/pi-agent and restart.", install_err)
                     } else {
-                        format!("Pi not found: bun is not installed. Freenpipe needs bun to run the AI assistant. Expected bundled bun next to the app executable.")
+                        format!("Pi not found: bun is not installed. Handvel needs bun to run the AI assistant. Expected bundled bun next to the app executable.")
                     }
                 })?
         }
@@ -1349,7 +1349,7 @@ pub async fn pi_start_inner(
     // ahead of the PATH set above.
     screenpipe_core::agents::cli_runtime::apply_to_command(&mut cmd);
 
-    // Freenpipe's own Pi config directory and Pi's runtime switches
+    // Handvel's own Pi config directory and Pi's runtime switches
     // (PI_CODING_AGENT_DIR, PI_SKIP_VERSION_CHECK, JITI_TRY_NATIVE, ...).
     let pi_config_dir = get_pi_config_dir()?;
     pi_runtime::apply_to_command(&mut cmd, &pi_config_dir);
@@ -1767,7 +1767,7 @@ pub async fn pi_start_inner(
                             m.child = None;
                             m.stdin = None;
                             return Err(format!(
-                                "Pi could not start: this processor cannot run the bun build at {}. Freenpipe is fetching bun's baseline build; start the chat again in a minute.",
+                                "Pi could not start: this processor cannot run the bun build at {}. Handvel is fetching bun's baseline build; start the chat again in a minute.",
                                 bun_path
                             ));
                         }

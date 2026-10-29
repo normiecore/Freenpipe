@@ -351,7 +351,7 @@ pub(crate) async fn get_tags_batch(
     }
 }
 
-// Freenpipe: tag autocomplete, mounted through `routes/ext.rs`.
+// Handvel: tag autocomplete, mounted through `routes/ext.rs`.
 
 /// Query of `GET /tags/autocomplete`.
 #[derive(OaSchema, Deserialize)]

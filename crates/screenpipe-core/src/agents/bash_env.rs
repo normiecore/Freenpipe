@@ -61,7 +61,7 @@ pub const WRAPPER_SCRIPT: &str = r#"# screenpipe — auto-injected by pi-agent b
 # the agent can see is SCREENPIPE_LOCAL_API_KEY, which is correct.
 unset SCREENPIPE_API_KEY
 
-# Freenpipe: `screenpipe` always means the CLI installed with the desktop
+# Handvel: `screenpipe` always means the CLI installed with the desktop
 # app (SCREENPIPE_CLI, exported by the spawn path). A function beats any
 # other `screenpipe` on PATH, and nothing is fetched from a package registry.
 if [ -n "${SCREENPIPE_CLI:-}" ]; then

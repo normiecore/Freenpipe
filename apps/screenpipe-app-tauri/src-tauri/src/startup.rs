@@ -1,5 +1,5 @@
-// Freenpipe — local-first screen & audio memory (fork of screenpipe @ 892199f, MIT)
-// https://github.com/normiecore/Freenpipe
+// Handvel — local-first screen & audio memory (fork of screenpipe @ 892199f, MIT)
+// https://github.com/normiecore/Handvel
 
 //! Decisions the app makes while it starts (shell-019, shell-020,
 //! shell-021, shell-024), kept apart from `main.rs` so they can be tested.
@@ -395,7 +395,7 @@ mod tests {
         );
         assert_eq!(CALLS.load(Ordering::SeqCst), before + 1);
         assert_eq!(
-            dispatch_helper_mode(&args(&["app", "freenpipe://x"]), TABLE),
+            dispatch_helper_mode(&args(&["app", "handvel://x"]), TABLE),
             None
         );
     }
@@ -544,7 +544,7 @@ mod capability_tests {
         ));
         assert!(allowed("codex://threads/new?prompt=write%20tests"));
         assert!(allowed("obsidian://open?vault=notes&file=today"));
-        assert!(allowed("https://github.com/normiecore/Freenpipe"));
+        assert!(allowed("https://github.com/normiecore/Handvel"));
         assert!(allowed("mailto:someone@example.test"));
     }
 

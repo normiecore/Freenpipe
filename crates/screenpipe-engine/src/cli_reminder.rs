@@ -121,7 +121,7 @@ mod tests {
         assert!(!links.is_empty());
         for link in links {
             assert!(
-                link.starts_with("https://github.com/normiecore/Freenpipe"),
+                link.starts_with("https://github.com/normiecore/Handvel"),
                 "{link}"
             );
         }

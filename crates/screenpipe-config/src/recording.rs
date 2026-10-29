@@ -549,7 +549,7 @@ pub struct RecordingSettings {
     pub use_chinese_mirror: bool,
 
     /// Legacy telemetry opt-in, kept so an existing store.bin still loads.
-    /// Defaults to off, and nothing reads it to send data: Freenpipe has no
+    /// Defaults to off, and nothing reads it to send data: Handvel has no
     /// telemetry.
     #[serde(rename = "analyticsEnabled")]
     pub analytics_enabled: bool,
@@ -1060,7 +1060,7 @@ mod tests {
         assert_eq!(settings, deserialized);
     }
 
-    // ---- Settings schema v2 (Freenpipe W1-02) ----
+    // ---- Settings schema v2 (Handvel W1-02) ----
 
     /// Every recording key of the v2 store schema, in field order.
     const SCHEMA_V2_KEYS: &[&str] = &[

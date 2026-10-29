@@ -519,7 +519,7 @@ export const useTimelineStore = create<TimelineState>((set, get) => ({
 				// OPTIMISTIC: Keep showing existing frames, just update connection status
 				set({ 
 					isLoading: currentFrames.length === 0, 
-					message: currentFrames.length === 0 ? "connecting to Freenpipe..." : null,
+					message: currentFrames.length === 0 ? "connecting to Handvel..." : null,
 					isConnected: false,
 				});
 

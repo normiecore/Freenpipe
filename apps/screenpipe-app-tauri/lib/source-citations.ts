@@ -252,7 +252,7 @@ function screenpipeToolCitation(args: Record<string, unknown>): SourceCitation {
   return {
     id: stableId(["screenpipe-search-tool", contentType, appName, query, range]),
     kind: "screenpipe",
-    title: "Freenpipe search",
+    title: "Handvel search",
     subtitle: parts.join("; ") || undefined,
     timestamp: navTimestamp(startTime),
     query: query || undefined,
@@ -334,10 +334,10 @@ function screenpipeKind(path: string): SourceCitationKind {
 }
 
 function screenpipeTitle(path: string): string {
-  if (path === "/search") return "Freenpipe search";
+  if (path === "/search") return "Handvel search";
   if (path === "/activity-summary") return "Activity summary";
   if (path === "/raw_sql") return "Local database query";
-  if (path === "/memories") return "Freenpipe memories";
+  if (path === "/memories") return "Handvel memories";
   if (path.startsWith("/connections/perplexity/")) return "Perplexity search";
   if (path.startsWith("/connections/google-calendar/") || path.startsWith("/connections/calendar/")) {
     return "Google Calendar events";
@@ -347,9 +347,9 @@ function screenpipeTitle(path: string): string {
   if (path.startsWith("/meetings")) return "Meeting data";
   if (path.startsWith("/frames")) return "Frame data";
   if (path.startsWith("/speakers")) return "Speaker data";
-  if (path === "/health") return "Freenpipe health";
+  if (path === "/health") return "Handvel health";
   if (path.startsWith("/connections/")) return `${titleCase(path.split("/")[2] ?? "connector")} connection`;
-  return "Freenpipe API";
+  return "Handvel API";
 }
 
 function screenpipeSubtitle(path: string, query: string): string | undefined {
@@ -369,7 +369,7 @@ function screenpipeSubtitle(path: string, query: string): string | undefined {
   }
 
   if (path === "/raw_sql") {
-    return "local Freenpipe data";
+    return "local Handvel data";
   }
 
   if (path === "/memories") {
@@ -377,7 +377,7 @@ function screenpipeSubtitle(path: string, query: string): string | undefined {
   }
 
   if (path.startsWith("/connections/perplexity/")) {
-    return "external web context via Freenpipe connection";
+    return "external web context via Handvel connection";
   }
 
   if (path.startsWith("/connections/google-calendar/") || path.startsWith("/connections/calendar/")) {

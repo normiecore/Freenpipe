@@ -1,6 +1,6 @@
 # Clean-room verbatim gate
 
-Freenpipe's earlier specs were written from the shipped screenpipe v2.7.104 binary and implemented in
+Handvel's earlier specs were written from the shipped screenpipe v2.7.104 binary and implemented in
 new words. Binary analysis stopped on 2026-10-29 (owner decision 8, `docs/clean-room/SOURCING.md`),
 but text written before then, and text written since, can still echo that binary by accident. This directory holds the tripwire that catches text copied from that binary.
 
@@ -33,7 +33,7 @@ copy, comments, documentation, prompts and error sentences.
 ## Why the corpus is hashed and never in the repository
 
 The extracted strings and frontend of the shipped binary belong to the vendor and are licensed under
-the Screenpipe Commercial License. They are reverse-engineering evidence, not material Freenpipe may
+the Screenpipe Commercial License. They are reverse-engineering evidence, not material Handvel may
 redistribute. Owner decision 4 (`docs/clean-room/DECISIONS.md`) keeps all raw extracted material (string
 dumps, the extracted frontend, REA graph dumps) out of the repository for good.
 

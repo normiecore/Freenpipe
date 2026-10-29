@@ -1,21 +1,21 @@
 ---
-title: "OpenClaw - AI assistant with Freenpipe memory"
+title: "OpenClaw - AI assistant with Handvel memory"
 sidebarTitle: "OpenClaw"
-description: "Connect Freenpipe to OpenClaw, a self-hosted personal AI that ties into WhatsApp, Telegram, Discord, and iMessage, so it can recall your screen history."
+description: "Connect Handvel to OpenClaw, a self-hosted personal AI that ties into WhatsApp, Telegram, Discord, and iMessage, so it can recall your screen history."
 icon: "robot"
 ---
 
 [OpenClaw](https://openclaw.ai) is a self-hosted personal AI assistant that connects to your messaging apps (WhatsApp, Telegram, Discord, iMessage, etc.) and can take actions on your behalf.
 
-With Freenpipe, OpenClaw can recall what you've seen on screen, reference past conversations, and answer questions about your digital history.
+With Handvel, OpenClaw can recall what you've seen on screen, reference past conversations, and answer questions about your digital history.
 
 ## same machine
 
-If OpenClaw and Freenpipe run on the same machine, setup is straightforward.
+If OpenClaw and Handvel run on the same machine, setup is straightforward.
 
 ### MCP (recommended)
 
-Add Freenpipe to your OpenClaw MCP config:
+Add Handvel to your OpenClaw MCP config:
 
 ```json
 {
@@ -69,11 +69,11 @@ Restart OpenClaw to load the skill.
 
 ## different machines
 
-If OpenClaw runs on a different machine (e.g., a VPS or home server) than Freenpipe, there are two ways to connect them:
+If OpenClaw runs on a different machine (e.g., a VPS or home server) than Handvel, there are two ways to connect them:
 
-### option 1: query Freenpipe's REST API directly
+### option 1: query Handvel's REST API directly
 
-If both machines are on the same network, OpenClaw can query Freenpipe's API directly. Use a custom skill:
+If both machines are on the same network, OpenClaw can query Handvel's API directly. Use a custom skill:
 
 Create `~/openclaw/skills/screenpipe/skill.md`:
 
@@ -118,11 +118,11 @@ curl -s "http://SCREENPIPE_IP:3030/meetings?limit=20"
 ```
 ````
 
-Replace `SCREENPIPE_IP` with the IP of the machine running Freenpipe. If the machines aren't on the same network, use [Tailscale](https://tailscale.com) to create a private network between them.
+Replace `SCREENPIPE_IP` with the IP of the machine running Handvel. If the machines aren't on the same network, use [Tailscale](https://tailscale.com) to create a private network between them.
 
 ### option 2: push data to the OpenClaw machine over SSH
 
-Use Freenpipe's built-in **remote sync** to push your `~/.screenpipe/` directory to the OpenClaw machine over SFTP. All it needs is SSH access to your server.
+Use Handvel's built-in **remote sync** to push your `~/.screenpipe/` directory to the OpenClaw machine over SFTP. All it needs is SSH access to your server.
 
 > **⚠️ clipboard sensitivity:** Remote sync includes clipboard events and content by default. If you're syncing to a less-trusted machine (VPS, shared server), disable clipboard capture first with `--disable-clipboard-capture` to avoid syncing passwords, API keys, or other sensitive data that flows through your clipboard.
 
@@ -156,9 +156,9 @@ Run that on a cron / launchd / systemd timer for continuous sync:
 
 Or set env vars instead of flags: `SCREENPIPE_REMOTE_HOST`, `SCREENPIPE_REMOTE_USER`, `SCREENPIPE_REMOTE_KEY`, `SCREENPIPE_REMOTE_PATH`.
 
-On the OpenClaw machine, point its skill at the synced directory or run a local Freenpipe pointing to the same data dir — OpenClaw can then query `localhost:3030` as if the data were captured locally.
+On the OpenClaw machine, point its skill at the synced directory or run a local Handvel pointing to the same data dir — OpenClaw can then query `localhost:3030` as if the data were captured locally.
 
-> Freenpipe does not use the vendor's hosted cloud sync. Archive and cross-device sync to storage you control are planned (see [archive](/cloud-archive)); until then, use `screenpipe sync remote`.
+> Handvel does not use the vendor's hosted cloud sync. Archive and cross-device sync to storage you control are planned (see [archive](/cloud-archive)); until then, use `screenpipe sync remote`.
 
 ## available MCP tools
 
@@ -192,13 +192,13 @@ Once configured, message OpenClaw from any chat app:
 
 **MCP not connecting?**
 - Test the server: `npx @modelcontextprotocol/inspector npx screenpipe-mcp`
-- Check Freenpipe is running: `curl http://localhost:3030/health`
+- Check Handvel is running: `curl http://localhost:3030/health`
 
-**remote machine can't reach Freenpipe?**
+**remote machine can't reach Handvel?**
 - Check Tailscale is connected: `tailscale status`
 - Check SSH tunnel is up: `curl http://localhost:3030/health` on the remote
-- Make sure Freenpipe is running on your computer
+- Make sure Handvel is running on your computer
 
 **no results from queries?**
-- Verify Freenpipe is running: `curl http://localhost:3030/health`
-- Ensure Freenpipe has screen recording permissions
+- Verify Handvel is running: `curl http://localhost:3030/health`
+- Ensure Handvel has screen recording permissions

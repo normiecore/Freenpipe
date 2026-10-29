@@ -1,10 +1,10 @@
-// Freenpipe — local-first screen & audio memory (fork of screenpipe @ 892199f, MIT)
-// https://github.com/normiecore/Freenpipe
+// Handvel — local-first screen & audio memory (fork of screenpipe @ 892199f, MIT)
+// https://github.com/normiecore/Handvel
 
 //! Bring-your-own AI gateway.
 //!
 //! screenpipe shipped a hosted, OpenAI-compatible gateway and a provider id
-//! (`screenpipe-cloud`) that pointed at it. Freenpipe keeps the provider id so
+//! (`screenpipe-cloud`) that pointed at it. Handvel keeps the provider id so
 //! existing stores, pipes and skills still load, but the id now resolves to a
 //! gateway the *user* runs or chose (LiteLLM, a self-hosted worker, any
 //! OpenAI-compatible proxy). With no gateway configured every gateway-only
@@ -138,7 +138,7 @@ pub fn media_analysis_opted_in(data_dir: &Path) -> bool {
 }
 
 /// Record the user's choice in `data_dir`. Writes one marker and removes
-/// the other, so the state is unambiguous for both Freenpipe and screenpipe.
+/// the other, so the state is unambiguous for both Handvel and screenpipe.
 pub fn set_media_analysis_opt_in(data_dir: &Path, enabled: bool) -> io::Result<()> {
     let (write, remove) = if enabled {
         (
@@ -153,9 +153,9 @@ pub fn set_media_analysis_opt_in(data_dir: &Path, enabled: bool) -> io::Result<(
     };
     std::fs::create_dir_all(data_dir)?;
     let note = if enabled {
-        "Freenpipe: agents may send media to your configured AI gateway for analysis.\n"
+        "Handvel: agents may send media to your configured AI gateway for analysis.\n"
     } else {
-        "Freenpipe: cloud media analysis is off. Agents are not told about it.\n"
+        "Handvel: cloud media analysis is off. Agents are not told about it.\n"
     };
     std::fs::write(data_dir.join(write), note)?;
     match std::fs::remove_file(data_dir.join(remove)) {

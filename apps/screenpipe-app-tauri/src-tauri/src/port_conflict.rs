@@ -1,7 +1,7 @@
-// Freenpipe — local-first screen & audio memory (fork of screenpipe @ 892199f, MIT)
-// https://github.com/normiecore/Freenpipe
+// Handvel — local-first screen & audio memory (fork of screenpipe @ 892199f, MIT)
+// https://github.com/normiecore/Handvel
 
-//! Who holds one of our local ports, and whether Freenpipe may take it back.
+//! Who holds one of our local ports, and whether Handvel may take it back.
 //!
 //! The base app terminated every other process it found listening on the API
 //! and control ports. That is unsafe on a machine that also runs another
@@ -69,7 +69,7 @@ pub enum HolderClass {
     /// terminated: the user is told another instance owns the port.
     Healthy,
     /// Another copy of this executable that gives no HTTP answer. The only
-    /// class Freenpipe terminates.
+    /// class Handvel terminates.
     Unhealthy,
     /// Another copy of this executable whose health could not be checked
     /// because other processes listen on the same port: the probe may have
@@ -149,7 +149,7 @@ impl HealthProbe {
 pub struct PortHolder {
     pub identity: ProcessIdentity,
     pub class: HolderClass,
-    /// Image name looks like screenpipe or Freenpipe. Only changes the
+    /// Image name looks like screenpipe or Handvel. Only changes the
     /// wording of the notification (another screenpipe app vs some program).
     pub screenpipe_family: bool,
     /// Same executable as this process.
@@ -262,7 +262,7 @@ pub fn is_screenpipe_family(identity: &ProcessIdentity) -> bool {
         })
         .unwrap_or_default()
         .to_lowercase();
-    name.contains("screenpipe") || name.contains("freenpipe")
+    name.contains("screenpipe") || name.contains("handvel") || name.contains("freenpipe")
 }
 
 /// Classify one listener from its identity and the probe result that
@@ -883,14 +883,14 @@ pub fn describe_block(port: u16, outcome: &ReclaimOutcome) -> String {
             h.identity.describe()
         ),
         ReclaimOutcome::Blocked(h) if h.class == HolderClass::Unverified => format!(
-            "port {port} is shared by several processes, including another copy of Freenpipe ({})",
+            "port {port} is shared by several processes, including another copy of Handvel ({})",
             h.identity.describe()
         ),
         ReclaimOutcome::Blocked(h) => {
             format!("port {port} is in use by {}", h.identity.describe())
         }
         ReclaimOutcome::ReclaimFailed { holders } => format!(
-            "port {port} is held by an unresponsive copy of Freenpipe that could not be stopped ({})",
+            "port {port} is held by an unresponsive copy of Handvel that could not be stopped ({})",
             describe_all(holders)
         ),
     }
@@ -912,20 +912,20 @@ fn notification_text(
     match outcome {
         ReclaimOutcome::Free => None,
         ReclaimOutcome::Reclaimed { terminated } => Some((
-            "Recovered a stuck Freenpipe process".to_string(),
+            "Recovered a stuck Handvel process".to_string(),
             format!(
-                "A copy of Freenpipe that had stopped responding kept local port {port} busy ({}). It was closed so Freenpipe can continue.",
+                "A copy of Handvel that had stopped responding kept local port {port} busy ({}). It was closed so Handvel can continue.",
                 describe_all(terminated)
             ),
         )),
         ReclaimOutcome::Blocked(h) if h.class == HolderClass::Healthy && h.own_executable => {
             Some((
-                "Freenpipe is already open".to_string(),
+                "Handvel is already open".to_string(),
                 if focused_other == Some(true) {
-                    "Another Freenpipe instance is running and its window was brought forward. This copy will not record.".to_string()
+                    "Another Handvel instance is running and its window was brought forward. This copy will not record.".to_string()
                 } else {
                     format!(
-                        "Another Freenpipe instance is serving port {port}, but its window could not be brought forward. Quit one of the two copies from the tray."
+                        "Another Handvel instance is serving port {port}, but its window could not be brought forward. Quit one of the two copies from the tray."
                     )
                 },
             ))
@@ -934,7 +934,7 @@ fn notification_text(
             Some((
                 "Another screenpipe is running".to_string(),
                 format!(
-                    "{} already answers on port {port}, so Freenpipe cannot start its {what} there. Quit the other app, {setting_hint}.",
+                    "{} already answers on port {port}, so Handvel cannot start its {what} there. Quit the other app, {setting_hint}.",
                     h.identity.describe()
                 ),
             ))
@@ -942,35 +942,35 @@ fn notification_text(
         ReclaimOutcome::Blocked(h) if h.class == HolderClass::Healthy => Some((
             format!("Port {port} is busy"),
             format!(
-                "{} answers on port {port} like a screenpipe server, so Freenpipe cannot start its {what} there. Quit that program, {setting_hint}.",
+                "{} answers on port {port} like a screenpipe server, so Handvel cannot start its {what} there. Quit that program, {setting_hint}.",
                 h.identity.describe()
             ),
         )),
         ReclaimOutcome::Blocked(h) if h.class == HolderClass::Unverified => Some((
             format!("Port {port} is shared"),
             format!(
-                "Another copy of Freenpipe, {}, listens on local port {port} together with other programs, so Freenpipe could not check whether it still responds and left it running. Quit the copy you do not need from its tray icon or Task Manager, {setting_hint}.",
+                "Another copy of Handvel, {}, listens on local port {port} together with other programs, so Handvel could not check whether it still responds and left it running. Quit the copy you do not need from its tray icon or Task Manager, {setting_hint}.",
                 h.identity.describe()
             ),
         )),
         ReclaimOutcome::Blocked(h) if h.screenpipe_family => Some((
             "Another screenpipe app holds the port".to_string(),
             format!(
-                "{} is listening on local port {port} but did not answer like a running screenpipe, so Freenpipe cannot start its {what} there. Freenpipe does not close other screenpipe apps: quit it from its tray icon or Task Manager, {setting_hint}.",
+                "{} is listening on local port {port} but did not answer like a running screenpipe, so Handvel cannot start its {what} there. Handvel does not close other screenpipe apps: quit it from its tray icon or Task Manager, {setting_hint}.",
                 h.identity.describe()
             ),
         )),
         ReclaimOutcome::Blocked(h) => Some((
             format!("Port {port} is busy"),
             format!(
-                "{} is using local port {port}, which Freenpipe needs for its {what}. Freenpipe does not close other programs: quit that one, {setting_hint}.",
+                "{} is using local port {port}, which Handvel needs for its {what}. Handvel does not close other programs: quit that one, {setting_hint}.",
                 h.identity.describe()
             ),
         )),
         ReclaimOutcome::ReclaimFailed { .. } => Some((
             format!("Could not free port {port}"),
             format!(
-                "An unresponsive copy of Freenpipe still holds local port {port} and could not be closed. End it from Task Manager (Activity Monitor on macOS), {setting_hint}."
+                "An unresponsive copy of Handvel still holds local port {port} and could not be closed. End it from Task Manager (Activity Monitor on macOS), {setting_hint}."
             ),
         )),
     }
@@ -1121,7 +1121,7 @@ mod tests {
     use std::collections::HashMap;
 
     const SELF_PID: u32 = 1000;
-    const OWN_EXE: &str = r"C:\Program Files\Freenpipe\freenpipe.exe";
+    const OWN_EXE: &str = r"C:\Program Files\Handvel\handvel.exe";
     const VENDOR_EXE: &str = r"C:\Users\me\AppData\Local\screenpipe\screenpipe-app.exe";
     const NODE_EXE: &str = r"C:\Program Files\nodejs\node.exe";
 
@@ -1190,24 +1190,24 @@ Active Connections
         let a = Path::new(OWN_EXE);
         assert!(same_executable_with(
             a,
-            Path::new(r"\\?\c:\program files\FREENPIPE\Freenpipe.EXE"),
+            Path::new(r"\\?\c:\program files\HANDVEL\Handvel.EXE"),
             true
         ));
         assert!(same_executable_with(
             a,
-            Path::new("C:/Program Files/Freenpipe/freenpipe.exe"),
+            Path::new("C:/Program Files/Handvel/handvel.exe"),
             true
         ));
         assert!(!same_executable_with(a, Path::new(VENDOR_EXE), true));
         // Case matters on Unix.
         assert!(!same_executable_with(
-            Path::new("/opt/Freenpipe/freenpipe"),
-            Path::new("/opt/freenpipe/freenpipe"),
+            Path::new("/opt/Handvel/handvel"),
+            Path::new("/opt/handvel/handvel"),
             false
         ));
         assert!(same_executable_with(
-            Path::new("/opt/freenpipe/freenpipe"),
-            Path::new("/opt/freenpipe/freenpipe"),
+            Path::new("/opt/handvel/handvel"),
+            Path::new("/opt/handvel/handvel"),
             false
         ));
         assert!(!same_executable_with(Path::new(""), Path::new(""), false));
@@ -1761,7 +1761,7 @@ Active Connections
             .into_iter()
             .map(|(p, _)| p)
             .collect();
-        let own_unix = "/Applications/Freenpipe.app/Contents/MacOS/freenpipe";
+        let own_unix = "/Applications/Handvel.app/Contents/MacOS/handvel";
         let holders: Vec<PortHolder> = [
             ident(pids[0], Some(own_unix)),
             ident(pids[1], Some("/usr/local/bin/node")),
@@ -1868,7 +1868,7 @@ Active Connections
         });
         let (title, body) = text(&shared);
         assert!(title.contains("3030"));
-        assert!(body.contains("freenpipe.exe (pid 4242)"));
+        assert!(body.contains("handvel.exe (pid 4242)"));
         assert!(describe_block(3030, &shared).contains("several processes"));
     }
 

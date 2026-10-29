@@ -121,8 +121,8 @@ function McpSection({ name, mcp }: { name: string; mcp: AgentCardProps["mcp"] })
   return (
     <div className="space-y-3">
       <p className="text-xs text-muted-foreground leading-relaxed">
-        Register Freenpipe as an MCP server in {name}. Best when {name} runs on the
-        same machine as Freenpipe.
+        Register Handvel as an MCP server in {name}. Best when {name} runs on the
+        same machine as Handvel.
       </p>
       <p className="text-xs text-muted-foreground">
         1. Open <code className="bg-muted px-1 rounded">{mcp.configPath}</code>
@@ -169,7 +169,7 @@ function SkillSection({ name, skills }: { name: string; skills: SkillVariant[] }
   return (
     <div className="space-y-3">
       <p className="text-xs text-muted-foreground leading-relaxed">
-        Drop a Freenpipe SKILL.md into {name}&apos;s skills directory and {name} loads it
+        Drop a Handvel SKILL.md into {name}&apos;s skills directory and {name} loads it
         as a new skill. {skills.length > 1 ? "Install either — or both." : ""}
       </p>
 
@@ -335,7 +335,7 @@ function SkillVariantBody({ name, variant }: { name: string; variant: SkillVaria
         <p className="text-xs text-muted-foreground leading-relaxed">
           Copy the SKILL.md contents above and paste them into{" "}
           <code className="bg-muted px-1 rounded">{variant.localPath}</code> on the remote
-          host. To let {name} reach the Freenpipe data on <em>this</em> machine, use the{" "}
+          host. To let {name} reach the Handvel data on <em>this</em> machine, use the{" "}
           <strong>Sync (remote)</strong> tab to push it over, or point any{" "}
           <code>localhost:3030</code> calls at this machine&apos;s IP/Tailscale name.
         </p>
@@ -854,7 +854,7 @@ function ConnectSection({ integrationId, fields }: { integrationId: string; fiel
   return (
     <div className="space-y-3">
       <p className="text-xs text-muted-foreground leading-relaxed">
-        Let Freenpipe pipes call back to this agent. Enter the gateway credentials so pipes can send events and messages directly to it.
+        Let Handvel pipes call back to this agent. Enter the gateway credentials so pipes can send events and messages directly to it.
       </p>
       {fields.map((field) => (
         <div key={field.key} className="space-y-1">

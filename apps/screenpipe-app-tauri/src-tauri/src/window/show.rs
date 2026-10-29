@@ -84,7 +84,7 @@ impl RewindWindowId {
     }
 
     /// Native window title. Every window names the product so it reads as
-    /// Freenpipe in the taskbar, Alt-Tab and the Dock menu.
+    /// Handvel in the taskbar, Alt-Tab and the Dock menu.
     pub fn title(&self) -> String {
         let suffix = match self {
             RewindWindowId::Main | RewindWindowId::Home => None,

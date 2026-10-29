@@ -1,5 +1,5 @@
-// Freenpipe — local-first screen & audio memory (fork of screenpipe @ 892199f, MIT)
-// https://github.com/normiecore/Freenpipe
+// Handvel — local-first screen & audio memory (fork of screenpipe @ 892199f, MIT)
+// https://github.com/normiecore/Handvel
 
 /**
  * MCP launch configs for external AI tools (Claude Desktop, Cursor, Codex,
@@ -62,12 +62,12 @@ export const DEFAULT_LOCAL_API_PORT = 3030;
  * installer does not bundle it yet).
  */
 export const PLACEHOLDER_MCP_LAUNCH: McpLaunch = {
-  command: "<Freenpipe install folder>/bun",
-  args: ["<Freenpipe install folder>/mcp/screenpipe-mcp.js"],
+  command: "<Handvel install folder>/bun",
+  args: ["<Handvel install folder>/mcp/screenpipe-mcp.js"],
 };
 
 export const MCP_NOT_BUNDLED_MESSAGE =
-  "This build of Freenpipe does not include the MCP server, so it cannot be registered automatically. " +
+  "This build of Handvel does not include the MCP server, so it cannot be registered automatically. " +
   "Build it from the repository (cd packages/screenpipe-mcp && bun install && bun run build) " +
   "and point your tool at dist/cli.js with bun or node.";
 

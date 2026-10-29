@@ -393,7 +393,7 @@ export function PrivacySection() {
 
       toast({
         title: "Settings updated successfully",
-        description: "Freenpipe has been restarted with new settings",
+        description: "Handvel has been restarted with new settings",
       });
     } catch (error) {
       console.error("Failed to update settings:", error);
@@ -830,7 +830,7 @@ export function PrivacySection() {
                     const { confirm } = await import("@tauri-apps/plugin-dialog");
                     const confirmed = await confirm(
                       "Regenerate API key? Existing browser extensions stay connected until you Apply & Restart, then they must reconnect with the new key.",
-                      { title: "Freenpipe", kind: "info" },
+                      { title: "Handvel", kind: "info" },
                     );
                     if (!confirmed) return;
                     setRegeneratingKey(true);
@@ -977,7 +977,7 @@ export function PrivacySection() {
               <div>
                 <h3 className="text-sm font-medium text-foreground flex items-center gap-1.5">
                   Capture clipboard
-                  <HelpTooltip text="when on, Freenpipe records clipboard copy/paste events and contents. turn off if you ship ~/.screenpipe to a remote LLM or share it — passwords, API keys, and private keys frequently pass through the clipboard." />
+                  <HelpTooltip text="when on, Handvel records clipboard copy/paste events and contents. turn off if you ship ~/.screenpipe to a remote LLM or share it — passwords, API keys, and private keys frequently pass through the clipboard." />
                 </h3>
                 <p className="text-xs text-muted-foreground">
                   Skip if your data leaves the machine (passwords, keys often
@@ -1003,7 +1003,7 @@ export function PrivacySection() {
               <div>
                 <h3 className="text-sm font-medium text-foreground flex items-center gap-1.5">
                   Capture keyboard
-                  <HelpTooltip text="when on, Freenpipe records what you type (your keystrokes). off by default. the accessibility tree and OCR still capture on-screen text either way, so Rewind and Ask keep working — this only controls the raw keystroke stream, where passwords, API keys, and secrets you type would otherwise be logged." />
+                  <HelpTooltip text="when on, Handvel records what you type (your keystrokes). off by default. the accessibility tree and OCR still capture on-screen text either way, so Rewind and Ask keep working — this only controls the raw keystroke stream, where passwords, API keys, and secrets you type would otherwise be logged." />
                 </h3>
                 <p className="text-xs text-muted-foreground">
                   Off by default. Records the raw keystroke stream (secrets

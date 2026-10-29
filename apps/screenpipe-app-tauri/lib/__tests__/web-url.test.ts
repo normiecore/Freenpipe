@@ -1,5 +1,5 @@
-// Freenpipe — local-first screen & audio memory (fork of screenpipe @ 892199f, MIT)
-// https://github.com/normiecore/Freenpipe
+// Handvel — local-first screen & audio memory (fork of screenpipe @ 892199f, MIT)
+// https://github.com/normiecore/Handvel
 
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
@@ -45,7 +45,7 @@ describe("web-url switchboard", () => {
     expect(joinUrl("https://h/", "")).toBe("https://h");
   });
 
-  it("builds project links on the Freenpipe repository", () => {
+  it("builds project links on the Handvel repository", () => {
     expect(freenpipeLink("repo")).toBe(FREENPIPE_REPO_URL);
     expect(freenpipeLink("releases")).toBe(`${FREENPIPE_REPO_URL}/releases`);
     expect(freenpipeLink("newIssue")).toBe(`${FREENPIPE_REPO_URL}/issues/new`);

@@ -1,5 +1,5 @@
-# Freenpipe — local-first screen & audio memory (fork of screenpipe @ 892199f, MIT)
-# https://github.com/normiecore/Freenpipe
+# Handvel — local-first screen & audio memory (fork of screenpipe @ 892199f, MIT)
+# https://github.com/normiecore/Handvel
 #
 # Cloud workflow helper for WORKER and MERGER sessions (docs/dev/cloud-runbook.md).
 # Uses git plus the GitHub REST API (`gh api`; GraphQL commands such as `gh pr` are blocked in
@@ -713,7 +713,7 @@ def cmd_publish_status(a):
 
 
 def main():
-    ap = argparse.ArgumentParser(description="Freenpipe cloud workflow helper (see docs/dev/cloud-runbook.md)")
+    ap = argparse.ArgumentParser(description="Handvel cloud workflow helper (see docs/dev/cloud-runbook.md)")
     sub = ap.add_subparsers(dest="cmd", required=True)
 
     p = sub.add_parser("pick", help="claim the first available action (status.py --next order)")

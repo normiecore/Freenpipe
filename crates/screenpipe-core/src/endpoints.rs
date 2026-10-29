@@ -1,5 +1,5 @@
-// Freenpipe — local-first screen & audio memory (fork of screenpipe @ 892199f, MIT)
-// https://github.com/normiecore/Freenpipe
+// Handvel — local-first screen & audio memory (fork of screenpipe @ 892199f, MIT)
+// https://github.com/normiecore/Handvel
 
 //! Endpoint switchboard: the single place that decides which remote base URL
 //! a feature may talk to.
@@ -30,9 +30,9 @@ use std::sync::{OnceLock, RwLock};
 use tracing::warn;
 
 /// Canonical home of the project, used for user-facing links only.
-pub const FREENPIPE_REPO_URL: &str = "https://github.com/normiecore/Freenpipe";
+pub const FREENPIPE_REPO_URL: &str = "https://github.com/normiecore/Handvel";
 
-/// A remote service Freenpipe can be pointed at.
+/// A remote service Handvel can be pointed at.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Endpoint {
     /// Companion website (account pages, web links). Unset: hide the links.
@@ -281,7 +281,7 @@ pub enum FreenpipeLink {
     Docs,
 }
 
-/// Build a user-facing link into the Freenpipe repository.
+/// Build a user-facing link into the Handvel repository.
 pub fn freenpipe_link(kind: FreenpipeLink) -> String {
     let suffix = match kind {
         FreenpipeLink::Repo => "",
@@ -296,7 +296,7 @@ pub fn freenpipe_link(kind: FreenpipeLink) -> String {
 }
 
 /// Outbound User-Agent for HTTP clients that want one, e.g.
-/// `user_agent("freenpipe-app", env!("CARGO_PKG_VERSION"))`.
+/// `user_agent("handvel-app", env!("CARGO_PKG_VERSION"))`.
 pub fn user_agent(product: &str, version: &str) -> String {
     format!("{product}/{version} (+{FREENPIPE_REPO_URL})")
 }
@@ -305,7 +305,7 @@ pub fn user_agent(product: &str, version: &str) -> String {
 /// tables, `HeaderValue::from_static`). Third-party APIs such as GitHub's
 /// refuse requests without one. It names this project, never the upstream
 /// vendor.
-pub const DEFAULT_USER_AGENT: &str = "Freenpipe (+https://github.com/normiecore/Freenpipe)";
+pub const DEFAULT_USER_AGENT: &str = "Handvel (+https://github.com/normiecore/Handvel)";
 
 #[cfg(test)]
 mod tests {
@@ -446,10 +446,10 @@ mod tests {
     fn links_and_user_agent_point_at_the_project() {
         assert_eq!(freenpipe_link(FreenpipeLink::Repo), FREENPIPE_REPO_URL);
         assert!(freenpipe_link(FreenpipeLink::Releases).ends_with("/releases"));
-        let ua = user_agent("freenpipe-app", "1.2.3");
-        assert!(ua.starts_with("freenpipe-app/1.2.3 "));
+        let ua = user_agent("handvel-app", "1.2.3");
+        assert!(ua.starts_with("handvel-app/1.2.3 "));
         assert!(ua.contains(FREENPIPE_REPO_URL));
-        assert!(DEFAULT_USER_AGENT.starts_with("Freenpipe "));
+        assert!(DEFAULT_USER_AGENT.starts_with("Handvel "));
         assert!(DEFAULT_USER_AGENT.contains(FREENPIPE_REPO_URL));
         assert!(!DEFAULT_USER_AGENT.to_lowercase().contains("screenpipe"));
     }

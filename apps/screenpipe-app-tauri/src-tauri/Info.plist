@@ -3,21 +3,21 @@
 <plist version="1.0">
 <dict>
     <key>NSMicrophoneUsageDescription</key>
-    <string>Freenpipe uses the microphone to record and transcribe audio on this Mac.</string>
+    <string>Handvel uses the microphone to record and transcribe audio on this Mac.</string>
     <key>NSScreenCaptureUsageDescription</key>
-    <string>Freenpipe needs screen recording access to capture what is on your screen.</string>
+    <string>Handvel needs screen recording access to capture what is on your screen.</string>
     <key>CGRequestScreenCaptureAccess</key>
-    <string>Freenpipe needs screen recording access to capture what is on your screen.</string>
+    <string>Handvel needs screen recording access to capture what is on your screen.</string>
     <key>NSAudioCaptureUsageDescription</key>
-    <string>Freenpipe captures system audio through a CoreAudio process tap and transcribes it on this Mac. To leave an app out, add its bundle ID to ~/.screenpipe/audio-exclusions.json.</string>
+    <string>Handvel captures system audio through a CoreAudio process tap and transcribes it on this Mac. To leave an app out, add its bundle ID to ~/.screenpipe/audio-exclusions.json.</string>
     <key>NSSystemExtensionUsageDescription</key>
-    <string>Freenpipe needs system extension access to capture audio output.</string>
+    <string>Handvel needs system extension access to capture audio output.</string>
     <key>NSRemindersUsageDescription</key>
-    <string>Freenpipe adds the action items it finds in your screen and audio activity to Apple Reminders.</string>
+    <string>Handvel adds the action items it finds in your screen and audio activity to Apple Reminders.</string>
     <key>NSCalendarsUsageDescription</key>
-    <string>Freenpipe reads your calendar to recognise meetings. Calendar data never leaves this Mac.</string>
+    <string>Handvel reads your calendar to recognise meetings. Calendar data never leaves this Mac.</string>
     <key>NSCalendarsFullAccessUsageDescription</key>
-    <string>Freenpipe reads your calendar to recognise meetings. Calendar data never leaves this Mac.</string>
+    <string>Handvel reads your calendar to recognise meetings. Calendar data never leaves this Mac.</string>
     <key>NSAppTransportSecurity</key>
     <dict>
         <key>NSAllowsLocalNetworking</key>

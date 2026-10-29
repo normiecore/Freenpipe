@@ -1,5 +1,5 @@
-// Freenpipe — local-first screen & audio memory (fork of screenpipe @ 892199f, MIT)
-// https://github.com/normiecore/Freenpipe
+// Handvel — local-first screen & audio memory (fork of screenpipe @ 892199f, MIT)
+// https://github.com/normiecore/Handvel
 
 /**
  * Settings schema v2: defaults for the keys added since the base schema and
@@ -259,7 +259,7 @@ export function settingsV2Defaults(platform: SettingsPlatformName): Record<strin
  * Privacy keys back-filled into stores that lack them: capture of typed text
  * and clipboard stays off and the AI redaction workers stay local. (screenpipe
  * picked the opposite for accounts eligible for its hosted redaction;
- * Freenpipe has no such accounts.)
+ * Handvel has no such accounts.)
  */
 export const PRIVACY_BACKFILL: Readonly<Record<string, unknown>> = Object.freeze({
   disableClipboardCapture: true,

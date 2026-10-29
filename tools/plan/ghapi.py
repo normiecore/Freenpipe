@@ -1,5 +1,5 @@
-# Freenpipe — local-first screen & audio memory (fork of screenpipe @ 892199f, MIT)
-# https://github.com/normiecore/Freenpipe
+# Handvel — local-first screen & audio memory (fork of screenpipe @ 892199f, MIT)
+# https://github.com/normiecore/Handvel
 #
 # Minimal GitHub REST client for the planning and cloud tools (stdlib only).
 #
@@ -8,7 +8,7 @@
 #      the GitHub proxy authenticates it (GH_TOKEN reads "proxy-injected" there). Only REST paths
 #      are used: the proxy rejects GraphQL, which rules out `gh pr` and `gh issue`.
 #   2. urllib against https://api.github.com, sending GITHUB_TOKEN or GH_TOKEN when set. Without a
-#      token this still works for reads, because normiecore/Freenpipe is public (60 requests/hour).
+#      token this still works for reads, because normiecore/Handvel is public (60 requests/hour).
 #
 # Set FP_GH_TRANSPORT=gh|http to force one transport, FP_REPO=owner/name to target another repo.
 import json
@@ -20,7 +20,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 
-DEFAULT_REPO = os.environ.get("FP_REPO", "normiecore/Freenpipe")
+DEFAULT_REPO = os.environ.get("FP_REPO", "normiecore/Handvel")
 API_ROOT = "https://api.github.com"
 
 
@@ -96,7 +96,7 @@ class GitHub:
         headers = {
             "Accept": "application/vnd.github+json",
             "X-GitHub-Api-Version": "2022-11-28",
-            "User-Agent": "freenpipe-plan-tools",
+            "User-Agent": "handvel-plan-tools",
         }
         data = None
         if body is not None:
@@ -131,7 +131,7 @@ class GitHub:
             if p.returncode != 0:
                 raise GitHubError(0, (p.stderr or p.stdout).strip()[:500] or "gh api error")
             return p.stdout
-        req = urllib.request.Request(f"{API_ROOT}/{path}", headers={"User-Agent": "freenpipe-plan-tools"})
+        req = urllib.request.Request(f"{API_ROOT}/{path}", headers={"User-Agent": "handvel-plan-tools"})
         if self.token:
             req.add_unredirected_header("Authorization", f"Bearer {self.token}")
         try:

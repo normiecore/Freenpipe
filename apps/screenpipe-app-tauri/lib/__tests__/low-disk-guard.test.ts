@@ -1,5 +1,5 @@
-// Freenpipe — local-first screen & audio memory (fork of screenpipe @ 892199f, MIT)
-// https://github.com/normiecore/Freenpipe
+// Handvel — local-first screen & audio memory (fork of screenpipe @ 892199f, MIT)
+// https://github.com/normiecore/Handvel
 
 import { describe, expect, it } from "vitest";
 import {
@@ -36,8 +36,8 @@ describe("low-disk guard text", () => {
   });
 
   it("points the notice button at a real settings section", () => {
-    expect(isSettingsSectionId(new URL("freenpipe://settings?section=storage").searchParams.get("section"))).toBe(true);
-    expect(isSettingsSectionId(new URL("freenpipe://settings").searchParams.get("section"))).toBe(false);
+    expect(isSettingsSectionId(new URL("handvel://settings?section=storage").searchParams.get("section"))).toBe(true);
+    expect(isSettingsSectionId(new URL("handvel://settings").searchParams.get("section"))).toBe(false);
   });
 });
 

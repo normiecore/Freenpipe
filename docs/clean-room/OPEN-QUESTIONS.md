@@ -33,11 +33,11 @@ WP, so parallel WPs never conflict). This file keeps the wave 0 entries.
   (`PiExecutor::ensure_screenpipe_team_skill`); the skill asset and the admin token card are
   removed. The `screenpipe-team` name stays reserved in the baseline skill list.
   **Reason:** the data dir is shared with screenpipe (DECISIONS 1), so an `enterprise.json` written
-  by screenpipe would otherwise make the Freenpipe agent query the vendor's console.
+  by screenpipe would otherwise make the Handvel agent query the vendor's console.
 
 - **Question:** the CLI checked `registry.npmjs.org/screenpipe/latest` at every engine start and
   every few minutes. Repoint it at GitHub Releases or drop it?
-  **Decision:** dropped. CLI tips are now printed from local text only and link to the Freenpipe
+  **Decision:** dropped. CLI tips are now printed from local text only and link to the Handvel
   repository.
   **Reason:** it compared against the vendor's npm package, the target no longer has
   `SCREENPIPE_NO_UPDATE_CHECK` (shell-025), and DECISIONS 3 keeps update checks off by default.
@@ -47,7 +47,7 @@ WP, so parallel WPs never conflict). This file keeps the wave 0 entries.
   **Reason:** cloud-023 asks for exactly that, and scripts that call it keep working.
 
 - **Question:** where does the changelog dialog read from, and when?
-  **Decision:** the unauthenticated GitHub Releases API of normiecore/Freenpipe, only when the
+  **Decision:** the unauthenticated GitHub Releases API of normiecore/Handvel, only when the
   dialog opens, cached for one hour in localStorage (`freenpipe:changelog-cache`); a stale cache is
   shown when GitHub is unreachable, and the bundled `CHANGELOG.md` when there is nothing cached.
   **Reason:** cloud-023 names both sources; reading only on open keeps the app from making
@@ -83,7 +83,7 @@ WP, so parallel WPs never conflict). This file keeps the wave 0 entries.
 
 - **Question:** the crash screen (`app/global-error.tsx`) sent "get help" to the vendor's Discord
   invite. The file is in no work package's owner paths.
-  **Decision:** W0-05 points it at a new issue on the Freenpipe repository, and the vendor guard's
+  **Decision:** W0-05 points it at a new issue on the Handvel repository, and the vendor guard's
   commerce rules now include the vendor's Discord invite (`community-invite`).
   **Reason:** the WP text sends every Discord link to GitHub, and an issue is where a crash report
   belongs. The help panel already lists Discussions for questions.
@@ -103,7 +103,7 @@ WP, so parallel WPs never conflict). This file keeps the wave 0 entries.
 - **HTTPS-only providers (Slack, Zoom, Calendly, QuickBooks).** Decision: there is no default redirect
   for them; the OAuth app dialog requires a redirect URI, and saving without one fails with an
   explanation. Any `https://` URL or a loopback `http://` URL is accepted. Reason: the spec asks for a
-  user-supplied relay with no Freenpipe-hosted one; accepting an explicit loopback URL keeps Intuit
+  user-supplied relay with no Handvel-hosted one; accepting an explicit loopback URL keeps Intuit
   development keys (which allow localhost) usable, and the provider itself rejects what it does not allow.
 - **Which providers get PKCE.** Decision: on for Google, Microsoft (365 and Teams), Zoom, Calendly and
   Supabase; off for Notion, GitHub, Slack, Atlassian, Cal.com, Intuit and Vercel. Reason: enabled where
@@ -118,7 +118,7 @@ WP, so parallel WPs never conflict). This file keeps the wave 0 entries.
   back to a valid `SCREENPIPE_PORT` (the override `to_recording_config` applies), then the stored
   `recording.port`, then 3030. The dialog shows the exact URI to register, and connect sends the same
   one. Reason: dev builds run on 3035 through `SCREENPIPE_PORT` while settings keep 3030, and a 3030
-  redirect would land where no Freenpipe engine listens (or on an installed screenpipe).
+  redirect would land where no Handvel engine listens (or on an installed screenpipe).
 - **MCP OAuth redirect.** Decision: `POST /mcp-servers/:id/oauth/start` accepts a `redirect_uri` only when
   it is the loopback `/mcp-servers/<id>/oauth/callback` of this engine; the default takes its port from
   a loopback `Host` header (else 3030); an `app_scheme` field is ignored. Reason: the plan keeps MCP OAuth
@@ -169,7 +169,7 @@ WP, so parallel WPs never conflict). This file keeps the wave 0 entries.
   Reason: the target strings give the codes but not statuses, and say nothing about an unset registry.
 - **Should publish/review work against a user-configured registry API?**
   Decision: no, they are always refused for now.
-  Reason: the base handlers forwarded the request's bearer token, which in Freenpipe is the local API key; sending it to a remote host would leak it. WR-01 turns publishing into a ready-to-PR pipe folder.
+  Reason: the base handlers forwarded the request's bearer token, which in Handvel is the local API key; sending it to a remote host would leak it. WR-01 turns publishing into a ready-to-PR pipe folder.
 - **How is a sync server configured for cloud sync/archive?**
   Decision: not at all in W0-08. `SyncClientConfig::new` has no server, every sync API call fails with `SyncError::NotConfigured` before any network traffic, the app's `sync_server_url()` returns `None`, and the engine's `/sync/init` and `/archive/init` answer 501. The settings UI hides both tabs (`lib/cloud-storage.ts`).
   Reason: settings keys belong to W1-02 and bring-your-own storage is WR-02; 501 matches what api-030 asks for vendor-only sync routes.
@@ -195,7 +195,7 @@ WP, so parallel WPs never conflict). This file keeps the wave 0 entries.
    Decision: a new `aiGatewayApiKey` setting next to `aiGatewayUrl` (both typed fields on the app's
    `SettingsStore`, optional in TypeScript), pushed into the running engine with the existing
    `set_cloud_token` command; headless runs use `SCREENPIPE_AI_GATEWAY_KEY`. The engine's
-   `SCREENPIPE_API_KEY` (the local API key in Freenpipe) and any cached screenpipe sign-in token are
+   `SCREENPIPE_API_KEY` (the local API key in Handvel) and any cached screenpipe sign-in token are
    never sent to a gateway.
    Reason: cloud-042 names only the URL setting, and cloud-013 says the cloud-token plumbing carries
    the gateway key; reusing `SCREENPIPE_API_KEY` or `user.token` would leak the local key or a vendor
@@ -304,10 +304,10 @@ WP, so parallel WPs never conflict). This file keeps the wave 0 entries.
 
 ## W0-09
 
-1. **Where is the "Freenpipe-controlled mirror" for the pyannote models, and what are the file names?**
+1. **Where is the "Handvel-controlled mirror" for the pyannote models, and what are the file names?**
    - Decision: this repository's own Git LFS storage, read through GitHub's media endpoint at the
      import commit:
-     `https://media.githubusercontent.com/media/normiecore/Freenpipe/bcef0bcde5e6ea12db811a27047ef63869b7374a/crates/screenpipe-audio/models/pyannote/`
+     `https://media.githubusercontent.com/media/normiecore/Handvel/bcef0bcde5e6ea12db811a27047ef63869b7374a/crates/screenpipe-audio/models/pyannote/`
      followed by the repository file name, percent-encoded (`segmentation-3.0.onnx`,
      `wespeaker_en_voxceleb_CAM%2B%2B.onnx`). `DEFAULT_MODEL_BASE_URL` in
      `crates/screenpipe-audio/src/speaker/models.rs` and `scripts/stage_bundled_runtime.js` use the same
@@ -435,7 +435,7 @@ WP, so parallel WPs never conflict). This file keeps the wave 0 entries.
    `cookie`, `privatekey`, `devicename` and any key ending in `key`; exceptions are the target's list
    plus `maxTokens`. The rule lives in `apps/screenpipe-app-tauri/lib/feedback/sensitive-keys.json`,
    read by both the TypeScript helper and the Rust writer, with shared test vectors. **Reason:**
-   Freenpipe settings hold keys such as `deepgramApiKey`, `openaiKey` and `licenseKey` the target list
+   Handvel settings hold keys such as `deepgramApiKey`, `openaiKey` and `licenseKey` the target list
    misses, and `maxTokens` matches `token` while being harmless and useful for debugging.
 4. **What does a masked value look like?** **Decision:** strings and numbers become `[redacted]`,
    non-empty arrays and objects become `[redacted: N items]` / `[redacted: N keys]`; booleans, nulls,
@@ -560,43 +560,43 @@ WP, so parallel WPs never conflict). This file keeps the wave 0 entries.
 
 ## W0-12
 
-- **Question:** DECISIONS (coordinator calls) says to register `freenpipe://` as primary with
+- **Question:** DECISIONS (coordinator calls) says to register `handvel://` as primary with
   `screenpipe://` as a compatibility alias, but the acceptance check requires
   `HKCU\Software\Classes\screenpipe` to stay untouched after install, and dev-isolation rule 4 says
   the installed screenpipe owns `screenpipe://`. Register both schemes with the OS, or one?
-  **Decision:** only `freenpipe://` (`freenpipe-beta://` for the beta channel) is listed in the
+  **Decision:** only `handvel://` (`handvel-beta://` for the beta channel) is listed in the
   Tauri `deep-link` config, so the NSIS installer and `register_all()` claim only that scheme. The
   app's own link handling accepts `screenpipe://` URLs once they reach it: command-line arguments
   on the single-instance and focus handoff, notification actions, chat and notification markdown,
   and the viewer route. Links the app builds itself (copy frame link, local file links in chat)
-  use `freenpipe://`. The helpers are `src-tauri/src/brand.rs` and `lib/brand.ts`.
+  use `handvel://`. The helpers are `src-tauri/src/brand.rs` and `lib/brand.ts`.
   **Reason:** this keeps every existing pipe, skill and notification that emits `screenpipe://`
-  working inside Freenpipe, satisfies the registry acceptance check, and leaves an installed
+  working inside Handvel, satisfies the registry acceptance check, and leaves an installed
   screenpipe's link handler alone.
 
 - **Question:** which identifiers and names are "user-visible identity" and which are interop?
-  **Decision:** renamed: product names (`Freenpipe`, `Freenpipe Dev`, `Freenpipe Beta`), bundle
-  identifiers (`com.normiecore.freenpipe`, `.dev`, `.beta`), installer publisher (`normiecore`),
+  **Decision:** renamed: product names (`Handvel`, `Handvel Dev`, `Handvel Beta`), bundle
+  identifiers (`com.normiecore.handvel`, `.dev`, `.beta`), installer publisher (`normiecore`),
   descriptions and copyright line, tray tooltip and menu labels, window titles, the macOS app menu
   and permission prompts, notification and toast copy, UI copy and the product name inside the
   app's LLM prompts, outbound User-Agent strings, the remote-sync data README, and the WebView2
-  profile folder (`%LOCALAPPDATA%\Freenpipe\WebView2`, app-private state like the identifier).
+  profile folder (`%LOCALAPPDATA%\Handvel\WebView2`, app-private state like the identifier).
   Kept: crate and package names, the `screenpipe-app` and `screenpipe` binaries, routes, JSON
   fields, settings and localStorage keys, SQL names, `SCREENPIPE_*` variables, CLI commands in
   prompts, skill and MCP server names, `~/.screenpipe` and `%LOCALAPPDATA%\screenpipe` data paths,
   the tray id `screenpipe_main`, tray icon file names (the code loads them by path) and the
   `screenpipe cloud` engine label on transcripts screenpipe's service produced.
   **Reason:** CLAUDE.md lets interop identifiers match upstream exactly and DECISIONS 1 keeps the
-  data layout drop-in; everything a person reads as the product's name says Freenpipe.
+  data layout drop-in; everything a person reads as the product's name says Handvel.
 
 - **Question:** on Windows the captured app name of a window is the executable's file
   description, which the bundler sets to the product name. The engine left out its own UI by
   matching `screenpipe` in the app name. Does the rename break that?
   **Decision:** yes, so the self-exclusion now goes through `screenpipe_core::brand::is_own_app_name`
-  (matches `freenpipe` and `screenpipe`), used by window capture, search, streaming and the hot
-  frame cache; the skip lists also name the three Freenpipe product names, and activity
-  suggestions leave out `Freenpipe*` apps.
-  **Reason:** without it Freenpipe would record and surface its own windows on Windows and macOS.
+  (matches `handvel` and `screenpipe`), used by window capture, search, streaming and the hot
+  frame cache; the skip lists also name the three Handvel product names, and activity
+  suggestions leave out `Handvel*` apps.
+  **Reason:** without it Handvel would record and surface its own windows on Windows and macOS.
 
 - **Question:** the default preset prompt says "screenpipe paths often contain spaces"; rename it?
   **Decision:** no. The same text is copied into new presets from `store.rs`, `use-settings.tsx`
@@ -606,8 +606,8 @@ WP, so parallel WPs never conflict). This file keeps the wave 0 entries.
 
 - **Question:** what should the vendor guard enforce in strict mode?
   **Decision:** strict is the default. Beyond vendor hosts and keys it now flags the vendor's
-  company name and `mediar.ai`, checks every `tauri*.json` for the Freenpipe product name,
-  identifier, publisher and `freenpipe` deep-link schemes, and flags UI copy under `app/` and
+  company name and `mediar.ai`, checks every `tauri*.json` for the Handvel product name,
+  identifier, publisher and `handvel` deep-link schemes, and flags UI copy under `app/` and
   `components/` that calls the product "screenpipe" (identifiers, paths, quoted ids, backticked
   commands and `screenpipe pipe|skill|cloud` are not hits). `packages/ai-gateway/` (W0-06 open
   question 11) and `third_party/` (W0-13) are excluded with reasons.
@@ -670,7 +670,7 @@ WP, so parallel WPs never conflict). This file keeps the wave 0 entries.
    blocks.**
    Decision: removed from the copy. Its `[[example]]` entry stays in `Cargo.toml`; cargo does not
    look for example files of a dependency.
-   Reason: the push cannot go through otherwise, and nothing in Freenpipe builds that example.
+   Reason: the push cannot go through otherwise, and nothing in Handvel builds that example.
 
 7. **tinfoil-rs (tinfoilsh/tinfoil-rs) is AGPL-3.0 and stays a git dependency. Anything to do?**
    Decision: nothing in W0-13 (it is an established third-party repository, outside decision 2);

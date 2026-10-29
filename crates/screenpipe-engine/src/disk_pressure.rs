@@ -1,5 +1,5 @@
-// Freenpipe — local-first screen & audio memory (fork of screenpipe @ 892199f, MIT)
-// https://github.com/normiecore/Freenpipe
+// Handvel — local-first screen & audio memory (fork of screenpipe @ 892199f, MIT)
+// https://github.com/normiecore/Handvel
 
 //! Low-disk monitor for the data directory.
 //!
@@ -23,7 +23,7 @@
 //! status is stored before its event goes out, so a subscriber that gets the
 //! event finds that reading, and its generation, in [`latest_status`].
 //!
-//! Thresholds are Freenpipe's choice (the shipped numbers were not
+//! Thresholds are Handvel's choice (the shipped numbers were not
 //! observable): 2 % of the volume, never less than 2 GiB and never more than
 //! 10 GiB, and recovery needs 1 GiB on top of that.
 

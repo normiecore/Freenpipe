@@ -1,5 +1,5 @@
-// Freenpipe — local-first screen & audio memory (fork of screenpipe @ 892199f, MIT)
-// https://github.com/normiecore/Freenpipe
+// Handvel — local-first screen & audio memory (fork of screenpipe @ 892199f, MIT)
+// https://github.com/normiecore/Handvel
 
 //! Checks that run before [`crate::DatabaseManager`] opens its pools.
 //!
@@ -42,7 +42,7 @@ pub const NOTADB_MESSAGE: &str = "file is not a database";
 /// SQLite's own message for [`SQLITE_CORRUPT`].
 pub const CORRUPT_MESSAGE: &str = "database disk image is malformed";
 
-/// Oldest SQLite release Freenpipe runs on (3.51.3, the WAL-reset fix).
+/// Oldest SQLite release Handvel runs on (3.51.3, the WAL-reset fix).
 pub const MIN_SQLITE_VERSION_NUMBER: i32 = 3_051_003;
 
 /// How long the header preflight may take before it steps aside.

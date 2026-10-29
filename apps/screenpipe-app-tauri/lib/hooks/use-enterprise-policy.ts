@@ -15,7 +15,7 @@ import {
 /**
  * Shape of an organisation policy. Upstream fetched it from the vendor's
  * enterprise console (with a license key, a device id and a heartbeat every
- * few minutes). Freenpipe has no such console, so the policy is always the
+ * few minutes). Handvel has no such console, so the policy is always the
  * empty one below; the type stays so settings components that read it keep
  * compiling and keep behaving exactly as on a personal install.
  */
@@ -51,7 +51,7 @@ export const EMPTY_ENTERPRISE_POLICY: EnterprisePolicy = Object.freeze({
 export type LicenseKeySubmitResult = { ok: boolean; error?: string };
 
 export const ENTERPRISE_UNAVAILABLE_MESSAGE =
-  "organisation policies are not available: Freenpipe has no enterprise console";
+  "organisation policies are not available: Handvel has no enterprise console";
 
 const nothingHidden = (_id: string): boolean => false;
 const nothingLocked = (_key: string): boolean => false;

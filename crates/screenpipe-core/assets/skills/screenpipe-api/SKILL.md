@@ -548,7 +548,7 @@ curl -X POST http://localhost:11435/notify \
 **Supported link types in body markdown:**
 - Web URLs: `[docs](https://example.com/docs)` — opens in browser
 - File paths: `[notes](~/notes/file.md)` or `[log](/var/log/app.log)` — opens in default app
-- Deeplinks: `[timeline](screenpipe://timeline)` — navigates within the app (Freenpipe also accepts `freenpipe://`)
+- Deeplinks: `[timeline](screenpipe://timeline)` — navigates within the app (Handvel also accepts `handvel://`)
 
 Returns `{"success": true, "message": "Notification sent successfully"}`.
 
@@ -574,7 +574,7 @@ curl -X POST http://localhost:3030/v1/local/chat/completions \
 ```
 
 A 400 means no default preset (or one without a base URL) is set up; tell the user to add one
-in Freenpipe's AI settings instead of retrying.
+in Handvel's AI settings instead of retrying.
 
 ---
 

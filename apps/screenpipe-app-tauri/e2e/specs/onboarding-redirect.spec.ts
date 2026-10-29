@@ -18,7 +18,7 @@
 //
 // What we assert:
 // 1. On boot, the URL is `/onboarding` — the gate fires.
-// 2. A real onboarding slide rendered (Freenpipe has no sign-in slide, so it
+// 2. A real onboarding slide rendered (Handvel has no sign-in slide, so it
 //    opens on permissions) and nothing asks the user to sign in — defensive
 //    against the page mounting but a child component throwing silently.
 // 3. The home window handle is NOT what we land on first — catches a
@@ -72,7 +72,7 @@ const canRun = !seedFlags.includes("onboarding");
       // sees nothing useful. The first slide is permissions; on platforms
       // with nothing to grant it may already have advanced to the engine
       // slide, so only require some visible text. No slide may ask the
-      // user to sign in: Freenpipe has no account.
+      // user to sign in: Handvel has no account.
       let bodyText = "";
       await browser.waitUntil(
         async () => {

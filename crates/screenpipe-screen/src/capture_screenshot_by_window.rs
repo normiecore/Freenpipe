@@ -98,10 +98,10 @@ static SKIP_APPS: Lazy<HashSet<&'static str>> = Lazy::new(|| {
         "screenpipe",
         "screenpipe - Development",
         "screenpipe beta",
-        // Freenpipe: product names from the Tauri configs
-        "Freenpipe",
-        "Freenpipe Dev",
-        "Freenpipe Beta",
+        // Handvel: product names from the Tauri configs
+        "Handvel",
+        "Handvel Dev",
+        "Handvel Beta",
     ])
 });
 
@@ -119,10 +119,10 @@ static SKIP_APPS: Lazy<HashSet<&'static str>> = Lazy::new(|| {
         "screenpipe",
         "screenpipe - Development",
         "screenpipe beta",
-        // Freenpipe: product names from the Tauri configs
-        "Freenpipe",
-        "Freenpipe Dev",
-        "Freenpipe Beta",
+        // Handvel: product names from the Tauri configs
+        "Handvel",
+        "Handvel Dev",
+        "Handvel Beta",
     ])
 });
 
@@ -144,10 +144,10 @@ static SKIP_APPS: Lazy<HashSet<&'static str>> = Lazy::new(|| {
         "screenpipe",
         "screenpipe - Development",
         "screenpipe beta",
-        // Freenpipe: product names from the Tauri configs
-        "Freenpipe",
-        "Freenpipe Dev",
-        "Freenpipe Beta",
+        // Handvel: product names from the Tauri configs
+        "Handvel",
+        "Handvel Dev",
+        "Handvel Beta",
         "screenpipe-app",
     ])
 });
@@ -1908,7 +1908,7 @@ mod tests {
         #[test]
         fn test_topmost_skips_freenpipe_ui() {
             let windows = vec![
-                make_window(999, 0, 0, 0, 1920, 1080, "Freenpipe", "Main"),
+                make_window(999, 0, 0, 0, 1920, 1080, "Handvel", "Main"),
                 make_window(100, 0, 0, 0, 1920, 1080, "Arc", "GitHub"),
             ];
             assert_eq!(

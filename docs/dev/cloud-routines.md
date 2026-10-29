@@ -14,7 +14,7 @@ At <https://claude.ai/code/routines>, choose **New routine** and set:
 | Name | `freenpipe worker-1` (and so on, see the table below) |
 | Instructions | the prompt below, exactly |
 | Model | the strongest model you have (use the same one for all five) |
-| Repository | `normiecore/Freenpipe` only |
+| Repository | `normiecore/Handvel` only |
 | Environment | `freenpipe` |
 | Trigger | Schedule, hourly (then set the exact minute, see "Schedules") |
 | Connectors | remove all; none is needed |
@@ -26,7 +26,7 @@ At <https://claude.ai/code/routines>, choose **New routine** and set:
 Use the same text and change only the worker id:
 
 ```text
-You are Freenpipe cloud worker "worker-1". Act as WORKER per docs/dev/cloud-runbook.md: read that
+You are Handvel cloud worker "worker-1". Act as WORKER per docs/dev/cloud-runbook.md: read that
 file first and follow it exactly, passing --worker worker-1 to every fp.py and status.py command
 that takes one. Work only on the wp/<WP-ID> or fix/main-<sha7> branch that fp.py gives you, push
 only through tools/cloud/fp.py, and never push to main or to a claude/ branch. Use the GitHub REST
@@ -37,7 +37,7 @@ report from runbook section 3.11.
 ### merger (two routines with the same prompt)
 
 ```text
-You are the Freenpipe cloud MERGER. Act as MERGER per docs/dev/cloud-runbook.md: read that file
+You are the Handvel cloud MERGER. Act as MERGER per docs/dev/cloud-runbook.md: read that file
 first and follow section 4 exactly. Change main only through tools/cloud/fp.py (REST merges and
 publish-status), and push to wp/* or fix/* branches only to resolve merge conflicts with
 fp.py sync-main. Never push to a claude/ branch and never implement work packages yourself. End
@@ -77,7 +77,7 @@ Merger runs with nothing to do are short.
 
 1. On the PC, finish the running wave. Wave 1 must be merged and pushed to `origin/main`, and no local
    `wp/*` work may be left unpushed. The cloud only sees what is on GitHub.
-2. Make sure the handoff changes (these docs, `tools/cloud/`, `tools/plan/`, Freenpipe CI) are on `main`.
+2. Make sure the handoff changes (these docs, `tools/cloud/`, `tools/plan/`, Handvel CI) are on `main`.
 3. Do the one-time setup in [cloud-environment.md](cloud-environment.md), including its check session.
 4. Create the five routines. Open `freenpipe merger-a` and choose **Run now**. Its run publishes a
    fresh `docs/clean-room/STATUS.md`.

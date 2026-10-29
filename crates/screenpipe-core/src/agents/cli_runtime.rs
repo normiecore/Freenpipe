@@ -1,10 +1,10 @@
-// Freenpipe — local-first screen & audio memory (fork of screenpipe @ 892199f, MIT)
-// https://github.com/normiecore/Freenpipe
+// Handvel — local-first screen & audio memory (fork of screenpipe @ 892199f, MIT)
+// https://github.com/normiecore/Handvel
 
 //! Where the command-line runtime that ships with the desktop app lives, and
 //! how agent processes get to it.
 //!
-//! Freenpipe never asks a package registry for "the newest CLI" or "the
+//! Handvel never asks a package registry for "the newest CLI" or "the
 //! newest MCP server" at run time. Both are built from this repository and
 //! installed with the app:
 //!
@@ -45,7 +45,7 @@ pub const MCP_ENTRY_RELATIVE: &str = "mcp/screenpipe-mcp.js";
 
 /// Product directory names the Linux packages install resources under
 /// (`/usr/lib/<name>/`).
-const LINUX_RESOURCE_DIR_NAMES: [&str; 2] = ["Freenpipe", "freenpipe"];
+const LINUX_RESOURCE_DIR_NAMES: [&str; 2] = ["Handvel", "handvel"];
 
 /// File name of the CLI binary on this platform.
 pub fn cli_file_name() -> &'static str {
@@ -157,7 +157,7 @@ pub fn posix_shim(cli: &Path, windows_style: bool) -> String {
     }
     format!(
         "#!/bin/sh\n\
-         # Freenpipe CLI launcher, regenerated when an agent starts. Forwards to\n\
+         # Handvel CLI launcher, regenerated when an agent starts. Forwards to\n\
          # the screenpipe binary installed with the desktop app.\n\
          exec {} \"$@\"\n",
         sh_quote(&target)
@@ -170,7 +170,7 @@ pub fn cmd_shim(cli: &Path) -> String {
     let target = cli.to_string_lossy().replace('%', "%%");
     format!(
         "@echo off\r\n\
-         rem Freenpipe CLI launcher, regenerated when an agent starts.\r\n\
+         rem Handvel CLI launcher, regenerated when an agent starts.\r\n\
          \"{target}\" %*\r\n\
          exit /b %ERRORLEVEL%\r\n"
     )
@@ -365,16 +365,16 @@ mod tests {
 
     #[test]
     fn install_roots_cover_each_platform_layout() {
-        let exe = abs(&["opt", "Freenpipe", "bin", "freenpipe-app"]);
+        let exe = abs(&["opt", "Handvel", "bin", "handvel-app"]);
         let roots = install_roots(&exe);
-        assert_eq!(roots[0], abs(&["opt", "Freenpipe", "bin"]));
-        assert!(roots.contains(&abs(&["opt", "Freenpipe", "Resources"])));
-        assert!(roots.contains(&abs(&["opt", "Freenpipe", "lib", "Freenpipe"])));
+        assert_eq!(roots[0], abs(&["opt", "Handvel", "bin"]));
+        assert!(roots.contains(&abs(&["opt", "Handvel", "Resources"])));
+        assert!(roots.contains(&abs(&["opt", "Handvel", "lib", "Handvel"])));
     }
 
     #[test]
     fn cli_next_to_the_executable_is_found() {
-        let root = abs(&["apps", "Freenpipe"]);
+        let root = abs(&["apps", "Handvel"]);
         let cli = root.join(cli_file_name());
         let found = resolve_cli_with(None, &[root.clone()], files(&[&cli]));
         assert_eq!(found, Some(cli));
@@ -382,7 +382,7 @@ mod tests {
 
     #[test]
     fn env_override_wins_when_it_points_at_a_file() {
-        let root = abs(&["apps", "Freenpipe"]);
+        let root = abs(&["apps", "Handvel"]);
         let bundled = root.join(cli_file_name());
         let custom = abs(&["dev", "target", "release", cli_file_name()]);
         let found = resolve_cli_with(
@@ -395,7 +395,7 @@ mod tests {
 
     #[test]
     fn unusable_env_override_falls_back_to_the_bundled_cli() {
-        let root = abs(&["apps", "Freenpipe"]);
+        let root = abs(&["apps", "Handvel"]);
         let bundled = root.join(cli_file_name());
         for bad in ["relative/screenpipe", ""] {
             let found =
@@ -433,18 +433,18 @@ mod tests {
     #[test]
     fn posix_shim_uses_forward_slashes_for_windows_paths() {
         let shim = posix_shim(
-            Path::new(r"C:\Program Files\Freenpipe\screenpipe.exe"),
+            Path::new(r"C:\Program Files\Handvel\screenpipe.exe"),
             true,
         );
-        assert!(shim.contains("'C:/Program Files/Freenpipe/screenpipe.exe'"));
+        assert!(shim.contains("'C:/Program Files/Handvel/screenpipe.exe'"));
         assert!(!shim.contains('\\'));
     }
 
     #[test]
     fn cmd_shim_quotes_and_escapes_percent() {
-        let shim = cmd_shim(Path::new(r"C:\Users\a%b\Freenpipe\screenpipe.exe"));
+        let shim = cmd_shim(Path::new(r"C:\Users\a%b\Handvel\screenpipe.exe"));
         assert!(shim.starts_with("@echo off\r\n"));
-        assert!(shim.contains("\"C:\\Users\\a%%b\\Freenpipe\\screenpipe.exe\" %*"));
+        assert!(shim.contains("\"C:\\Users\\a%%b\\Handvel\\screenpipe.exe\" %*"));
         assert!(shim.contains("exit /b %ERRORLEVEL%"));
     }
 

@@ -43,7 +43,7 @@ const SETTINGS_SECTIONS = [
   { id: 'speakers', keywords: ['speaker', 'voice'] },
 ] as const;
 
-// Upstream's hosted account, usage-credit, team and referral pages. Freenpipe
+// Upstream's hosted account, usage-credit, team and referral pages. Handvel
 // has none of those services, so the sections must not come back.
 const RETIRED_SECTIONS = ['account', 'usage', 'team', 'referral'] as const;
 

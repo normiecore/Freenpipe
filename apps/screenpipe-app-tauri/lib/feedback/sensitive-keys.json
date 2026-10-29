@@ -1,5 +1,5 @@
 {
-  "description": "Settings keys whose values are masked before settings go into a Freenpipe diagnostics bundle. A key is compared after lower-casing it and dropping every character that is not a letter or digit (so apiKey, api_key and API-KEY all read as apikey). It is sensitive when it contains one of the fragments or ends with one of the suffixes, unless it is listed under exceptions. Read by lib/feedback/sensitive-settings.ts and src-tauri/src/feedback_upload/redact.rs; change both test suites when you change this file.",
+  "description": "Settings keys whose values are masked before settings go into a Handvel diagnostics bundle. A key is compared after lower-casing it and dropping every character that is not a letter or digit (so apiKey, api_key and API-KEY all read as apikey). It is sensitive when it contains one of the fragments or ends with one of the suffixes, unless it is listed under exceptions. Read by lib/feedback/sensitive-settings.ts and src-tauri/src/feedback_upload/redact.rs; change both test suites when you change this file.",
   "fragments": [
     "token",
     "apikey",

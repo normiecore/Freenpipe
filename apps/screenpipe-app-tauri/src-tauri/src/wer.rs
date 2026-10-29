@@ -1,5 +1,5 @@
-// Freenpipe — local-first screen & audio memory (fork of screenpipe @ 892199f, MIT)
-// https://github.com/normiecore/Freenpipe
+// Handvel — local-first screen & audio memory (fork of screenpipe @ 892199f, MIT)
+// https://github.com/normiecore/Handvel
 
 //! Local crash dumps for crashes Rust's panic hook cannot see (shell-017).
 //!
@@ -508,10 +508,10 @@ mod tests {
         assert_eq!(crash_dumps_dir(data), Path::new("/data/crash-dumps"));
         assert_eq!(pending_dir(data), Path::new("/data/crash-dumps/pending"));
         assert_eq!(
-            harvest_sources(data, Some(Path::new("/opt/freenpipe"))),
+            harvest_sources(data, Some(Path::new("/opt/handvel"))),
             vec![
                 PathBuf::from("/data/crash-dumps/pending"),
-                PathBuf::from("/opt/freenpipe/crash-dumps")
+                PathBuf::from("/opt/handvel/crash-dumps")
             ]
         );
         // An executable in the data dir must not harvest into itself.
@@ -527,16 +527,16 @@ mod tests {
         let data = tmp.path().join("data");
         let exe_dir = tmp.path().join("install");
         let pending = pending_dir(&data);
-        touch(&pending.join("Freenpipe-1-20261020T101500Z.dmp"), b"one");
+        touch(&pending.join("Handvel-1-20261020T101500Z.dmp"), b"one");
         touch(
-            &exe_dir.join("crash-dumps/Freenpipe-2-20261020T101600Z.dmp"),
+            &exe_dir.join("crash-dumps/Handvel-2-20261020T101600Z.dmp"),
             b"two",
         );
         touch(
-            &pending.join("Freenpipe-3-20261020T101700Z.dmp.partial"),
+            &pending.join("Handvel-3-20261020T101700Z.dmp.partial"),
             b"busy",
         );
-        let dead = pending.join("Freenpipe-4-20261019T101700Z.dmp.partial");
+        let dead = pending.join("Handvel-4-20261019T101700Z.dmp.partial");
         touch(&dead, b"dead");
         set_age(&dead, STALE_PARTIAL_AGE + Duration::from_secs(60));
         touch(&pending.join("notes.txt"), b"keep me");
@@ -556,17 +556,17 @@ mod tests {
         assert_eq!(
             sorted_files(&dest),
             vec![
-                "Freenpipe-1-20261020T101500Z.dmp",
-                "Freenpipe-2-20261020T101600Z.dmp"
+                "Handvel-1-20261020T101500Z.dmp",
+                "Handvel-2-20261020T101600Z.dmp"
             ]
         );
         assert_eq!(
-            fs::read(dest.join("Freenpipe-2-20261020T101600Z.dmp")).unwrap(),
+            fs::read(dest.join("Handvel-2-20261020T101600Z.dmp")).unwrap(),
             b"two"
         );
         assert_eq!(
             sorted_files(&pending),
-            vec!["Freenpipe-3-20261020T101700Z.dmp.partial", "notes.txt"]
+            vec!["Handvel-3-20261020T101700Z.dmp.partial", "notes.txt"]
         );
 
         // A second run finds nothing new.

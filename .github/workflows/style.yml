@@ -1,7 +1,7 @@
 name: Code Quality & Optimization
 
 on:
-  # Freenpipe: dispatch-only; upstream's clippy/fmt/knip/machete gate fails on the inherited base. Re-enable once the tree is clean.
+  # Handvel: dispatch-only; upstream's clippy/fmt/knip/machete gate fails on the inherited base. Re-enable once the tree is clean.
   workflow_dispatch:
 
 concurrency:

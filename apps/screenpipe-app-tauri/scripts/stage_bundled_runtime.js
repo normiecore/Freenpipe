@@ -1,5 +1,5 @@
-// Freenpipe — local-first screen & audio memory (fork of screenpipe @ 892199f, MIT)
-// https://github.com/normiecore/Freenpipe
+// Handvel — local-first screen & audio memory (fork of screenpipe @ 892199f, MIT)
+// https://github.com/normiecore/Handvel
 
 // Stages the runtime files the Windows installer ships next to the app, under
 // src-tauri/bundled/ (mapped as bundle resources in tauri.windows.conf.json):
@@ -60,7 +60,7 @@ import { inflateRawSync } from 'zlib'
 // GitHub's LFS media endpoint for crates/screenpipe-audio/models/pyannote/,
 // addressed by the import commit so the files cannot change.
 export const DEFAULT_PYANNOTE_BASE_URL =
-	'https://media.githubusercontent.com/media/normiecore/Freenpipe/bcef0bcde5e6ea12db811a27047ef63869b7374a/crates/screenpipe-audio/models/pyannote'
+	'https://media.githubusercontent.com/media/normiecore/Handvel/bcef0bcde5e6ea12db811a27047ef63869b7374a/crates/screenpipe-audio/models/pyannote'
 
 // Same values as crates/screenpipe-audio/src/speaker/models.rs (a test keeps
 // them in sync). Size and hash come from the repository's Git LFS pointers;
@@ -126,7 +126,7 @@ export const DIRECTML_PACKAGE = {
 /** File names the Vulkan loader is staged under (same names as screenpipe's install). */
 export const VULKAN_LOADER = { dll: 'vulkan-1.dll', licence: 'VulkanRT-License.txt' }
 
-/** PE machine types of the Windows architectures Freenpipe ships. */
+/** PE machine types of the Windows architectures Handvel ships. */
 export const PE_MACHINE = { x64: 0x8664, arm64: 0xaa64 }
 
 export const MCP_ENTRY = path.join('mcp', 'screenpipe-mcp.js')
