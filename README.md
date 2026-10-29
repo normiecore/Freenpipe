@@ -6,9 +6,19 @@ It is a fork of screenpipe at commit `892199f` (2026-06-10), the last upstream c
 
 Handvel is not affiliated with or endorsed by the screenpipe project or its owners. See [NOTICE.md](NOTICE.md).
 
+## Install
+
+Download the installer for your platform from the [latest release](https://github.com/normiecore/Handvel/releases/latest). Windows (x64) is the primary platform: run `Handvel_<version>_x64-setup.exe`. It installs for the current user, so no administrator rights are needed.
+
+- **Builds are not code-signed yet.** Windows SmartScreen shows "Windows protected your PC": choose **More info**, then **Run anyway**. On macOS, right-click the app and choose **Open** the first time.
+- **No automatic updates yet.** Download new versions from the releases page.
+- Handvel uses screenpipe's data folder (`~/.screenpipe`) and port 3030, so quit screenpipe before starting Handvel (see "Drop-in compatibility" below).
+
+macOS and Linux builds are published too, but they are not tested in this fork.
+
 ## Status
 
-Handvel is in active development and has no release yet. Work is organised in numbered waves of work packages:
+Handvel is in early development; v0.1.0 is its first release. Work is organised in numbered waves of work packages:
 
 - [docs/clean-room/PLAN.md](docs/clean-room/PLAN.md) is the plan: waves 0 to 8, each work package with its dependencies, owned files and acceptance checks.
 - [docs/clean-room/STATUS.md](docs/clean-room/STATUS.md) is the generated progress board.
