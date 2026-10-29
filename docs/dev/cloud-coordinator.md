@@ -17,7 +17,7 @@ or a brand-new coordinator session continues from there with nothing else.
 2. State:
    ```bash
    . ~/.freenpipe-env.sh && git fetch -q origin && python3 tools/plan/status.py
-   gh api 'repos/normiecore/Freenpipe/pulls?state=open&per_page=100' --jq '.[] | [.number, .head.ref, .draft, .head.sha[0:8]] | @tsv'
+   gh api 'repos/normiecore/Handvel/pulls?state=open&per_page=100' --jq '.[] | [.number, .head.ref, .draft, .head.sha[0:8]] | @tsv'
    ```
    Also check the session's own background work (`/workflows`, task notifications). A workflow that
    is still running owns its WPs; do not start a second one for them.
@@ -84,7 +84,7 @@ or a brand-new coordinator session continues from there with nothing else.
 The workflow script lives at `tools/cloud/workflows/wp-batch.js`. Start it with the Workflow tool:
 
 ```text
-Workflow({scriptPath: "/home/user/Freenpipe/tools/cloud/workflows/wp-batch.js",
+Workflow({scriptPath: "/home/user/Handvel/tools/cloud/workflows/wp-batch.js",
           args: {base: "<origin/main sha>", session_url: "<this session's URL>",
                  wps: [{id: "W2-01", title: "<title from PLAN.md>"},
                        {id: "W2-02", title: "...", mode: "ci-fix", ci_failure: "..."}]}})
@@ -127,7 +127,7 @@ branch.
 ## Starting a fresh coordinator session
 
 If the coordinator session itself is gone (archived, or its conversation is unusable), start a new
-Claude Code cloud session on `normiecore/Freenpipe` in the Handvel environment with this prompt:
+Claude Code cloud session on `normiecore/Handvel` in the Handvel environment with this prompt:
 
 ```text
 You are the Handvel COORDINATOR. Read docs/dev/cloud-coordinator.md and follow it exactly:

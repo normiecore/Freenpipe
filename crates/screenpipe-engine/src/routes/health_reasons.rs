@@ -1,5 +1,5 @@
 // Handvel — local-first screen & audio memory (fork of screenpipe @ 892199f, MIT)
-// https://github.com/normiecore/Freenpipe
+// https://github.com/normiecore/Handvel
 
 //! Pure decision logic behind `/health` v2: `vision_reason`, the audio
 //! `capture_status`, the startup phase, the audio `runtime` component view

@@ -86,7 +86,7 @@ Wave 0 ran on the PC before the cloud phase. Tick anything you already checked t
 - [ ] **SMK-W0-03-1** (UI smoke) The updater is off by default, and the manual check opens the releases page
   - Setup: `scripts/dev/app-dev.sh` with a fresh `FP_DD`.
   - Steps: 1. Start the app and wait one minute. 2. Use the manual update-check action (Settings or tray).
-  - Expected: no automatic update request at start; the manual action opens https://github.com/normiecore/Freenpipe/releases in the browser (DECISIONS.md 3).
+  - Expected: no automatic update request at start; the manual action opens https://github.com/normiecore/Handvel/releases in the browser (DECISIONS.md 3).
   - Result:
 
 ### W0-04 Remove entitlement, login and plan gates
@@ -112,7 +112,7 @@ Wave 0 ran on the PC before the cloud phase. Tick anything you already checked t
 - [ ] **SMK-W0-05-3** (UI smoke) Help links and the changelog go to GitHub
   - Setup: app dev run; network available.
   - Steps: 1. Home > Help. 2. Click Documentation, Discussions, Feature ideas, Bug reports and Changelog in turn. 3. Open the changelog dialog (overlay window, or a `screenpipe://changelog` deep link). 4. Disconnect the network, clear `freenpipe:changelog-cache` from the webview's localStorage (devtools) and open the dialog again.
-  - Expected: every Help link opens a page under github.com/normiecore/Freenpipe; there is no Discord, YouTube or booking link. The dialog lists GitHub releases (or the empty-state link to the releases page when none are published); offline with no cache it shows the bundled CHANGELOG.md.
+  - Expected: every Help link opens a page under github.com/normiecore/Handvel; there is no Discord, YouTube or booking link. The dialog lists GitHub releases (or the empty-state link to the releases page when none are published); offline with no cache it shows the bundled CHANGELOG.md.
   - Result:
 - [ ] **SMK-W0-05-4** (UI smoke) No plan lock or upgrade prompt on connections and onboarding
   - Setup: fresh `FP_DD`; app dev run through onboarding.
@@ -122,7 +122,7 @@ Wave 0 ran on the PC before the cloud phase. Tick anything you already checked t
 - [ ] **SMK-W0-05-5** (Runtime) The CLI has no team command and no vendor links
   - Setup: release-dev engine build.
   - Steps: 1. `screenpipe.exe team devices`. 2. `screenpipe.exe survey`. 3. Run `screenpipe.exe record --port 3035 --data-dir "$FP_DD"` for 6 minutes with a network monitor (Resource Monitor) open.
-  - Expected: 1 fails with a clap "unrecognized subcommand" error. 2 prints the GitHub Discussions and new-issue links and opens nothing. 3 prints at most a tip pointing at github.com/normiecore/Freenpipe; no connection to registry.npmjs.org or any vendor host.
+  - Expected: 1 fails with a clap "unrecognized subcommand" error. 2 prints the GitHub Discussions and new-issue links and opens nothing. 3 prints at most a tip pointing at github.com/normiecore/Handvel; no connection to registry.npmjs.org or any vendor host.
   - Result:
 
 ### W0-06 AI gateway, transcription, PII backend and media analysis to bring-your-own
@@ -261,7 +261,7 @@ Wave 0 ran on the PC before the cloud phase. Tick anything you already checked t
 - [ ] **SMK-W0-10-3** (UI smoke) Completion actions: show in folder and the prefilled GitHub issue
   - Setup: as SMK-W0-10-1, after a bundle was saved.
   - Steps: 1. Click "show in folder". 2. Click "open github issue".
-  - Expected: 1. Explorer opens with the zip selected. 2. The browser opens `https://github.com/normiecore/Freenpipe/issues/new` with the title and body filled in (note, Handvel version, Windows version, bundle file name) and no full local path; nothing is attached or submitted automatically.
+  - Expected: 1. Explorer opens with the zip selected. 2. The browser opens `https://github.com/normiecore/Handvel/issues/new` with the title and body filled in (note, Handvel version, Windows version, bundle file name) and no full local path; nothing is attached or submitted automatically.
   - Result:
 - [ ] **SMK-W0-10-4** (UI smoke) "Save logs" on the engine-down and onboarding-stuck screens
   - Setup: app dev run; make the engine fail to start (for example, occupy the dev port first with `python -m http.server 3035`).

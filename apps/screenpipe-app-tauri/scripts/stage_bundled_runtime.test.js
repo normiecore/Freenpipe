@@ -1,5 +1,5 @@
 // Handvel — local-first screen & audio memory (fork of screenpipe @ 892199f, MIT)
-// https://github.com/normiecore/Freenpipe
+// https://github.com/normiecore/Handvel
 
 // Run from apps/screenpipe-app-tauri: bun test scripts/stage_bundled_runtime.test.js
 
@@ -68,7 +68,7 @@ describe('pyannote model table', () => {
 		)
 		expect(pyannoteModelUrl(m, 'file:///tmp')).toBe(`${DEFAULT_PYANNOTE_BASE_URL}/${m.asset}`)
 		expect(DEFAULT_PYANNOTE_BASE_URL).toMatch(
-			/^https:\/\/media\.githubusercontent\.com\/media\/normiecore\/Freenpipe\/[0-9a-f]{40}\/crates\/screenpipe-audio\/models\/pyannote$/,
+			/^https:\/\/media\.githubusercontent\.com\/media\/normiecore\/Handvel\/[0-9a-f]{40}\/crates\/screenpipe-audio\/models\/pyannote$/,
 		)
 	})
 

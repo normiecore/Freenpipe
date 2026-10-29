@@ -1,5 +1,5 @@
 // Handvel — local-first screen & audio memory (fork of screenpipe @ 892199f, MIT)
-// https://github.com/normiecore/Freenpipe
+// https://github.com/normiecore/Handvel
 
 import { describe, expect, it, vi } from "vitest";
 import {
@@ -16,7 +16,7 @@ const RELEASES = [
     tag_name: "v0.2.0",
     name: "Handvel 0.2.0",
     body: "## Fixes\r\n- one\r\n",
-    html_url: "https://github.com/normiecore/Freenpipe/releases/tag/v0.2.0",
+    html_url: "https://github.com/normiecore/Handvel/releases/tag/v0.2.0",
     published_at: "2026-10-01T12:00:00Z",
     draft: false,
     prerelease: false,
@@ -54,7 +54,7 @@ describe("parseGithubReleases", () => {
     });
     expect(entries[1].title).toBe("v0.3.0-rc1");
     expect(entries[1].date).toBe("");
-    expect(entries[1].url).toBe("https://github.com/normiecore/Freenpipe/releases/tag/v0.3.0-rc1");
+    expect(entries[1].url).toBe("https://github.com/normiecore/Handvel/releases/tag/v0.3.0-rc1");
     expect(entries[1].prerelease).toBe(true);
   });
 
@@ -66,7 +66,7 @@ describe("parseGithubReleases", () => {
 
 describe("loadChangelog", () => {
   it("reads the Handvel GitHub releases and caches them", async () => {
-    expect(RELEASES_API_URL).toBe("https://api.github.com/repos/normiecore/Freenpipe/releases?per_page=50");
+    expect(RELEASES_API_URL).toBe("https://api.github.com/repos/normiecore/Handvel/releases?per_page=50");
     const fetchImpl = vi.fn(async () => jsonResponse(RELEASES));
     const storage = memoryStorage();
 

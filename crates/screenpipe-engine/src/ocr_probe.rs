@@ -1,5 +1,5 @@
 // Handvel — local-first screen & audio memory (fork of screenpipe @ 892199f, MIT)
-// https://github.com/normiecore/Freenpipe
+// https://github.com/normiecore/Handvel
 
 //! Probes once at engine start whether the platform OCR engine can run
 //! (Windows recognizer languages, tesseract elsewhere) and publishes the

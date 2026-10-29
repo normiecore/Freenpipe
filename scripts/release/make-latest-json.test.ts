@@ -1,5 +1,5 @@
 // Handvel — local-first screen & audio memory (fork of screenpipe @ 892199f, MIT)
-// https://github.com/normiecore/Freenpipe
+// https://github.com/normiecore/Handvel
 
 /**
  * Tests for the release manifest generator. Run from the repository root:
@@ -32,7 +32,7 @@ import {
 
 const FIXTURES = join(import.meta.dir, "fixtures");
 const BUNDLES = join(FIXTURES, "bundle");
-const BASE_URL = "https://github.com/normiecore/Freenpipe/releases/download/v1.2.3";
+const BASE_URL = "https://github.com/normiecore/Handvel/releases/download/v1.2.3";
 
 const GOLDEN_ARGS = [
   "--version", "v1.2.3",

@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Handvel — local-first screen & audio memory (fork of screenpipe @ 892199f, MIT)
-# https://github.com/normiecore/Freenpipe
+# https://github.com/normiecore/Handvel
 #
 # Per-session setup for a Handvel cloud session (Claude Code cloud VM, Ubuntu 24.04 x86_64).
 # Idempotent: every step checks before it acts, so running it again is cheap.

@@ -1,5 +1,5 @@
 // Handvel — local-first screen & audio memory (fork of screenpipe @ 892199f, MIT)
-// https://github.com/normiecore/Freenpipe
+// https://github.com/normiecore/Handvel
 
 //! Prefilled "new issue" link for the Handvel tracker.
 //!
@@ -8,7 +8,7 @@
 //! automatically.
 
 /// Where new issues are filed.
-pub const NEW_ISSUE_URL: &str = "https://github.com/normiecore/Freenpipe/issues/new";
+pub const NEW_ISSUE_URL: &str = "https://github.com/normiecore/Handvel/issues/new";
 
 /// Stay well under the URL length browsers and GitHub accept.
 const MAX_URL_CHARS: usize = 7_000;
@@ -127,7 +127,7 @@ mod tests {
     #[test]
     fn targets_the_freenpipe_tracker_with_a_prefilled_form() {
         let url = new_issue_url(&details("Timeline stays blank\nafter wake from sleep"));
-        assert!(url.starts_with("https://github.com/normiecore/Freenpipe/issues/new?"), "{url}");
+        assert!(url.starts_with("https://github.com/normiecore/Handvel/issues/new?"), "{url}");
         let q = query(&url);
         assert_eq!(q["title"], "Timeline stays blank");
         let body = &q["body"];

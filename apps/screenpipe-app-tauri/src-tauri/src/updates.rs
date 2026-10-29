@@ -1502,7 +1502,7 @@ pub fn start_update_check(
 mod tests {
     use super::*;
 
-    const REPO: &str = "https://github.com/normiecore/Freenpipe";
+    const REPO: &str = "https://github.com/normiecore/Handvel";
 
     fn github_feed() -> ReleaseFeed {
         ReleaseFeed::from_endpoint(&format!("{REPO}/releases/latest/download/latest.json"))
@@ -1612,7 +1612,7 @@ mod tests {
 
         // Not the latest-download shape, or an unsafe segment: plain URL.
         for url in [
-            "https://github.com/normiecore/Freenpipe/releases/download/v1/latest.json",
+            "https://github.com/normiecore/Handvel/releases/download/v1/latest.json",
             "https://github.com/../Handvel/releases/latest/download/latest.json",
         ] {
             assert!(matches!(ReleaseFeed::from_endpoint(url), ReleaseFeed::Url(_)), "{url}");

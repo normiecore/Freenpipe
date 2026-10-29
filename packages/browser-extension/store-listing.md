@@ -22,7 +22,7 @@ PRIVACY AND SECURITY
 - The extension does nothing unless the local Handvel server is running
 - Code runs in a tab only when one of your local pipes asks for it
 - No tracking, no analytics, no data collection
-- Source code (MIT): https://github.com/normiecore/Freenpipe
+- Source code (MIT): https://github.com/normiecore/Handvel
 
 REQUIREMENTS
 - The Handvel desktop app running on the same machine
@@ -35,10 +35,10 @@ Productivity
 English
 
 ## Privacy Policy URL
-https://github.com/normiecore/Freenpipe/blob/main/packages/browser-extension/PRIVACY.md
+https://github.com/normiecore/Handvel/blob/main/packages/browser-extension/PRIVACY.md
 
 ## Website
-https://github.com/normiecore/Freenpipe
+https://github.com/normiecore/Handvel
 
 ## Support URL
-https://github.com/normiecore/Freenpipe/issues
+https://github.com/normiecore/Handvel/issues

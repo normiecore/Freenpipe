@@ -1,5 +1,5 @@
 // Handvel — local-first screen & audio memory (fork of screenpipe @ 892199f, MIT)
-// https://github.com/normiecore/Freenpipe
+// https://github.com/normiecore/Handvel
 
 // The enterprise and plan-gate commands are registered so a frontend written
 // against screenpipe's bindings compiles. Each one answers for a personal

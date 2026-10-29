@@ -23,7 +23,7 @@ New source files (.rs, .ts, .tsx, .js, .jsx, .swift, .py) carry this header as t
 
 ```
 // Handvel — local-first screen & audio memory (fork of screenpipe @ 892199f, MIT)
-// https://github.com/normiecore/Freenpipe
+// https://github.com/normiecore/Handvel
 ```
 
 Use `#` for Python. When you edit an existing upstream file, leave its original header alone; it is attribution.

@@ -1,5 +1,5 @@
 // Handvel — local-first screen & audio memory (fork of screenpipe @ 892199f, MIT)
-// https://github.com/normiecore/Freenpipe
+// https://github.com/normiecore/Handvel
 
 // The team and organisation-policy hooks used to talk to the vendor's
 // services. In Handvel they answer for a personal install and must never

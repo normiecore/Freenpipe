@@ -9,7 +9,7 @@ export const meta = {
   ],
 }
 // Handvel — local-first screen & audio memory (fork of screenpipe @ 892199f, MIT)
-// https://github.com/normiecore/Freenpipe
+// https://github.com/normiecore/Handvel
 
 const { wp, title, pr, session_url, other_wps } = args
 const WT = `/root/.cache/freenpipe/wt/${wp}`
@@ -37,7 +37,7 @@ const REVIEW = {
   required: ['verdict', 'findings', 'summary'],
 }
 
-const RULES = `Rules: run \`. ~/.freenpipe-env.sh\` before builds; the cargo target dir is shared, so wait on its lock. Never use git reset --hard, git clean, git checkout -- ., git stash, rebase or force-push. Never edit /home/user/Freenpipe or other worktrees. Push only with \`python3 tools/cloud/fp.py push\` from inside ${WT}. After a passing \`bun run build\`, delete ${WT}/apps/screenpipe-app-tauri/.next (disk is small). Commit messages end with:
+const RULES = `Rules: run \`. ~/.freenpipe-env.sh\` before builds; the cargo target dir is shared, so wait on its lock. Never use git reset --hard, git clean, git checkout -- ., git stash, rebase or force-push. Never edit /home/user/Handvel or other worktrees. Push only with \`python3 tools/cloud/fp.py push\` from inside ${WT}. After a passing \`bun run build\`, delete ${WT}/apps/screenpipe-app-tauri/.next (disk is small). Commit messages end with:
 
 ${TRAILER}`
 

@@ -1,5 +1,5 @@
 // Handvel — local-first screen & audio memory (fork of screenpipe @ 892199f, MIT)
-// https://github.com/normiecore/Freenpipe
+// https://github.com/normiecore/Handvel
 
 //! Writes the diagnostics zip.
 //!
@@ -648,7 +648,7 @@ fn readme(input: &BundleInput) -> String {
          \n\
          This file was written on your computer and has not been sent anywhere.\n\
          Share it only if you choose to, for example by attaching it to an issue at\n\
-         https://github.com/normiecore/Freenpipe/issues\n\
+         https://github.com/normiecore/Handvel/issues\n\
          \n\
          What is inside\n\
          - feedback.txt: what you wrote, if anything.\n\

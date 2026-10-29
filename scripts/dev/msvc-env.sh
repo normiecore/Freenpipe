@@ -1,5 +1,5 @@
 # Handvel — local-first screen & audio memory (fork of screenpipe @ 892199f, MIT)
-# https://github.com/normiecore/Freenpipe
+# https://github.com/normiecore/Handvel
 #
 # Load the MSVC (VS 2022 Build Tools) + Windows SDK build environment into a
 # Git Bash shell, the equivalent of opening an "x64 Native Tools" prompt.

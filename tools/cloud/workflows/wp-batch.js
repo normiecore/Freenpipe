@@ -10,7 +10,7 @@ export const meta = {
   ],
 }
 // Handvel — local-first screen & audio memory (fork of screenpipe @ 892199f, MIT)
-// https://github.com/normiecore/Freenpipe
+// https://github.com/normiecore/Handvel
 //
 // Run with the Workflow tool: {scriptPath: "<repo>/tools/cloud/workflows/wp-batch.js", args: {...}}.
 // A workflow runs at most min(16, CPUs - 2) agents at once, so on a 4-CPU VM give each run one or
@@ -18,7 +18,7 @@ export const meta = {
 // draft PR description, review comment); nothing here depends on this VM surviving.
 
 const BASE = args.base
-const REPO = args.repo || '/home/user/Freenpipe'
+const REPO = args.repo || '/home/user/Handvel'
 const SESSION = args.session_url || ''
 const LEAN = !!args.lean   // owner decision 6: one combined reviewer reading the diff, CI as the build gate, one fix round
 const MAX_ROUND = LEAN ? 1 : 2
@@ -117,7 +117,7 @@ ${SHARED_RULES}
 The coordinator's notes on the failure:
 ${w.ci_failure || '(none; find it yourself)'}
 
-Read the failing job logs yourself: \`python3 tools/cloud/fp.py ci <PR> --why\` names the failed jobs and steps; read logs with the GitHub MCP tool mcp__github__get_job_logs (load it with ToolSearch "select:mcp__github__get_job_logs"; owner normiecore, repo Freenpipe, return_content true, tail_lines 400 or more), because direct log downloads are blocked here. Root-cause the failure. Windows-only code cannot be built here: read it carefully and make the fix obviously right. Follow docs/dev/cloud-runbook.md section 3.9/3.10 rules; never skip, disable or quarantine a test to get green. If the failure is not this branch's (it is red on main too), say so with evidence instead of changing code. ${commitRule}
+Read the failing job logs yourself: \`python3 tools/cloud/fp.py ci <PR> --why\` names the failed jobs and steps; read logs with the GitHub MCP tool mcp__github__get_job_logs (load it with ToolSearch "select:mcp__github__get_job_logs"; owner normiecore, repo Handvel, return_content true, tail_lines 400 or more), because direct log downloads are blocked here. Root-cause the failure. Windows-only code cannot be built here: read it carefully and make the fix obviously right. Follow docs/dev/cloud-runbook.md section 3.9/3.10 rules; never skip, disable or quarantine a test to get green. If the failure is not this branch's (it is red on main too), say so with evidence instead of changing code. ${commitRule}
 
 Finish with everything committed and pushed (fp.py push). Return head_sha, pushed, one response per root cause found (finding = the failure, action fixed|rebutted|deferred, note) and the checks you ran.
 ${w.extra || ''}`

@@ -40,8 +40,8 @@ write the same config: `screenpipe mcp setup`.
 ### Option 2: Build from source
 
 ```bash
-git clone https://github.com/normiecore/Freenpipe
-cd Freenpipe/packages/screenpipe-mcp
+git clone https://github.com/normiecore/Handvel
+cd Handvel/packages/screenpipe-mcp
 bun install
 bun run build
 ```
@@ -230,8 +230,8 @@ deletable at any time (`rm -rf ~/.screenpipe` removes everything).
 
 ### Source code
 The Handvel MCP server is MIT-licensed and the entire source is
-public at <https://github.com/normiecore/Freenpipe/tree/main/packages/screenpipe-mcp>.
+public at <https://github.com/normiecore/Handvel/tree/main/packages/screenpipe-mcp>.
 
 ### Contact
 Questions or concerns: open an issue at
-<https://github.com/normiecore/Freenpipe/issues>.
+<https://github.com/normiecore/Handvel/issues>.

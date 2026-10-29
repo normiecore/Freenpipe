@@ -1,5 +1,5 @@
 // Handvel — local-first screen & audio memory (fork of screenpipe @ 892199f, MIT)
-// https://github.com/normiecore/Freenpipe
+// https://github.com/normiecore/Handvel
 
 //! The embedded sqlx migration set, and how a database moves between Handvel
 //! and screenpipe v2.7.104 without either side re-running or rejecting

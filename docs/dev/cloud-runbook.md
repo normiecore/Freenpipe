@@ -63,7 +63,7 @@ repository. Only git and GitHub carry state between sessions.
   the harness adds is fine.
 - **Push with `python3 tools/cloud/fp.py push`.** It detects when another session has taken over your
   branch (then you stop and pick other work) and absorbs the merger's sync merges.
-- **PRs, comments, CI and merges go through the REST API** (`fp.py`, or `gh api repos/normiecore/Freenpipe/...`).
+- **PRs, comments, CI and merges go through the REST API** (`fp.py`, or `gh api repos/normiecore/Handvel/...`).
   `gh pr` and `gh issue` use GraphQL, which the proxy blocks.
 - In your VM checkout you may switch branches freely; CLAUDE.md's ban on `git reset --hard`,
   `git clean`, `git checkout -- .` and `git stash` still applies to work you did not write.
@@ -182,7 +182,7 @@ available to you; pick another). A claim is an empty commit `claim: <WP-ID> by w
 4. Read the code at the owner paths. For a `resume` or `takeover`, read
    `git log --stat origin/main..HEAD` first and continue from there.
 5. If the WP's PR already exists (it can, after a takeover), read its description:
-   `gh api repos/normiecore/Freenpipe/pulls?head=normiecore:wp/<WP-ID>`.
+   `gh api repos/normiecore/Handvel/pulls?head=normiecore:wp/<WP-ID>`.
 
 ### 3.3 Implement and checkpoint
 
@@ -478,7 +478,7 @@ reasons), main CI state, and any wave integration recorded.
 | Windows-only build error | Cannot reproduce in the VM | Fix from the log and annotations, push, let CI judge. |
 | Spec ambiguity | The spec does not settle a detail | Decide, document it in the PR, append it to `docs/clean-room/OPEN-QUESTIONS.md`. |
 | Spec gap or schema gap | The WP cannot be done as specified (for example a needed migration, which later WPs must not add) | Open the PR with what is done, `fp.py block <PR> --reason "..."`, report it, and move on. |
-| WP blocked by another WP | A dependency is merged but incomplete | Comment on the PR (`gh api repos/normiecore/Freenpipe/issues/<PR>/comments -f body=...`), block it, move on. |
+| WP blocked by another WP | A dependency is merged but incomplete | Comment on the PR (`gh api repos/normiecore/Handvel/issues/<PR>/comments -f body=...`), block it, move on. |
 | Merge conflict | GitHub reports `mergeable: false` | The merger runs `fp.py sync-main` (4.3). |
 | Main red after merges | Two PRs passed alone but not together | Merger re-runs once (4.5), then a worker takes `fix-main` (3.10). |
 | `bun install` fails in the VM | Bun and the cloud proxy disagree | Frontend build and tests run only in CI. |

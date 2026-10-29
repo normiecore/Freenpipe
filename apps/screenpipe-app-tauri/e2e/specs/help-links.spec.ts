@@ -1,5 +1,5 @@
 // Handvel — local-first screen & audio memory (fork of screenpipe @ 892199f, MIT)
-// https://github.com/normiecore/Freenpipe
+// https://github.com/normiecore/Handvel
 
 // The Help section points at the project's GitHub pages (docs, discussions,
 // issues, releases). Upstream also linked a vendor Discord server, a booking

@@ -15,7 +15,7 @@ a pipe is an AI automation that works on your recorded screen and audio data. ea
 
 upstream's pipe store was a catalogue hosted on the vendor's servers. Handvel does not use it, so the store listings from the vendor are not available.
 
-the store comes back as work package WR-01 (owner decision 5 in [DECISIONS.md](https://github.com/normiecore/Freenpipe/blob/main/docs/clean-room/DECISIONS.md)): a static registry kept in the `registry/` directory of the [Handvel repository](https://github.com/normiecore/Freenpipe), used by default and replaceable with your own registry URL. installs are checked against a sha256 recorded in the registry. publishing a pipe means opening a pull request that adds its folder to the registry, and CI validates the submission. progress is tracked in [STATUS.md](https://github.com/normiecore/Freenpipe/blob/main/docs/clean-room/STATUS.md).
+the store comes back as work package WR-01 (owner decision 5 in [DECISIONS.md](https://github.com/normiecore/Handvel/blob/main/docs/clean-room/DECISIONS.md)): a static registry kept in the `registry/` directory of the [Handvel repository](https://github.com/normiecore/Handvel), used by default and replaceable with your own registry URL. installs are checked against a sha256 recorded in the registry. publishing a pipe means opening a pull request that adds its folder to the registry, and CI validates the submission. progress is tracked in [STATUS.md](https://github.com/normiecore/Handvel/blob/main/docs/clean-room/STATUS.md).
 
 until then, use the built-in template pipes below or write your own.
 
@@ -125,4 +125,4 @@ a pipe is a folder with a `pipe.md` file, so you can share it as a file or throu
 | **privacy controls** | restrict what data a pipe can access with [permissions](/pipe-permissions) |
 | **shareable** | a pipe is one file, so it can be shared like any other file |
 
-need help building a pipe? open a [GitHub issue](https://github.com/normiecore/Freenpipe/issues).
+need help building a pipe? open a [GitHub issue](https://github.com/normiecore/Handvel/issues).

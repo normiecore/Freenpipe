@@ -1,5 +1,5 @@
 // Handvel — local-first screen & audio memory (fork of screenpipe @ 892199f, MIT)
-// https://github.com/normiecore/Freenpipe
+// https://github.com/normiecore/Handvel
 
 //! Speakers v2 (W2-16): five-table merge integrity, guarded speaker deletion,
 //! reassign scope and undo, paginated search, playable samples, the speaker

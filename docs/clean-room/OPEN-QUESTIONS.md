@@ -47,7 +47,7 @@ WP, so parallel WPs never conflict). This file keeps the wave 0 entries.
   **Reason:** cloud-023 asks for exactly that, and scripts that call it keep working.
 
 - **Question:** where does the changelog dialog read from, and when?
-  **Decision:** the unauthenticated GitHub Releases API of normiecore/Freenpipe, only when the
+  **Decision:** the unauthenticated GitHub Releases API of normiecore/Handvel, only when the
   dialog opens, cached for one hour in localStorage (`freenpipe:changelog-cache`); a stale cache is
   shown when GitHub is unreachable, and the bundled `CHANGELOG.md` when there is nothing cached.
   **Reason:** cloud-023 names both sources; reading only on open keeps the app from making
@@ -307,7 +307,7 @@ WP, so parallel WPs never conflict). This file keeps the wave 0 entries.
 1. **Where is the "Handvel-controlled mirror" for the pyannote models, and what are the file names?**
    - Decision: this repository's own Git LFS storage, read through GitHub's media endpoint at the
      import commit:
-     `https://media.githubusercontent.com/media/normiecore/Freenpipe/bcef0bcde5e6ea12db811a27047ef63869b7374a/crates/screenpipe-audio/models/pyannote/`
+     `https://media.githubusercontent.com/media/normiecore/Handvel/bcef0bcde5e6ea12db811a27047ef63869b7374a/crates/screenpipe-audio/models/pyannote/`
      followed by the repository file name, percent-encoded (`segmentation-3.0.onnx`,
      `wespeaker_en_voxceleb_CAM%2B%2B.onnx`). `DEFAULT_MODEL_BASE_URL` in
      `crates/screenpipe-audio/src/speaker/models.rs` and `scripts/stage_bundled_runtime.js` use the same

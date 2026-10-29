@@ -12,7 +12,7 @@ import { hermesYaml } from "@/lib/mcp-config";
 
 // Skills are read from this repository's product copies (the same files
 // the app installs into its own agent sessions).
-const SKILLS_SOURCE = "github:normiecore/Freenpipe/crates/screenpipe-core/assets/skills";
+const SKILLS_SOURCE = "github:normiecore/Handvel/crates/screenpipe-core/assets/skills";
 
 export function HermesCard() {
   return (

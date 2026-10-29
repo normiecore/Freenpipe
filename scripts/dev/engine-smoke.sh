@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Handvel — local-first screen & audio memory (fork of screenpipe @ 892199f, MIT)
-# https://github.com/normiecore/Freenpipe
+# https://github.com/normiecore/Handvel
 #
 # Engine smoke test with dev isolation (docs/dev/windows-build.md):
 #   1. start the engine on the dev port with the isolated data dir,

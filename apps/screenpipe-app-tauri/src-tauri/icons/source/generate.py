@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # Handvel — local-first screen & audio memory (fork of screenpipe @ 892199f, MIT)
-# https://github.com/normiecore/Freenpipe
+# https://github.com/normiecore/Handvel
 """Regenerate every Handvel icon, installer image and in-app illustration.
 
 The mark is a lowercase "f" with a dot (a recording light) on a rounded

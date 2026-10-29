@@ -60,7 +60,7 @@ if you're running a custom LLM server (Qwen, vLLM, Text Generation WebUI, etc.),
 
 - check what path your server uses for model listing (`/models`, `/v1/list`, etc.)
 - if unsure, test with curl first: `curl {your-endpoint}/path-to-models`
-- open a [GitHub issue](https://github.com/normiecore/Freenpipe/issues) with the details of your setup
+- open a [GitHub issue](https://github.com/normiecore/Handvel/issues) with the details of your setup
 
 example: a Qwen server on `http://localhost:5000` with OpenAI-compatible API should work automatically. if Handvel can't find models, verify the server responds to: `curl http://localhost:5000/v1/models`
 
@@ -137,6 +137,6 @@ Handvel tries both OpenAI and Ollama formats. if neither works:
    - vLLM: `/v1/models` (OpenAI-compatible)
    - Text Generation WebUI: `/api/v1/models` (may vary)
 
-if stuck, open a [GitHub issue](https://github.com/normiecore/Freenpipe/issues) with your endpoint URL structure and error logs.
+if stuck, open a [GitHub issue](https://github.com/normiecore/Handvel/issues) with your endpoint URL structure and error logs.
 
-need help? open a [GitHub issue](https://github.com/normiecore/Freenpipe/issues).
+need help? open a [GitHub issue](https://github.com/normiecore/Handvel/issues).

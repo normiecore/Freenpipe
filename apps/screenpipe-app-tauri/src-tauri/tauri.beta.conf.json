@@ -48,7 +48,7 @@
   "plugins": {
     "updater": {
       "endpoints": [
-        "https://github.com/normiecore/Freenpipe/releases/download/prerelease/latest.json"
+        "https://github.com/normiecore/Handvel/releases/download/prerelease/latest.json"
       ],
       "pubkey": ""
     },

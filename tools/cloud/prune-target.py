@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # Handvel — local-first screen & audio memory (fork of screenpipe @ 892199f, MIT)
-# https://github.com/normiecore/Freenpipe
+# https://github.com/normiecore/Handvel
 """Free disk in the shared cargo target dir without disturbing running builds.
 
 A worktree's own builds of the Handvel crates (see cargo-wt.py) are dead once the worktree is

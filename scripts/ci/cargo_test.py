@@ -1,5 +1,5 @@
 # Handvel — local-first screen & audio memory (fork of screenpipe @ 892199f, MIT)
-# https://github.com/normiecore/Freenpipe
+# https://github.com/normiecore/Handvel
 """Run `cargo test` for CI with the test quarantine applied, and summarise it.
 
     python scripts/ci/cargo_test.py --platform windows --suite engine [--quarantined]

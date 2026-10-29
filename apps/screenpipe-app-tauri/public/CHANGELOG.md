@@ -6,4 +6,4 @@ Handvel has no tagged release yet. This build is a development snapshot of the o
 - No telemetry, no hosted account and no vendor services. Cloud features use your own keys or self-hosted servers.
 - Release notes for tagged builds appear here once releases are published on GitHub.
 
-#### **Project:** [github.com/normiecore/Freenpipe](https://github.com/normiecore/Freenpipe)
+#### **Project:** [github.com/normiecore/Handvel](https://github.com/normiecore/Handvel)

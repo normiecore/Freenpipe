@@ -14,7 +14,7 @@ At <https://claude.ai/code/routines>, choose **New routine** and set:
 | Name | `freenpipe worker-1` (and so on, see the table below) |
 | Instructions | the prompt below, exactly |
 | Model | the strongest model you have (use the same one for all five) |
-| Repository | `normiecore/Freenpipe` only |
+| Repository | `normiecore/Handvel` only |
 | Environment | `freenpipe` |
 | Trigger | Schedule, hourly (then set the exact minute, see "Schedules") |
 | Connectors | remove all; none is needed |

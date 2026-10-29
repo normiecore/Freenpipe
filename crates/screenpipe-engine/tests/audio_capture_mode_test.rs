@@ -1,5 +1,5 @@
 // Handvel — local-first screen & audio memory (fork of screenpipe @ 892199f, MIT)
-// https://github.com/normiecore/Freenpipe
+// https://github.com/normiecore/Handvel
 
 //! Audio routes under `audioCaptureMode` (audio-010, audio-026) and the
 //! device status event (audio-018), served through the real router. No port

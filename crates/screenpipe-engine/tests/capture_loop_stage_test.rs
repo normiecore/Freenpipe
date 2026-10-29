@@ -1,5 +1,5 @@
 // Handvel — local-first screen & audio memory (fork of screenpipe @ 892199f, MIT)
-// https://github.com/normiecore/Freenpipe
+// https://github.com/normiecore/Handvel
 
 //! `/health` reports the capture loop that has been in its current stage the
 //! longest (`loop_stage`, `loop_stage_age_secs`), as published by the loops'

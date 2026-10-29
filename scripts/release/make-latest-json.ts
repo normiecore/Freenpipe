@@ -1,6 +1,6 @@
 #!/usr/bin/env bun
 // Handvel — local-first screen & audio memory (fork of screenpipe @ 892199f, MIT)
-// https://github.com/normiecore/Freenpipe
+// https://github.com/normiecore/Handvel
 
 /**
  * Build a Tauri updater manifest (`latest.json`, static format) from the
@@ -9,7 +9,7 @@
  *
  *   bun scripts/release/make-latest-json.ts \
  *     --version 1.2.3 \
- *     --base-url https://github.com/normiecore/Freenpipe/releases/download/v1.2.3 \
+ *     --base-url https://github.com/normiecore/Handvel/releases/download/v1.2.3 \
  *     --bundle x86_64-pc-windows-msvc=path/to/bundle \
  *     [--bundle <rust target>=<bundle dir> ...] \
  *     [--artifact <platform key>=<artifact file> ...] \

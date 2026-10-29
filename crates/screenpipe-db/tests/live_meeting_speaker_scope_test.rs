@@ -1,5 +1,5 @@
 // Handvel — local-first screen & audio memory (fork of screenpipe @ 892199f, MIT)
-// https://github.com/normiecore/Freenpipe
+// https://github.com/normiecore/Handvel
 
 //! Stream-scoped live meeting speakers (db-014, audio-001), the guarded
 //! per-chunk speaker backfill (audio-008), strict meeting-segment to global

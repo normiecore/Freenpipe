@@ -480,7 +480,7 @@ curl -X POST http://localhost:11435/notify \
 | `actions` | array | No | Action buttons |
 
 **Supported link types in body markdown:**
-- Web URLs: `[repo](https://github.com/normiecore/Freenpipe)`: opens in browser
+- Web URLs: `[repo](https://github.com/normiecore/Handvel)`: opens in browser
 - File paths: `[notes](~/notes/file.md)` or `[log](/var/log/app.log)` — opens in default app
 - Deeplinks: `[timeline](screenpipe://timeline)` — navigates within screenpipe
 

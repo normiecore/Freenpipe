@@ -46,7 +46,7 @@ export function screenpipeWebUrl(path: string): string | null {
   return base ? joinUrl(base, path) : null;
 }
 
-export const FREENPIPE_REPO_URL = "https://github.com/normiecore/Freenpipe";
+export const FREENPIPE_REPO_URL = "https://github.com/normiecore/Handvel";
 
 export type FreenpipeLinkKind =
   | "repo"

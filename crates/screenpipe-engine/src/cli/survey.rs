@@ -34,8 +34,8 @@ mod tests {
     #[test]
     fn points_at_github_discussions_and_issues() {
         let text = feedback_lines().join("\n");
-        assert!(text.contains("https://github.com/normiecore/Freenpipe/discussions"));
-        assert!(text.contains("https://github.com/normiecore/Freenpipe/issues/new"));
+        assert!(text.contains("https://github.com/normiecore/Handvel/discussions"));
+        assert!(text.contains("https://github.com/normiecore/Handvel/issues/new"));
     }
 
     #[test]

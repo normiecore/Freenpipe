@@ -36,7 +36,7 @@ const MAX_RECOVERY_RETRIES: u8 = 1;
 /// Default download location: GitHub's Git LFS media endpoint for this
 /// repository's `crates/screenpipe-audio/models/pyannote/` folder, addressed
 /// by the import commit (not a branch), so the files behind it cannot change.
-pub const DEFAULT_MODEL_BASE_URL: &str = "https://media.githubusercontent.com/media/normiecore/Freenpipe/bcef0bcde5e6ea12db811a27047ef63869b7374a/crates/screenpipe-audio/models/pyannote";
+pub const DEFAULT_MODEL_BASE_URL: &str = "https://media.githubusercontent.com/media/normiecore/Handvel/bcef0bcde5e6ea12db811a27047ef63869b7374a/crates/screenpipe-audio/models/pyannote";
 
 /// Overrides [`DEFAULT_MODEL_BASE_URL`]; the asset name is appended.
 pub const MODEL_BASE_URL_ENV: &str = "SCREENPIPE_PYANNOTE_BASE_URL";
@@ -542,7 +542,7 @@ mod tests {
 
     #[test]
     fn default_download_source_is_the_freenpipe_mirror() {
-        let prefix = "https://media.githubusercontent.com/media/normiecore/Freenpipe/";
+        let prefix = "https://media.githubusercontent.com/media/normiecore/Handvel/";
         assert!(DEFAULT_MODEL_BASE_URL.starts_with(prefix));
         // Pinned to a full commit id, never a branch or tag that can move.
         let commit = DEFAULT_MODEL_BASE_URL[prefix.len()..]

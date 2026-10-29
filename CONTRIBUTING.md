@@ -59,8 +59,8 @@ Follow [docs/dev/windows-build.md](docs/dev/windows-build.md). It covers the too
 
 3. Clone and build:
    ```bash
-   git clone https://github.com/normiecore/Freenpipe
-   cd Freenpipe
+   git clone https://github.com/normiecore/Handvel
+   cd Handvel
    cargo build --release --features metal,apple-intelligence
    ./target/release/screenpipe
    ```
@@ -84,8 +84,8 @@ Follow [docs/dev/windows-build.md](docs/dev/windows-build.md). It covers the too
 
 2. Clone and build:
    ```bash
-   git clone https://github.com/normiecore/Freenpipe
-   cd Freenpipe
+   git clone https://github.com/normiecore/Handvel
+   cd Handvel
    cargo build --release
    ./target/release/screenpipe
    ```
@@ -122,7 +122,7 @@ Use a throwaway data directory, especially when you test new database migrations
 
 ## How to contribute
 
-Questions, bug reports and proposals go to [GitHub issues](https://github.com/normiecore/Freenpipe/issues).
+Questions, bug reports and proposals go to [GitHub issues](https://github.com/normiecore/Handvel/issues).
 
 ### Reporting bugs
 

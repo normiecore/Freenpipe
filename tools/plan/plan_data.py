@@ -1,5 +1,5 @@
 # Handvel — local-first screen & audio memory (fork of screenpipe @ 892199f, MIT)
-# https://github.com/normiecore/Freenpipe
+# https://github.com/normiecore/Handvel
 #
 # Work-package data for docs/clean-room/PLAN.md and docs/clean-room/plan_wps.json.
 # Imported by plan_build.py; regenerate with `python3 tools/plan/plan_build.py` after editing.
@@ -94,7 +94,7 @@ wp("W0-03", 0, "M", "Updater on GitHub releases, release pipeline de-vendoring, 
     ".github/workflows/release-cli.yml", ".github/workflows/sync-skills.yml", "packages/cli (npm postinstall scripts)",
     "docs/mintlify/docs-mintlify-mig-tmp/docs.json (analytics block)", "scripts/release/make-latest-json.ts (new)"],
    ["W0-01"],
-   "Point the Tauri updater at github.com/normiecore/Freenpipe releases with a new minisign public key; stable reads "
+   "Point the Tauri updater at github.com/normiecore/Handvel releases with a new minisign public key; stable reads "
    "releases/latest/download/latest.json, pre-release (beta maps to it) reads a fixed-tag manifest; drop bearer auth and the "
    "auth_required flow; rollback uses per-tag manifests with allowDowngrades. Add restart_for_update(timeout_secs) wrapping the base "
    "restart gate, writing the local update-attempt marker and update-install/update-recovery logs (refuse symlinks). In CI replace the "
@@ -1986,7 +1986,7 @@ wp("WR-01", 6, "L", "Pipe store on a GitHub-hosted registry",
     ".github/workflows/registry-validate.yml (new)"],
    ["W0-08", "W2-22", "W5-01"],
    "Make the pipe store work out of the box without vendor servers. Define a static registry format (index.json listing id, name, "
-   "description, author, version, permissions, sha256, source path) served from raw.githubusercontent.com of normiecore/Freenpipe "
+   "description, author, version, permissions, sha256, source path) served from raw.githubusercontent.com of normiecore/Handvel "
    "(registry/ directory on main) as the DEFAULT registry URL, overridable by SCREENPIPE_API_BASE_URL or a settings key. Implement "
    "list/search/detail/install/update against it with sha256 verification and the existing typed registry_* errors. 'Publish' "
    "produces a ready-to-PR pipe folder plus instructions (opens the GitHub new-PR page); a CI workflow validates registry PRs "
@@ -2041,7 +2041,7 @@ wp("WR-04", 7, "L", "Composio integrations (BYO key) and workflow sharing",
    "Composio's public API directly; list available toolkits, connect accounts via Composio's hosted auth links, and expose connected "
    "tools to the agent like other connections. Workflow sharing: export a workflow (definition, steps, optional SOP video, redacted "
    "by default) as a signed .fpworkflow bundle, import it with a preview and permission review, and browse/publish to a gallery "
-   "index under registry/workflows/ on normiecore/Freenpipe (publish = generated PR folder, like WR-01). Training-data contribution "
+   "index under registry/workflows/ on normiecore/Handvel (publish = generated PR folder, like WR-01). Training-data contribution "
    "remains removed.",
    ["cargo test: Composio client against a wiremock server (toolkit list, connect link, tool call) with key from the secret store",
     "Round-trip: export a workflow, import on a fresh data dir, it runs; the bundle contains no unredacted PII by default",

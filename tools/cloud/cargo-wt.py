@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # Handvel — local-first screen & audio memory (fork of screenpipe @ 892199f, MIT)
-# https://github.com/normiecore/Freenpipe
+# https://github.com/normiecore/Handvel
 """`cargo` wrapper that keeps WP worktrees from sharing builds of the Handvel crates.
 
 All worktrees share one CARGO_TARGET_DIR so third-party crates are built once. Cargo names a path

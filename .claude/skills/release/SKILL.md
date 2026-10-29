@@ -72,7 +72,7 @@ gh run view <RUN_ID> --json status,conclusion,jobs --jq '{status: .status, concl
 ```
 
 ### 5. Test the Draft Release
-- Download the installers from the GitHub release the workflow created (https://github.com/normiecore/Freenpipe/releases)
+- Download the installers from the GitHub release the workflow created (https://github.com/normiecore/Handvel/releases)
 - Test on macOS and Windows
 - Verify updater artifacts exist (.tar.gz, .sig files)
 

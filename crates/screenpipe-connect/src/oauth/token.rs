@@ -1,5 +1,5 @@
 // Handvel — local-first screen & audio memory (fork of screenpipe @ 892199f, MIT)
-// https://github.com/normiecore/Freenpipe
+// https://github.com/normiecore/Handvel
 
 //! Direct calls to a provider's OAuth token endpoint (RFC 6749 §4.1.3, §6)
 //! with the user's own client credentials, plus mapping of the many shapes

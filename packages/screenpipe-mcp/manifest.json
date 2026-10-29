@@ -7,15 +7,15 @@
   "long_description": "Handvel records your screen and audio on your own machine and indexes them for search. This extension connects Claude to your local Handvel instance so it can search what you have seen and heard.",
   "author": {
     "name": "Handvel",
-    "url": "https://github.com/normiecore/Freenpipe"
+    "url": "https://github.com/normiecore/Handvel"
   },
   "repository": {
     "type": "git",
-    "url": "https://github.com/normiecore/Freenpipe"
+    "url": "https://github.com/normiecore/Handvel"
   },
-  "homepage": "https://github.com/normiecore/Freenpipe",
-  "documentation": "https://github.com/normiecore/Freenpipe/tree/main/packages/screenpipe-mcp",
-  "support": "https://github.com/normiecore/Freenpipe/issues",
+  "homepage": "https://github.com/normiecore/Handvel",
+  "documentation": "https://github.com/normiecore/Handvel/tree/main/packages/screenpipe-mcp",
+  "support": "https://github.com/normiecore/Handvel/issues",
   "license": "MIT",
   "server": {
     "type": "node",
@@ -59,6 +59,6 @@
   },
   "keywords": ["screen-recording", "ocr", "audio-transcription", "automation", "memory", "search"],
   "privacy_policies": [
-    "https://github.com/normiecore/Freenpipe/tree/main/packages/screenpipe-mcp#privacy-policy"
+    "https://github.com/normiecore/Handvel/tree/main/packages/screenpipe-mcp#privacy-policy"
   ]
 }

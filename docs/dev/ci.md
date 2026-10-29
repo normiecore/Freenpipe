@@ -162,11 +162,11 @@ repository's 10 GB cache budget, so a second writer would evict main's.
 Until the first main push after this workflow lands, every run builds cold.
 
 ```bash
-gh api "repos/normiecore/Freenpipe/actions/cache/usage"
-gh api "repos/normiecore/Freenpipe/actions/caches?per_page=100" \
+gh api "repos/normiecore/Handvel/actions/cache/usage"
+gh api "repos/normiecore/Handvel/actions/caches?per_page=100" \
   --jq '.actions_caches[] | [.ref, .key, (.size_in_bytes/1e9|tostring)] | @tsv'
 # drop stale caches of a ref:
-gh api -X DELETE "repos/normiecore/Freenpipe/actions/caches?key=<key>&ref=refs/heads/<branch>"
+gh api -X DELETE "repos/normiecore/Handvel/actions/caches?key=<key>&ref=refs/heads/<branch>"
 ```
 
 ## Test quarantine
@@ -207,7 +207,7 @@ step. Treat a recurring warning as a bug to fix, not as noise.
 auth at all; job logs, reruns and dispatches do.
 
 ```bash
-R=repos/normiecore/Freenpipe
+R=repos/normiecore/Handvel
 SHA=$(git rev-parse HEAD)
 
 # Every check on a commit: the merge gate in one call

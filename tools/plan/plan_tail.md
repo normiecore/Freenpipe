@@ -44,13 +44,13 @@ Implementers must choose sensible values and document them in code comments.
 4. **Hybrid Parquet storage** (db-021..024, retention-008, parts of frontend-039/044). It is opt-in in the target, and it is five XL/L WPs with real data-loss risk. Is it required for parity, or should it be deferred and the waves after W5 trimmed?
 5. **SQLite toolchain jump** (W0-11). Is the move to sqlx 0.9 / libsqlite3-sys 0.37 acceptable? The alternative is to stay on 0.7 and give up the 3.51.3 guard, embedded recovery and the vtab.
 6. **Git dependencies under the vendor's orgs.** Should they be mirrored under normiecore after the date and licence check? May the target's newer audiopipe revision be used if its licence is clearly MIT or Apache?
-7. **Updater and releases.** Who creates the minisign key and the GitHub release secrets for normiecore/Freenpipe? Is `autoUpdate` defaulting to true (as in the target) acceptable for Handvel?
+7. **Updater and releases.** Who creates the minisign key and the GitHub release secrets for normiecore/Handvel? Is `autoUpdate` defaulting to true (as in the target) acceptable for Handvel?
 8. **Localization.** Ship English only with the ja catalogue scaffolded, or commission a Japanese translation?
 9. **Third-party, user-initiated network features.** Are these acceptable to keep: the MCP registry search (registry.modelcontextprotocol.io), ACP agent npm installs, Cursor Cloud (api.cursor.com), the GitHub skill install and the Bee pairing service? The Bee pairing app id would have to be supplied by the user.
 10. **Default narration provider** for SOP videos. Captions-only (silent) unless the user configures TTS, or local Windows SAPI?
 11. **React version.** Follow the target to React 19 now (W2-25), or stay on React 18 until the feature UIs land?
 12. **Built-in pipe and skill content.** 21 pipes and 20 starter skills need fresh prose. Should all of them be written for parity, or a curated subset?
-13. **CI.** Does normiecore/Freenpipe have Windows GitHub Actions runners for the build, test and installer pipeline that W0-03 produces?
+13. **CI.** Does normiecore/Handvel have Windows GitHub Actions runners for the build, test and installer pipeline that W0-03 produces?
 
 ## 13. Regenerating this plan
 

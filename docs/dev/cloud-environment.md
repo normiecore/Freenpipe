@@ -7,7 +7,7 @@ themselves follow [cloud-runbook.md](cloud-runbook.md).
 ## 1. Give Claude access to the repository
 
 1. Open <https://github.com/apps/claude> and choose **Configure** (or **Install**).
-2. Pick the `normiecore` account, select **Only select repositories**, add **normiecore/Freenpipe**, and
+2. Pick the `normiecore` account, select **Only select repositories**, add **normiecore/Handvel**, and
    save.
 3. At <https://claude.ai/code>, finish onboarding if it asks you to connect GitHub.
 
@@ -154,7 +154,7 @@ Notes:
 
 ## 3. Check the environment
 
-Start a session at <https://claude.ai/code> on **normiecore/Freenpipe** with the `freenpipe`
+Start a session at <https://claude.ai/code> on **normiecore/Handvel** with the `freenpipe`
 environment and this prompt:
 
 ```text

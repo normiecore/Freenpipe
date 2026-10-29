@@ -65,17 +65,17 @@
     "links": [
       {
         "label": "issues",
-        "href": "https://github.com/normiecore/Freenpipe/issues"
+        "href": "https://github.com/normiecore/Handvel/issues"
       }
     ],
     "primary": {
       "type": "github",
-      "href": "https://github.com/normiecore/Freenpipe"
+      "href": "https://github.com/normiecore/Handvel"
     }
   },
   "footer": {
     "socials": {
-      "github": "https://github.com/normiecore/Freenpipe"
+      "github": "https://github.com/normiecore/Handvel"
     }
   },
   "search": {

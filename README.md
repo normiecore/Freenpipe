@@ -78,4 +78,4 @@ MIT. See [LICENSE.md](LICENSE.md) for the licence and the upstream copyright, an
 
 Read [CONTRIBUTING.md](CONTRIBUTING.md) first. Contributions follow the clean-room rules in [CLAUDE.md](CLAUDE.md): no post-relicense upstream material, original code, and upstream names only for interoperability identifiers.
 
-Report bugs and propose changes through [GitHub issues](https://github.com/normiecore/Freenpipe/issues).
+Report bugs and propose changes through [GitHub issues](https://github.com/normiecore/Handvel/issues).

@@ -1,5 +1,5 @@
 # Handvel — local-first screen & audio memory (fork of screenpipe @ 892199f, MIT)
-# https://github.com/normiecore/Freenpipe
+# https://github.com/normiecore/Handvel
 #
 # Clean-room verbatim gate. Flags any run of N plain words in the given files that also occurs
 # in the reverse-engineering corpus of the shipped screenpipe v2.7.104 binary. The corpus is

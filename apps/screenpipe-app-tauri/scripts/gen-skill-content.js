@@ -18,7 +18,7 @@ const repoRoot = path.resolve(__dirname, '../../..')
 const outFile = path.resolve(__dirname, '../lib/generated/screenpipe-skills.ts')
 
 // export name -> canonical SKILL.md (the same folders the agent cards'
-// `... skills install github:normiecore/Freenpipe/...` one-liners install from).
+// `... skills install github:normiecore/Handvel/...` one-liners install from).
 const SKILLS_DIR = 'crates/screenpipe-core/assets/skills'
 const SOURCES = {
 	SCREENPIPE_API_SKILL_MD: path.join(repoRoot, SKILLS_DIR, 'screenpipe-api/SKILL.md'),

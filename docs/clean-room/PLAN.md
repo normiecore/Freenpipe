@@ -217,7 +217,7 @@ Acceptance:
 - **Depends on:** W0-01
 - **Specs:** specs/cloud.md cloud-012, cloud-041, cloud-V02; specs/shell.md shell-016 (merged)
 
-Point the Tauri updater at github.com/normiecore/Freenpipe releases with a new minisign public key; stable reads releases/latest/download/latest.json, pre-release (beta maps to it) reads a fixed-tag manifest; drop bearer auth and the auth_required flow; rollback uses per-tag manifests with allowDowngrades. Add restart_for_update(timeout_secs) wrapping the base restart gate, writing the local update-attempt marker and update-install/update-recovery logs (refuse symlinks). In CI replace the R2 upload with a GitHub release plus a generated latest.json, delete Sentry symbol uploads, strip the npm postinstall PostHog ping, the docs analytics block and any job that pulls from the upstream repo.
+Point the Tauri updater at github.com/normiecore/Handvel releases with a new minisign public key; stable reads releases/latest/download/latest.json, pre-release (beta maps to it) reads a fixed-tag manifest; drop bearer auth and the auth_required flow; rollback uses per-tag manifests with allowDowngrades. Add restart_for_update(timeout_secs) wrapping the base restart gate, writing the local update-attempt marker and update-install/update-recovery logs (refuse symlinks). In CI replace the R2 upload with a GitHub release plus a generated latest.json, delete Sentry symbol uploads, strip the npm postinstall PostHog ping, the docs analytics block and any job that pulls from the upstream repo.
 
 Owner paths:
 - `apps/screenpipe-app-tauri/src-tauri/src/updates.rs`
@@ -3132,7 +3132,7 @@ Acceptance:
 - **Depends on:** W0-08, W2-22, W5-01
 - **Specs:** specs/cloud.md cloud-021; specs/agents_pipes.md agents_pipes-037
 
-Make the pipe store work out of the box without vendor servers. Define a static registry format (index.json listing id, name, description, author, version, permissions, sha256, source path) served from raw.githubusercontent.com of normiecore/Freenpipe (registry/ directory on main) as the DEFAULT registry URL, overridable by SCREENPIPE_API_BASE_URL or a settings key. Implement list/search/detail/install/update against it with sha256 verification and the existing typed registry_* errors. 'Publish' produces a ready-to-PR pipe folder plus instructions (opens the GitHub new-PR page); a CI workflow validates registry PRs (schema, sha256, frontmatter, no vendor hosts). Seed the registry with the built-in pipe catalogue once W7-08 lands (until then, with 3 sample pipes written fresh).
+Make the pipe store work out of the box without vendor servers. Define a static registry format (index.json listing id, name, description, author, version, permissions, sha256, source path) served from raw.githubusercontent.com of normiecore/Handvel (registry/ directory on main) as the DEFAULT registry URL, overridable by SCREENPIPE_API_BASE_URL or a settings key. Implement list/search/detail/install/update against it with sha256 verification and the existing typed registry_* errors. 'Publish' produces a ready-to-PR pipe folder plus instructions (opens the GitHub new-PR page); a CI workflow validates registry PRs (schema, sha256, frontmatter, no vendor hosts). Seed the registry with the built-in pipe catalogue once W7-08 lands (until then, with 3 sample pipes written fresh).
 
 Owner paths:
 - `registry/ (new: index.json, pipes/<id>/pipe.md, schema.json, README.md)`
@@ -3330,7 +3330,7 @@ Acceptance:
 - **Depends on:** W2-20, W6-07, WR-01
 - **Specs:** specs/cloud.md cloud-035, cloud-038
 
-Composio: restore the Composio-brokered integrations using the user's own Composio API key (stored in the secret store), calling Composio's public API directly; list available toolkits, connect accounts via Composio's hosted auth links, and expose connected tools to the agent like other connections. Workflow sharing: export a workflow (definition, steps, optional SOP video, redacted by default) as a signed .fpworkflow bundle, import it with a preview and permission review, and browse/publish to a gallery index under registry/workflows/ on normiecore/Freenpipe (publish = generated PR folder, like WR-01). Training-data contribution remains removed.
+Composio: restore the Composio-brokered integrations using the user's own Composio API key (stored in the secret store), calling Composio's public API directly; list available toolkits, connect accounts via Composio's hosted auth links, and expose connected tools to the agent like other connections. Workflow sharing: export a workflow (definition, steps, optional SOP video, redacted by default) as a signed .fpworkflow bundle, import it with a preview and permission review, and browse/publish to a gallery index under registry/workflows/ on normiecore/Handvel (publish = generated PR folder, like WR-01). Training-data contribution remains removed.
 
 Owner paths:
 - `crates/screenpipe-connect/src/connections/composio.rs (new)`
@@ -3917,13 +3917,13 @@ Implementers must choose sensible values and document them in code comments.
 4. **Hybrid Parquet storage** (db-021..024, retention-008, parts of frontend-039/044). It is opt-in in the target, and it is five XL/L WPs with real data-loss risk. Is it required for parity, or should it be deferred and the waves after W5 trimmed?
 5. **SQLite toolchain jump** (W0-11). Is the move to sqlx 0.9 / libsqlite3-sys 0.37 acceptable? The alternative is to stay on 0.7 and give up the 3.51.3 guard, embedded recovery and the vtab.
 6. **Git dependencies under the vendor's orgs.** Should they be mirrored under normiecore after the date and licence check? May the target's newer audiopipe revision be used if its licence is clearly MIT or Apache?
-7. **Updater and releases.** Who creates the minisign key and the GitHub release secrets for normiecore/Freenpipe? Is `autoUpdate` defaulting to true (as in the target) acceptable for Handvel?
+7. **Updater and releases.** Who creates the minisign key and the GitHub release secrets for normiecore/Handvel? Is `autoUpdate` defaulting to true (as in the target) acceptable for Handvel?
 8. **Localization.** Ship English only with the ja catalogue scaffolded, or commission a Japanese translation?
 9. **Third-party, user-initiated network features.** Are these acceptable to keep: the MCP registry search (registry.modelcontextprotocol.io), ACP agent npm installs, Cursor Cloud (api.cursor.com), the GitHub skill install and the Bee pairing service? The Bee pairing app id would have to be supplied by the user.
 10. **Default narration provider** for SOP videos. Captions-only (silent) unless the user configures TTS, or local Windows SAPI?
 11. **React version.** Follow the target to React 19 now (W2-25), or stay on React 18 until the feature UIs land?
 12. **Built-in pipe and skill content.** 21 pipes and 20 starter skills need fresh prose. Should all of them be written for parity, or a curated subset?
-13. **CI.** Does normiecore/Freenpipe have Windows GitHub Actions runners for the build, test and installer pipeline that W0-03 produces?
+13. **CI.** Does normiecore/Handvel have Windows GitHub Actions runners for the build, test and installer pipeline that W0-03 produces?
 
 ## 13. Regenerating this plan
 

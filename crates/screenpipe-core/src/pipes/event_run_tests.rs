@@ -1,5 +1,5 @@
 // Handvel — local-first screen & audio memory (fork of screenpipe @ 892199f, MIT)
-// https://github.com/normiecore/Freenpipe
+// https://github.com/normiecore/Handvel
 
 //! Tests for event-run claims, run outcome checks and the meeting-summary
 //! finalizer, through the real scheduler where it matters.
