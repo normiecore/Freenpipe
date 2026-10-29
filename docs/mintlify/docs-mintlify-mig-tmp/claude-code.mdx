@@ -1,11 +1,11 @@
 ---
 title: "Claude Code - AI coding with screen context"
 sidebarTitle: "claude code"
-description: "Use Freenpipe with Claude Code CLI to give Claude access to your screen history, meeting transcriptions, and app context while coding."
+description: "Use Handvel with Claude Code CLI to give Claude access to your screen history, meeting transcriptions, and app context while coding."
 icon: "terminal"
 ---
 
-[Claude Code](https://code.claude.com) is Anthropic's official CLI for agentic coding. with Freenpipe integration, Claude can reference what you've been working on, recall information from your screen, and access meeting transcriptions.
+[Claude Code](https://code.claude.com) is Anthropic's official CLI for agentic coding. with Handvel integration, Claude can reference what you've been working on, recall information from your screen, and access meeting transcriptions.
 
 ## setup
 
@@ -40,7 +40,7 @@ once connected, Claude Code has access to these tools:
 
 ## usage examples
 
-ask Claude Code to use Freenpipe naturally:
+ask Claude Code to use Handvel naturally:
 
 ```
 > what was I looking at in my browser an hour ago?
@@ -121,7 +121,7 @@ ask Claude Code to use Freenpipe naturally:
 
 ## requirements
 
-- Freenpipe running on localhost:3030
+- Handvel running on localhost:3030
 - Claude Code CLI installed
 - Node.js >= 18.0.0
 
@@ -129,13 +129,13 @@ ask Claude Code to use Freenpipe naturally:
 
 **AI agent crashed with "Error: AI agent crashed — restarting automatically..."?**
 
-this happens when Claude Code can't communicate with Freenpipe or Freenpipe encounters an error. try these steps in order:
+this happens when Claude Code can't communicate with Handvel or Handvel encounters an error. try these steps in order:
 
-1. **check Freenpipe is running:**
+1. **check Handvel is running:**
    ```bash
    curl http://localhost:3030/health
    ```
-   you should see `{"status":"healthy"}`. if this fails, start Freenpipe first.
+   you should see `{"status":"healthy"}`. if this fails, start Handvel first.
 
 2. **verify MCP is connected:**
    ```bash
@@ -143,11 +143,11 @@ this happens when Claude Code can't communicate with Freenpipe or Freenpipe enco
    ```
    you should see `screenpipe` in the list with status "ready".
 
-3. **check Freenpipe has recorded data:**
+3. **check Handvel has recorded data:**
    ```bash
    curl "http://localhost:3030/search?limit=1"
    ```
-   if empty, Freenpipe hasn't recorded anything yet—let it run for a minute and try again.
+   if empty, Handvel hasn't recorded anything yet—let it run for a minute and try again.
 
 4. **restart the MCP connection:**
    ```bash
@@ -155,22 +155,22 @@ this happens when Claude Code can't communicate with Freenpipe or Freenpipe enco
    claude mcp add screenpipe --transport stdio -- npx -y screenpipe-mcp
    ```
 
-5. **check Freenpipe logs:**
+5. **check Handvel logs:**
    - macOS/Linux: `~/.screenpipe/screenpipe.log`
    - Windows: check event viewer or `%APPDATA%\screenpipe\logs`
 
 **MCP not connecting?**
-- verify Freenpipe is running: `curl http://localhost:3030/health`
+- verify Handvel is running: `curl http://localhost:3030/health`
 - check MCP status in Claude Code: `/mcp`
 - remove and re-add: `claude mcp remove screenpipe && claude mcp add screenpipe --transport stdio -- npx -y screenpipe-mcp`
 
 **queries returning empty?**
-- check Freenpipe has data: `curl "http://localhost:3030/search?limit=1"`
+- check Handvel has data: `curl "http://localhost:3030/search?limit=1"`
 - ensure screen recording permissions are granted
 - verify the time range you're querying
 
 **permission errors?**
 - macos: check System Settings > Privacy & Security > Screen Recording
-- ensure Freenpipe app is listed and enabled
+- ensure Handvel app is listed and enabled
 
 still stuck? open a [GitHub issue](https://github.com/normiecore/Freenpipe/issues).

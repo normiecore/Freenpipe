@@ -1,4 +1,4 @@
-// Freenpipe — local-first screen & audio memory (fork of screenpipe @ 892199f, MIT)
+// Handvel — local-first screen & audio memory (fork of screenpipe @ 892199f, MIT)
 // https://github.com/normiecore/Freenpipe
 
 //! Decisions the app makes while it starts (shell-019, shell-020,
@@ -395,7 +395,7 @@ mod tests {
         );
         assert_eq!(CALLS.load(Ordering::SeqCst), before + 1);
         assert_eq!(
-            dispatch_helper_mode(&args(&["app", "freenpipe://x"]), TABLE),
+            dispatch_helper_mode(&args(&["app", "handvel://x"]), TABLE),
             None
         );
     }

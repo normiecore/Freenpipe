@@ -1,4 +1,4 @@
-// Freenpipe — local-first screen & audio memory (fork of screenpipe @ 892199f, MIT)
+// Handvel — local-first screen & audio memory (fork of screenpipe @ 892199f, MIT)
 // https://github.com/normiecore/Freenpipe
 
 import { describe, it, expect } from "bun:test";
@@ -19,12 +19,12 @@ import {
 } from "../mcp-config";
 
 const WIN_RUNTIME = {
-  bunPath: "C:\\Program Files\\Freenpipe\\bun.exe",
-  entryPath: "C:\\Program Files\\Freenpipe\\mcp\\screenpipe-mcp.js",
+  bunPath: "C:\\Program Files\\Handvel\\bun.exe",
+  entryPath: "C:\\Program Files\\Handvel\\mcp\\screenpipe-mcp.js",
 };
 const MAC_RUNTIME = {
-  bunPath: "/Applications/Freenpipe.app/Contents/MacOS/bun",
-  entryPath: "/Applications/Freenpipe.app/Contents/Resources/mcp/screenpipe-mcp.js",
+  bunPath: "/Applications/Handvel.app/Contents/MacOS/bun",
+  entryPath: "/Applications/Handvel.app/Contents/Resources/mcp/screenpipe-mcp.js",
 };
 
 const REGISTRY = /@latest|\bnpx\b|\bbunx\b|"x"/;
@@ -118,14 +118,14 @@ describe("other tool formats", () => {
   it("formats Codex TOML with an env table when a key is present", () => {
     const toml = codexMcpToml(launch());
     expect(toml).toContain("[mcp_servers.screenpipe]");
-    expect(toml).toContain('command = "C:\\\\Program Files\\\\Freenpipe\\\\bun.exe"');
+    expect(toml).toContain('command = "C:\\\\Program Files\\\\Handvel\\\\bun.exe"');
     expect(toml).toContain("[mcp_servers.screenpipe.env]");
     expect(toml).toContain('SCREENPIPE_LOCAL_API_KEY = "sp-abc12345"');
   });
 
   it("quotes paths with spaces in the Claude Code command", () => {
     expect(claudeCodeAddCommand(display)).toBe(
-      'claude mcp add screenpipe -- "C:\\Program Files\\Freenpipe\\bun.exe" "C:\\Program Files\\Freenpipe\\mcp\\screenpipe-mcp.js"',
+      'claude mcp add screenpipe -- "C:\\Program Files\\Handvel\\bun.exe" "C:\\Program Files\\Handvel\\mcp\\screenpipe-mcp.js"',
     );
   });
 
@@ -139,11 +139,11 @@ describe("other tool formats", () => {
 });
 
 describe("API key placement", () => {
-  const cli = "C:\\Program Files\\Freenpipe\\screenpipe.exe";
+  const cli = "C:\\Program Files\\Handvel\\screenpipe.exe";
 
   it("onboarding leaves the key to the bundled CLI when there is one", () => {
     expect(shouldEmbedApiKey("cli-or-env", cli)).toBe(false);
-    expect(shouldEmbedApiKey("cli-or-env", "/Applications/Freenpipe.app/Contents/MacOS/screenpipe")).toBe(false);
+    expect(shouldEmbedApiKey("cli-or-env", "/Applications/Handvel.app/Contents/MacOS/screenpipe")).toBe(false);
   });
 
   it("writes the key as a fallback when no CLI ships", () => {

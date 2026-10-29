@@ -8,7 +8,7 @@ gated on the checks below, and a merge waits for all of them to pass.
 
 | Workflow (file) | Runs on | Triggers | Typical wall time |
 |---|---|---|---|
-| **Freenpipe CI** (`freenpipe-ci.yml`) | windows-2022, ubuntu-24.04 | every PR (any base), push to `main` and `ci/**`, dispatch | windows 70 min cold, linux 40 min cold, gates about 5 min (see Durations) |
+| **Handvel CI** (`freenpipe-ci.yml`) | windows-2022, ubuntu-24.04 | every PR (any base), push to `main` and `ci/**`, dispatch | windows 70 min cold, linux 40 min cold, gates about 5 min (see Durations) |
 | Windows CLI Integration Test (`windows-integration-test.yml`) | windows-2022 | every PR, push to `main` and `ci/**`, dispatch | 18-30 min |
 | Secret Scan (trufflehog) (`gitleaks.yml`) | ubuntu | every PR, push to `main` | 1 min |
 | Meeting Detection Eval (`eval-meeting-detection.yml`) | ubuntu | PRs that touch the meeting detector or `crates/screenpipe-meeting-eval`, dispatch | under 30 min (its timeout) |
@@ -19,7 +19,7 @@ gated on the checks below, and a merge waits for all of them to pass.
 Cloud sessions cannot push tags (the git proxy refuses them), so no release
 workflow can start from a cloud session except by dispatch.
 
-### Freenpipe CI jobs
+### Handvel CI jobs
 
 `windows` (windows-2022, 4 vCPU, 16 GB) and `linux` (ubuntu-24.04, the same
 image as the cloud VM) run the same steps:
@@ -116,7 +116,7 @@ licence guard):
   BUSL, Elastic and CC BY-NC are refused by name; unknown identifiers fail
   too; MPL-2.0 and LGPL pass and are listed in the summary for the release
   licence audit), or when a package declares no licence and is neither
-  Freenpipe's own crate nor in the test's commented `DECLARED_ELSEWHERE`
+  Handvel's own crate nor in the test's commented `DECLARED_ELSEWHERE`
   list. Negative tests rebuild the engine manifest in a symlinked overlay
   workspace with `opf-text` or `tinfoil-enclave` switched back on and expect
   the gate to fail. Per-build package counts and failures go to the job
@@ -245,7 +245,7 @@ gh api "$R/actions/runs/<run_id>" --jq .conclusion
 
 A PR may merge when every check run on its head commit has completed with
 `success`, `skipped` or `neutral`, and these five check runs (job names) are
-among them: `windows`, `linux` and `gates` (Freenpipe CI), `trufflehog`
+among them: `windows`, `linux` and `gates` (Handvel CI), `trufflehog`
 (Secret Scan) and `test-windows` (Windows CLI Integration Test). Meeting
 Detection Eval (`eval`) counts when it ran. A pending check is not a pass.
 `python3 tools/cloud/fp.py ci` applies this gate (`tools/plan/status.py`
@@ -268,26 +268,26 @@ gh api -X POST "$R/actions/workflows/freenpipe-ci.yml/dispatches" -f ref=<branch
 
 Rerun a failed job only when the failure looks transient (a network fetch, a
 runner lost); a real test failure fails again. To test CI itself, or any
-commit without a PR, push it to a `ci/<name>` branch: Freenpipe CI and the
+commit without a PR, push it to a `ci/<name>` branch: Handvel CI and the
 Windows integration test run on `ci/**` pushes. A newer push to the same PR
 or branch cancels the run in progress (`main` runs always finish).
 
 ## Upstream workflows
 
 None of upstream's workflow files are deleted. Those that make no sense for
-the fork keep only `workflow_dispatch`, with a one-line `# Freenpipe:`
+the fork keep only `workflow_dispatch`, with a one-line `# Handvel:`
 comment on the trigger saying why:
 
 | Workflow | Was | Now | Why |
 |---|---|---|---|
-| Rust CI (`ci.yml`) | push/PR (path-filtered) | dispatch | Freenpipe CI builds and tests the pinned toolchain on Windows and Linux instead |
+| Rust CI (`ci.yml`) | push/PR (path-filtered) | dispatch | Handvel CI builds and tests the pinned toolchain on Windows and Linux instead |
 | Docs (`docs.yml`) | push/PR (docs paths) | dispatch | validates upstream's Mintlify site, which the fork does not publish |
 | E2E Tests (`e2e-test.yml`) | push/PR to main, dispatch | dispatch | 90-minute UI e2e on three OSes built around upstream flows; it failed on every main push |
 | Audio Eval (`eval-diarization.yml`) | PR (audio paths), dispatch | dispatch | pulls the pyannote models through Git LFS (limited bandwidth) plus about 2.2 GB of datasets per cold run |
 | Code Quality (`style.yml`) | every push and PR | dispatch | upstream's clippy/fmt/knip/machete gate fails on the inherited base; re-enable once the tree is clean |
 | sync-skills (`sync-skills.yml`) | push to main (skill paths), dispatch | dispatch | would open bot PRs mirroring product skills into `.claude/skills`, which cloud sessions load |
 | test-cli-npm-e2e (`test-cli-npm-e2e.yml`) | push/PR (npm CLI paths) | dispatch | macOS-only test of the npm CLI wrapper, which the fork does not publish yet |
-| Frontend Tests (`test-frontend.yml`) | push/PR (app paths) | dispatch | Freenpipe CI runs these suites and the build on Windows and Linux |
+| Frontend Tests (`test-frontend.yml`) | push/PR (app paths) | dispatch | Handvel CI runs these suites and the build on Windows and Linux |
 | Benchmark (`benchmark.yml`) | daily schedule, dispatch | dispatch | needs upstream's self-hosted macOS and Windows runners |
 | close-inactive (`close-inactive.yml`) | daily schedule, dispatch | dispatch | the stale bot would close PRs idle for 7 days |
 | E2E macOS (`e2e-macos.yml`) | 4-hourly schedule, dispatch | dispatch | a macOS UI e2e of upstream flows every 4 hours; Windows is the fork's target |

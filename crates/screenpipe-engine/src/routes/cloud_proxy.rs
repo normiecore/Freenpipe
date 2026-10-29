@@ -60,7 +60,7 @@ pub(crate) async fn forward_chat_completions(
         return error_response(
             StatusCode::SERVICE_UNAVAILABLE,
             ai_gateway::NOT_CONFIGURED_CODE,
-            "no AI gateway is configured; set one in Freenpipe settings (AI) or SCREENPIPE_AI_GATEWAY_URL",
+            "no AI gateway is configured; set one in Handvel settings (AI) or SCREENPIPE_AI_GATEWAY_URL",
         );
     };
 

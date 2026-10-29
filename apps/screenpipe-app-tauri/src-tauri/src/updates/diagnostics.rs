@@ -1,4 +1,4 @@
-// Freenpipe — local-first screen & audio memory (fork of screenpipe @ 892199f, MIT)
+// Handvel — local-first screen & audio memory (fork of screenpipe @ 892199f, MIT)
 // https://github.com/normiecore/Freenpipe
 
 //! Local updater diagnostics.
@@ -570,10 +570,10 @@ mod tests {
     #[test]
     fn leftover_installer_cleanup_only_touches_matching_folders() {
         let temp = tempfile::tempdir().unwrap();
-        let ours = temp.path().join("Freenpipe-2.4.2-updater-AbC123");
+        let ours = temp.path().join("Handvel-2.4.2-updater-AbC123");
         let other_app = temp.path().join("OtherApp-1.0.0-updater-xyz");
-        let unrelated = temp.path().join("Freenpipe-cache");
-        let file = temp.path().join("Freenpipe-2.4.2-updater-file");
+        let unrelated = temp.path().join("Handvel-cache");
+        let file = temp.path().join("Handvel-2.4.2-updater-file");
         for dir in [&ours, &other_app, &unrelated] {
             fs::create_dir_all(dir).unwrap();
             fs::write(dir.join("payload.exe"), b"x").unwrap();
@@ -582,11 +582,11 @@ mod tests {
 
         // Too young: nothing is removed.
         assert_eq!(
-            remove_leftover_installers(temp.path(), "Freenpipe", Duration::from_secs(3600)),
+            remove_leftover_installers(temp.path(), "Handvel", Duration::from_secs(3600)),
             0
         );
         assert_eq!(
-            remove_leftover_installers(temp.path(), "Freenpipe", Duration::ZERO),
+            remove_leftover_installers(temp.path(), "Handvel", Duration::ZERO),
             1
         );
         assert!(!ours.exists());

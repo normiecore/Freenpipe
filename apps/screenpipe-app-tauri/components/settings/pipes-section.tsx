@@ -95,17 +95,17 @@ import { MemoizedReactMarkdown } from "@/components/markdown";
 import { useDeviceMonitor } from "@/lib/hooks/use-device-monitor";
 import { Monitor, Wifi, WifiOff, ScanSearch } from "lucide-react";
 
-const PIPE_CREATION_PROMPT = `create a Freenpipe pipe that does the following.
+const PIPE_CREATION_PROMPT = `create a Handvel pipe that does the following.
 
-## what is Freenpipe?
+## what is Handvel?
 
-Freenpipe is a desktop app that continuously captures your screen text (via accessibility APIs, with OCR as fallback for apps that don't support accessibility) and audio (transcription).
+Handvel is a desktop app that continuously captures your screen text (via accessibility APIs, with OCR as fallback for apps that don't support accessibility) and audio (transcription).
 it runs a local API at http://localhost:3030 that lets you query everything you've seen, said, or heard.
 
 ## what is a pipe?
 
 a pipe is a scheduled AI agent defined as a single markdown file: ~/.screenpipe/pipes/{name}/pipe.md
-every N minutes, Freenpipe runs a coding agent (like pi or claude-code) with the pipe's prompt.
+every N minutes, Handvel runs a coding agent (like pi or claude-code) with the pipe's prompt.
 the agent can query your screen data, write files, call external APIs, send notifications, etc.
 
 ## pipe.md format
@@ -123,7 +123,7 @@ Your prompt instructions here...
 
 ## context header
 
-before execution, Freenpipe prepends a context header to the prompt with:
+before execution, Handvel prepends a context header to the prompt with:
 - time range (start/end timestamps based on the schedule interval)
 - current date
 - user's timezone
@@ -185,17 +185,17 @@ function buildCreatePipeDisplayLabel(prompt: string): string {
 }
 
 function buildOptimizePrompt(pipeName: string): string {
-  // Pi runs with Freenpipe's own config dir, so its sessions live there. The
+  // Pi runs with Handvel's own config dir, so its sessions live there. The
   // dir follows the data dir (and SCREENPIPE_PI_AGENT_DIR), so name it by the
   // variable every Pi process gets rather than a fixed path.
-  const sessionDir = `the sessions/ folder of the pi config directory (the path in the PI_CODING_AGENT_DIR environment variable; by default pi-agent/pi-config inside the Freenpipe data dir)`;
-  return `i need help optimizing my Freenpipe pipe "${pipeName}".
+  const sessionDir = `the sessions/ folder of the pi config directory (the path in the PI_CODING_AGENT_DIR environment variable; by default pi-agent/pi-config inside the Handvel data dir)`;
+  return `i need help optimizing my Handvel pipe "${pipeName}".
 
 ## your task
 
 1. first, ask me: what do i expect this pipe to produce? what's the ideal output?
 2. then read the pipe prompt: ~/.screenpipe/pipes/${pipeName}/pipe.md
-3. check the last few execution logs by querying the local Freenpipe API: GET http://localhost:3030/pipes/${pipeName}/executions?limit=5
+3. check the last few execution logs by querying the local Handvel API: GET http://localhost:3030/pipes/${pipeName}/executions?limit=5
 4. look at the pi agent session files in ${sessionDir} for the full conversation history (tool calls, reasoning, errors)
 5. based on all of this, suggest specific improvements to the pipe.md prompt
 
@@ -1339,7 +1339,7 @@ export function PipesSection() {
       <div className="flex flex-col items-center justify-center py-16 gap-3 text-muted-foreground">
         <Monitor className="h-8 w-8 opacity-40" />
         <p className="text-sm font-medium">{selectedDeviceInfo.label} is offline</p>
-        <p className="text-xs opacity-70">check that Freenpipe is running on the remote device</p>
+        <p className="text-xs opacity-70">check that Handvel is running on the remote device</p>
         <Button variant="outline" size="sm" onClick={() => setSelectedDevice(null)}>
           back to this device
         </Button>

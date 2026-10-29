@@ -40,7 +40,7 @@
 name: Audio Eval
 
 on:
-  # Freenpipe: dispatch-only; it pulls the pyannote models through Git LFS (limited bandwidth) plus ~2.2 GB of datasets per cold run.
+  # Handvel: dispatch-only; it pulls the pyannote models through Git LFS (limited bandwidth) plus ~2.2 GB of datasets per cold run.
   workflow_dispatch:
     inputs:
       fixtures:

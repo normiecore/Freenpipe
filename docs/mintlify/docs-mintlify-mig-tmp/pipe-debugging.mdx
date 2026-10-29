@@ -1,7 +1,7 @@
 ---
-title: "debug Freenpipe pipes"
+title: "debug Handvel pipes"
 sidebarTitle: "pipe debugging"
-description: "A practical debugging guide for Freenpipe pipes: schedules, logs, API access, AI provider auth, connection proxies, permissions, and stuck runs."
+description: "A practical debugging guide for Handvel pipes: schedules, logs, API access, AI provider auth, connection proxies, permissions, and stuck runs."
 icon: "bug"
 ---
 
@@ -15,7 +15,7 @@ when a pipe fails, debug it like a small production job: confirm the engine is a
 
 | check | command or screen | what it tells you |
 | --- | --- | --- |
-| engine | `curl http://localhost:3030/health` | Freenpipe API is alive |
+| engine | `curl http://localhost:3030/health` | Handvel API is alive |
 | data | `curl "http://localhost:3030/search?limit=5"` | there is searchable context |
 | pipe list | `curl http://localhost:3030/pipes` | pipe is installed and enabled |
 | logs | `curl http://localhost:3030/pipes/<name>/logs` | last stdout, stderr, and errors |
@@ -212,7 +212,7 @@ include:
 - output of `curl http://localhost:3030/pipes/<name>/logs`
 - AI provider and model
 - whether API auth is enabled
-- OS and Freenpipe version
+- OS and Handvel version
 
 ## related pages
 

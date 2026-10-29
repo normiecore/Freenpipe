@@ -102,10 +102,10 @@ fn should_skip(name: &str) -> bool {
 }
 
 /// Skill file dropped on the remote so AI agents know how to query the data.
-/// The constant keeps its upstream name; the text names Freenpipe.
-const SCREENPIPE_SKILL: &str = r#"# Freenpipe Data Reference
+/// The constant keeps its upstream name; the text names Handvel.
+const SCREENPIPE_SKILL: &str = r#"# Handvel Data Reference
 
-This directory holds data synced from [Freenpipe](https://github.com/normiecore/Freenpipe), a local-first memory of your screen and audio. The layout is the same as screenpipe's, so queries written for screenpipe data work here too.
+This directory holds data synced from [Handvel](https://github.com/normiecore/Freenpipe), a local-first memory of your screen and audio. The layout is the same as screenpipe's, so queries written for screenpipe data work here too.
 
 ## Database: db.sqlite
 

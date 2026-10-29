@@ -809,13 +809,13 @@ mod tests {
     #[test]
     fn mcp_redirect_refuses_relays_and_other_targets() {
         for bad in [
-            "https://relay.example.com/api/oauth/mcp/srv-1/callback?app_scheme=freenpipe",
+            "https://relay.example.com/api/oauth/mcp/srv-1/callback?app_scheme=handvel",
             "https://localhost:3030/mcp-servers/srv-1/oauth/callback",
             "http://192.168.1.10:3030/mcp-servers/srv-1/oauth/callback",
             "http://localhost:3030/mcp-servers/other/oauth/callback",
             "http://localhost:3030/connections/oauth/callback",
             "http://localhost:3030/mcp-servers/srv-1/oauth/callback?next=https://x.example",
-            "freenpipe://mcp-oauth",
+            "handvel://mcp-oauth",
             "not a url",
         ] {
             assert!(

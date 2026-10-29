@@ -332,7 +332,7 @@ pub struct Speaker {
     pub metadata: String,
 }
 
-// Freenpipe (W2-16): speaker reassign v2 types.
+// Handvel (W2-16): speaker reassign v2 types.
 
 /// What a `/speakers/reassign` call is allowed to change.
 #[derive(OaSchema, Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]

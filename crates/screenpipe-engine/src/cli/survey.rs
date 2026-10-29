@@ -5,7 +5,7 @@
 use screenpipe_core::endpoints::{freenpipe_link, FreenpipeLink};
 
 /// Lines printed by `screenpipe survey`. The command used to open a hosted
-/// questionnaire; Freenpipe collects feedback in the open instead, so it only
+/// questionnaire; Handvel collects feedback in the open instead, so it only
 /// prints where to go. Nothing is opened or sent.
 pub fn feedback_lines() -> Vec<String> {
     vec![

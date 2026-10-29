@@ -19,7 +19,7 @@ The implementer is neither the redactor nor the behaviour author of any item abo
 
 - Brief or prompt: <who wrote it, and confirm it contains no description taken from legacy-specs/>
 - Specs: <files and items>
-- Freenpipe and MIT-base code: <areas>
+- Handvel and MIT-base code: <areas>
 - Third-party documentation: <libraries, URLs>
 - Anything else: <or "nothing">
 

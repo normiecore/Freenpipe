@@ -1,6 +1,6 @@
 export const meta = {
-  name: 'freenpipe-wp-batch',
-  description: 'Freenpipe work packages: implement (or fix CI) in worktrees, verification + compliance review with up to two fix rounds, then push and record on a draft PR',
+  name: 'handvel-wp-batch',
+  description: 'Handvel work packages: implement (or fix CI) in worktrees, verification + compliance review with up to two fix rounds, then push and record on a draft PR',
   whenToUse: 'Coordinator sessions (docs/dev/cloud-coordinator.md). args: {base, repo?, session_url, wps: [{id, title, mode?: "impl"|"ci-fix"|"review"|"publish", ci_failure?, impl?, result?, result_file?, status?, head?, extra?, extraReview?}]}',
   phases: [
     { title: 'Implement', detail: 'one worker per WP in its own git worktree (resumes a pushed branch)' },
@@ -9,7 +9,7 @@ export const meta = {
     { title: 'Publish', detail: 'push the branch, open or update the draft PR, record the reviews' },
   ],
 }
-// Freenpipe — local-first screen & audio memory (fork of screenpipe @ 892199f, MIT)
+// Handvel — local-first screen & audio memory (fork of screenpipe @ 892199f, MIT)
 // https://github.com/normiecore/Freenpipe
 //
 // Run with the Workflow tool: {scriptPath: "<repo>/tools/cloud/workflows/wp-batch.js", args: {...}}.
@@ -87,7 +87,7 @@ const commitRule = `Commit with \`git commit -F -\`; every message ends with thi
 ${TRAILER}`
 
 function implPrompt(w) {
-  return `You are a Freenpipe WORKER implementing work package ${w.id} ("${w.title}") in this clean-room fork. A coordinator session reviews, merges and pushes main.
+  return `You are a Handvel WORKER implementing work package ${w.id} ("${w.title}") in this clean-room fork. A coordinator session reviews, merges and pushes main.
 
 Setup (once): \`cd ${REPO} && . ~/.freenpipe-env.sh && bash tools/cloud/wp-worktree.sh ${w.id} ${BASE}\` prints your worktree, ${WT(w.id)}, on branch wp/${w.id}. If that branch already has commits beyond ${BASE} (\`git -C ${WT(w.id)} log --stat ${BASE}..HEAD\`), an earlier session started this WP: read them and continue from there rather than starting over. For frontend tests run \`bun install\` in the worktree's apps/screenpipe-app-tauri first (bun's cache makes it quick); if it fails, say so.
 
@@ -110,7 +110,7 @@ ${w.extra || ''}`
 }
 
 function ciFixPrompt(w) {
-  return `You are the Freenpipe WORKER for ${w.id} ("${w.title}"). CI failed on its pull request; make it green. Worktree: \`cd ${REPO} && . ~/.freenpipe-env.sh && bash tools/cloud/wp-worktree.sh ${w.id} ${BASE}\` prints ${WT(w.id)} (branch wp/${w.id}, already pushed).
+  return `You are the Handvel WORKER for ${w.id} ("${w.title}"). CI failed on its pull request; make it green. Worktree: \`cd ${REPO} && . ~/.freenpipe-env.sh && bash tools/cloud/wp-worktree.sh ${w.id} ${BASE}\` prints ${WT(w.id)} (branch wp/${w.id}, already pushed).
 
 ${SHARED_RULES}
 
@@ -136,7 +136,7 @@ This is a re-review. You previously reviewed head ${prev.sha}; the worker has si
 ${JSON.stringify(prev.findings, null, 1)}
 The worker's responses (a rebuttal with evidence can be accepted):
 ${JSON.stringify(prev.responses || [], null, 1)}`
-  return `You review Freenpipe work package ${w.id} ("${w.title}") on branch wp/${w.id}, head ${sha}, in the worktree ${WT(w.id)}. The base commit is ${BASE}. Before any build or test command run \`. ~/.freenpipe-env.sh\`. First confirm \`git -C ${WT(w.id)} rev-parse HEAD\` equals ${sha}; if it does not, report that as a blocker and stop.
+  return `You review Handvel work package ${w.id} ("${w.title}") on branch wp/${w.id}, head ${sha}, in the worktree ${WT(w.id)}. The base commit is ${BASE}. Before any build or test command run \`. ~/.freenpipe-env.sh\`. First confirm \`git -C ${WT(w.id)} rev-parse HEAD\` equals ${sha}; if it does not, report that as a blocker and stop.
 
 ${role.key === 'combined'
     ? 'You are the Combined reviewer. Read docs/dev/cloud-reviewers.md: follow the shared preamble, then apply both the "Verification reviewer" and the "Compliance reviewer" briefs in one pass. CI builds and tests every PR on Windows and Linux, so do not run workspace builds, the app crate build or `bun run build`: read the diff, and run only fast checks (the verbatim gate, `bun test scripts/ci/vendor-guard.test.ts`, and a single targeted test such as `cargo test -p <crate> --lib <filter>` where you doubt a logic path). Read'
@@ -151,7 +151,7 @@ ${w.extraReview || ''}`
 }
 
 function fixPrompt(w, head, round, findings) {
-  return `You are the Freenpipe WORKER for ${w.id} ("${w.title}"), now fixing review findings (round ${round}) on branch wp/${w.id} in the worktree ${WT(w.id)} (current head ${head}, base ${BASE}). Read the WP section of docs/clean-room/PLAN.md and docs/dev/cloud-runbook.md sections 1.2-1.5 and 3.3-3.4 again if you need them; the same rules apply.
+  return `You are the Handvel WORKER for ${w.id} ("${w.title}"), now fixing review findings (round ${round}) on branch wp/${w.id} in the worktree ${WT(w.id)} (current head ${head}, base ${BASE}). Read the WP section of docs/clean-room/PLAN.md and docs/dev/cloud-runbook.md sections 1.2-1.5 and 3.3-3.4 again if you need them; the same rules apply.
 
 ${SHARED_RULES}
 
@@ -166,7 +166,7 @@ ${w.extra || ''}`
 
 function publishPrompt(w, res) {
   const approved = res.status === 'approved'
-  return `You publish the result of Freenpipe work package ${w.id} ("${w.title}") to GitHub. Worktree ${WT(w.id)}, branch wp/${w.id}, expected head ${res.head}. Run every command from inside the worktree after \`. ~/.freenpipe-env.sh &&\`.
+  return `You publish the result of Handvel work package ${w.id} ("${w.title}") to GitHub. Worktree ${WT(w.id)}, branch wp/${w.id}, expected head ${res.head}. Run every command from inside the worktree after \`. ~/.freenpipe-env.sh &&\`.
 
 1. Confirm \`git rev-parse HEAD\` is ${res.head} and the tree is clean, then \`python3 tools/cloud/fp.py push\` (it must say pushed; if it prints STOP, report that and do nothing else).
 2. Write the PR description: \`python3 tools/cloud/fp.py template ${w.id} --worker coordinator > $FP_STATE/pr-${w.id}.md\`, then fill in every section from the data below, in plain factual prose (no marketing words, no emoji). "What changed": the summary bullets. "Acceptance checks": tick [x] only for pass, and say where each ran or will run (VM Linux, CI windows job, CI linux job, smoke checklist entry). "Tests run": the check commands and results. "Verbatim gate": hits and justifications or "0 hits". "Windows hardware smoke items": the entries or "none". "Review": one bullet per reviewer (${ROLES.map(r => r.name).join(', ')}), each \`- <reviewer> (head \\\`${res.head}\\\`): <VERDICT> - <summary>\`, using the final round's verdicts${approved ? '' : ' (state plainly that changes are still open)'}. "Spec decisions and open questions" and "Follow-ups": from the data, or "none". Keep the \`<!-- fp-target: ${w.id} -->\` line. End the file with a blank line, then these two lines:

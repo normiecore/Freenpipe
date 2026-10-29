@@ -1,6 +1,6 @@
 # Cloud runbook: WORKER and MERGER sessions
 
-This file is the operating manual for Claude Code **cloud sessions** that build Freenpipe. It is
+This file is the operating manual for Claude Code **cloud sessions** that build Handvel. It is
 self-contained: a session that starts with no other context follows it top to bottom for its role.
 The owner's PC is usually off, so nothing here may depend on it.
 
@@ -8,14 +8,14 @@ The owner's PC is usually off, so nothing here may depend on it.
 - **Coordinator mode** (one session plays every role with Workflow batches): [cloud-coordinator.md](cloud-coordinator.md).
 - **Routine prompts and schedules**: [cloud-routines.md](cloud-routines.md).
 - **Reviewer briefs**: [cloud-reviewers.md](cloud-reviewers.md).
-- **CI**: [ci.md](ci.md). The "Freenpipe CI" workflow (`.github/workflows/freenpipe-ci.yml`, jobs
+- **CI**: [ci.md](ci.md). The "Handvel CI" workflow (`.github/workflows/freenpipe-ci.yml`, jobs
   `windows`, `linux`, `gates`) plus Secret Scan and the Windows CLI Integration Test form the **merge
   gate**: every check run on the PR head has completed with success, skipped or neutral, and those five
   checks are among them. "CI green" below always means this gate (`fp.py ci` applies it).
 
 ## 0. Orientation
 
-Freenpipe is a fork of screenpipe's last MIT commit (`892199f`), kept compatible with screenpipe's
+Handvel is a fork of screenpipe's last MIT commit (`892199f`), kept compatible with screenpipe's
 data, API, pipes and MCP configurations (owner decision 8 replaced the earlier goal of parity with
 v2.7.104). The work is cut into **154 work packages (WPs)** in waves 0 to 8:
 
@@ -86,7 +86,7 @@ repository. Only git and GitHub carry state between sessions.
   settings keys, environment variables, event names, file and directory names.
 - **No phoning home**: no vendor host, PostHog key, Sentry DSN or vendor OAuth client id in code that
   builds requests. New network features are user-configured (BYO) or third-party and user-initiated.
-- **New source files** start with the two-line Freenpipe header from CLAUDE.md (`#` for Python and
+- **New source files** start with the two-line Handvel header from CLAUDE.md (`#` for Python and
   shell). Leave upstream headers on files you edit.
 - **Run the verbatim gate** before review. Over everything your branch adds (what CI runs):
   `bash scripts/ci/verbatim-diff.sh origin/main HEAD`. Over whole files:

@@ -394,7 +394,7 @@ impl PiExecutor {
     /// `project_dir/.pi/skills/screenpipe-team/`.
     ///
     /// Upstream installed this skill for enterprise admins; it taught the
-    /// agent to query the vendor's hosted team console. Freenpipe has no such
+    /// agent to query the vendor's hosted team console. Handvel has no such
     /// service, so the skill is never installed. Sessions created by an older
     /// build (or by screenpipe itself, which shares the data dir) may still
     /// carry a copy, and this deletes it so the agent cannot follow it.
@@ -743,7 +743,7 @@ impl PiExecutor {
     /// Merge screenpipe provider (and optionally the pipe's own provider) into
     /// pi's existing config files.
     ///
-    /// The files live in Freenpipe's own Pi config directory
+    /// The files live in Handvel's own Pi config directory
     /// (`<data dir>/pi-agent/pi-config`, see [`pi_runtime::ensure_config_dir`]),
     /// which is seeded once from the user's global Pi config. Existing
     /// providers and credentials there (from `pi /login`, the global seed, or
@@ -1149,7 +1149,7 @@ impl PiExecutor {
         // After the BASH_ENV/PATH setup above so it extends that PATH.
         crate::agents::cli_runtime::apply_to_tokio_command(&mut cmd);
 
-        // Freenpipe's own Pi config directory and Pi's runtime switches.
+        // Handvel's own Pi config directory and Pi's runtime switches.
         let config_dir = pi_runtime::ensure_config_dir()?;
         pi_runtime::apply_to_tokio_command(&mut cmd, &config_dir);
 
@@ -1307,7 +1307,7 @@ impl PiExecutor {
         // After the BASH_ENV/PATH setup above so it extends that PATH.
         crate::agents::cli_runtime::apply_to_tokio_command(&mut cmd);
 
-        // Freenpipe's own Pi config directory and Pi's runtime switches.
+        // Handvel's own Pi config directory and Pi's runtime switches.
         let config_dir = pi_runtime::ensure_config_dir()?;
         pi_runtime::apply_to_tokio_command(&mut cmd, &config_dir);
 

@@ -1,4 +1,4 @@
-// Freenpipe — local-first screen & audio memory (fork of screenpipe @ 892199f, MIT)
+// Handvel — local-first screen & audio memory (fork of screenpipe @ 892199f, MIT)
 // https://github.com/normiecore/Freenpipe
 
 //! What the app and the helper DLL agree on: the context block the app
@@ -170,7 +170,7 @@ pub fn utc_stamp(unix_secs: u64) -> String {
 }
 
 /// File name of the dump for one crash: executable stem, process id and the
-/// UTC time, e.g. `Freenpipe-4242-20261020T101500Z.dmp`.
+/// UTC time, e.g. `Handvel-4242-20261020T101500Z.dmp`.
 pub fn dump_file_name(exe_path: &str, pid: u32, unix_secs: u64) -> String {
     format!(
         "{}-{pid}-{}.{DUMP_EXTENSION}",
@@ -258,15 +258,15 @@ mod tests {
     fn dump_names_are_safe_and_ordered() {
         assert_eq!(
             dump_file_name(
-                r"C:\Program Files\Freenpipe\Freenpipe.exe",
+                r"C:\Program Files\Handvel\Handvel.exe",
                 4242,
                 1_792_491_300
             ),
-            "Freenpipe-4242-20261020T101500Z.dmp"
+            "Handvel-4242-20261020T101500Z.dmp"
         );
         assert_eq!(
-            dump_file_name(r"C:\x\Freenpipe Beta.EXE", 7, 0),
-            "Freenpipe_Beta-7-19700101T000000Z.dmp"
+            dump_file_name(r"C:\x\Handvel Beta.EXE", 7, 0),
+            "Handvel_Beta-7-19700101T000000Z.dmp"
         );
         assert_eq!(dump_file_name("", 1, 0), "process-1-19700101T000000Z.dmp");
         let long = format!(r"C:\{}.exe", "a".repeat(200));
@@ -277,10 +277,10 @@ mod tests {
 
     #[test]
     fn finished_dumps_are_told_apart_from_partial_ones() {
-        assert!(is_finished_dump("Freenpipe-1-19700101T000000Z.dmp"));
+        assert!(is_finished_dump("Handvel-1-19700101T000000Z.dmp"));
         assert!(is_finished_dump("x.DMP"));
         assert!(!is_finished_dump(
-            "Freenpipe-1-19700101T000000Z.dmp.partial"
+            "Handvel-1-19700101T000000Z.dmp.partial"
         ));
         assert!(!is_finished_dump(".dmp"));
         assert!(!is_finished_dump("notes.txt"));

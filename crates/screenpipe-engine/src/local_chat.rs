@@ -1,4 +1,4 @@
-// Freenpipe — local-first screen & audio memory (fork of screenpipe @ 892199f, MIT)
+// Handvel — local-first screen & audio memory (fork of screenpipe @ 892199f, MIT)
 // https://github.com/normiecore/Freenpipe
 
 //! Local OpenAI-compatible chat proxy (`POST /v1/local/chat/completions`).
@@ -231,19 +231,19 @@ impl LocalChatError {
                 format!("could not read the AI presets from the settings store: {why}")
             }
             LocalChatError::NoDefaultPreset => "no default AI preset is set up. Create an AI \
-                 preset in Freenpipe's AI settings and make it the default, then try again."
+                 preset in Handvel's AI settings and make it the default, then try again."
                 .to_string(),
             LocalChatError::MissingBaseUrl { preset } => format!(
                 "the default AI preset \"{preset}\" has no base URL. Add the provider's URL to \
-                 it in Freenpipe's AI settings, then try again."
+                 it in Handvel's AI settings, then try again."
             ),
             LocalChatError::InvalidBaseUrl { preset } => format!(
                 "the base URL of the default AI preset \"{preset}\" is not an http(s) URL. Fix \
-                 it in Freenpipe's AI settings, then try again."
+                 it in Handvel's AI settings, then try again."
             ),
             LocalChatError::GatewayNotConfigured { preset } => format!(
                 "the default AI preset \"{preset}\" uses the screenpipe-cloud provider, which \
-                 needs your own AI gateway. Set one in Freenpipe's AI settings or make another \
+                 needs your own AI gateway. Set one in Handvel's AI settings or make another \
                  preset the default."
             ),
             LocalChatError::UnsupportedProvider { preset, provider } => format!(
@@ -253,7 +253,7 @@ impl LocalChatError {
             ),
             LocalChatError::MissingModel { preset } => format!(
                 "the default AI preset \"{preset}\" has no model and the request names none. \
-                 Pick a model for the preset in Freenpipe's AI settings."
+                 Pick a model for the preset in Handvel's AI settings."
             ),
             LocalChatError::Unreachable(detail) => {
                 format!("could not reach the AI provider: {detail}")

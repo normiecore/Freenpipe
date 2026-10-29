@@ -72,7 +72,7 @@ fn build_config(app: &tauri::AppHandle) -> Result<RecordingConfig, String> {
     Ok(store.to_recording_config(data_dir))
 }
 
-/// Recording is never gated on a plan in Freenpipe. Kept as a named check so
+/// Recording is never gated on a plan in Handvel. Kept as a named check so
 /// the start paths read the same as before; it always allows, because
 /// `app_entitled_or_dev` is constant-true.
 fn require_app_entitlement(store: &SettingsStore) -> Result<(), String> {

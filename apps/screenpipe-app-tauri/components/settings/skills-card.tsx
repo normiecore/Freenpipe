@@ -107,7 +107,7 @@ export function SkillsCard({ onChanged }: { onChanged?: () => void }) {
         Skills are reusable{" "}
         <code className="text-[11px] bg-muted px-1 rounded">SKILL.md</code>{" "}
         playbooks — the same format Claude Code uses. Import them here and
-        Freenpipe&apos;s agent loads them in chat and in every pipe.
+        Handvel&apos;s agent loads them in chat and in every pipe.
       </p>
 
       {error && (

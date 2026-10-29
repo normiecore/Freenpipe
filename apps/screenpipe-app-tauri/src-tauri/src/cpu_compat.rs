@@ -1,9 +1,9 @@
-// Freenpipe — local-first screen & audio memory (fork of screenpipe @ 892199f, MIT)
+// Handvel — local-first screen & audio memory (fork of screenpipe @ 892199f, MIT)
 // https://github.com/normiecore/Freenpipe
 
 //! CPU compatibility mode for processors without AVX2 (shell-022).
 //!
-//! Freenpipe's Whisper engines (whisper.cpp/ggml) and its Qwen3-ASR engine
+//! Handvel's Whisper engines (whisper.cpp/ggml) and its Qwen3-ASR engine
 //! (the antirez C build, on every platform) run AVX2 code. On an x86 CPU
 //! without AVX2 they die with an illegal-instruction fault instead of
 //! transcribing. Such CPUs are rare but real: older Pentium/Celeron parts and
@@ -81,7 +81,7 @@ pub fn parakeet_built() -> bool {
     cfg!(feature = "parakeet")
 }
 
-/// Engines whose Freenpipe build executes AVX2 instructions.
+/// Engines whose Handvel build executes AVX2 instructions.
 pub fn engine_needs_avx2(engine: &str) -> bool {
     engine.starts_with("whisper") || engine == "qwen3-asr"
 }

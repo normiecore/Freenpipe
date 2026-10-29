@@ -1,12 +1,12 @@
 {
   "manifest_version": "0.3",
   "name": "screenpipe",
-  "display_name": "Freenpipe",
+  "display_name": "Handvel",
   "version": "0.0.0-injected-from-package-json",
-  "description": "Search your Freenpipe screen and audio history from Claude",
-  "long_description": "Freenpipe records your screen and audio on your own machine and indexes them for search. This extension connects Claude to your local Freenpipe instance so it can search what you have seen and heard.",
+  "description": "Search your Handvel screen and audio history from Claude",
+  "long_description": "Handvel records your screen and audio on your own machine and indexes them for search. This extension connects Claude to your local Handvel instance so it can search what you have seen and heard.",
   "author": {
-    "name": "Freenpipe",
+    "name": "Handvel",
     "url": "https://github.com/normiecore/Freenpipe"
   },
   "repository": {

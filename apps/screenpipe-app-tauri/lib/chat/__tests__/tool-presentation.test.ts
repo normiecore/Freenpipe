@@ -138,7 +138,7 @@ describe("endpointFamily", () => {
     expect(endpointFamily("/connections/google-calendar/events")).toBe("Calendar");
     expect(endpointFamily("/connections/slack/x")).toBe("Slack");
     expect(endpointFamily("/pipes")).toBe("Pipes");
-    expect(endpointFamily("/anything-else")).toBe("Freenpipe");
+    expect(endpointFamily("/anything-else")).toBe("Handvel");
   });
 });
 

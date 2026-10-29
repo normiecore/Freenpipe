@@ -61,7 +61,7 @@ async function readNotifications(): Promise<NotificationHistoryEntry[]> {
     await $('[data-testid="audio-engine-fallback-use-whisper"]').waitForExist({
       timeout: t(5_000),
     });
-    // Freenpipe has no hosted account: the alert must not offer a sign-in or
+    // Handvel has no hosted account: the alert must not offer a sign-in or
     // an upgrade, only the local fallback.
     expect(await $('[data-testid="audio-engine-fallback-login"]').isExisting()).toBe(false);
     expect(await $('[data-testid="audio-engine-fallback-upgrade"]').isExisting()).toBe(false);

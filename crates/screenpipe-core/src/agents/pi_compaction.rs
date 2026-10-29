@@ -1,7 +1,7 @@
-// Freenpipe — local-first screen & audio memory (fork of screenpipe @ 892199f, MIT)
+// Handvel — local-first screen & audio memory (fork of screenpipe @ 892199f, MIT)
 // https://github.com/normiecore/Freenpipe
 
-//! The Freenpipe runtime patch for the installed Pi.
+//! The Handvel runtime patch for the installed Pi.
 //!
 //! Pi 0.84.1 compacts a session only when a run ends or before the next
 //! prompt, keeps fixed token budgets that do not fit small local models, and
@@ -29,7 +29,7 @@
 //!   whose replacement changes therefore keeps working without a new id,
 //!   although a new id is still the clearer way to change one;
 //! * when anything else does not match (another release, a missing package),
-//!   Pi keeps running without Freenpipe's patch and the reason is logged once
+//!   Pi keeps running without Handvel's patch and the reason is logged once
 //!   per process;
 //! * `SCREENPIPE_DISABLE_PI_PATCHES=1` turns it off and restores the stock
 //!   files by reversing the hunks.
@@ -362,12 +362,12 @@ pub enum Outcome {
     /// reinstalled before the current patch can be applied.
     Stale(String),
     /// The install is the target release, but some of its files are neither
-    /// stock nor patched by Freenpipe (for example another vendor's patch).
+    /// stock nor patched by Handvel (for example another vendor's patch).
     /// They are left as they are; the stock files must be reinstalled before
     /// the patch can be applied.
     Foreign(String),
     /// The install does not match the patch (another release, a missing
-    /// package); Pi runs without Freenpipe's patch.
+    /// package); Pi runs without Handvel's patch.
     Skipped(String),
 }
 
@@ -521,7 +521,7 @@ pub fn sync(install_dir: &Path) -> Outcome {
                 }
                 Outcome::Foreign(ref why) => warn!(
                     "pi runtime: the installed Pi files are not the stock release ({}); \
-                     Freenpipe's patch is not applied to them",
+                     Handvel's patch is not applied to them",
                     why
                 ),
                 _ => {}
@@ -532,7 +532,7 @@ pub fn sync(install_dir: &Path) -> Outcome {
             let reason = format!("{e:#}");
             if !LOGGED_SKIP.swap(true, Ordering::Relaxed) {
                 warn!(
-                    "pi runtime patch not {}; Pi runs without Freenpipe's patch: {}",
+                    "pi runtime patch not {}; Pi runs without Handvel's patch: {}",
                     if disabled { "removed" } else { "applied" },
                     reason
                 );

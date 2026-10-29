@@ -123,7 +123,7 @@ export function UserBrowserCard() {
             <p className="text-xs text-muted-foreground mb-3 leading-relaxed">
               Lets agents use your real Chrome / Arc / Edge when browser
               context is needed. Install the extension, then approve the
-              connection in Freenpipe. No API token copy/paste.
+              connection in Handvel. No API token copy/paste.
             </p>
 
             {status.kind !== "connected" ? (
@@ -148,7 +148,7 @@ export function UserBrowserCard() {
               </Button>
             ) : (
               <p className="text-xs text-muted-foreground">
-                The extension is connected. Freenpipe can use your open tabs
+                The extension is connected. Handvel can use your open tabs
                 when you ask an agent to work in the browser.
               </p>
             )}

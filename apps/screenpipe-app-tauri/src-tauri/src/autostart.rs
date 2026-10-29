@@ -1,4 +1,4 @@
-// Freenpipe — local-first screen & audio memory (fork of screenpipe @ 892199f, MIT)
+// Handvel — local-first screen & audio memory (fork of screenpipe @ 892199f, MIT)
 // https://github.com/normiecore/Freenpipe
 
 //! Start at login (shell-020).
@@ -15,7 +15,7 @@
 //!   unquoted and which also re-enables the entry in Task Manager on every
 //!   call. A user who turned the entry off under Task Manager > Startup apps
 //!   (`Explorer\StartupApproved\Run`) keeps that choice at every start;
-//!   only switching autostart on in Freenpipe's settings turns it back on.
+//!   only switching autostart on in Handvel's settings turns it back on.
 //! - macOS and Linux: the autostart plugin (login LaunchAgent, XDG autostart
 //!   entry), configured with the same argument.
 //! - Debug builds never touch the login entry, so a development build cannot
@@ -303,45 +303,45 @@ mod tests {
 
     #[test]
     fn autostart_launch_is_recognised_after_the_program_name() {
-        assert!(is_autostart_launch(&["C:\\Freenpipe.exe", "--autostart"]));
+        assert!(is_autostart_launch(&["C:\\Handvel.exe", "--autostart"]));
         assert!(is_autostart_launch(&[
-            "/usr/bin/freenpipe",
+            "/usr/bin/handvel",
             "--foo",
             "--autostart"
         ]));
         assert!(!is_autostart_launch(&["--autostart"]));
-        assert!(!is_autostart_launch(&["freenpipe", "--autostart=1"]));
+        assert!(!is_autostart_launch(&["handvel", "--autostart=1"]));
         assert!(!is_autostart_launch::<&str>(&[]));
-        assert!(!is_autostart_launch(&["freenpipe", "freenpipe://settings"]));
+        assert!(!is_autostart_launch(&["handvel", "handvel://settings"]));
     }
 
     #[test]
     fn run_value_quotes_the_executable() {
         assert_eq!(
-            run_command(r"C:\Users\Ada Lovelace\AppData\Local\Freenpipe\Freenpipe.exe"),
-            r#""C:\Users\Ada Lovelace\AppData\Local\Freenpipe\Freenpipe.exe" --autostart"#
+            run_command(r"C:\Users\Ada Lovelace\AppData\Local\Handvel\Handvel.exe"),
+            r#""C:\Users\Ada Lovelace\AppData\Local\Handvel\Handvel.exe" --autostart"#
         );
     }
 
     #[test]
     fn entry_state_compares_like_windows_paths() {
-        let expected = run_command(r"C:\Apps\Freenpipe\Freenpipe.exe");
+        let expected = run_command(r"C:\Apps\Handvel\Handvel.exe");
         assert_eq!(entry_state(None, &expected), EntryState::Missing);
         assert_eq!(entry_state(Some("  "), &expected), EntryState::Missing);
         assert_eq!(
             entry_state(
-                Some(r#""c:\apps\freenpipe\FREENPIPE.EXE" --autostart "#),
+                Some(r#""c:\apps\handvel\HANDVEL.EXE" --autostart "#),
                 &expected
             ),
             EntryState::Current
         );
         // What older builds wrote: unquoted, no argument.
         assert_eq!(
-            entry_state(Some(r"C:\Apps\Freenpipe\Freenpipe.exe "), &expected),
+            entry_state(Some(r"C:\Apps\Handvel\Handvel.exe "), &expected),
             EntryState::Outdated
         );
         assert_eq!(
-            entry_state(Some(r#""D:\Other\Freenpipe.exe" --autostart"#), &expected),
+            entry_state(Some(r#""D:\Other\Handvel.exe" --autostart"#), &expected),
             EntryState::Outdated
         );
     }

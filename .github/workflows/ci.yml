@@ -5,7 +5,7 @@
 name: Rust CI
 
 on:
-  # Freenpipe: dispatch-only; freenpipe-ci.yml builds and tests the pinned toolchain on Windows and Linux instead.
+  # Handvel: dispatch-only; freenpipe-ci.yml builds and tests the pinned toolchain on Windows and Linux instead.
   workflow_dispatch:
 
 concurrency:

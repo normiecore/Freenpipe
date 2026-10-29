@@ -1,4 +1,4 @@
-# Freenpipe — local-first screen & audio memory (fork of screenpipe @ 892199f, MIT)
+# Handvel — local-first screen & audio memory (fork of screenpipe @ 892199f, MIT)
 # https://github.com/normiecore/Freenpipe
 #
 # Minimal GitHub REST client for the planning and cloud tools (stdlib only).
@@ -96,7 +96,7 @@ class GitHub:
         headers = {
             "Accept": "application/vnd.github+json",
             "X-GitHub-Api-Version": "2022-11-28",
-            "User-Agent": "freenpipe-plan-tools",
+            "User-Agent": "handvel-plan-tools",
         }
         data = None
         if body is not None:
@@ -131,7 +131,7 @@ class GitHub:
             if p.returncode != 0:
                 raise GitHubError(0, (p.stderr or p.stdout).strip()[:500] or "gh api error")
             return p.stdout
-        req = urllib.request.Request(f"{API_ROOT}/{path}", headers={"User-Agent": "freenpipe-plan-tools"})
+        req = urllib.request.Request(f"{API_ROOT}/{path}", headers={"User-Agent": "handvel-plan-tools"})
         if self.token:
             req.add_unredirected_header("Authorization", f"Bearer {self.token}")
         try:

@@ -1,4 +1,4 @@
-// Freenpipe — local-first screen & audio memory (fork of screenpipe @ 892199f, MIT)
+// Handvel — local-first screen & audio memory (fork of screenpipe @ 892199f, MIT)
 // https://github.com/normiecore/Freenpipe
 
 //! `POST /v1/chat/completions` is a proxy to the user's own AI gateway.
@@ -83,7 +83,7 @@ async fn engine_router() -> Router {
     );
     let audio_manager = Arc::new(
         AudioManagerBuilder::new()
-            .output_path(std::env::temp_dir().join("freenpipe-cloud-proxy-test"))
+            .output_path(std::env::temp_dir().join("handvel-cloud-proxy-test"))
             .is_disabled(true)
             .build(db.clone())
             .await

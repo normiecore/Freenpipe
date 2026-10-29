@@ -1,7 +1,7 @@
-// Freenpipe — local-first screen & audio memory (fork of screenpipe @ 892199f, MIT)
+// Handvel — local-first screen & audio memory (fork of screenpipe @ 892199f, MIT)
 // https://github.com/normiecore/Freenpipe
 
-//! Prefilled "new issue" link for the Freenpipe tracker.
+//! Prefilled "new issue" link for the Handvel tracker.
 //!
 //! Opening the link only shows GitHub's issue form in the browser; nothing
 //! is sent until the user submits it, and the bundle is never attached
@@ -67,7 +67,7 @@ fn issue_body(details: &IssueDetails<'_>, excerpt_chars: usize) -> String {
         body.push_str("\n\n");
     }
     body.push_str("### Environment\n\n");
-    body.push_str(&format!("- Freenpipe: {}\n", details.app_version));
+    body.push_str(&format!("- Handvel: {}\n", details.app_version));
     body.push_str(&format!(
         "- OS: {} {} ({})\n",
         details.os_platform, details.os_version, details.os_arch
@@ -78,7 +78,7 @@ fn issue_body(details: &IssueDetails<'_>, excerpt_chars: usize) -> String {
     body.push_str("\n### Diagnostics\n\n");
     match details.bundle_file_name {
         Some(name) => body.push_str(&format!(
-            "A diagnostics bundle was saved on my computer as `{name}` (in the Freenpipe \
+            "A diagnostics bundle was saved on my computer as `{name}` (in the Handvel \
              data folder, under `feedback`). Drag it into this issue if you are happy to \
              share it; check its text files first.\n"
         )),
@@ -132,7 +132,7 @@ mod tests {
         assert_eq!(q["title"], "Timeline stays blank");
         let body = &q["body"];
         assert!(body.contains("after wake from sleep"));
-        assert!(body.contains("- Freenpipe: 2.5.28"));
+        assert!(body.contains("- Handvel: 2.5.28"));
         assert!(body.contains("- OS: windows 10.0.22631 (x86_64)"));
         assert!(body.contains("`20261015-143005.zip`"));
     }

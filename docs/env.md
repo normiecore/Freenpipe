@@ -1,6 +1,6 @@
 # Environment variables
 
-Freenpipe reads and sets the same environment variables as screenpipe, so
+Handvel reads and sets the same environment variables as screenpipe, so
 existing scripts, pipes and MCP configs keep working. The names live in
 `crates/screenpipe-core/src/env.rs`; a unit test there fails when a name
 is missing from this page. Variables that only screenpipe's hosted
@@ -26,7 +26,7 @@ services used are left out.
 | `SCREENPIPE_WAL_MAINTENANCE_INTERVAL_SECS` | Seconds between the database's background WAL checkpoints (tests and diagnostics; default 30). |
 | `SCREENPIPE_PLANNER_MAINTENANCE_INTERVAL_SECS` | Seconds before the first and between later query-planner statistics runs, which write `sqlite-planner-maintenance.json` (tests and diagnostics; default 10 minutes, then every 6 hours). |
 | `SCREENPIPE_ENCRYPT_STORE` | Encrypts the settings store at rest. |
-| `SCREENPIPE_STARTUP_AUTHENTICATION_STATUS` | How the app's startup account check resolved: `authenticated`, `logged_out` or `not_required` (Freenpipe always sets `not_required`). |
+| `SCREENPIPE_STARTUP_AUTHENTICATION_STATUS` | How the app's startup account check resolved: `authenticated`, `logged_out` or `not_required` (Handvel always sets `not_required`). |
 
 ## App startup and process behaviour
 
@@ -47,7 +47,7 @@ services used are left out.
 | `SCREENPIPE_FFMPEG_PATH` | Path of the ffmpeg binary to use. |
 | `SCREENPIPE_ENABLE_MDNS` | Enables mDNS advertising of the API. |
 
-## Telemetry, diagnostics and identity tags (telemetry stays off in Freenpipe)
+## Telemetry, diagnostics and identity tags (telemetry stays off in Handvel)
 
 | Variable | Meaning |
 |---|---|
@@ -140,8 +140,8 @@ services used are left out.
 | `SCREENPIPE_CHAT_CONTROL_TOKEN` | Token for the chat control channel. |
 | `SCREENPIPE_CHAT_CONTROL_DISABLED` | Turns the chat control channel off. |
 | `SCREENPIPE_PI_AGENT_DIR` | Pi's configuration directory (default `<data dir>/pi-agent/pi-config`). Read to override the default and given to Pi processes. |
-| `SCREENPIPE_FORCE_BASELINE_BUN` | Freenpipe addition: `1` makes Windows x64 run Pi with bun's baseline (non-AVX2) build even when the CPU has AVX2. For testing that path. |
-| `SCREENPIPE_DISABLE_PI_PATCHES` | Freenpipe addition: `1` leaves the installed Pi runtime unpatched and removes the runtime patch if it was applied. |
+| `SCREENPIPE_FORCE_BASELINE_BUN` | Handvel addition: `1` makes Windows x64 run Pi with bun's baseline (non-AVX2) build even when the CPU has AVX2. For testing that path. |
+| `SCREENPIPE_DISABLE_PI_PATCHES` | Handvel addition: `1` leaves the installed Pi runtime unpatched and removes the runtime patch if it was applied. |
 | `SCREENPIPE_AI_TOOLS_HOME` | Home directory searched for AI tool configs (`.claude`, `.codex`, `.cursor`, `.gemini`, `.openclaw`, `.hermes`) when auto-connecting MCP. |
 | `SCREENPIPE_ACP_ID` | ACP runtime: agent id. |
 | `SCREENPIPE_ACP_CWD` | ACP runtime: working directory. |
@@ -178,7 +178,7 @@ services used are left out.
 | `SCREENPIPE_MCP_CLIENT` | Name of the MCP client. |
 | `SCREENPIPE_MCP_SERVER_ALLOWLIST` | MCP servers a pipe session may call. |
 
-## Freenpipe only
+## Handvel only
 
 Not read by screenpipe, so they carry a `FREENPIPE_` prefix and are not in
 `screenpipe_core::env`.

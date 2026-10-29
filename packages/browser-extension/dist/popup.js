@@ -149,7 +149,7 @@ function setStatusUI(status) {
     ok: "bridge connected",
     bridge_down: "connecting…",
     auth_required: "not connected",
-    server_down: "Freenpipe not running",
+    server_down: "Handvel not running",
     error: "connection error"
   };
   text.textContent = labels[status];
@@ -168,7 +168,7 @@ function setStatusUI(status) {
   } else if (status === "server_down") {
     openBtn.hidden = false;
     openBtn.disabled = false;
-    hint.textContent = "Open the Freenpipe desktop app first.";
+    hint.textContent = "Open the Handvel desktop app first.";
     section.hidden = false;
   }
 }
@@ -206,7 +206,7 @@ async function runPairingFlow(baseUrl, existingPair) {
       code = pair.code;
       await saveSessionPair({ id: pairId, code, baseUrl, startedAt: Date.now() });
     }
-    setPairingUI(code, "Switch to Freenpipe and click Allow.");
+    setPairingUI(code, "Switch to Handvel and click Allow.");
     bar.dataset.state = "bridge_down";
     text.textContent = "waiting for approval…";
     await tryFocusScreenpipe();
@@ -265,7 +265,7 @@ async function tryOpenScreenpipe(baseUrl) {
   const btn = $("open-btn");
   const hint = $("action-hint");
   btn.disabled = true;
-  hint.textContent = "Trying to open Freenpipe…";
+  hint.textContent = "Trying to open Handvel…";
   await tryFocusScreenpipe();
   await new Promise((r) => setTimeout(r, 1500));
   const { token } = await getConfig();
@@ -274,7 +274,7 @@ async function tryOpenScreenpipe(baseUrl) {
     setStatusUI(status);
   } else {
     btn.disabled = false;
-    hint.textContent = "Freenpipe is not running. Please open it.";
+    hint.textContent = "Handvel is not running. Please open it.";
   }
 }
 async function init() {

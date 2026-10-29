@@ -2,21 +2,21 @@
 
 > "Civilization advances by extending the number of important operations which we can perform without thinking about them." (Alfred North Whitehead)
 
-## What Freenpipe is
+## What Handvel is
 
 Context infrastructure for AI agents: the ambient layer between people and their digital work.
 
-The screen is the universal interface, about 10M bits per second and the highest-fidelity signal of what a person intends. During work it shows all the software people use, much of which AI is now absorbing. Freenpipe captures that context locally and makes it available to AI.
+The screen is the universal interface, about 10M bits per second and the highest-fidelity signal of what a person intends. During work it shows all the software people use, much of which AI is now absorbing. Handvel captures that context locally and makes it available to AI.
 
 Not a memory tool. Not an assistant you prompt. An ambient automation layer that works in the background without prompting.
 
-Freenpipe is an MIT fork of screenpipe at commit `892199f`. It keeps the base's direction and stays compatible with screenpipe's data, API, pipes and MCP configurations, without the upstream vendor's services. Beyond compatibility, Freenpipe designs its own features (see [docs/clean-room/README.md](docs/clean-room/README.md)).
+Handvel is an MIT fork of screenpipe at commit `892199f`. It keeps the base's direction and stays compatible with screenpipe's data, API, pipes and MCP configurations, without the upstream vendor's services. Beyond compatibility, Handvel designs its own features (see [docs/clean-room/README.md](docs/clean-room/README.md)).
 
 ## Why it exists
 
 Every AI interaction today means stopping work, turning intent into a prompt, and waiting. That is a tax on every interaction. The screen already shows what you are doing; the context is right there.
 
-Freenpipe builds the layer that gives AI the full context of digital work so it can act on its own. Recording plus AI makes it possible to reproduce digital work at high fidelity.
+Handvel builds the layer that gives AI the full context of digital work so it can act on its own. Recording plus AI makes it possible to reproduce digital work at high fidelity.
 
 ## Where this goes
 
@@ -28,7 +28,7 @@ Freenpipe builds the layer that gives AI the full context of digital work so it 
 
 - **Stability over features.** Users who stay rely on it every day. Users who leave hit bugs. Fix what is broken before building what is new.
 - **No feature creep.** Every feature must serve Record, Rewind or Ask. If it does not, it does not ship.
-- **Respect the user's machine.** CPU, memory, disk: Freenpipe runs all day in the background. Performance is not optional. Target: under 20% CPU and under 3 GB RAM on release builds.
+- **Respect the user's machine.** CPU, memory, disk: Handvel runs all day in the background. Performance is not optional. Target: under 20% CPU and under 3 GB RAM on release builds.
 
 ## Engineering principles
 
@@ -49,7 +49,7 @@ Freenpipe builds the layer that gives AI the full context of digital work so it 
 
 ## Measuring progress
 
-Freenpipe collects no usage data, so it does not track usage metrics. Progress is measured against the plan ([docs/clean-room/STATUS.md](docs/clean-room/STATUS.md)), the regression checklist in [TESTING.md](TESTING.md), and resource use on release builds.
+Handvel collects no usage data, so it does not track usage metrics. Progress is measured against the plan ([docs/clean-room/STATUS.md](docs/clean-room/STATUS.md)), the regression checklist in [TESTING.md](TESTING.md), and resource use on release builds.
 
 ## What we believe
 

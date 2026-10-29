@@ -1,8 +1,8 @@
-// Freenpipe — local-first screen & audio memory (fork of screenpipe @ 892199f, MIT)
+// Handvel — local-first screen & audio memory (fork of screenpipe @ 892199f, MIT)
 // https://github.com/normiecore/Freenpipe
 
 // The team and organisation-policy hooks used to talk to the vendor's
-// services. In Freenpipe they answer for a personal install and must never
+// services. In Handvel they answer for a personal install and must never
 // issue a request. (The hosted-usage hook is gone entirely: W0-06 removed
 // the model picker's allowance chip that used it.)
 

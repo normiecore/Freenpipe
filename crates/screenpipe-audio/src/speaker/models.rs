@@ -12,8 +12,8 @@
 //!    [`bundled_model_dirs`]) or in a directory named by
 //!    `SCREENPIPE_PYANNOTE_DIR`; accepted only when its size matches the
 //!    pinned model, so a Git LFS pointer is never mistaken for a model;
-//! 3. the download cache, filled from the Freenpipe model mirror (the Git
-//!    LFS storage of the Freenpipe repository, read at a pinned commit;
+//! 3. the download cache, filled from the Handvel model mirror (the Git
+//!    LFS storage of the Handvel repository, read at a pinned commit;
 //!    overridable with `SCREENPIPE_PYANNOTE_BASE_URL`). Downloads are checked
 //!    against the pinned SHA-256 before use. A mirror that answers 404 is
 //!    not retried, so startup is never held up by a missing file.
@@ -145,7 +145,7 @@ pub fn bundled_model_dirs() -> Vec<PathBuf> {
     dirs
 }
 
-/// Model directories under each install root, in lookup order: Freenpipe's
+/// Model directories under each install root, in lookup order: Handvel's
 /// `models/pyannote/`, then the flat `models/` of screenpipe's installer.
 pub fn install_layout_dirs(roots: &[PathBuf]) -> Vec<PathBuf> {
     let mut dirs = Vec::with_capacity(roots.len() * 2);
@@ -647,7 +647,7 @@ mod tests {
         assert_eq!(dirs[1], exe_dir.join(FLAT_BUNDLED_RELATIVE_DIR));
         assert_eq!(find_bundled_model(&SEGMENTATION_SPEC, &dirs), Some(flat.clone()));
 
-        // Freenpipe's own layout comes first when both exist.
+        // Handvel's own layout comes first when both exist.
         let nested = write_model_sized(&exe_dir.join(BUNDLED_RELATIVE_DIR), &SEGMENTATION_SPEC);
         assert_eq!(find_bundled_model(&SEGMENTATION_SPEC, &dirs), Some(nested));
     }

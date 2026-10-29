@@ -1,4 +1,4 @@
-// Freenpipe — local-first screen & audio memory (fork of screenpipe @ 892199f, MIT)
+// Handvel — local-first screen & audio memory (fork of screenpipe @ 892199f, MIT)
 // https://github.com/normiecore/Freenpipe
 
 //! Checking and applying config changes (`POST /pipes/:id/config`, CLI).
@@ -100,7 +100,7 @@ pub enum PipeConfigUpdateError {
     InvalidId(InvalidPipeId),
     /// No pipe with this id is installed.
     NotFound(String),
-    /// The pipe is locked by an organisation (never the case in Freenpipe).
+    /// The pipe is locked by an organisation (never the case in Handvel).
     Managed(String),
     /// The fields were wrapped in a `config` object.
     Envelope,

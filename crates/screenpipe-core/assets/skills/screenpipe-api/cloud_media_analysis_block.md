@@ -2,7 +2,7 @@
 
 ## Media analysis through the user's AI gateway — `POST /v1/chat/completions`
 
-The user opted in to sending selected media to the AI gateway they configured in Freenpipe. Reach for it when a question needs real understanding of pictures or sound (what a screen recording shows, what was said in a short clip) and the OCR text, transcripts and search results you already have do not answer it.
+The user opted in to sending selected media to the AI gateway they configured in Handvel. Reach for it when a question needs real understanding of pictures or sound (what a screen recording shows, what was said in a short clip) and the OCR text, transcripts and search results you already have do not answer it.
 
 Send the request to the local server. It forwards the body to the gateway and attaches the gateway credential, which you never see.
 

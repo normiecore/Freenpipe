@@ -1,10 +1,10 @@
-// Freenpipe — local-first screen & audio memory (fork of screenpipe @ 892199f, MIT)
+// Handvel — local-first screen & audio memory (fork of screenpipe @ 892199f, MIT)
 // https://github.com/normiecore/Freenpipe
 
 /**
  * Which cloud storage features the settings UI may offer.
  *
- * Cloud sync and cloud archive both need a sync server. Freenpipe ships
+ * Cloud sync and cloud archive both need a sync server. Handvel ships
  * without a hosted one and has no setting for a self-hosted one yet, so both
  * are unavailable: the storage settings hide their tabs, and the Tauri
  * commands answer "not configured" (`sync_server_url()` in

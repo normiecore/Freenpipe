@@ -1,7 +1,7 @@
 import { create } from "zustand";
 
 // screenpipe showed a "login required" dialog here before cloud-only actions.
-// Freenpipe has no hosted account, so nothing ever needs a login: the dialog
+// Handvel has no hosted account, so nothing ever needs a login: the dialog
 // renders nothing and `checkLogin` always lets the caller proceed. The exports
 // keep their shape so existing mounts and callers compile unchanged.
 export function LoginDialog() {

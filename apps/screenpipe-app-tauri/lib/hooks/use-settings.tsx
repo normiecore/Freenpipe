@@ -541,7 +541,7 @@ let DEFAULT_SETTINGS: Settings = {
 			cloudMediaAnalysisEnabled: false,
 			aiGatewayUrl: "",
 			aiGatewayApiKey: "",
-			// Fresh settings are already in their Freenpipe shape.
+			// Fresh settings are already in their Handvel shape.
 			_freenpipeCloudPresetMigrated: true,
 			_freenpipePrivacyDefaultsApplied: true,
 			meetingSummaryPipeSlug: "meeting-summary",
@@ -665,7 +665,7 @@ const tauriLoadEnvironment: SettingsLoadEnvironment = {
 };
 
 /**
- * Apply every load migration (base, Freenpipe and settings schema v2) to a
+ * Apply every load migration (base, Handvel and settings schema v2) to a
  * stored settings object. Returns the migrated object and whether it must
  * be saved; the stored object itself is not replaced. The settings store
  * runs this on every load.
@@ -736,7 +736,7 @@ export async function migrateStoredSettings(
 		needsUpdate = true;
 	}
 
-	// One-time Freenpipe migrations (hosted-provider presets, PII backend,
+	// One-time Handvel migrations (hosted-provider presets, PII backend,
 	// analytics and media-analysis defaults). See lib/ai-gateway.ts. Once
 	// both have run this costs nothing; the gateway lookup (a Tauri call)
 	// only happens while the preset step is pending.
@@ -970,7 +970,7 @@ export const SettingsProvider: React.FC<{ children: React.ReactNode }> = ({ chil
 		};
 	}, []);
 
-	// No account session lives here: Freenpipe never verifies a token against
+	// No account session lives here: Handvel never verifies a token against
 	// a website, never refreshes a cached user and installs no fetch
 	// interceptor. See loadUser below.
 
@@ -1059,7 +1059,7 @@ export const SettingsProvider: React.FC<{ children: React.ReactNode }> = ({ chil
 		});
 
 	// screenpipe verified the token against its website here and cached the
-	// account it returned. Freenpipe has no hosted account, so loadUser keeps
+	// account it returned. Handvel has no hosted account, so loadUser keeps
 	// its signature for existing callers but resolves at once: no network
 	// call, no write to the stored user, no token pushed to the engine.
 	const loadUser = async (_token: string, _verify = false) => {};

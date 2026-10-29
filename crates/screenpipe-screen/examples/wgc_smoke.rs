@@ -1,4 +1,4 @@
-// Freenpipe — local-first screen & audio memory (fork of screenpipe @ 892199f, MIT)
+// Handvel — local-first screen & audio memory (fork of screenpipe @ 892199f, MIT)
 // https://github.com/normiecore/Freenpipe
 
 //! Windows Graphics Capture smoke test.
@@ -86,7 +86,7 @@ mod windows_smoke {
         let mut options = Options {
             frames: 10,
             interval: Duration::from_millis(300),
-            out: std::env::temp_dir().join("freenpipe-wgc-smoke"),
+            out: std::env::temp_dir().join("handvel-wgc-smoke"),
             warp_first: false,
         };
         let mut args = std::env::args().skip(1);

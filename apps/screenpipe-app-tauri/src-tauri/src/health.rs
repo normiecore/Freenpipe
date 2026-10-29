@@ -689,7 +689,7 @@ pub(crate) mod watchdog {
     use std::collections::VecDeque;
     use std::time::{Duration, Instant};
 
-    /// Freenpipe's constants: sample every 5 s, respawn after 3 refused
+    /// Handvel's constants: sample every 5 s, respawn after 3 refused
     /// samples (12 when the engine only times out, since a busy database
     /// pool can stall /health for a while), at most 3 respawns per 10
     /// minutes, and a failed respawn retried after 1, 2, 4 then 5 minutes.
@@ -1634,7 +1634,7 @@ async fn show_capture_stall_notification(app: &tauri::AppHandle, system: &str) -
         "id": format!("capture_stall_{}", system),
         "type": "capture_stall",
         "title": format!("{} capture may be stalled", system),
-        "body": format!("Freenpipe has not received recent {} updates. this may recover on its own, but restarting usually fixes it.", system),
+        "body": format!("Handvel has not received recent {} updates. this may recover on its own, but restarting usually fixes it.", system),
         "actions": [
             { "label": "RESTART", "action": "restart_recording", "primary": true }
         ],
@@ -1669,7 +1669,7 @@ async fn show_ocr_unavailable_notification(app: &tauri::AppHandle) -> Result<boo
         "type": "ocr_unavailable",
         "title": "screen text recognition is unavailable",
         "body": format!(
-            "Freenpipe keeps recording your screen and app text, but text that only appears in screenshots will not be searchable. {}",
+            "Handvel keeps recording your screen and app text, but text that only appears in screenshots will not be searchable. {}",
             hint
         ),
         "actions": [],

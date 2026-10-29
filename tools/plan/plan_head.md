@@ -1,4 +1,4 @@
-# Freenpipe implementation plan: BASE 892199f to compatibility with screenpipe
+# Handvel implementation plan: BASE 892199f to compatibility with screenpipe
 
 > **Owner decision 8 (2026-10-29) overrides this plan where they conflict.** Binary analysis is frozen, the goal is compatibility rather than parity, and implementers work only from re-sourced items in `docs/clean-room/specs/` (see `docs/clean-room/SOURCING.md`). The work-package descriptions below were written from the pre-freeze specs: implementers use them only for item ids, dependencies, owner paths and acceptance checks.
 
@@ -13,11 +13,11 @@ First generated 2026-10-15 from the verified delta in `docs/clean-room/specs/*.m
 
 ## 2. Ground rules for every WP
 
-1. **Clean room (binding, see `Freenpipe/CLAUDE.md`).** Work only from re-sourced items in `specs/*.md` (DECISIONS.md decision 8, SOURCING.md) and BASE source; never `legacy-specs/` or the analysis workspace. Do not consult post-relicense upstream material, browse vendor sites, or execute the target. Write original code. Do not paste decompiled code, extracted frontend JS, UI copy paragraphs or LLM prompt text; paraphrase behaviour. Interoperability identifiers (routes, JSON fields, SQL DDL and names, CLI flags, settings keys, env vars, file names) may match exactly. Built-in pipes, starter skills, the meeting-summary prompt, activity-history prompts and workflow agent prompts must be written fresh.
+1. **Clean room (binding, see the repository-root `CLAUDE.md`).** Work only from re-sourced items in `specs/*.md` (DECISIONS.md decision 8, SOURCING.md) and BASE source; never `legacy-specs/` or the analysis workspace. Do not consult post-relicense upstream material, browse vendor sites, or execute the target. Write original code. Do not paste decompiled code, extracted frontend JS, UI copy paragraphs or LLM prompt text; paraphrase behaviour. Interoperability identifiers (routes, JSON fields, SQL DDL and names, CLI flags, settings keys, env vars, file names) may match exactly. Built-in pipes, starter skills, the meeting-summary prompt, activity-history prompts and workflow agent prompts must be written fresh.
 2. **No phoning home.** No vendor host, PostHog key, Sentry DSN or vendor OAuth client id may appear in request-building code. All new network features are user-configured (BYO) or third-party and user-initiated. The vendor guard test (W0-01 scaffolds it, W0-12 makes it fail the build) enforces this.
-3. **New file header.** Every new .rs/.ts/.tsx/.js/.py file starts with the two-line Freenpipe header from CLAUDE.md. Upstream headers on edited files stay.
+3. **New file header.** Every new .rs/.ts/.tsx/.js/.py file starts with the two-line Handvel header from CLAUDE.md. Upstream headers on edited files stay.
 4. **Dev isolation.** screenpipe v2.7.104 is installed on the dev machine and may be running. It owns port 3030, the :11435 control server, `~/.screenpipe` and the `screenpipe://` scheme. Rules:
-   - Never point a Freenpipe build at `~/.screenpipe`. Use `FP_DD` (section 4).
+   - Never point a Handvel build at `~/.screenpipe`. Use `FP_DD` (section 4).
    - Never use port 3030 for dev engines. Use 3035.
    - Set `SCREENPIPE_API_KEY`, so the engine does not read or delete `~/.screenpipe/auth.json` (base `auth_key.rs` falls back to it).
    - Before any `bun run tauri dev`, quit the installed screenpipe app, because the base app control server binds :11435 unconditionally. W0-01 also removes the base blind `taskkill` of other port holders, which would otherwise kill the installed screenpipe engine.
@@ -74,7 +74,7 @@ These seams keep parallel WPs in their own files:
 - **App modules:** W1-03 pre-declares `mod` lines and empty files in `src-tauri/src/` for every planned app module, for example activity_history, first_run_summary, brain_views, workflow_video, workflows_media, coding_workspace, chat_control, storage_migration, db_self_heal, overlay_health, port_conflict, disk_pressure, power_awake, search_only and calendar/reminders.
 - **Background workers:** a registry in `crates/screenpipe-engine/src/core.rs`. Workers register there instead of editing the startup sequence.
 - **Shared constants:** data-dir file names in `crates/screenpipe-core/src/paths.rs` and `SCREENPIPE_*` env names in `crates/screenpipe-core/src/env.rs`.
-- **Migrations:** W1-01 adds all 28 target migrations at once under the exact target versions, with DDL as recorded in db.md. Later WPs never add migrations. A WP that finds a schema gap stops and raises it, because a Freenpipe-only migration would break checksum interop.
+- **Migrations:** W1-01 adds all 28 target migrations at once under the exact target versions, with DDL as recorded in db.md. Later WPs never add migrations. A WP that finds a schema gap stops and raises it, because a Handvel-only migration would break checksum interop.
 
 ## 6. Shared hotspot files and region ownership
 

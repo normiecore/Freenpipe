@@ -51,8 +51,8 @@ const NotificationHandler: React.FC = () => {
 
           if (!welcomeShown) {
             sendNotification({
-              title: "welcome to Freenpipe",
-              body: "thank you for using Freenpipe! we're dedicated to help you get the most out of Freenpipe.",
+              title: "welcome to Handvel",
+              body: "thank you for using Handvel! we're dedicated to help you get the most out of Handvel.",
             });
             localStorage?.setItem("welcomeNotificationShown", "true");
           }
@@ -218,7 +218,7 @@ const NotificationHandler: React.FC = () => {
         // URL-opening actions. Two explicit types so senders can't conflate
         // them:
         //   "link"      — external URL, opens in default browser
-        //   "deeplink"  — freenpipe:// (or screenpipe://) in-app route
+        //   "deeplink"  — handvel:// (or screenpipe://) in-app route
         //
         // Note: these are also handled in Rust inside `native_notif_action_callback`
         // for the native macOS panel case (where this JS listener may not be
@@ -299,17 +299,17 @@ const NotificationHandler: React.FC = () => {
   return null;
 };
 
-const PIPE_SUGGESTION_PROMPT = `you are a Freenpipe automation advisor. the user wants ideas for pipes (scheduled AI agents) they can create based on their actual workflow.
+const PIPE_SUGGESTION_PROMPT = `you are a Handvel automation advisor. the user wants ideas for pipes (scheduled AI agents) they can create based on their actual workflow.
 
-## what is Freenpipe?
+## what is Handvel?
 
-Freenpipe is a desktop app that continuously captures screen text (via accessibility APIs) and audio (transcription).
+Handvel is a desktop app that continuously captures screen text (via accessibility APIs) and audio (transcription).
 it runs a local API at http://localhost:3030 that lets you query everything you've seen, said, or heard.
 
 ## what is a pipe?
 
 a pipe is a scheduled AI agent defined as a single markdown file: ~/.screenpipe/pipes/{name}/pipe.md
-every N minutes, Freenpipe runs a coding agent with the pipe's prompt.
+every N minutes, Handvel runs a coding agent with the pipe's prompt.
 the agent can query screen data, write files, call external APIs, send notifications, etc.
 
 ## your task

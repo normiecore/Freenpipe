@@ -77,7 +77,7 @@ fn record_permanent_failure(failure: PermanentDownloadError) {
 }
 
 /// Size and SHA-256 a downloaded file must match before it is kept
-/// (Freenpipe, W2-19). Checked on the downloaded bytes, before the file is
+/// (Handvel, W2-19). Checked on the downloaded bytes, before the file is
 /// moved into the cache, so a wrong or tampered file never lands there.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ExpectedFile {

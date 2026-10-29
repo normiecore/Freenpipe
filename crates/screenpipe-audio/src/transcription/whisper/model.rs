@@ -88,7 +88,7 @@ pub fn whisper_context_params<'a>(use_gpu: bool) -> WhisperContextParameters<'a>
 }
 
 // ---------------------------------------------------------------------------
-// GPU device probe (Freenpipe, W2-19)
+// GPU device probe (Handvel, W2-19)
 //
 // Windows release builds compile whisper.cpp with ggml-vulkan, macOS builds
 // with Metal. Whether a GPU is actually usable is only known at run time, so
@@ -296,7 +296,7 @@ fn disable_whisper_gpu() {
     }
 }
 
-/// Test hook (Freenpipe only, hence not a `SCREENPIPE_*` name or an entry in
+/// Test hook (Handvel only, hence not a `SCREENPIPE_*` name or an entry in
 /// `screenpipe_core::env`): makes GPU whisper sessions fail on purpose so the
 /// CPU recovery path can be exercised on real hardware. `state` fails GPU
 /// state creation, `inference` (or `1`/`true`) fails GPU inference. CPU

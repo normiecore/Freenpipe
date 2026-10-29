@@ -1,5 +1,5 @@
 export const meta = {
-  name: 'freenpipe-sync-resolve',
+  name: 'handvel-sync-resolve',
   description: 'Merge origin/main into an approved WP branch, resolve conflicts keeping both sides intent, push, then two independent resolution reviews',
   whenToUse: 'Coordinator (docs/dev/cloud-coordinator.md): an approved, green WP PR conflicts with main in logic, not just append-only docs. args: {wp, title, pr, session_url, other_wps: "what the conflicting merged WPs did"}',
   phases: [
@@ -8,7 +8,7 @@ export const meta = {
     { title: 'Fix', detail: 'one fix round if a reviewer requests changes' },
   ],
 }
-// Freenpipe — local-first screen & audio memory (fork of screenpipe @ 892199f, MIT)
+// Handvel — local-first screen & audio memory (fork of screenpipe @ 892199f, MIT)
 // https://github.com/normiecore/Freenpipe
 
 const { wp, title, pr, session_url, other_wps } = args
@@ -48,7 +48,7 @@ ${JSON.stringify(fixFindings, null, 1)}
 Fix every blocker and major finding (rebut wrong ones with evidence), re-run the checks they touch, commit and push. ${RULES}
 Return merge_sha (unchanged), head_sha, pushed, conflicts (empty), checks and concerns.`
   }
-  return `You are the Freenpipe merger resolving a conflict. Work package ${wp} ("${title}", PR #${pr}) was approved and CI-green, but main has moved and the branch now conflicts with it. Worktree: ${WT} (branch wp/${wp}).
+  return `You are the Handvel merger resolving a conflict. Work package ${wp} ("${title}", PR #${pr}) was approved and CI-green, but main has moved and the branch now conflicts with it. Worktree: ${WT} (branch wp/${wp}).
 
 What the WPs that merged into main since then did, in the conflicting areas:
 ${other_wps}
@@ -63,7 +63,7 @@ Return merge_sha (the merge commit), head_sha, pushed, every conflict with its r
 }
 
 function reviewPrompt(role, res, prev) {
-  return `You review only a merge-conflict resolution for Freenpipe work package ${wp} ("${title}"): merge commit ${res.merge_sha} (branch head ${res.head_sha}) in the worktree ${WT}. Read docs/dev/cloud-reviewers.md and act as the ${role} using its "Merge resolution variant" section. Write the resolution diff with \`git -C ${WT} show --remerge-diff ${res.merge_sha}\` (and \`git -C ${WT} diff ${res.merge_sha}..${res.head_sha}\` for any follow-up commits) and judge whether both sides' intent survived and nothing outside both sides' changes was added. The merged WPs did this in the conflicting areas:
+  return `You review only a merge-conflict resolution for Handvel work package ${wp} ("${title}"): merge commit ${res.merge_sha} (branch head ${res.head_sha}) in the worktree ${WT}. Read docs/dev/cloud-reviewers.md and act as the ${role} using its "Merge resolution variant" section. Write the resolution diff with \`git -C ${WT} show --remerge-diff ${res.merge_sha}\` (and \`git -C ${WT} diff ${res.merge_sha}..${res.head_sha}\` for any follow-up commits) and judge whether both sides' intent survived and nothing outside both sides' changes was added. The merged WPs did this in the conflicting areas:
 ${other_wps}
 The resolver reported:
 ${JSON.stringify(res.conflicts, null, 1)}

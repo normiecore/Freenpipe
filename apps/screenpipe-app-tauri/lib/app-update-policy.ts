@@ -1,4 +1,4 @@
-// Freenpipe — local-first screen & audio memory (fork of screenpipe @ 892199f, MIT)
+// Handvel — local-first screen & audio memory (fork of screenpipe @ 892199f, MIT)
 // https://github.com/normiecore/Freenpipe
 
 /**
@@ -6,7 +6,7 @@
  * enterprise-policy hook.
  *
  * The base app imported this from a proprietary directory that is not part
- * of the fork. Freenpipe has no managed deployments, so nothing fetches a
+ * of the fork. Handvel has no managed deployments, so nothing fetches a
  * policy; this module only has to keep a valid, well-typed value around for
  * code paths that still read `settings.enterpriseAppUpdatePolicy`. The mode
  * set mirrors what `src-tauri/src/updates.rs` understands.

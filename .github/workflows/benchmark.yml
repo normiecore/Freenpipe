@@ -1,7 +1,7 @@
 name: Rust Benchmark
 
 on:
-  # Freenpipe: schedule disabled (upstream automation); run manually if needed.
+  # Handvel: schedule disabled (upstream automation); run manually if needed.
   workflow_dispatch:
 
 concurrency:

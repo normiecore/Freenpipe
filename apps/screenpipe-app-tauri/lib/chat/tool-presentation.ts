@@ -417,7 +417,7 @@ export function endpointFamily(path: string): string {
   if (path.startsWith("/meetings")) return "Meetings";
   if (path.startsWith("/speakers")) return "Speakers";
   if (path.startsWith("/pipes")) return "Pipes";
-  return "Freenpipe";
+  return "Handvel";
 }
 
 export function parseToolResultJson(result: string | undefined): any | null {

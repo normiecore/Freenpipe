@@ -1,7 +1,7 @@
 ---
-title: "troubleshoot Freenpipe: install, permissions, and pipes"
+title: "troubleshoot Handvel: install, permissions, and pipes"
 sidebarTitle: "troubleshooting"
-description: "Fix common Freenpipe issues including installation errors, screen and microphone permissions, missing audio, pipe failures, and MCP connection problems."
+description: "Fix common Handvel issues including installation errors, screen and microphone permissions, missing audio, pipe failures, and MCP connection problems."
 icon: "wrench"
 ---
 
@@ -15,7 +15,7 @@ icon: "wrench"
 | --- | --- | --- |
 | desktop timeline missing after CLI build | build the desktop app, not only the CLI | [getting started](/getting-started) |
 | app opens but data is empty | `curl http://localhost:3030/health` and wait 1-2 minutes | [API recipes](/api-recipes) |
-| AI tool cannot see Freenpipe | MCP config, Node 18+, app running | [MCP server](/mcp-server) |
+| AI tool cannot see Handvel | MCP config, Node 18+, app running | [MCP server](/mcp-server) |
 | pipe fails or hangs | pipe logs, provider auth, permissions | [pipe debugging](/pipe-debugging) |
 | Windows command window flashes during pipe run | pipe exits immediately; check logs | [pipe debugging](/pipe-debugging) |
 | meeting transcript is empty | microphone, system audio, transcription engine | [meeting intelligence](/meeting-intelligence) |
@@ -33,29 +33,29 @@ if you want the visual timeline, settings, chat, and guided permissions, build t
 
 after starting the desktop app:
 
-1. open Freenpipe.
+1. open Handvel.
 2. grant screen recording and accessibility permissions.
 3. wait 1-2 minutes.
 4. verify data with `curl "http://localhost:3030/search?limit=5&content_type=all"`.
 
-### Freenpipe won't start
+### Handvel won't start
 
 **macOS:**
-- grant screen recording permission: System Settings → Privacy & Security → Screen Recording → enable Freenpipe
-- grant accessibility permission: System Settings → Privacy & Security → Accessibility → enable Freenpipe
+- grant screen recording permission: System Settings → Privacy & Security → Screen Recording → enable Handvel
+- grant accessibility permission: System Settings → Privacy & Security → Accessibility → enable Handvel
 - if you see "app is damaged", right-click the app → Open (bypasses Gatekeeper on first launch)
 
 **Windows:**
 - run as administrator on first launch
 - if Windows Defender blocks it, click "More info" → "Run anyway"
 - ensure the .NET runtime is installed
-- if the embedded browser or timeline is blank, install or repair Microsoft Edge WebView2 Runtime and restart Freenpipe
+- if the embedded browser or timeline is blank, install or repair Microsoft Edge WebView2 Runtime and restart Handvel
 
 **Linux:**
 - install dependencies: `sudo apt install tesseract-ocr libxcb1`
 - grant screen capture permissions for your display server (X11 or Wayland)
 
-### Freenpipe is running but not capturing
+### Handvel is running but not capturing
 
 check the health endpoint:
 ```bash
@@ -68,7 +68,7 @@ if it returns an error:
 - check if another instance is already running on port 3030
 
 if health returns OK but search returns no results:
-- wait 1-2 minutes — Freenpipe needs time to capture and process frames
+- wait 1-2 minutes — Handvel needs time to capture and process frames
 - check that your display is listed in settings → monitors
 - verify screen text search is working: `curl "http://localhost:3030/search?limit=1&content_type=all"`
 - try `content_type=accessibility` and `content_type=all` before narrowing to OCR-only searches
@@ -80,7 +80,7 @@ if health returns OK but search returns no results:
 
 ### `/api/search` returns 404
 
-the local Freenpipe endpoint is:
+the local Handvel endpoint is:
 
 ```bash
 curl "http://localhost:3030/search?limit=5"
@@ -105,7 +105,7 @@ if recent results are missing:
 2. check whether the app/window is ignored.
 3. search without `start_time`, `end_time`, `app_name`, or `window_name` filters first.
 4. if a pipe uses a schedule, remember it may only search its schedule window.
-5. restart Freenpipe if the UI is stale but the API is healthy.
+5. restart Handvel if the UI is stale but the API is healthy.
 
 ### can I capture only work hours?
 
@@ -126,12 +126,12 @@ on Windows 11 24H2, some USB and communications-class microphones can expose for
 1. switch the input to the Windows system default microphone.
 2. unplug phantom devices such as dock stubs or controller adapters.
 3. test another USB port or direct connection instead of a dock.
-4. restart Freenpipe and run `curl "http://localhost:3030/search?content_type=audio&limit=1"`.
+4. restart Handvel and run `curl "http://localhost:3030/search?content_type=audio&limit=1"`.
 5. include the exact device name when reporting the issue.
 
 ### audio drops out during calls or long meetings
 
-if you notice gaps in transcription or missing audio segments, the transcription queue is likely full and Freenpipe is dropping segments to prevent the system from freezing.
+if you notice gaps in transcription or missing audio segments, the transcription queue is likely full and Handvel is dropping segments to prevent the system from freezing.
 
 **causes:**
 - transcription can't keep up with the incoming audio (especially with large batch sizes or slower hardware)
@@ -144,15 +144,15 @@ if you notice gaps in transcription or missing audio segments, the transcription
 2. **switch to faster transcription:** settings → AI models → try `whisper-tiny` or `whisper-base` instead of `whisper-large-v3-turbo` (trades accuracy for speed)
 3. **disable unused audio devices:** settings → recording → uncheck devices you don't need — recording one device instead of multiple reduces queue pressure
 4. **use cloud transcription:** switch to **deepgram** with your own key for remote processing, which doesn't block your local system
-5. **reduce system load:** close heavy apps or run Freenpipe on a machine with better CPU/RAM
+5. **reduce system load:** close heavy apps or run Handvel on a machine with better CPU/RAM
 
 if the issue persists, check logs: settings → pipes → view logs to see "dropping audio segment" warnings.
 
 ### bluetooth headphone audio quality drops
 
-this is a macOS limitation, not a Freenpipe bug. when any app opens a bluetooth microphone, macOS switches from A2DP (high quality) to HFP (phone quality).
+this is a macOS limitation, not a Handvel bug. when any app opens a bluetooth microphone, macOS switches from A2DP (high quality) to HFP (phone quality).
 
-**fix:** go to **settings → recording** → switch input to your MacBook's built-in microphone. Freenpipe still captures your voice, and your bluetooth audio quality stays high.
+**fix:** go to **settings → recording** → switch input to your MacBook's built-in microphone. Handvel still captures your voice, and your bluetooth audio quality stays high.
 
 note: AirPods don't have this issue — Apple uses a proprietary codec.
 
@@ -168,13 +168,13 @@ note: AirPods don't have this issue — Apple uses a proprietary codec.
 
 if you want to record only certain applications (like Teams meetings) and exclude everything else:
 
-1. **screen capture**: go to **settings → recording → included windows** and add the app name (e.g., `Teams`, `Zoom`). Freenpipe will only capture these windows, even if you switch away briefly
+1. **screen capture**: go to **settings → recording → included windows** and add the app name (e.g., `Teams`, `Zoom`). Handvel will only capture these windows, even if you switch away briefly
 2. **audio devices**: go to **settings → recording** and select only the devices you need — for example, just your microphone and system audio, deselecting other inputs
 3. **test it**: open Teams and verify the timeline shows only Teams content. try opening other apps — they shouldn't appear in the recording
 
 this is useful for compliance, privacy (avoid recording unrelated work), or reducing storage usage. your recorded meetings and transcriptions are searchable via the API as normal.
 
-note: with included windows, Freenpipe pauses capture when the app loses focus. this is intentional — if you want to capture even when focused on another window, use the broader "all windows" setting instead.
+note: with included windows, Handvel pauses capture when the app loses focus. this is intentional — if you want to capture even when focused on another window, use the broader "all windows" setting instead.
 
 ---
 
@@ -184,15 +184,15 @@ note: with included windows, Freenpipe pauses capture when the app loses focus. 
 
 if your chat window freezes, try these fixes in order:
 
-1. **restart Freenpipe** — closes stalled message queues
+1. **restart Handvel** — closes stalled message queues
 2. **check health:** `curl http://localhost:3030/health` — if it fails, backend is stuck
-3. **verify you have data** — Freenpipe needs screen/audio history; wait 1-2 minutes after startup
+3. **verify you have data** — Handvel needs screen/audio history; wait 1-2 minutes after startup
 4. **verify AI provider connection** — settings → model selector. for ChatGPT/Claude, sign out/back in
 5. **reduce load** — disable unused pipes (settings → pipes), switch to faster model (gpt-4o mini), check logs for "timeout" errors
 
 ### chat messages disappear
 
-if assistant replies vanish when navigating away: this message persistence bug was fixed upstream before the Freenpipe base, so every Freenpipe build includes the fix. if it still happens, open a [GitHub issue](https://github.com/normiecore/Freenpipe/issues) with the steps.
+if assistant replies vanish when navigating away: this message persistence bug was fixed upstream before the Handvel base, so every Handvel build includes the fix. if it still happens, open a [GitHub issue](https://github.com/normiecore/Freenpipe/issues) with the steps.
 
 ### AI model connection fails
 
@@ -222,7 +222,7 @@ include the log output when asking for help. "the command window flashes" is the
 1. check logs: go to **settings → pipes** → click your pipe → view logs
 2. make sure your prompt includes concrete instructions to write output or send notifications
 3. test manually: click "run" in the pipe UI and watch the logs in real-time
-4. verify Freenpipe has data to work with: `curl "http://localhost:3030/search?limit=5"`
+4. verify Handvel has data to work with: `curl "http://localhost:3030/search?limit=5"`
 5. confirm the prompt says what to do when no data is found, so the pipe does not silently guess
 
 ### pipe doesn't run on schedule
@@ -241,18 +241,18 @@ include the log output when asking for help. "the command window flashes" is the
 
 ### pipe can't find screen data
 
-- make sure Freenpipe is actively recording (check health endpoint)
+- make sure Handvel is actively recording (check health endpoint)
 - the pipe only searches within its schedule interval — if schedule is "every 30m", it only looks at the last 30 minutes
 - verify data exists for the time range: `curl "http://localhost:3030/search?start_time=30m+ago&limit=5"`
 - search with `content_type=all` before narrowing to `accessibility`, `ocr`, or `audio`
-- remove `window_name` filters until you confirm the exact window title stored by Freenpipe
+- remove `window_name` filters until you confirm the exact window title stored by Handvel
 
 ### pipe notifications, sounds, or Telegram messages do not fire
 
 debug the pipeline in pieces:
 
 1. confirm the pipe starts.
-2. confirm Freenpipe search returns the condition you expect.
+2. confirm Handvel search returns the condition you expect.
 3. test the notification or Telegram/API call outside the pipe.
 4. reconnect the integration if tokens expired.
 5. make the prompt write a log line when it decides not to notify.
@@ -263,14 +263,14 @@ debug the pipeline in pieces:
 
 ### MCP not connecting to Claude/Cursor
 
-1. verify Freenpipe is running: `curl http://localhost:3030/health`
+1. verify Handvel is running: `curl http://localhost:3030/health`
 2. restart Claude Desktop / Cursor after adding the MCP config
 3. test the MCP server directly: `npx @modelcontextprotocol/inspector npx screenpipe-mcp`
 4. check that Node.js >= 18 is installed: `node --version`
 
 ### Claude/Cursor says "no results" when asking about screen
 
-- make sure Freenpipe has been running long enough to capture data
+- make sure Handvel has been running long enough to capture data
 - try a broader query: "what apps have I been using?" instead of very specific text
 - check that screen recording permissions are granted
 
@@ -278,21 +278,21 @@ debug the pipeline in pieces:
 
 - sign out and sign back in (settings → model selector → sign out)
 - make sure your ChatGPT subscription is active
-- try restarting the Freenpipe app
+- try restarting the Handvel app
 
 ---
 
 ## performance
 
-### Freenpipe using too much CPU
+### Handvel using too much CPU
 
 - reduce capture FPS: settings → capture rate (default 1 FPS is usually fine)
 - exclude heavy apps from capture: settings → recording → ignored windows
 - on older machines, use `whisper-tiny` instead of `whisper-large-v3-turbo`
 
-### Freenpipe using too much disk space
+### Handvel using too much disk space
 
-- Freenpipe uses ~30 GB/month at 1 FPS — this is normal
+- Handvel uses ~30 GB/month at 1 FPS — this is normal
 - reduce capture rate in settings
 - data is stored in `~/.screenpipe/data/` — you can delete old recordings
 - planned: archive to storage you control ([learn more →](/cloud-archive))
@@ -303,7 +303,7 @@ you can back up `~/.screenpipe/` to external storage. be careful with active dat
 
 for active long-term retention, prefer a stable local disk plus backup. if you do use a NAS, test recording, search, restart, and recovery before relying on it.
 
-### Freenpipe using too much RAM
+### Handvel using too much RAM
 
 - typical usage is ~600 MB RAM
 - if it's using significantly more, restart the app
@@ -313,9 +313,9 @@ for active long-term retention, prefer a stable local disk plus backup. if you d
 ### timeline or owned browser is blank on Windows
 
 1. install or repair Microsoft Edge WebView2 Runtime.
-2. close Freenpipe completely and reopen it.
+2. close Handvel completely and reopen it.
 3. check whether other WebView2 apps on the machine render.
-4. if this only happens after sleep/wake, restart Freenpipe and include logs in the report.
+4. if this only happens after sleep/wake, restart Handvel and include logs in the report.
 
 ### engine is still starting
 
@@ -333,13 +333,13 @@ then retry sync, pipe run, search, or MCP setup.
 
 ### how is personal data protected?
 
-Freenpipe does not automatically redact personal information from storage by default. instead, you have these options:
+Handvel does not automatically redact personal information from storage by default. instead, you have these options:
 
 | feature | what it does | where |
 | --- | --- | --- |
 | local AI PII removal | redacts sensitive data before selected AI workflows see it | settings → privacy → AI PII removal |
 | privacy filter (enclave mode) | uses a confidential enclave to redact text for cloud AI | settings → privacy → privacy filter mode |
-| ignored windows | prevents Freenpipe from recording specific apps (password managers, banking) | settings → recording → ignored windows |
+| ignored windows | prevents Handvel from recording specific apps (password managers, banking) | settings → recording → ignored windows |
 
 the safest setup: enable **AI PII removal**, ignore your password manager window, and use local Ollama or disabled cloud media.
 
@@ -349,7 +349,7 @@ the safest setup: enable **AI PII removal**, ignore your password manager window
 2. toggle **AI PII removal** on.
 3. choose a redaction policy: default is `credentials-only` (catches API keys, tokens, SSNs, credit cards). you can also choose `strict` to redact names, emails, and phone numbers.
 4. for image protection: toggle **image PII removal** separately if you want screenshots redacted before image workflows.
-5. restart Freenpipe if you changed settings.
+5. restart Handvel if you changed settings.
 
 the local model runs on your machine — no data leaves your computer. the first run may be slow as the model loads; subsequent searches are faster.
 
@@ -379,7 +379,7 @@ if you sync data to another device or service, PII removal does not automaticall
 
 when asking for help, include:
 - your OS and version
-- the Freenpipe commit you built from
+- the Handvel commit you built from
 - output of `curl http://localhost:3030/health`
 - whether API auth and LAN access are enabled
 - microphone/audio device name, if audio is involved

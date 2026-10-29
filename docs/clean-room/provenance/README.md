@@ -1,6 +1,6 @@
 # Provenance records
 
-Owner decision 8 requires a provenance record for every work package started from 2026-10-29 on. The record is a dated account of where each part of the work came from. If anyone ever asks how Freenpipe was built, these records answer for each work package.
+Owner decision 8 requires a provenance record for every work package started from 2026-10-29 on. The record is a dated account of where each part of the work came from. If anyone ever asks how Handvel was built, these records answer for each work package.
 
 ## Rules
 

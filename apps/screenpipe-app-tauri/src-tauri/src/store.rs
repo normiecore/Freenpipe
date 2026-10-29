@@ -527,7 +527,7 @@ pub struct OnboardingStore {
     /// Last error from generating the summary.
     #[serde(rename = "firstRunSummaryError", default)]
     pub first_run_summary_error: Option<String>,
-    /// Version marker screenpipe kept for its own analytics. Freenpipe keeps
+    /// Version marker screenpipe kept for its own analytics. Handvel keeps
     /// the stored value and never reports it.
     #[serde(rename = "firstRunSummaryTelemetryVersion", default)]
     pub first_run_summary_telemetry_version: Option<u32>,
@@ -558,7 +558,7 @@ impl Default for OnboardingStore {
     }
 }
 
-/// Onboarding steps written by screenpipe's trial/paywall experiment. Freenpipe
+/// Onboarding steps written by screenpipe's trial/paywall experiment. Handvel
 /// has no trial, so it never assigns these; a store that still carries one
 /// (for example one copied over from a screenpipe install) counts as finished.
 const TRIAL_ACTIVATION_STEPS: [&str; 3] = [
@@ -693,7 +693,7 @@ where
 /// Fields follow the order of the settings schema (v2): app keys first, then
 /// the flattened recording keys, then `extra`, which keeps every key this
 /// version does not model so a store shared with screenpipe or a newer
-/// Freenpipe round-trips without losing data. Keys added after the first
+/// Handvel round-trips without losing data. Keys added after the first
 /// schema carry a field-level default so they are optional in the generated
 /// TypeScript type and absent keys load with their documented default.
 #[derive(Serialize, Deserialize, Type, Clone)]
@@ -805,7 +805,7 @@ pub struct SettingsStore {
     /// Credential sent to that gateway as a Bearer token. Empty = none.
     #[serde(rename = "aiGatewayApiKey", default)]
     pub ai_gateway_api_key: String,
-    /// Remote support-log collection. Freenpipe has no support service: the
+    /// Remote support-log collection. Handvel has no support service: the
     /// key is kept for stores shared with screenpipe but is always false and
     /// never read.
     #[serde(rename = "remoteLogCollectionEnabled", default)]
@@ -1031,7 +1031,7 @@ pub struct AIPreset {
     #[serde(rename = "maxTokens", default = "default_max_tokens")]
     pub max_tokens: i32,
     /// Set by screenpipe on presets an enterprise administrator pushed.
-    /// Kept as stored so the preset round-trips; Freenpipe has no managed
+    /// Kept as stored so the preset round-trips; Handvel has no managed
     /// presets and never sets it.
     #[serde(
         rename = "enterpriseManaged",
@@ -1099,7 +1099,7 @@ impl Default for AIPreset {
 
 /// Cached screenpipe account record.
 ///
-/// Freenpipe has no accounts: it never fetches this record and never gates a
+/// Handvel has no accounts: it never fetches this record and never gates a
 /// feature on it. The fields are kept, together with the ones newer screenpipe
 /// releases write (`has_payment_method`, `entitlement_source`,
 /// `enterprise_account`), so a `store.bin` produced by screenpipe loads and
@@ -1602,7 +1602,7 @@ impl SettingsStore {
         let mut settings = self.recording.clone();
         // `user_id` is the Bearer credential the engine sends to the user's
         // AI gateway (cloud transcription, the live-notes relay, the chat
-        // proxy), not a database ID. Freenpipe has no account, so it is the
+        // proxy), not a database ID. Handvel has no account, so it is the
         // gateway key from settings (or SCREENPIPE_AI_GATEWAY_KEY) and never
         // a token cached from a screenpipe sign-in.
         settings.user_id =
@@ -1663,7 +1663,7 @@ impl SettingsStore {
         config
     }
 
-    /// Whether this install may record. Freenpipe has no licence or plan, so
+    /// Whether this install may record. Handvel has no licence or plan, so
     /// the answer is always yes; the name and signature stay so callers that
     /// used to consult screenpipe's entitlement keep compiling unchanged.
     pub fn app_entitled_or_dev(&self) -> bool {
@@ -1737,7 +1737,7 @@ impl SettingsStore {
         .is_some()
     }
 
-    /// One-time Freenpipe migrations for a store written by screenpipe (the
+    /// One-time Handvel migrations for a store written by screenpipe (the
     /// frontend runs the same steps under the same flags, whichever loads the
     /// store first does the work). Returns `true` when something changed.
     ///
@@ -1830,7 +1830,7 @@ fn is_remote_pii_backend(value: &str) -> bool {
 // screenpipe used to keep its account token in `settings.user.token` inside
 // `store.bin` (plain JSON unless store encryption is on, and always plain in
 // the `.last-good` snapshot). Newer releases keep it in the encrypted secret
-// store under `cloud.auth_token` instead. Freenpipe has no account and never
+// store under `cloud.auth_token` instead. Handvel has no account and never
 // sends this token anywhere; it only moves an imported token out of
 // `store.bin` and reads the same key back, so a store shared with screenpipe
 // stays consistent.
@@ -2029,12 +2029,12 @@ pub fn report_store_init_failure(app: &AppHandle, error: &str) {
     );
     app.dialog()
         .message(format!(
-            "Freenpipe could not read its settings file and stopped so the file is not replaced.\n\n\
+            "Handvel could not read its settings file and stopped so the file is not replaced.\n\n\
              File: {store_path}\nReason: {error}\n\n\
              If store encryption is on, allow keychain access and start again. \
              To start over with default settings, move the file elsewhere first."
         ))
-        .title("Freenpipe cannot start")
+        .title("Handvel cannot start")
         .kind(MessageDialogKind::Error)
         .buttons(MessageDialogButtons::Ok)
         .show(|_| std::process::exit(1));
@@ -2059,7 +2059,7 @@ pub fn init_store(app: &AppHandle) -> Result<SettingsStore, String> {
     // A new store is always written once so the frontend and the CLI find it.
     let mut should_save = is_new_store;
 
-    // Freenpipe one-time AI/privacy migrations (no-ops after the first run).
+    // Handvel one-time AI/privacy migrations (no-ops after the first run).
     let gateway_configured = store.ai_gateway_configured();
     if store.apply_freenpipe_ai_migrations(gateway_configured) {
         should_save = true;
@@ -2546,7 +2546,7 @@ mod tests {
         assert_eq!(store.to_recording_settings().user_id, "gw-key");
     }
 
-    // ---- Entitlement gate removal (Freenpipe has no plans) ----
+    // ---- Entitlement gate removal (Handvel has no plans) ----
 
     #[test]
     fn app_entitled_or_dev_is_always_true() {
@@ -2663,7 +2663,7 @@ mod tests {
         assert!(settings.user.enterprise_account.is_none());
     }
 
-    // ---- Trial-activation onboarding steps (never assigned by Freenpipe) ----
+    // ---- Trial-activation onboarding steps (never assigned by Handvel) ----
 
     #[test]
     fn stored_trial_step_counts_as_completed_onboarding() {

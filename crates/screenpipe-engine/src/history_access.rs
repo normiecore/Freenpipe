@@ -1,11 +1,11 @@
-// Freenpipe — local-first screen & audio memory (fork of screenpipe @ 892199f, MIT)
+// Handvel — local-first screen & audio memory (fork of screenpipe @ 892199f, MIT)
 // https://github.com/normiecore/Freenpipe
 
 //! History access policy: every read of local history is allowed.
 //!
 //! screenpipe's hosted plans could cap how far back an account was allowed to
 //! read. Frames, elements, exports, meetings, raw SQL and starred sessions
-//! older than that window were refused with a fixed error code. Freenpipe has
+//! older than that window were refused with a fixed error code. Handvel has
 //! no accounts and no plans, so it never limits history: data the user
 //! recorded stays readable for as long as it is on disk.
 //!
@@ -14,7 +14,7 @@
 //! [`HistoryAccess`] deliberately has no restricted variant, which means no
 //! caller can ever be handed a refusal. [`HistoryAccessErrorCode`] keeps the
 //! refusal's wire code defined so clients written against screenpipe still
-//! have something to match; nothing in Freenpipe produces it.
+//! have something to match; nothing in Handvel produces it.
 
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
@@ -71,7 +71,7 @@ pub enum HistoryAccess {
 /// Error codes a history-window refusal carries on the wire, as
 /// `{"error": "...", "code": "<code>"}`.
 ///
-/// Reserved for compatibility only: Freenpipe never refuses a read because of
+/// Reserved for compatibility only: Handvel never refuses a read because of
 /// its age, so no value of this type is ever sent.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum HistoryAccessErrorCode {

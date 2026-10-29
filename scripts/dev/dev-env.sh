@@ -1,11 +1,11 @@
-# Freenpipe — local-first screen & audio memory (fork of screenpipe @ 892199f, MIT)
+# Handvel — local-first screen & audio memory (fork of screenpipe @ 892199f, MIT)
 # https://github.com/normiecore/Freenpipe
 #
 # Dev isolation for Git Bash on Windows (also works on macOS/Linux shells).
 #
 #   source scripts/dev/dev-env.sh [name]
 #
-# Freenpipe keeps screenpipe's drop-in defaults (~/.screenpipe, API port 3030,
+# Handvel keeps screenpipe's drop-in defaults (~/.screenpipe, API port 3030,
 # control server 11435). A development machine may also run the real
 # screenpipe, so every dev run must use its own data dir, ports and API key.
 # This script exports them; it never touches ~/.screenpipe.

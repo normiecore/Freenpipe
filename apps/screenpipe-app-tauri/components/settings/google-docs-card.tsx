@@ -172,7 +172,7 @@ export function GoogleDocsCard({
 
             <p className="text-xs text-muted-foreground mb-3 leading-relaxed">
               Read and write access to Google Docs. Lets AI search, read, create, and edit documents.
-              Only docs you open with Freenpipe or that Freenpipe creates are visible — not your whole Drive.
+              Only docs you open with Handvel or that Handvel creates are visible — not your whole Drive.
             </p>
 
             {accounts.length > 0 && (

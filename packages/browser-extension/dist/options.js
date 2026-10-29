@@ -45,7 +45,7 @@ function setPairCode(code) {
   const el = $("pair-code");
   details.hidden = !code;
   details.open = false;
-  el.textContent = code ? `match code: ${code}. approve only if the same code appears in Freenpipe.` : "";
+  el.textContent = code ? `match code: ${code}. approve only if the same code appears in Handvel.` : "";
 }
 function setConnectedUi(connected) {
   const title = $("connection-title");
@@ -54,8 +54,8 @@ function setConnectedUi(connected) {
   const advanced = $("advanced-toggle");
   connect.hidden = connected;
   advanced.textContent = connected ? "Troubleshooting" : "Manual setup";
-  title.textContent = connected ? "Freenpipe connected" : "connect Freenpipe";
-  help.textContent = connected ? "you can close this tab. agents can now use your browser when needed." : "click connect, then approve the request in the Freenpipe desktop app. no API token copy/paste needed.";
+  title.textContent = connected ? "Handvel connected" : "connect Handvel";
+  help.textContent = connected ? "you can close this tab. agents can now use your browser when needed." : "click connect, then approve the request in the Handvel desktop app. no API token copy/paste needed.";
 }
 function getBrowserName() {
   const ua = navigator.userAgent;
@@ -113,7 +113,7 @@ async function probeConnection(token, baseUrl) {
   } catch (e) {
     return {
       status: "server_down",
-      message: `can't reach Freenpipe at ${baseUrl}. is the app running?`
+      message: `can't reach Handvel at ${baseUrl}. is the app running?`
     };
   }
   try {
@@ -127,7 +127,7 @@ async function probeConnection(token, baseUrl) {
     if (auth.status === 401 || auth.status === 403) {
       return {
         status: "auth_required",
-        message: token ? "token was rejected: copy a fresh one from Freenpipe settings" : "this server requires a token — paste one above"
+        message: token ? "token was rejected: copy a fresh one from Handvel settings" : "this server requires a token — paste one above"
       };
     }
     return { status: "error", message: `unexpected HTTP ${auth.status}` };
@@ -179,20 +179,20 @@ async function onConnectClick() {
   connect.disabled = true;
   setPairCode(null);
   const baseUrl = $("baseUrl").value.trim() || DEFAULT_BASE_URL;
-  setStatus("saving", "checking for Freenpipe…");
+  setStatus("saving", "checking for Handvel…");
   const liveness = await probeConnection("", baseUrl);
   if (liveness.status === "server_down") {
-    setStatus("server_down", `Freenpipe is not running at ${baseUrl}`);
+    setStatus("server_down", `Handvel is not running at ${baseUrl}`);
     pairingInProgress = false;
     connect.disabled = false;
     return;
   }
   try {
-    setStatus("pairing", "opening approval request in Freenpipe…");
+    setStatus("pairing", "opening approval request in Handvel…");
     const pair = await startPairing(baseUrl);
     setPairCode(pair.code);
     const focused = await openScreenpipeForApproval();
-    setStatus("pairing", focused ? "Freenpipe should come to the front. click Allow there" : "approve in Freenpipe. if it did not come forward, open the app manually");
+    setStatus("pairing", focused ? "Handvel should come to the front. click Allow there" : "approve in Handvel. if it did not come forward, open the app manually");
     const approval = await waitForPairApproval(baseUrl, pair.id);
     setPairCode(null);
     if (approval.status === "approved") {
@@ -200,12 +200,12 @@ async function onConnectClick() {
       await saveSettings(token, baseUrl);
       $("token").value = token;
       const { status, message } = await probeConnection(token, baseUrl);
-      setStatus(status, status === "ok" ? "connected to Freenpipe" : message);
+      setStatus(status, status === "ok" ? "connected to Handvel" : message);
       setConnectedUi(status === "ok");
       return;
     }
     if (approval.status === "denied") {
-      setStatus("denied", "connection denied in Freenpipe");
+      setStatus("denied", "connection denied in Handvel");
       return;
     }
     setStatus("error", "approval expired — try connecting again");
@@ -244,7 +244,7 @@ async function recheckSavedConnection() {
     setStatus(status, message);
     return;
   }
-  setStatus(status, status === "auth_required" ? "Freenpipe auth changed: connect again" : message);
+  setStatus(status, status === "auth_required" ? "Handvel auth changed: connect again" : message);
 }
 async function init() {
   const { token, baseUrl } = await loadSettings();
@@ -268,7 +268,7 @@ async function init() {
     setStatus(status, message);
     setConnectedUi(status === "ok");
   } else {
-    setStatus("idle", "click connect, then approve in the Freenpipe app");
+    setStatus("idle", "click connect, then approve in the Handvel app");
     setConnectedUi(false);
   }
   setInterval(() => {

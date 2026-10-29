@@ -1,9 +1,9 @@
-// Freenpipe — local-first screen & audio memory (fork of screenpipe @ 892199f, MIT)
+// Handvel — local-first screen & audio memory (fork of screenpipe @ 892199f, MIT)
 // https://github.com/normiecore/Freenpipe
 
 //! Read-only client for a user-configured pipe registry.
 //!
-//! Freenpipe ships without a registry address. The registry is whatever
+//! Handvel ships without a registry address. The registry is whatever
 //! [`Endpoint::PipeRegistry`] resolves to (a settings override or the
 //! `SCREENPIPE_API_BASE_URL` environment variable), and it is unset by
 //! default. Callers decide what "unset" means for them: the store listing
@@ -61,7 +61,7 @@ static HTTP: Lazy<reqwest::Client> = Lazy::new(|| {
         .pool_max_idle_per_host(4)
         .timeout(REQUEST_TIMEOUT)
         .user_agent(endpoints::user_agent(
-            "freenpipe-engine",
+            "handvel-engine",
             env!("CARGO_PKG_VERSION"),
         ))
         .build()

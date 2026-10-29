@@ -14,7 +14,7 @@ import { useOnboarding } from "@/lib/hooks/use-onboarding";
 import posthog from "posthog-js";
 import { commands } from "@/lib/utils/tauri";
 
-// Freenpipe has no account, so there is no sign-in slide: onboarding opens on
+// Handvel has no account, so there is no sign-in slide: onboarding opens on
 // permissions. Steps screenpipe stored for its sign-in or welcome screens map
 // to that first slide.
 type SlideKey = "permissions" | "engine" | "connect-apps" | "pipe";

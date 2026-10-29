@@ -596,7 +596,7 @@ impl DatabaseManager {
         // upgraded across that migration boundary may have skipped it.
         Self::ensure_memories_sync_columns(pool).await?;
 
-        // Freenpipe (W2-16, db-011): recreate the speaker tables if a damaged
+        // Handvel (W2-16, db-011): recreate the speaker tables if a damaged
         // database lost them.
         Self::ensure_speaker_tables(pool).await?;
 
@@ -2408,7 +2408,7 @@ impl DatabaseManager {
 
     /// Find the microphone owner's voice so it can be named after the user.
     ///
-    /// Freenpipe (W2-16, audio-009): this only answers when the evidence is
+    /// Handvel (W2-16, audio-009): this only answers when the evidence is
     /// unambiguous. Every input-device row with a speaker since `since` must
     /// belong to one single speaker id (named or not), and that speaker must
     /// be unnamed, not a hallucination, and never heard on an output device.
@@ -6652,7 +6652,7 @@ impl DatabaseManager {
         Ok(res)
     }
 
-    // ===== Freenpipe (W2-16): speaker reference integrity =====
+    // ===== Handvel (W2-16): speaker reference integrity =====
     //
     // A speaker id can be referenced from five tables. Merging or absorbing a
     // speaker repoints all of them, and a speakers row is only removed once
@@ -7043,7 +7043,7 @@ impl DatabaseManager {
         .fetch_all(&mut **tx.conn())
         .await?;
 
-        // Freenpipe (W2-16): rows in the other three speaker-referencing
+        // Handvel (W2-16): rows in the other three speaker-referencing
         // tables outlive the speaker. Live meeting segments and diarization
         // segments drop the link (they fall back to their provider label);
         // identity evidence about this voice goes with it. This mirrors the
@@ -9111,7 +9111,7 @@ LIMIT ? OFFSET ?
         ))
     }
 
-    /// Give the speaker of an audio chunk a name (Freenpipe W2-16, audio-006).
+    /// Give the speaker of an audio chunk a name (Handvel W2-16, audio-006).
     ///
     /// 1. The name is trimmed; an empty name fails with
     ///    `sqlx::Error::InvalidArgument`.

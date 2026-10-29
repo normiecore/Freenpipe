@@ -12,8 +12,8 @@ import { buildSystemPrompt, buildConnectionsContext } from "../system-prompt";
 describe("buildSystemPrompt", () => {
   const prompt = buildSystemPrompt();
 
-  it("opens by establishing the Freenpipe assistant role", () => {
-    expect(prompt.startsWith("You are the user's Freenpipe assistant.")).toBe(true);
+  it("opens by establishing the Handvel assistant role", () => {
+    expect(prompt.startsWith("You are the user's Handvel assistant.")).toBe(true);
   });
 
   it("includes the key behavioral sections", () => {

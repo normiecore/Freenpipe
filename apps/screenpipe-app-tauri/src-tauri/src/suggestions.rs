@@ -1082,6 +1082,9 @@ fn idle_suggestions(
         "finder",
         "screenpipe",
         "screenpipe-app",
+        "handvel",
+        "handvel dev",
+        "handvel beta",
         "freenpipe",
         "freenpipe dev",
         "freenpipe beta",
@@ -1261,7 +1264,7 @@ async fn fetch_app_activity(api: &LocalApiContext) -> Result<Vec<AppActivity>, S
     let resp = api
         .apply_auth(client.post(api.url("/raw_sql")))
         .json(&serde_json::json!({
-            "query": "SELECT app_name, COUNT(*) as cnt FROM frames WHERE datetime(timestamp) > datetime('now', '-30 minutes') AND app_name != '' AND app_name != 'screenpipe' AND app_name != 'screenpipe-app' AND app_name NOT LIKE 'freenpipe%' GROUP BY app_name ORDER BY cnt DESC LIMIT 15"
+            "query": "SELECT app_name, COUNT(*) as cnt FROM frames WHERE datetime(timestamp) > datetime('now', '-30 minutes') AND app_name != '' AND app_name != 'screenpipe' AND app_name != 'screenpipe-app' AND app_name NOT LIKE 'handvel%' AND app_name NOT LIKE 'freenpipe%' GROUP BY app_name ORDER BY cnt DESC LIMIT 15"
         }))
         .timeout(std::time::Duration::from_secs(10))
         .send()
@@ -1281,7 +1284,7 @@ async fn fetch_window_activity(api: &LocalApiContext) -> Result<Vec<WindowActivi
     let resp = api
         .apply_auth(client.post(api.url("/raw_sql")))
         .json(&serde_json::json!({
-            "query": "SELECT app_name, window_name, COUNT(*) as cnt FROM frames WHERE datetime(timestamp) > datetime('now', '-30 minutes') AND app_name != '' AND app_name != 'screenpipe' AND app_name != 'screenpipe-app' AND app_name NOT LIKE 'freenpipe%' AND window_name != '' GROUP BY app_name, window_name ORDER BY cnt DESC LIMIT 20"
+            "query": "SELECT app_name, window_name, COUNT(*) as cnt FROM frames WHERE datetime(timestamp) > datetime('now', '-30 minutes') AND app_name != '' AND app_name != 'screenpipe' AND app_name != 'screenpipe-app' AND app_name NOT LIKE 'handvel%' AND app_name NOT LIKE 'freenpipe%' AND window_name != '' GROUP BY app_name, window_name ORDER BY cnt DESC LIMIT 20"
         }))
         .timeout(std::time::Duration::from_secs(10))
         .send()
@@ -1337,7 +1340,7 @@ async fn fetch_accessibility_snippets(api: &LocalApiContext) -> Vec<Accessibilit
     let resp = api
         .apply_auth(client.post(api.url("/raw_sql")))
         .json(&serde_json::json!({
-            "query": "SELECT app_name, window_name, SUBSTR(full_text, 1, 200) as snippet FROM frames WHERE datetime(timestamp) > datetime('now', '-15 minutes') AND LENGTH(full_text) > 30 AND app_name != 'screenpipe' AND app_name NOT LIKE 'freenpipe%' AND full_text IS NOT NULL ORDER BY timestamp DESC LIMIT 8"
+            "query": "SELECT app_name, window_name, SUBSTR(full_text, 1, 200) as snippet FROM frames WHERE datetime(timestamp) > datetime('now', '-15 minutes') AND LENGTH(full_text) > 30 AND app_name != 'screenpipe' AND app_name NOT LIKE 'handvel%' AND app_name NOT LIKE 'freenpipe%' AND full_text IS NOT NULL ORDER BY timestamp DESC LIMIT 8"
         }))
         .timeout(std::time::Duration::from_secs(5))
         .send()

@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
-# Freenpipe — local-first screen & audio memory (fork of screenpipe @ 892199f, MIT)
+# Handvel — local-first screen & audio memory (fork of screenpipe @ 892199f, MIT)
 # https://github.com/normiecore/Freenpipe
-"""Regenerate every Freenpipe icon, installer image and in-app illustration.
+"""Regenerate every Handvel icon, installer image and in-app illustration.
 
 The mark is a lowercase "f" with a dot (a recording light) on a rounded
 square. All geometry lives in this file; it writes the SVG sources next to
@@ -196,7 +196,7 @@ def nsis_images(work: Path) -> None:
     header.paste(m, (332 - 84 - 20, 21), m)
     draw = ImageDraw.Draw(header)
     f = font(34)
-    text = "Freenpipe"
+    text = "Handvel"
     tw = draw.textlength(text, font=f)
     draw.text((332 - 84 - 32 - tw, 42), text, font=f, fill=INK)
     header.save(ASSETS / "nsis-header.bmp")
@@ -222,7 +222,7 @@ def dmg_background() -> None:
     draw.line([(300, y), (366, y)], fill=GREEN[1], width=10)
     draw.polygon([(366, y - 22), (398, y), (366, y + 22)], fill=GREEN[1])
     f = font(18, bold=False)
-    text = "drag Freenpipe to Applications"
+    text = "drag Handvel to Applications"
     tw = draw.textlength(text, font=f)
     draw.text((349 - tw / 2, y + 40), text, font=f, fill=INK)
     img.save(ASSETS / "dmg-background.png")

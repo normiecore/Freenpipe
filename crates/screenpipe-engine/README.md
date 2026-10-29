@@ -1,6 +1,6 @@
 # screenpipe-engine
 
-The Freenpipe engine. It builds the `screenpipe` CLI binary (`src/bin/screenpipe-engine.rs`), which runs capture and serves the local HTTP API (port 3030 by default).
+The Handvel engine. It builds the `screenpipe` CLI binary (`src/bin/screenpipe-engine.rs`), which runs capture and serves the local HTTP API (port 3030 by default).
 
 Main parts:
 

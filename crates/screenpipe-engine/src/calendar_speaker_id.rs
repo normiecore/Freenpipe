@@ -40,7 +40,7 @@ use tracing::{debug, info, warn};
 /// present on a device. Prevents naming from a single spurious detection.
 const MIN_TRANSCRIPTION_COUNT: i32 = 3;
 
-/// Freenpipe (W2-16, audio-009): automatic self-naming needs the lone
+/// Handvel (W2-16, audio-009): automatic self-naming needs the lone
 /// microphone voice to show up in at least this many distinct audio chunks.
 const AUTO_SELF_MIN_CHUNKS: i64 = MIN_TRANSCRIPTION_COUNT as i64;
 

@@ -2,7 +2,7 @@
 
 The Windows installer ships the two ONNX files in this folder under
 `<install>/models/pyannote/`, and the engine downloads the same bytes (pinned by
-SHA-256) when no installed copy exists. Freenpipe redistributes both files
+SHA-256) when no installed copy exists. Handvel redistributes both files
 unchanged, exactly as they were imported with the MIT base repository.
 
 ## segmentation-3.0.onnx
@@ -33,6 +33,6 @@ unchanged, exactly as they were imported with the MIT base repository.
   Speaker Verification Using Context-Aware Masking", Interspeech 2023); and the
   VoxCeleb datasets (Arsha Nagrani, Joon Son Chung, Andrew Zisserman, VGG,
   University of Oxford).
-- Changes: none by Freenpipe.
+- Changes: none by Handvel.
 - SHA-256: `c46fad10b5f81e1aa4a60c162714208577093655076c5450f8c469e522ec54ef`
   (29,292,684 bytes).

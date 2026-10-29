@@ -1,4 +1,4 @@
-// Freenpipe — local-first screen & audio memory (fork of screenpipe @ 892199f, MIT)
+// Handvel — local-first screen & audio memory (fork of screenpipe @ 892199f, MIT)
 // https://github.com/normiecore/Freenpipe
 
 //! One bounded teardown for every way the app ends, and a safe relaunch.
@@ -681,7 +681,7 @@ async fn release_tray_before_forced_exit(app: &tauri::AppHandle) {
 }
 
 /// Quit the app: the tray's Quit item and anything else that means "close
-/// Freenpipe". Ignored while a teardown or a protected database recovery runs.
+/// Handvel". Ignored while a teardown or a protected database recovery runs.
 pub fn request_quit(app: tauri::AppHandle, source: &'static str) {
     match try_begin_teardown() {
         QuitGate::Proceed => {}
@@ -1283,7 +1283,7 @@ pub async fn safe_relaunch(
             if let Err(err) = crate::recording::spawn_screenpipe(state, app.clone(), None).await {
                 error!("safe relaunch: could not resume recording: {err}");
             }
-            Err(format!("could not start a new Freenpipe process: {e}"))
+            Err(format!("could not start a new Handvel process: {e}"))
         }
     }
 }

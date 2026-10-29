@@ -1,4 +1,4 @@
-// Freenpipe — local-first screen & audio memory (fork of screenpipe @ 892199f, MIT)
+// Handvel — local-first screen & audio memory (fork of screenpipe @ 892199f, MIT)
 // https://github.com/normiecore/Freenpipe
 
 /**
@@ -11,7 +11,7 @@
  * only reports places that could actually build a request.
  *
  * It also guards the product's identity (W0-12): the Tauri configs must name
- * Freenpipe, use its own bundle identifier and register only `freenpipe`
+ * Handvel, use its own bundle identifier and register only `handvel`
  * deep-link schemes, and the desktop UI's copy must not call the product
  * "screenpipe". Interop names keep the upstream spelling and are not
  * reported: crate and package names, `SCREENPIPE_*` variables,
@@ -99,7 +99,7 @@ const ALLOWED: { path: string; rules: string[]; reason: string }[] = [
  * features.
  *
  * W0-05 removed every one of these that the MIT base had. The target-only
- * ones are never ported: Freenpipe has nothing to sell, so they have no
+ * ones are never ported: Handvel has nothing to sell, so they have no
  * counterpart. Unlike RULES, these fail in every mode. Code that has to name
  * one of them to recognise and ignore it (store compatibility, deep-link
  * filtering) goes in COMMERCE_ALLOWED with its reason.
@@ -229,11 +229,11 @@ const TAURI_DIR = "apps/screenpipe-app-tauri/src-tauri";
 
 export function identityProblems(file: string, conf: any): string[] {
   const problems: string[] = [];
-  if ("productName" in conf && !/^Freenpipe( |$)/.test(String(conf.productName))) {
-    problems.push(`${file}: productName "${conf.productName}" is not Freenpipe`);
+  if ("productName" in conf && !/^Handvel( |$)/.test(String(conf.productName))) {
+    problems.push(`${file}: productName "${conf.productName}" is not Handvel`);
   }
-  if ("identifier" in conf && !/^com\.normiecore\.freenpipe(\.[a-z]+)?$/.test(String(conf.identifier))) {
-    problems.push(`${file}: identifier "${conf.identifier}" is not com.normiecore.freenpipe[.channel]`);
+  if ("identifier" in conf && !/^com\.normiecore\.handvel(\.[a-z]+)?$/.test(String(conf.identifier))) {
+    problems.push(`${file}: identifier "${conf.identifier}" is not com.normiecore.handvel[.channel]`);
   }
   const publisher = conf.bundle?.publisher;
   if (publisher !== undefined && /mediar|screenpipe/i.test(String(publisher))) {
@@ -243,8 +243,8 @@ export function identityProblems(file: string, conf: any): string[] {
   const desktop = deepLink?.desktop?.schemes ?? deepLink?.desktop?.scheme;
   const schemes: string[] = desktop === undefined ? [] : [desktop].flat();
   for (const scheme of schemes) {
-    if (!/^freenpipe(-[a-z]+)?$/.test(String(scheme))) {
-      problems.push(`${file}: registers deep-link scheme "${scheme}" (only freenpipe schemes may be claimed)`);
+    if (!/^handvel(-[a-z]+)?$/.test(String(scheme))) {
+      problems.push(`${file}: registers deep-link scheme "${scheme}" (only handvel schemes may be claimed)`);
     }
   }
   for (const entry of deepLink?.mobile ?? []) {
@@ -598,12 +598,12 @@ describe("vendor-host guard", () => {
       "lmstudio://add_mcp?name=screenpipe&config=x",
       'localStorage.getItem("screenpipe:pipes-welcome-dismissed")',
       'console.error("failed to open screenpipe link", e);',
-      "Freenpipe is recording",
+      "Handvel is recording",
     ];
     for (const line of fine) expect(brandCopyHits(line), line).toEqual([]);
   });
 
-  test("desktop UI copy names Freenpipe, not screenpipe (every mode)", () => {
+  test("desktop UI copy names Handvel, not screenpipe (every mode)", () => {
     const { hits, files } = scanBrandCopy();
     if (hits.length > 0) {
       console.log(
@@ -630,15 +630,15 @@ describe("vendor-host guard", () => {
     };
     expect(identityProblems("x.json", upstream)).toHaveLength(5);
     const ours = {
-      productName: "Freenpipe Beta",
-      identifier: "com.normiecore.freenpipe.beta",
+      productName: "Handvel Beta",
+      identifier: "com.normiecore.handvel.beta",
       bundle: { publisher: "normiecore" },
-      plugins: { "deep-link": { desktop: { schemes: ["freenpipe-beta"] } } },
+      plugins: { "deep-link": { desktop: { schemes: ["handvel-beta"] } } },
     };
     expect(identityProblems("x.json", ours)).toEqual([]);
   });
 
-  test("Tauri configs carry the Freenpipe identity (every mode)", () => {
+  test("Tauri configs carry the Handvel identity (every mode)", () => {
     const dir = join(REPO_ROOT, TAURI_DIR);
     const files = readdirSync(dir).filter((f) => /^tauri(\..+)?\.(conf\.)?json$/.test(f));
     expect(files).toContain("tauri.conf.json");
@@ -648,8 +648,8 @@ describe("vendor-host guard", () => {
     expect(problems).toEqual([]);
     // The release config must actually set the name and identifier.
     const prod = JSON.parse(readFileSync(join(dir, "tauri.prod.conf.json"), "utf8"));
-    expect(prod.productName).toBe("Freenpipe");
-    expect(prod.identifier).toBe("com.normiecore.freenpipe");
+    expect(prod.productName).toBe("Handvel");
+    expect(prod.identifier).toBe("com.normiecore.handvel");
   });
 
   test(`repository scan (${MODE} mode)`, () => {

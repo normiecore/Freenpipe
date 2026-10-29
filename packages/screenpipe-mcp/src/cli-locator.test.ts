@@ -1,4 +1,4 @@
-// Freenpipe — local-first screen & audio memory (fork of screenpipe @ 892199f, MIT)
+// Handvel — local-first screen & audio memory (fork of screenpipe @ 892199f, MIT)
 // https://github.com/normiecore/Freenpipe
 
 import { describe, it, expect } from "vitest";
@@ -15,11 +15,11 @@ describe("cliCandidates", () => {
         SCREENPIPE_CLI: "D:\\dev\\screenpipe.exe",
         LOCALAPPDATA: "C:\\Users\\me\\AppData\\Local",
       },
-      scriptPath: "C:\\Program Files\\Freenpipe\\mcp\\screenpipe-mcp.js",
+      scriptPath: "C:\\Program Files\\Handvel\\mcp\\screenpipe-mcp.js",
     });
     expect(list[0]).toBe("D:\\dev\\screenpipe.exe");
-    expect(list[1]).toBe("C:\\Program Files\\Freenpipe\\screenpipe.exe");
-    expect(list).toContain("C:\\Users\\me\\AppData\\Local\\Freenpipe\\screenpipe.exe");
+    expect(list[1]).toBe("C:\\Program Files\\Handvel\\screenpipe.exe");
+    expect(list).toContain("C:\\Users\\me\\AppData\\Local\\Handvel\\screenpipe.exe");
   });
 
   it("ignores a relative SCREENPIPE_CLI and returns only absolute paths", () => {
@@ -27,11 +27,11 @@ describe("cliCandidates", () => {
       platform: "darwin",
       home: "/Users/me",
       env: { SCREENPIPE_CLI: "screenpipe" },
-      scriptPath: "/Applications/Freenpipe.app/Contents/Resources/mcp/screenpipe-mcp.js",
+      scriptPath: "/Applications/Handvel.app/Contents/Resources/mcp/screenpipe-mcp.js",
     });
     expect(list).not.toContain("screenpipe");
     expect(list.every((p) => p.startsWith("/"))).toBe(true);
-    expect(list).toContain("/Applications/Freenpipe.app/Contents/MacOS/screenpipe");
+    expect(list).toContain("/Applications/Handvel.app/Contents/MacOS/screenpipe");
   });
 
   it("never points at a package runner", () => {

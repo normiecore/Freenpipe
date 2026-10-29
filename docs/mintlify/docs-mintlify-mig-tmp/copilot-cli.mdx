@@ -1,17 +1,17 @@
 ---
 title: "GitHub Copilot CLI — agentic coding with screen context"
 sidebarTitle: "copilot cli"
-description: "Connect Freenpipe to GitHub Copilot CLI via MCP so Copilot can reference your screen history, meeting transcriptions, and app context from the terminal."
+description: "Connect Handvel to GitHub Copilot CLI via MCP so Copilot can reference your screen history, meeting transcriptions, and app context from the terminal."
 icon: "terminal"
 ---
 
 <img src="/copilot-icon.svg" alt="GitHub Copilot" width="80" />
 
-[GitHub Copilot CLI](https://docs.github.com/en/copilot/concepts/agents/about-copilot-cli) is GitHub's terminal-based AI coding agent. it supports MCP servers, so you can connect Freenpipe and let Copilot reference what you've been seeing, hearing, and doing.
+[GitHub Copilot CLI](https://docs.github.com/en/copilot/concepts/agents/about-copilot-cli) is GitHub's terminal-based AI coding agent. it supports MCP servers, so you can connect Handvel and let Copilot reference what you've been seeing, hearing, and doing.
 
 ## setup
 
-before setting up, make sure Freenpipe is running on your machine (build it first, see [getting started](/getting-started)):
+before setting up, make sure Handvel is running on your machine (build it first, see [getting started](/getting-started)):
 
 ```bash
 screenpipe record
@@ -57,9 +57,9 @@ restart Copilot CLI after editing the config.
 
 ## stdio vs http — which should I use?
 
-**use stdio** (`type: "local"` in config). this is the standard for local MCP servers on the same machine. Freenpipe runs locally on your machine, so stdio communication has no network overhead and is the intended pattern.
+**use stdio** (`type: "local"` in config). this is the standard for local MCP servers on the same machine. Handvel runs locally on your machine, so stdio communication has no network overhead and is the intended pattern.
 
-HTTP transport is only for remote scenarios where your MCP client (Claude, Cursor, etc.) runs on a different machine than Freenpipe — see [openclaw](/openclaw) for that pattern. **for Copilot CLI on the same machine, always choose stdio.**
+HTTP transport is only for remote scenarios where your MCP client (Claude, Cursor, etc.) runs on a different machine than Handvel — see [openclaw](/openclaw) for that pattern. **for Copilot CLI on the same machine, always choose stdio.**
 
 ## verify connection
 
@@ -84,7 +84,7 @@ you should see `screenpipe` listed with its tools.
 
 ## usage examples
 
-ask Copilot CLI to use Freenpipe naturally:
+ask Copilot CLI to use Handvel naturally:
 
 ```
 > what was I working on this morning?
@@ -122,13 +122,13 @@ ask Copilot CLI to use Freenpipe naturally:
 
 ## requirements
 
-- Freenpipe running on localhost:3030 (start with `screenpipe record`)
+- Handvel running on localhost:3030 (start with `screenpipe record`)
 - GitHub Copilot CLI installed
 - Node.js >= 18.0.0
 
 ## troubleshooting
 
-**how do I check I'm on the latest Freenpipe CLI?**
+**how do I check I'm on the latest Handvel CLI?**
 
 check the version you're running:
 
@@ -136,11 +136,11 @@ check the version you're running:
 screenpipe --version
 ```
 
-to update, pull the latest commits and rebuild (see [getting started](/getting-started)). `npx screenpipe@latest` runs the upstream vendor's npm package, not Freenpipe.
+to update, pull the latest commits and rebuild (see [getting started](/getting-started)). `npx screenpipe@latest` runs the upstream vendor's npm package, not Handvel.
 
 **MCP not connecting?**
 
-1. verify Freenpipe is running:
+1. verify Handvel is running:
    ```bash
    curl http://localhost:3030/health
    ```
@@ -155,9 +155,9 @@ to update, pull the latest commits and rebuild (see [getting started](/getting-s
 
 **queries returning empty?**
 
-- check Freenpipe has data: `curl "http://localhost:3030/search?limit=1"`
+- check Handvel has data: `curl "http://localhost:3030/search?limit=1"`
 - ensure screen recording permissions are granted
-- give Freenpipe a minute or two of running before querying
+- give Handvel a minute or two of running before querying
 
 **permission errors on macOS?**
 

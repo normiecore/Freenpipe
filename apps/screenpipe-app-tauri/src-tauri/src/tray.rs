@@ -200,7 +200,7 @@ fn quit_label() -> String {
     format!("Quit {}", PRODUCT_NAME)
 }
 
-/// Disabled version row of the tray menu, e.g. "Freenpipe v1.2.3 (Beta)".
+/// Disabled version row of the tray menu, e.g. "Handvel v1.2.3 (Beta)".
 fn version_label(version: &str, is_beta: bool, is_enterprise: bool) -> String {
     match (is_beta, is_enterprise) {
         (_, true) => format!("{} v{} (Enterprise)", PRODUCT_NAME, version),
@@ -1465,13 +1465,13 @@ mod brand_label_tests {
 
     #[test]
     fn tooltip_names_the_product() {
-        assert_eq!(tray_tooltip(false, false, None), "Freenpipe");
-        assert_eq!(tray_tooltip(false, true, None), "Freenpipe — paused");
+        assert_eq!(tray_tooltip(false, false, None), "Handvel");
+        assert_eq!(tray_tooltip(false, true, None), "Handvel — paused");
         assert_eq!(
             tray_tooltip(false, true, Some(Duration::from_secs(12 * 60))),
-            "Freenpipe — paused, resumes in 12m"
+            "Handvel — paused, resumes in 12m"
         );
-        assert!(tray_tooltip(true, true, None).starts_with("Freenpipe — "));
+        assert!(tray_tooltip(true, true, None).starts_with("Handvel — "));
         for t in [tray_tooltip(false, false, None), tray_tooltip(true, false, None)] {
             assert!(!t.to_lowercase().contains("screenpipe"), "{t}");
         }
@@ -1479,12 +1479,12 @@ mod brand_label_tests {
 
     #[test]
     fn menu_labels_name_the_product() {
-        assert_eq!(quit_label(), "Quit Freenpipe");
-        assert_eq!(version_label("2.7.104", false, false), "Freenpipe v2.7.104");
-        assert_eq!(version_label("2.7.104", true, false), "Freenpipe v2.7.104 (Beta)");
+        assert_eq!(quit_label(), "Quit Handvel");
+        assert_eq!(version_label("2.7.104", false, false), "Handvel v2.7.104");
+        assert_eq!(version_label("2.7.104", true, false), "Handvel v2.7.104 (Beta)");
         assert_eq!(
             version_label("2.7.104", true, true),
-            "Freenpipe v2.7.104 (Enterprise)"
+            "Handvel v2.7.104 (Enterprise)"
         );
     }
 }

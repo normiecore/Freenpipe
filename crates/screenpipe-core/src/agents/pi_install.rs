@@ -1,4 +1,4 @@
-// Freenpipe — local-first screen & audio memory (fork of screenpipe @ 892199f, MIT)
+// Handvel — local-first screen & audio memory (fork of screenpipe @ 892199f, MIT)
 // https://github.com/normiecore/Freenpipe
 
 //! Installing the pinned Pi release into `<data dir>/pi-agent`.
@@ -19,7 +19,7 @@
 //!    does not apply leaves Pi working without it.
 //!
 //! An install of the pinned release whose files do not take the patch (an
-//! older build's patch, another vendor's patch, a package Freenpipe does not
+//! older build's patch, another vendor's patch, a package Handvel does not
 //! ship) is rebuilt **beside** the live one, in `<install>/.rebuild`, and
 //! swapped in only once it is complete and patched. A Pi started meanwhile
 //! keeps running the live tree, and when the live tree cannot be moved (on
@@ -414,14 +414,14 @@ fn rebuild_reason(install_dir: &Path) -> Option<String> {
             return Some(format!("the runtime patch is from an older build ({why})"));
         }
         pi_compaction::Outcome::Foreign(why) => {
-            return Some(format!("Pi's files were changed outside Freenpipe ({why})"));
+            return Some(format!("Pi's files were changed outside Handvel ({why})"));
         }
         _ => {}
     }
     let excluded = pi_runtime::excluded_packages_present(install_dir);
     (!excluded.is_empty()).then(|| {
         format!(
-            "it carries {}, which Freenpipe does not install",
+            "it carries {}, which Handvel does not install",
             excluded.join(", ")
         )
     })
@@ -503,7 +503,7 @@ fn rebuild_beside(install_dir: &Path, bun: &str) -> Result<(), String> {
     std::fs::create_dir_all(&staging)
         .map_err(|e| format!("could not create {}: {e}", staging.display()))?;
     // Keep what the live manifest lists beyond the pins; seeding applies the
-    // pins and drops packages Freenpipe does not install. No lockfile: it
+    // pins and drops packages Handvel does not install. No lockfile: it
     // would pin the tree being replaced.
     let manifest = install_dir.join("package.json");
     if manifest.is_file() {
@@ -663,7 +663,7 @@ mod tests {
     #[test]
     fn a_missing_bun_is_an_error_not_a_panic() {
         let dir = tempfile::tempdir().unwrap();
-        let err = install(dir.path(), "/nonexistent/freenpipe-test-bun").unwrap_err();
+        let err = install(dir.path(), "/nonexistent/handvel-test-bun").unwrap_err();
         assert!(err.contains("could not start bun"), "{err}");
         // The manifest is seeded before bun runs.
         assert!(dir.path().join("package.json").exists());

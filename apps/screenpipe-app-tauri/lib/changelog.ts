@@ -1,10 +1,10 @@
-// Freenpipe — local-first screen & audio memory (fork of screenpipe @ 892199f, MIT)
+// Handvel — local-first screen & audio memory (fork of screenpipe @ 892199f, MIT)
 // https://github.com/normiecore/Freenpipe
 
 /**
  * Release notes for the changelog dialog.
  *
- * Source: the GitHub Releases of the Freenpipe repository, read without
+ * Source: the GitHub Releases of the Handvel repository, read without
  * authentication and only when the user opens the dialog. Results are kept
  * for an hour in localStorage so reopening the dialog does not hit GitHub
  * again; a stale copy is still shown if GitHub cannot be reached. When there

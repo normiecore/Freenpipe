@@ -1,6 +1,6 @@
 ---
 name: bug report
-about: report a bug in Freenpipe
+about: report a bug in Handvel
 title: "[bug] "
 labels: bug
 assignees: ''
@@ -12,7 +12,7 @@ brief description of the bug.
 
 **system info**
 - os: [e.g. macos 10.15.7, windows 10, ubuntu 20.04]
-- Freenpipe version or commit: [e.g. 1.2.3 or f811975]
+- Handvel version or commit: [e.g. 1.2.3 or f811975]
 
 **additional context**
 add any other context, screenshots, or error logs here.

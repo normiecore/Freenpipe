@@ -435,7 +435,7 @@ pub(crate) async fn undo_speaker_reassign_handler(
 
 // ── Voice samples: GET /speakers/sample/:audio_chunk_id ─────────────────────
 //
-// Freenpipe (W2-16, audio-005). `<audio src>` cannot send an Authorization
+// Handvel (W2-16, audio-005). `<audio src>` cannot send an Authorization
 // header, so the UI authenticates with the `?token=` query parameter or the
 // `screenpipe_auth` cookie that the API middleware already accepts.
 

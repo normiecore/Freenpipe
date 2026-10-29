@@ -1359,7 +1359,7 @@ async fn app_main() {
             // Start server core + capture on a dedicated thread with its own tokio runtime
             // to avoid competing with Tauri's UI runtime.
             // Two-phase startup: ServerCore (DB + HTTP + pipes) then CaptureSession (vision + audio).
-            // Freenpipe has no account or plan gate: the server always auto-starts.
+            // Handvel has no account or plan gate: the server always auto-starts.
             {
                 let store_clone = store.clone();
                 let data_dir_clone = data_dir.clone();

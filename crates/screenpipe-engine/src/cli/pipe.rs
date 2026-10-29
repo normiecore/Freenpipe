@@ -330,7 +330,7 @@ async fn handle_info_command(slug: &str) -> anyhow::Result<()> {
 }
 
 /// `pipe status`: publish and review state only exists on a hosted store,
-/// which Freenpipe does not use.
+/// which Handvel does not use.
 fn handle_status_command(slug: &str) -> anyhow::Result<()> {
     anyhow::bail!(
         "publish and review status is not available for '{}': pipe registries are read-only here.\n\

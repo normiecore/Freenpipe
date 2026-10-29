@@ -14,7 +14,7 @@
 name: sync-skills
 
 on:
-  # Freenpipe: dispatch-only; it would open bot PRs mirroring product skills into .claude/skills, which cloud agent sessions load.
+  # Handvel: dispatch-only; it would open bot PRs mirroring product skills into .claude/skills, which cloud agent sessions load.
   workflow_dispatch:
 
 permissions:

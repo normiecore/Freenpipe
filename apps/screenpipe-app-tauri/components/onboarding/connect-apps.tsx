@@ -316,7 +316,7 @@ const INTEGRATIONS: Integration[] = [
     id: "chatgpt",
     cardKey: "chatgpt",
     name: "ChatGPT",
-    valueProp: "use ChatGPT Plus as Freenpipe's AI brain",
+    valueProp: "use ChatGPT Plus as Handvel's AI brain",
     ahaCopy: "ChatGPT connected",
     type: "chatgpt",
   },
@@ -666,7 +666,7 @@ export default function ConnectApps({ handleNextSlide }: ConnectAppsProps) {
       >
         <h2 className="font-mono text-base font-bold lowercase">connect your world</h2>
         <p className="font-mono text-[10px] text-muted-foreground/60 mt-1 max-w-[300px]">
-          Freenpipe sees your screen — connect the tools it acts on
+          Handvel sees your screen — connect the tools it acts on
         </p>
       </motion.div>
 

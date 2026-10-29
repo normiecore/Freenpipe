@@ -392,7 +392,7 @@ pub fn truncate_middle(text: &str, max_chars: usize) -> String {
 }
 
 /// Case-insensitive check for whether an app row should be filtered out
-/// because it belongs to the app itself (Freenpipe, or screenpipe data).
+/// because it belongs to the app itself (Handvel, or screenpipe data).
 pub fn is_screenpipe_app(app_name: &str) -> bool {
     screenpipe_core::brand::is_own_app_name(app_name)
 }
@@ -1438,7 +1438,7 @@ mod tests {
     fn own_app_rows_are_filtered_under_either_name() {
         // On Windows the captured app name is the exe's file description,
         // which is the product name after the rebrand.
-        for name in ["Freenpipe", "Freenpipe Dev", "screenpipe", "screenpipe-app"] {
+        for name in ["Handvel", "Handvel Dev", "screenpipe", "screenpipe-app"] {
             assert!(is_screenpipe_app(name), "{name}");
         }
         assert!(!is_screenpipe_app("Google Chrome"));

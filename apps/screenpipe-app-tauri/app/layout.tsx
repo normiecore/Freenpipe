@@ -390,7 +390,7 @@ export default function RootLayout({
             recovery render) on every first launch after auto-update. */}
         <Providers>
           {/* DeeplinkHandler is mounted in Providers (outside the entitlement
-              gate) so in-app links (freenpipe:// and the screenpipe:// alias)
+              gate) so in-app links (handvel:// and the screenpipe:// alias)
               are always caught, even while a blocking screen is showing. */}
           {!isOverlay && <ShortcutTracker />}
           {!isOverlay && <PipeInstallDialog />}

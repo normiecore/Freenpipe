@@ -1,4 +1,4 @@
-// Freenpipe — local-first screen & audio memory (fork of screenpipe @ 892199f, MIT)
+// Handvel — local-first screen & audio memory (fork of screenpipe @ 892199f, MIT)
 // https://github.com/normiecore/Freenpipe
 
 /**
@@ -6,7 +6,7 @@
  * purchase back to the app: a top-level `api_key` query parameter (sign-in),
  * and the `subscription-success` / `purchase-successful` targets.
  *
- * Freenpipe has no hosted account or plan, so the deep-link handler drops
+ * Handvel has no hosted account or plan, so the deep-link handler drops
  * these without reading their tokens. Only the link's own query string is
  * checked: a nested URL that merely contains `api_key=` (for example inside
  * an install-pipe `url=` parameter) is not an account link.

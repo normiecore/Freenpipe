@@ -1,4 +1,4 @@
-// Freenpipe — local-first screen & audio memory (fork of screenpipe @ 892199f, MIT)
+// Handvel — local-first screen & audio memory (fork of screenpipe @ 892199f, MIT)
 // https://github.com/normiecore/Freenpipe
 
 //! Layout and environment of the managed Pi runtime.
@@ -12,7 +12,7 @@
 //!   whole `@earendil-works/*` family resolves to the exact release the
 //!   runtime patch (see [`super::pi_compaction`]) was written against;
 //! * the install command (`bun add <pins> --force --ignore-scripts`);
-//! * Pi's configuration directory. Freenpipe keeps its own,
+//! * Pi's configuration directory. Handvel keeps its own,
 //!   `<data dir>/pi-agent/pi-config`, instead of sharing the user's global
 //!   `~/.pi/agent`, so provider entries written for chats and pipes never
 //!   rewrite the user's own Pi setup. The first time that directory is used
@@ -101,7 +101,7 @@ const LOCK_WAIT: Duration = Duration::from_secs(10);
 /// or that name the vendor's hosted providers (`screenpipe-cloud`,
 /// `screenpipe-tinfoil`, ...). They are never carried over from the global
 /// config: an entry screenpipe wrote there points at the vendor's hosted
-/// gateway, and Freenpipe writes its own gateway entry from the gateway the
+/// gateway, and Handvel writes its own gateway entry from the gateway the
 /// user configured.
 fn is_gateway_provider(name: &str) -> bool {
     let name = name.trim().to_ascii_lowercase();
@@ -199,7 +199,7 @@ pub fn expected_package_json() -> Value {
         overrides.insert(name.to_string(), value);
     }
     json!({
-        "name": "freenpipe-pi-agent",
+        "name": "handvel-pi-agent",
         "private": true,
         "dependencies": Value::Object(deps),
         "overrides": Value::Object(overrides),

@@ -53,7 +53,7 @@ describe("SourceCitationFooter", () => {
             id: "screenpipe-connections-perplexity-proxy-chat-completions",
             kind: "connector",
             title: "Perplexity search",
-            subtitle: "external web context via Freenpipe connection",
+            subtitle: "external web context via Handvel connection",
           },
         ]}
       />
@@ -76,7 +76,7 @@ describe("SourceCitationFooter", () => {
           {
             id: "screenpipe-memories-jill-benaglio",
             kind: "screenpipe",
-            title: "Freenpipe memories",
+            title: "Handvel memories",
             subtitle: "memory query: Jill Benaglio",
           },
         ]}

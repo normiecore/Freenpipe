@@ -1,7 +1,7 @@
 name: Docs
 
 on:
-  # Freenpipe: dispatch-only; it validates upstream's Mintlify site, which the fork does not publish.
+  # Handvel: dispatch-only; it validates upstream's Mintlify site, which the fork does not publish.
   workflow_dispatch:
 
 concurrency:

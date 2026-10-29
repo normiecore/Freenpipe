@@ -1,6 +1,6 @@
 # CLAUDE.md
 
-Freenpipe captures accessibility trees (OCR as fallback), audio and conversations, and indexes them locally for AI consumption. It is a fork of screenpipe's last MIT-licensed commit. It stays compatible with screenpipe's data, API, pipes and MCP configurations; features beyond that are Freenpipe's own design.
+Handvel captures accessibility trees (OCR as fallback), audio and conversations, and indexes them locally for AI consumption. It is a fork of screenpipe's last MIT-licensed commit. It stays compatible with screenpipe's data, API, pipes and MCP configurations; features beyond that are Handvel's own design.
 
 ## Provenance and clean-room rules (read first)
 
@@ -9,7 +9,7 @@ Freenpipe captures accessibility trees (OCR as fallback), audio and conversation
 - **Binary analysis is frozen (owner decision 8, 2026-10-29).** Never examine, run or extract anything from a screenpipe binary, installer or bundled frontend, and never read the private analysis workspace (including `C:\sp`). `.claude/settings.json` denies those reads.
 - **Implement only from re-sourced items** in `docs/clean-room/specs/`. Never read `docs/clean-room/legacy-specs/` (the pre-freeze specs); only a redactor does, under `docs/clean-room/SOURCING.md`. The session or person that redacted or wrote an item never implements it. Use PLAN.md only for item ids, dependencies, owner paths and acceptance checks. Every work package adds a provenance record (`docs/clean-room/provenance/<WP>.md`), checked by `scripts/ci/clean-room-guard.test.ts`.
 - **Write original code.** Do not paste decompiled code, extracted frontend JavaScript, or extracted prose/LLM-prompt text verbatim. Implement from the spec in your own words.
-- **Interoperability identifiers may match exactly:** HTTP route paths, JSON field names, SQL table/column/index names, CLI flag names, settings keys, environment variable names, and file/directory layout. Freenpipe should be able to read data written by screenpipe.
+- **Interoperability identifiers may match exactly:** HTTP route paths, JSON field names, SQL table/column/index names, CLI flag names, settings keys, environment variable names, and file/directory layout. Handvel should be able to read data written by screenpipe.
 - **No phoning home.** Never send data to screenpi.pe / Mediar / Negentropy services, and never embed their API keys, PostHog keys or Sentry DSNs. Telemetry stays off. Cloud-only features get a local or bring-your-own-key equivalent.
 
 ## Product vision
@@ -22,7 +22,7 @@ Refer to `DESIGN.md` before making design decisions.
 New source files (.rs, .ts, .tsx, .js, .jsx, .swift, .py) carry this header as their first comment (below any shebang or directive that must come first):
 
 ```
-// Freenpipe — local-first screen & audio memory (fork of screenpipe @ 892199f, MIT)
+// Handvel — local-first screen & audio memory (fork of screenpipe @ 892199f, MIT)
 // https://github.com/normiecore/Freenpipe
 ```
 

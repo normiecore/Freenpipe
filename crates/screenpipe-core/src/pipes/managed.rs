@@ -1,4 +1,4 @@
-// Freenpipe — local-first screen & audio memory (fork of screenpipe @ 892199f, MIT)
+// Handvel — local-first screen & audio memory (fork of screenpipe @ 892199f, MIT)
 // https://github.com/normiecore/Freenpipe
 
 //! Organisation-managed pipes and team skills, and the plan pipe quota.
@@ -9,7 +9,7 @@
 //! into every agent session. Account plans also capped how many pipes were
 //! loaded, unloading the rest and stopping any that were running.
 //!
-//! Freenpipe has no organisations and no plans. Every pipe and skill on disk
+//! Handvel has no organisations and no plans. Every pipe and skill on disk
 //! belongs to the local user, and any number of pipes may load. The pipe
 //! runtime, the engine API and the desktop app ask these functions instead of
 //! answering the questions themselves, so a personal install gives the same

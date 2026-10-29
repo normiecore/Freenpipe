@@ -57,7 +57,7 @@ export function NotificationsSettings() {
     <div className="space-y-6">
       <div>
         <p className="text-muted-foreground text-sm">
-          Control which notifications Freenpipe sends you.
+          Control which notifications Handvel sends you.
         </p>
       </div>
 

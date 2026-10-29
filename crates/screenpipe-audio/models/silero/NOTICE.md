@@ -15,7 +15,7 @@ installer build fetches it from the address below and checks it against the pin.
   https://raw.githubusercontent.com/snakers4/silero-vad/6478567951ae5c9979ad7b234185b5515f4be7a1/src/silero_vad/data/silero_vad.onnx
 - Licence: MIT, Copyright (c) 2020-present Silero Team (the repository's
   `LICENSE` file).
-- Changes: none by Freenpipe. The file is stored under the name
+- Changes: none by Handvel. The file is stored under the name
   `silero_vad_v5.onnx`, the name screenpipe uses for it.
 - SHA-256: `2623a2953f6ff3d2c1e61740c6cdb7168133479b267dfef114a4a3cc5bdd788f`
   (2,327,524 bytes).

@@ -4,7 +4,7 @@
 
 // Pure helpers for classifying and presenting AI quota / rate-limit errors.
 //
-// Every model in Freenpipe runs on the user's own provider (or a gateway the
+// Every model in Handvel runs on the user's own provider (or a gateway the
 // user runs), so a "limit" error always comes from that provider. The copy
 // below says so plainly and points at Settings; it never offers a plan,
 // an upgrade or a sign-in.

@@ -124,6 +124,7 @@ fn choose_user_data_dir() -> Result<(String, PathBuf, String), String> {
         // under the product's own folder so an installed screenpipe's profile
         // at `ScreenPipe\WebView2` is never shared or overwritten.
         let path = base.join(crate::brand::PRODUCT_NAME).join("WebView2");
+        migrate_legacy_profile(&base, &path);
         match ensure_writable_dir(&path) {
             Ok(()) => return Ok((source, path, elevation)),
             Err(err) => errors.push(format!("{}: {}", path.display(), err)),
@@ -134,6 +135,37 @@ fn choose_user_data_dir() -> Result<(String, PathBuf, String), String> {
         "no writable WebView2 user data candidate ({})",
         errors.join("; ")
     ))
+}
+
+/// Product folder the WebView2 profile lived in before the rename (decision 9).
+const LEGACY_PRODUCT_DIR: &str = "Freenpipe";
+
+/// Moves the pre-rename WebView2 profile into place once, so localStorage,
+/// IndexedDB and cookies survive the rename. Best effort: on failure the app
+/// starts with a fresh profile and the old one stays where it was.
+fn migrate_legacy_profile(base: &Path, path: &Path) {
+    let legacy = base.join(LEGACY_PRODUCT_DIR).join("WebView2");
+    if path.exists() || !legacy.is_dir() {
+        return;
+    }
+    if let Some(parent) = path.parent() {
+        if let Err(e) = std::fs::create_dir_all(parent) {
+            tracing::warn!("webview2 profile migration skipped: {}: {e}", parent.display());
+            return;
+        }
+    }
+    match std::fs::rename(&legacy, path) {
+        Ok(()) => tracing::info!(
+            "moved webview2 profile from {} to {}",
+            legacy.display(),
+            path.display()
+        ),
+        Err(e) => tracing::warn!(
+            "webview2 profile migration failed: {} -> {}: {e}",
+            legacy.display(),
+            path.display()
+        ),
+    }
 }
 
 fn ensure_writable_dir(path: &Path) -> Result<(), String> {

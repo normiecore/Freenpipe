@@ -1,13 +1,13 @@
 ---
-title: "Freenpipe architecture: event-driven capture and storage"
+title: "Handvel architecture: event-driven capture and storage"
 sidebarTitle: "architecture"
-description: "How Freenpipe uses event-driven capture, accessibility tree extraction, OCR fallback, and SQLite storage to build a searchable local memory of your screen."
+description: "How Handvel uses event-driven capture, accessibility tree extraction, OCR fallback, and SQLite storage to build a searchable local memory of your screen."
 icon: "sitemap"
 ---
 
 ## overview
 
-Freenpipe is a Rust application that captures your screen and audio using an event-driven architecture, processes them locally, and stores everything in a SQLite database. instead of recording every second, it listens for meaningful OS events and captures only when something actually changes — pairing each screenshot with accessibility tree data for maximum quality at minimal cost.
+Handvel is a Rust application that captures your screen and audio using an event-driven architecture, processes them locally, and stores everything in a SQLite database. instead of recording every second, it listens for meaningful OS events and captures only when something actually changes — pairing each screenshot with accessibility tree data for maximum quality at minimal cost.
 
 ```mermaid
 graph LR
@@ -94,7 +94,7 @@ sequenceDiagram
 
 ## crates
 
-Freenpipe is a Rust workspace with specialized crates:
+Handvel is a Rust workspace with specialized crates:
 
 ```mermaid
 graph TD
@@ -127,7 +127,7 @@ graph TD
 
 ### 1. event-driven capture
 
-Freenpipe listens for meaningful OS events instead of polling at a fixed FPS. when an event fires, it captures a screenshot and walks the accessibility tree together — same timestamp, same frame.
+Handvel listens for meaningful OS events instead of polling at a fixed FPS. when an event fires, it captures a screenshot and walks the accessibility tree together — same timestamp, same frame.
 
 | trigger | description |
 |---------|-------------|
@@ -184,7 +184,7 @@ see [API reference](/cli-reference) for the full endpoint list.
 
 ### 5. pipes
 
-[pipes](/pipes) are AI agents (`.md` prompt files) that run on your screen data. they're executed by an AI agent that reads the prompt, queries the Freenpipe API, and takes action.
+[pipes](/pipes) are AI agents (`.md` prompt files) that run on your screen data. they're executed by an AI agent that reads the prompt, queries the Handvel API, and takes action.
 
 pipes live in `~/.screenpipe/pipes/{name}/` and run on cron-like schedules.
 

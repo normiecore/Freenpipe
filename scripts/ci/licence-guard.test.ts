@@ -1,4 +1,4 @@
-// Freenpipe — local-first screen & audio memory (fork of screenpipe @ 892199f, MIT)
+// Handvel — local-first screen & audio memory (fork of screenpipe @ 892199f, MIT)
 // https://github.com/normiecore/Freenpipe
 
 /**
@@ -26,7 +26,7 @@
  *      CC BY-NC are refused by name; any identifier nobody has reviewed yet
  *      fails as well. Permissive licences, MPL-2.0 and LGPL (weak copyleft)
  *      pass;
- *   3. declares no licence at all, unless it is Freenpipe's own crate (covered
+ *   3. declares no licence at all, unless it is Handvel's own crate (covered
  *      by LICENSE.md) or listed in DECLARED_ELSEWHERE with a reason.
  *
  * The test needs no network: it runs cargo with `--offline --locked`, so the
@@ -294,7 +294,7 @@ export function parseTree(output: string): CratePkg[] {
   return [...seen.values()];
 }
 
-/** A path source inside `root` but outside third_party/: Freenpipe's own crate. */
+/** A path source inside `root` but outside third_party/: Handvel's own crate. */
 export function isOwnCrate(pkg: CratePkg, root: string): boolean {
   if (!pkg.source || !(isAbsolute(pkg.source) || /^[A-Za-z]:[\\/]/.test(pkg.source))) return false;
   const rel = relative(root, pkg.source);
@@ -477,7 +477,7 @@ export function overlayWorkspace(editEngineManifest: (text: string) => string): 
   root: string;
   cleanup: () => void;
 } {
-  const root = mkdtempSync(join(tmpdir(), "freenpipe-licence-guard-"));
+  const root = mkdtempSync(join(tmpdir(), "handvel-licence-guard-"));
   const links: string[] = [];
   const link = (target: string, path: string) => {
     symlinkSync(target, path, lstatSync(target).isDirectory() ? "dir" : "file");

@@ -1,10 +1,10 @@
-// Freenpipe — local-first screen & audio memory (fork of screenpipe @ 892199f, MIT)
+// Handvel — local-first screen & audio memory (fork of screenpipe @ 892199f, MIT)
 // https://github.com/normiecore/Freenpipe
 
-//! Enterprise UI policy for Freenpipe: there is none.
+//! Enterprise UI policy for Handvel: there is none.
 //!
 //! The base app compiled this module from a proprietary directory that is
-//! not part of the fork. Freenpipe has no managed deployment mode, so every
+//! not part of the fork. Handvel has no managed deployment mode, so every
 //! answer here is the consumer one: the app UI is visible and no tray item is
 //! hidden. The commands remain registered so the generated TypeScript
 //! bindings and any frontend code that still calls them keep working; they
@@ -12,7 +12,7 @@
 //!
 //! screenpipe v2.7 added more commands to this family (UI visibility, host
 //! identity for the admin console, recording authorisation, managed team
-//! skills, history-access limits, activity sync). Freenpipe registers them
+//! skills, history-access limits, activity sync). Handvel registers them
 //! with the same names and argument names so a frontend written against
 //! screenpipe's bindings keeps compiling, and answers each one for a personal
 //! install. None of them reads machine identifiers, stores credentials or
@@ -22,30 +22,30 @@ use serde::{Deserialize, Serialize};
 use tracing::debug;
 
 /// True when a managed deployment wants the whole app UI hidden (tray-only,
-/// headless recording). Freenpipe never hides its UI.
+/// headless recording). Handvel never hides its UI.
 pub fn is_app_ui_hidden() -> bool {
     false
 }
 
 /// True when a managed deployment hides the tray item with this id
 /// (`tray_chat`, `tray_search`, `tray_timeline`, `tray_plan`,
-/// `tray_recording_controls`, `tray_settings`). Freenpipe shows them all.
+/// `tray_recording_controls`, `tray_settings`). Handvel shows them all.
 pub fn is_tray_item_hidden(_item_id: &str) -> bool {
     false
 }
 
 /// Accepts a list of settings sections a managed policy would hide.
-/// Freenpipe has no remote policy source, so the list is ignored.
+/// Handvel has no remote policy source, so the list is ignored.
 #[tauri::command]
 #[specta::specta]
 pub fn set_enterprise_policy(hidden_sections: Vec<String>) {
     debug!(
-        "set_enterprise_policy ignored ({} hidden sections): no managed mode in Freenpipe",
+        "set_enterprise_policy ignored ({} hidden sections): no managed mode in Handvel",
         hidden_sections.len()
     );
 }
 
-/// Accepts per-stream switches for a managed upload channel. Freenpipe
+/// Accepts per-stream switches for a managed upload channel. Handvel
 /// uploads nothing, so the switches are ignored.
 #[tauri::command]
 #[specta::specta]
@@ -58,12 +58,12 @@ pub fn set_sync_streams(
 ) {
     debug!(
         "set_sync_streams ignored (frames={frames} audio={audio} ui_events={ui_events} \
-         memories={memories} snapshots={snapshots}): no managed upload in Freenpipe"
+         memories={memories} snapshots={snapshots}): no managed upload in Handvel"
     );
 }
 
 /// Re-applies a managed policy's window and tray visibility, then reports
-/// whether the app UI ended up hidden. Freenpipe has no policy, so nothing
+/// whether the app UI ended up hidden. Handvel has no policy, so nothing
 /// changes and the answer is always false.
 #[tauri::command]
 #[specta::specta]
@@ -73,7 +73,7 @@ pub fn apply_enterprise_ui_visibility() -> bool {
 
 /// Hashed identifiers an admin console would use to tell seats apart.
 ///
-/// Both fields are always `null` in Freenpipe: it never derives a stable
+/// Both fields are always `null` in Handvel: it never derives a stable
 /// machine or OS-user identifier, hashed or not, because nothing it runs
 /// needs to recognise this computer from the outside.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, specta::Type)]
@@ -90,7 +90,7 @@ pub fn get_enterprise_host_identity() -> EnterpriseHostIdentity {
 }
 
 /// Accepts an admin console's verdict on whether this seat may record,
-/// together with the credential it checked. Recording in Freenpipe is
+/// together with the credential it checked. Recording in Handvel is
 /// controlled only by the user, so the verdict changes nothing, and the
 /// credential is dropped without being stored or logged.
 #[tauri::command]
@@ -102,7 +102,7 @@ pub fn set_enterprise_recording_authorized(
 ) -> Result<(), String> {
     debug!(
         "set_enterprise_recording_authorized ignored (authorized={authorized}, \
-         credential type {:?}, credential {}): recording is user-controlled in Freenpipe",
+         credential type {:?}, credential {}): recording is user-controlled in Handvel",
         credential_type,
         if credential.is_some() {
             "supplied and discarded"
@@ -129,7 +129,7 @@ pub struct ManagedTeamSkill {
     pub name: String,
 }
 
-/// Skills an organisation manages on this machine. Freenpipe has no
+/// Skills an organisation manages on this machine. Handvel has no
 /// organisations, so the list is always empty.
 #[tauri::command]
 #[specta::specta]
@@ -141,7 +141,7 @@ pub fn list_managed_team_skills() -> Vec<ManagedTeamSkill> {
 }
 
 /// Accepts an organisation's skill list and whether skills missing from it
-/// should be removed. Freenpipe installs nothing from a policy and removes
+/// should be removed. Handvel installs nothing from a policy and removes
 /// nothing, so the request is ignored. The entries are taken as plain JSON
 /// so a payload in any shape is accepted rather than failing to parse.
 #[tauri::command]
@@ -152,19 +152,19 @@ pub fn sync_managed_team_skills(
 ) -> Result<(), String> {
     debug!(
         "sync_managed_team_skills ignored ({} skills, prune_unlisted={prune_unlisted}): \
-         no managed skills in Freenpipe",
+         no managed skills in Handvel",
         skills.len()
     );
     Ok(())
 }
 
-/// Turns the managed activity upload on or off. Freenpipe has no upload
+/// Turns the managed activity upload on or off. Handvel has no upload
 /// worker, so the switch is ignored and nothing leaves the machine.
 #[tauri::command]
 #[specta::specta]
 pub fn set_activity_sync_enabled(enabled: bool) -> Result<(), String> {
     debug!(
-        "set_activity_sync_enabled ignored (enabled={enabled}): no activity upload in Freenpipe"
+        "set_activity_sync_enabled ignored (enabled={enabled}): no activity upload in Handvel"
     );
     Ok(())
 }

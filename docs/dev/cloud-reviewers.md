@@ -9,7 +9,7 @@ write scratch files under `$FP_STATE/review/` only.
 ## Shared preamble (put it at the top of both briefs)
 
 ```text
-You review Freenpipe work package <WP-ID> ("<title>") on branch <branch>, head <sha>, in the
+You review Handvel work package <WP-ID> ("<title>") on branch <branch>, head <sha>, in the
 repository checkout at <repo path>. Before any build or test command, run `. ~/.freenpipe-env.sh`.
 
 Read first:
@@ -93,7 +93,7 @@ Your job: does the change respect the clean-room, de-cloud, scope and security r
    injection, secrets in logs or plain files (use the secret store), unsafe deserialisation, CORS
    and Origin checks on local servers, and network listeners bound beyond 127.0.0.1 without a
    setting.
-6. Hygiene. New source files carry the two-line Freenpipe header; upstream headers stay on edited
+6. Hygiene. New source files carry the two-line Handvel header; upstream headers stay on edited
    files; no local machine paths; every commit message ends with the
    "Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>" trailer
    (`git log --format=%B origin/main..<sha>`); new dependencies have licences compatible with MIT

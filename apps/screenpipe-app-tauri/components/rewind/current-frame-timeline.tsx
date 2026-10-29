@@ -411,7 +411,7 @@ export const CurrentFrameTimeline: FC<CurrentFrameTimelineProps> = ({
 							copyDeeplinkAction();
 							setContextMenuOpen(false);
 						}}
-						title="Copy freenpipe://frame/N link"
+						title="Copy handvel://frame/N link"
 					>
 						<Link2 className="w-4 h-4 shrink-0" />
 						copy deeplink

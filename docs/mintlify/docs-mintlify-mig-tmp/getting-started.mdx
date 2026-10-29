@@ -1,7 +1,7 @@
 ---
-title: "install Freenpipe from source"
+title: "install Handvel from source"
 sidebarTitle: "installation"
-description: "Build and run Freenpipe from source on Windows, macOS, or Linux, verify that it records, and connect it to AI tools."
+description: "Build and run Handvel from source on Windows, macOS, or Linux, verify that it records, and connect it to AI tools."
 icon: "rocket"
 ---
 
@@ -11,7 +11,7 @@ icon: "rocket"
 
 <Tip>already built it? see the [quickstart →](/quickstart)</Tip>
 
-Freenpipe has no release yet, so you build it from source. Windows (x86_64) is the primary platform; the macOS and Linux code paths are kept compiling but are not exercised in this fork.
+Handvel has no release yet, so you build it from source. Windows (x86_64) is the primary platform; the macOS and Linux code paths are kept compiling but are not exercised in this fork.
 
 ## desktop app or CLI?
 
@@ -42,7 +42,7 @@ cargo build --release -p screenpipe-engine --bin screenpipe
 
 this starts recording and serves the API. data is stored in `~/.screenpipe/` on your local machine.
 
-<Warning>Freenpipe uses the same data directory and ports as screenpipe, so it does not run alongside an installed screenpipe. quit one before starting the other.</Warning>
+<Warning>Handvel uses the same data directory and ports as screenpipe, so it does not run alongside an installed screenpipe. quit one before starting the other.</Warning>
 
 ### desktop app
 
@@ -65,7 +65,7 @@ if you use the CLI on its own, install [.NET 8.0](https://dotnet.microsoft.com/e
 put OpenBLAS on `PATH` first, as described in the build guide.
 
 **port 3030 already in use:**
-if Freenpipe or screenpipe is already running, the CLI will fail to bind. check for existing processes:
+if Handvel or screenpipe is already running, the CLI will fail to bind. check for existing processes:
 ```bash
 lsof -i :3030     # macOS/Linux
 netstat -ano | findstr :3030  # Windows
@@ -97,7 +97,7 @@ after starting the CLI, you have three ways to access your screen history:
 
 ## verify it's running
 
-once Freenpipe starts, it serves an API on `localhost:3030`:
+once Handvel starts, it serves an API on `localhost:3030`:
 
 ```bash
 # check health
@@ -121,7 +121,7 @@ git pull
 cargo build --release -p screenpipe-engine --bin screenpipe
 ```
 
-<Note>the `screenpipe` package on npm is published by the upstream vendor, not by Freenpipe. installing it with `npx` or `npm` runs upstream's build, not this one.</Note>
+<Note>the `screenpipe` package on npm is published by the upstream vendor, not by Handvel. installing it with `npx` or `npm` runs upstream's build, not this one.</Note>
 
 ### API authentication (required)
 
@@ -148,13 +148,13 @@ curl "http://localhost:3030/search?q=example" \
 
 ## connect to AI
 
-Freenpipe works with any AI that supports MCP or HTTP APIs:
+Handvel works with any AI that supports MCP or HTTP APIs:
 
 | integration | how |
 | --- | --- |
-| **claude desktop** | add Freenpipe as MCP server ([guide](/mcp-server)) |
-| **cursor** | add Freenpipe MCP to your project ([guide](/mcp-server)) |
-| **claude code** | use Freenpipe MCP or curl the API ([guide](/claude-code)) |
+| **claude desktop** | add Handvel as MCP server ([guide](/mcp-server)) |
+| **cursor** | add Handvel MCP to your project ([guide](/mcp-server)) |
+| **claude code** | use Handvel MCP or curl the API ([guide](/claude-code)) |
 | **ollama** | configure in app settings, use any local model |
 
 ## what's next?
@@ -164,7 +164,7 @@ Freenpipe works with any AI that supports MCP or HTTP APIs:
     day recap, standup, time tracking, and how to write your own
   </Card>
   <Card title="connect your AI" icon="server" href="/mcp-server">
-    add Freenpipe to Claude, Cursor, ChatGPT, or any AI tool
+    add Handvel to Claude, Cursor, ChatGPT, or any AI tool
   </Card>
   <Card title="connect your apps" icon="plug" href="/connections">
     link Gmail, Calendar, Notion, Obsidian for richer context

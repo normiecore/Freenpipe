@@ -1,7 +1,7 @@
 ---
 title: "pipe store and built-in pipes"
 sidebarTitle: "pipe store"
-description: "Where Freenpipe pipes come from: the built-in templates, your own pipe.md files, and the planned registry on GitHub that replaces the vendor pipe store."
+description: "Where Handvel pipes come from: the built-in templates, your own pipe.md files, and the planned registry on GitHub that replaces the vendor pipe store."
 icon: "store"
 ---
 
@@ -13,15 +13,15 @@ a pipe is an AI automation that works on your recorded screen and audio data. ea
 
 ## the pipe store
 
-upstream's pipe store was a catalogue hosted on the vendor's servers. Freenpipe does not use it, so the store listings from the vendor are not available.
+upstream's pipe store was a catalogue hosted on the vendor's servers. Handvel does not use it, so the store listings from the vendor are not available.
 
-the store comes back as work package WR-01 (owner decision 5 in [DECISIONS.md](https://github.com/normiecore/Freenpipe/blob/main/docs/clean-room/DECISIONS.md)): a static registry kept in the `registry/` directory of the [Freenpipe repository](https://github.com/normiecore/Freenpipe), used by default and replaceable with your own registry URL. installs are checked against a sha256 recorded in the registry. publishing a pipe means opening a pull request that adds its folder to the registry, and CI validates the submission. progress is tracked in [STATUS.md](https://github.com/normiecore/Freenpipe/blob/main/docs/clean-room/STATUS.md).
+the store comes back as work package WR-01 (owner decision 5 in [DECISIONS.md](https://github.com/normiecore/Freenpipe/blob/main/docs/clean-room/DECISIONS.md)): a static registry kept in the `registry/` directory of the [Handvel repository](https://github.com/normiecore/Freenpipe), used by default and replaceable with your own registry URL. installs are checked against a sha256 recorded in the registry. publishing a pipe means opening a pull request that adds its folder to the registry, and CI validates the submission. progress is tracked in [STATUS.md](https://github.com/normiecore/Freenpipe/blob/main/docs/clean-room/STATUS.md).
 
 until then, use the built-in template pipes below or write your own.
 
 ## built-in template pipes
 
-these ship with Freenpipe and are available without an install:
+these ship with Handvel and are available without an install:
 
 | pipe | what it does |
 |------|-------------|
@@ -43,18 +43,18 @@ these ship with Freenpipe and are available without an install:
 
 **solution**: 
 
-1. restart Freenpipe (close and reopen the app). the pipe list sometimes takes a few seconds to refresh.
+1. restart Handvel (close and reopen the app). the pipe list sometimes takes a few seconds to refresh.
 2. check that the pipe folder exists:
    - **macOS/Linux**: `ls ~/.screenpipe/pipes/` and verify the pipe name appears
    - **Windows**: `dir %USERPROFILE%\.screenpipe\pipes\` (or `echo $env:USERPROFILE\.screenpipe\pipes` in PowerShell)
 3. if the folder is missing, install the pipe again.
-4. verify Freenpipe API is healthy: `curl http://localhost:3030/health`
+4. verify Handvel API is healthy: `curl http://localhost:3030/health`
 
 ### pipes disappearing from UI
 
 **problem**: pipes you installed are suddenly gone, or they appear and then vanish.
 
-**solution**: Freenpipe uses a **tombstone system** to track deleted pipes and prevent them from being restored. a pipe may be marked as deleted if:
+**solution**: Handvel uses a **tombstone system** to track deleted pipes and prevent them from being restored. a pipe may be marked as deleted if:
 - you deleted it via **settings → pipes → delete**
 - you uninstalled the app (rebuilding the pipe list removes orphaned pipes)
 - the pipe folder was manually deleted from `~/.screenpipe/pipes/`
@@ -62,7 +62,7 @@ these ship with Freenpipe and are available without an install:
 **to recover**:
 1. go to **settings → pipes** and look for the pipe in the installed list
 2. if it's not there, install the pipe again (copy its folder back into `~/.screenpipe/pipes/`)
-3. if the pipe is still not showing, the tombstone file (`.tombstones.json`) may need to be cleared. **backup first**, then delete `~/.screenpipe/pipes/.tombstones.json` and restart Freenpipe
+3. if the pipe is still not showing, the tombstone file (`.tombstones.json`) may need to be cleared. **backup first**, then delete `~/.screenpipe/pipes/.tombstones.json` and restart Handvel
 
 **to prevent**: avoid deleting pipes manually from the filesystem. use the **delete** button in the app instead; it keeps the tombstone records consistent.
 
@@ -70,7 +70,7 @@ these ship with Freenpipe and are available without an install:
 
 **problem**: the pipe is installed and enabled, but scheduled runs produce no output or logs.
 
-**solution**: the issue is usually the pipe execution, not the installation. see [debug Freenpipe pipes](/pipe-debugging) for execution troubleshooting (logs, API health, provider auth).
+**solution**: the issue is usually the pipe execution, not the installation. see [debug Handvel pipes](/pipe-debugging) for execution troubleshooting (logs, API health, provider auth).
 
 ## create your own pipe
 

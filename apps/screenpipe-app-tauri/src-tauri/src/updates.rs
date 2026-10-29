@@ -4,7 +4,7 @@
 
 //! In-app updater.
 //!
-//! Freenpipe publishes static Tauri manifests (`latest.json`) on the GitHub
+//! Handvel publishes static Tauri manifests (`latest.json`) on the GitHub
 //! Releases of its repository; `scripts/release/make-latest-json.ts` writes
 //! them in CI. Which manifest a check reads depends on the `updateChannel`
 //! setting (see [`ReleaseFeed`]).
@@ -217,7 +217,7 @@ pub fn release_feed(app: &tauri::AppHandle) -> Option<ReleaseFeed> {
     )
 }
 
-/// Releases page of the configured feed, or of the Freenpipe repository.
+/// Releases page of the configured feed, or of the Handvel repository.
 pub fn releases_page_url(app: &tauri::AppHandle) -> String {
     release_feed(app)
         .and_then(|feed| feed.releases_page())
@@ -449,7 +449,7 @@ pub fn is_source_build(_app: &tauri::AppHandle) -> bool {
 }
 
 /// Enterprise build: updates are managed by IT (Intune/RoboPack), not in-app.
-/// Freenpipe has no enterprise build (the `enterprise-build` feature was
+/// Handvel has no enterprise build (the `enterprise-build` feature was
 /// removed with the proprietary `ee/` sources), so this is always false.
 pub fn is_enterprise_build(_app: &tauri::AppHandle) -> bool {
     false
@@ -1613,7 +1613,7 @@ mod tests {
         // Not the latest-download shape, or an unsafe segment: plain URL.
         for url in [
             "https://github.com/normiecore/Freenpipe/releases/download/v1/latest.json",
-            "https://github.com/../Freenpipe/releases/latest/download/latest.json",
+            "https://github.com/../Handvel/releases/latest/download/latest.json",
         ] {
             assert!(matches!(ReleaseFeed::from_endpoint(url), ReleaseFeed::Url(_)), "{url}");
         }

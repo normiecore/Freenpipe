@@ -1,10 +1,10 @@
-// Freenpipe — local-first screen & audio memory (fork of screenpipe @ 892199f, MIT)
+// Handvel — local-first screen & audio memory (fork of screenpipe @ 892199f, MIT)
 // https://github.com/normiecore/Freenpipe
 
 //! Key-by-key tolerant loading of settings objects.
 //!
 //! A settings store can be written by several app versions (screenpipe and
-//! Freenpipe releases share `store.bin`). When one key holds a value of a
+//! Handvel releases share `store.bin`). When one key holds a value of a
 //! type this version does not expect, strict deserialisation would reject
 //! the whole object, and the caller would either refuse to start or fall
 //! back to defaults. Neither is acceptable for user data.

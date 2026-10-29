@@ -1,13 +1,13 @@
 #!/usr/bin/env python3
-# Freenpipe — local-first screen & audio memory (fork of screenpipe @ 892199f, MIT)
+# Handvel — local-first screen & audio memory (fork of screenpipe @ 892199f, MIT)
 # https://github.com/normiecore/Freenpipe
-"""`cargo` wrapper that keeps WP worktrees from sharing builds of the Freenpipe crates.
+"""`cargo` wrapper that keeps WP worktrees from sharing builds of the Handvel crates.
 
 All worktrees share one CARGO_TARGET_DIR so third-party crates are built once. Cargo names a path
 crate's artifacts from a hash that no longer depends on its absolute path, and it judges freshness by
 mtime, so worktree B could link the screenpipe-db that worktree A built a minute earlier and test A's
 code. This wrapper gives every worktree under $FP_STATE/wt its own `codegen-units` override for each
-Freenpipe package the worktree changed against origin/main. The profile is part of cargo's artifact
+Handvel package the worktree changed against origin/main. The profile is part of cargo's artifact
 hash, and a crate's hash includes its dependencies' hashes, so a changed crate and everything that
 depends on it get their own artifacts in that worktree. Unchanged crates and all registry and vendored
 dependencies stay shared, which keeps the disk cost to what the WP actually touched.

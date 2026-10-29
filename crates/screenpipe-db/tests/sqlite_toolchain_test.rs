@@ -1,4 +1,4 @@
-// Freenpipe — local-first screen & audio memory (fork of screenpipe @ 892199f, MIT)
+// Handvel — local-first screen & audio memory (fork of screenpipe @ 892199f, MIT)
 // https://github.com/normiecore/Freenpipe
 
 //! Pins the SQLite toolchain that the storage layer relies on:
@@ -27,7 +27,7 @@ use screenpipe_db::{DatabaseManager, FrameWindowData};
 use sqlx::sqlite::{SqliteConnectOptions, SqliteConnection};
 use sqlx::{ConnectOptions, Row};
 
-/// Oldest SQLite release Freenpipe accepts, as (major, minor, patch).
+/// Oldest SQLite release Handvel accepts, as (major, minor, patch).
 const MIN_SQLITE: (u32, u32, u32) = (3, 51, 3);
 /// The same floor in `SQLITE_VERSION_NUMBER` form.
 const MIN_SQLITE_NUMBER: i32 = 3_051_003;

@@ -1,4 +1,4 @@
-// Freenpipe — local-first screen & audio memory (fork of screenpipe @ 892199f, MIT)
+// Handvel — local-first screen & audio memory (fork of screenpipe @ 892199f, MIT)
 // https://github.com/normiecore/Freenpipe
 
 //! "Send logs & feedback", without sending anything.
@@ -87,7 +87,7 @@ pub struct FeedbackUploadCompleted {
     pub path: Option<String>,
     pub file_name: Option<String>,
     pub size_bytes: Option<u64>,
-    /// Prefilled `issues/new` link for the Freenpipe tracker.
+    /// Prefilled `issues/new` link for the Handvel tracker.
     pub issue_url: Option<String>,
     /// Set when the bundle could not be written.
     pub error: Option<String>,

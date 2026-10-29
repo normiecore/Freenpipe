@@ -1,6 +1,6 @@
-# Contributing to Freenpipe
+# Contributing to Handvel
 
-Thank you for considering a contribution. Freenpipe is an MIT fork of screenpipe at commit `892199f`. It stays compatible with screenpipe's data, API, pipes and MCP configurations, and builds its own features beyond that. That origin puts a few rules on every contribution, so read the first section before you write code.
+Thank you for considering a contribution. Handvel is an MIT fork of screenpipe at commit `892199f`. It stays compatible with screenpipe's data, API, pipes and MCP configurations, and builds its own features beyond that. That origin puts a few rules on every contribution, so read the first section before you write code.
 
 ## Clean-room rules (read first)
 
@@ -27,7 +27,7 @@ Where to look:
 python3 -I tools/clean-room/verbatim_gate.py path/to/file.md
 ```
 
-New source files carry the Freenpipe file header described in CLAUDE.md. When you edit an existing upstream file, leave its original header alone; it is attribution.
+New source files carry the Handvel file header described in CLAUDE.md. When you edit an existing upstream file, leave its original header alone; it is attribution.
 
 Before product or UI decisions, read [VISION.md](VISION.md) and [DESIGN.md](DESIGN.md).
 
@@ -104,7 +104,7 @@ A third-party desktop environment image that includes the base project is descri
 
 ## Dev isolation
 
-Freenpipe uses screenpipe's default data directory (`~/.screenpipe`) and ports (3030 for the API, 11435 for the app's control server). A development build must never use them, because the machine may also run an installed screenpipe or your own everyday Freenpipe.
+Handvel uses screenpipe's default data directory (`~/.screenpipe`) and ports (3030 for the API, 11435 for the app's control server). A development build must never use them, because the machine may also run an installed screenpipe or your own everyday Handvel.
 
 Load the isolation variables in every dev shell:
 
@@ -306,7 +306,7 @@ cargo install sqlx-cli
 sqlx migrate add <migration_name>
 ```
 
-Schema names are interoperability identifiers: a migration must keep Freenpipe able to read data written by screenpipe. The schema identifiers are the `interop` items of `db.md` in [docs/clean-room/specs/](docs/clean-room/specs/README.md).
+Schema names are interoperability identifiers: a migration must keep Handvel able to read data written by screenpipe. The schema identifiers are the `interop` items of `db.md` in [docs/clean-room/specs/](docs/clean-room/specs/README.md).
 
 ### Fixing migration errors
 

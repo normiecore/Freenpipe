@@ -11,7 +11,7 @@
  *   <bun|node> screenpipe-mcp.js               → stdio MCP server (Claude Desktop)
  *   <bun|node> screenpipe-mcp.js --http [...]  → Streamable HTTP MCP server
  *
- * Freenpipe ships this entry point bundled into a single file
+ * Handvel ships this entry point bundled into a single file
  * (`<install>/mcp/screenpipe-mcp.js`, built by the desktop app's
  * scripts/stage_bundled_runtime.js) and registers it by absolute path; it is
  * not fetched from a package registry. `node dist/cli.js` works for a local

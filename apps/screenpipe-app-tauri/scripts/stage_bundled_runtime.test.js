@@ -1,4 +1,4 @@
-// Freenpipe — local-first screen & audio memory (fork of screenpipe @ 892199f, MIT)
+// Handvel — local-first screen & audio memory (fork of screenpipe @ 892199f, MIT)
 // https://github.com/normiecore/Freenpipe
 
 // Run from apps/screenpipe-app-tauri: bun test scripts/stage_bundled_runtime.test.js
@@ -60,7 +60,7 @@ describe('pyannote model table', () => {
 		}
 	})
 
-	it('downloads from the Freenpipe LFS mirror unless overridden', () => {
+	it('downloads from the Handvel LFS mirror unless overridden', () => {
 		const m = PYANNOTE_MODELS[1]
 		expect(pyannoteModelUrl(m)).toBe(`${DEFAULT_PYANNOTE_BASE_URL}/${m.asset}`)
 		expect(pyannoteModelUrl(m, 'https://mirror.example.test/models/')).toBe(

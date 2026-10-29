@@ -1,15 +1,15 @@
 ---
 title: "gemini CLI - google's AI with screen context"
 sidebarTitle: "gemini cli"
-description: "Connect Freenpipe to Gemini CLI via MCP so Google's terminal AI assistant can reference your screen history and meeting transcriptions while you code."
+description: "Connect Handvel to Gemini CLI via MCP so Google's terminal AI assistant can reference your screen history and meeting transcriptions while you code."
 icon: "wand-magic-sparkles"
 ---
 
-[Gemini CLI](https://github.com/google/gemini-cli) is Google's terminal-based AI coding assistant. it supports MCP servers, so you can connect Freenpipe to give Gemini context about what you've been working on.
+[Gemini CLI](https://github.com/google/gemini-cli) is Google's terminal-based AI coding assistant. it supports MCP servers, so you can connect Handvel to give Gemini context about what you've been working on.
 
 ## setup
 
-Gemini CLI uses MCP for external tools. add Freenpipe to your config:
+Gemini CLI uses MCP for external tools. add Handvel to your config:
 
 ```bash
 # add screenpipe MCP server
@@ -47,7 +47,7 @@ gemini
 
 ## available tools
 
-Freenpipe provides these MCP tools to Gemini:
+Handvel provides these MCP tools to Gemini:
 
 - **search-content** - search accessibility-first screen text, audio transcriptions, and input events
 - **export-video** - create video exports from screen recordings
@@ -72,7 +72,7 @@ Freenpipe provides these MCP tools to Gemini:
 
 ## requirements
 
-- Freenpipe running on localhost:3030
+- Handvel running on localhost:3030
 - Gemini CLI installed
 - Node.js >= 18.0.0
 

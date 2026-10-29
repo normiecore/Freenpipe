@@ -1,4 +1,4 @@
-# Freenpipe CI test quarantine (read by scripts/ci/cargo_test.py).
+# Handvel CI test quarantine (read by scripts/ci/cargo_test.py).
 #
 # One test per line:  <platform> <suite> <exact test name> <why>
 #   platform  windows | linux | macos | all

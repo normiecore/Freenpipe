@@ -48,11 +48,11 @@ export function DeeplinkHandler() {
       const parsedUrl = new URL(url);
 
       // Account links from screenpipe's website (sign-in `?api_key=`,
-      // subscription-success, purchase-successful) carry nothing Freenpipe
+      // subscription-success, purchase-successful) carry nothing Handvel
       // can use: there is no hosted account or plan. Drop them without
       // reading their tokens.
       if (isAccountDeepLink(parsedUrl)) {
-        console.log("[deeplink] ignoring account/billing link; Freenpipe has no hosted account");
+        console.log("[deeplink] ignoring account/billing link; Handvel has no hosted account");
         return;
       }
 

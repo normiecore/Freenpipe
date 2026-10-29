@@ -1,10 +1,10 @@
-// Freenpipe — local-first screen & audio memory (fork of screenpipe @ 892199f, MIT)
+// Handvel — local-first screen & audio memory (fork of screenpipe @ 892199f, MIT)
 // https://github.com/normiecore/Freenpipe
 
 /**
  * Inert stand-in for `posthog-js` and `posthog-js/react`.
  *
- * Freenpipe sends no telemetry, so the analytics SDK is not installed.
+ * Handvel sends no telemetry, so the analytics SDK is not installed.
  * `tsconfig.json` (and `vitest.config.ts`, which does not read tsconfig paths)
  * resolves both module ids to this file, so the existing
  * `import posthog from "posthog-js"` call sites keep compiling while every

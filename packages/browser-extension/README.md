@@ -1,10 +1,10 @@
-# Freenpipe Browser Bridge
+# Handvel Browser Bridge
 
-Chrome/Chromium extension that connects your browser to Freenpipe, so pipes can execute JavaScript in browser tabs.
+Chrome/Chromium extension that connects your browser to Handvel, so pipes can execute JavaScript in browser tabs.
 
 ## How it works
 
-1. Extension connects to Freenpipe's local server via WebSocket (`ws://localhost:3030/browser/ws`)
+1. Extension connects to Handvel's local server via WebSocket (`ws://localhost:3030/browser/ws`)
 2. Pipes send JS code via `POST /browser/eval`
 3. Extension executes the code in the matching tab using `chrome.scripting.executeScript`
 4. Results flow back through the same path
@@ -45,6 +45,6 @@ Response:
 
 ## Use cases
 
-- Sync ChatGPT/Claude conversation history into Freenpipe memories
+- Sync ChatGPT/Claude conversation history into Handvel memories
 - Scrape authenticated web pages (uses the browser's own cookies)
 - Automate web workflows from pipes
