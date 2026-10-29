@@ -750,9 +750,19 @@ mod tests {
         assert!(report.last_failure.is_none());
         assert_eq!(busy_timeouts(&pool).await, vec![5000, 5000]);
 
-        // A second run finds nothing new to analyze and still succeeds.
-        let again = job(&path, &pool).run_once(&rx).await;
-        assert_eq!(again.status, status::SUCCEEDED);
+        // A second run finds nothing new to analyze and still succeeds. The
+        // run's connection uses busy_timeout=0, so a pooled connection that
+        // is still finishing its own work can make one attempt report busy;
+        // production retries that too (`retry_after`), so the test does.
+        let mut again = job(&path, &pool).run_once(&rx).await;
+        for _ in 0..20 {
+            if again.status != status::BUSY {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+            again = job(&path, &pool).run_once(&rx).await;
+        }
+        assert_eq!(again.status, status::SUCCEEDED, "{again:?}");
         assert!(again.analyzed_tables.is_empty(), "{again:?}");
     }
 

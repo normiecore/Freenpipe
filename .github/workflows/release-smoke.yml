@@ -1,0 +1,163 @@
+# Handvel — local-first screen & audio memory (fork of screenpipe @ 892199f, MIT)
+# https://github.com/normiecore/Handvel
+#
+# Smoke test of a published release, run on a clean GitHub-hosted Windows
+# machine: download the x64 installer from the release, install it silently
+# for the current user, launch the app, check that the engine answers on
+# :3030 and captures searchable screen text, then uninstall it. Screenshots,
+# the installed file list, the app's logs and a JSON report are uploaded as
+# artifacts, and a summary goes to the job page.
+
+name: Release Smoke Test
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Release tag to test (for example v0.1.0)"
+        required: true
+
+permissions:
+  contents: read
+
+jobs:
+  smoke-windows:
+    runs-on: windows-2022
+    timeout-minutes: 30
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      TAG: ${{ github.event.inputs.tag }}
+    steps:
+      - name: Download the x64 installer
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          New-Item -ItemType Directory -Force smoke | Out-Null
+          gh release download $env:TAG --repo $env:GITHUB_REPOSITORY --pattern "*_x64-setup.exe" --dir dl
+          $installer = Get-ChildItem dl\*_x64-setup.exe | Select-Object -First 1
+          if (-not $installer) { throw "no *_x64-setup.exe asset on release $env:TAG" }
+          "INSTALLER=$($installer.FullName)" | Out-File $env:GITHUB_ENV -Append -Encoding utf8
+          "installer: $($installer.Name) ($([math]::Round($installer.Length / 1MB)) MB)" | Tee-Object -Append smoke\report.txt
+
+      - name: Install silently
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $p = Start-Process -FilePath $env:INSTALLER -ArgumentList "/S" -Wait -PassThru
+          "installer exit code: $($p.ExitCode)" | Tee-Object -Append smoke\report.txt
+          if ($p.ExitCode -ne 0) { throw "installer failed with exit code $($p.ExitCode)" }
+          $uninstall = Get-ChildItem "HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall", "HKLM:\Software\Microsoft\Windows\CurrentVersion\Uninstall" -ErrorAction SilentlyContinue |
+            ForEach-Object { Get-ItemProperty $_.PSPath } | Where-Object { $_.DisplayName -match "^(Handvel|Freenpipe)" } | Select-Object -First 1
+          if (-not $uninstall) { throw "no Handvel (or pre-rename Freenpipe) entry in Apps & features after install" }
+          "apps & features: $($uninstall.DisplayName) $($uninstall.DisplayVersion) by $($uninstall.Publisher)" | Tee-Object -Append smoke\report.txt
+          $dir = $uninstall.InstallLocation
+          if (-not $dir) { $dir = Split-Path ($uninstall.UninstallString -replace '"', '') }
+          $exe = Get-ChildItem $dir -Filter "*.exe" | Where-Object { $_.Name -notmatch "uninstall" -and $_.Name -match "handvel|freenpipe|screenpipe-app" } | Select-Object -First 1
+          if (-not $exe) { throw "no app executable found in $dir" }
+          "INSTALL_DIR=$dir" | Out-File $env:GITHUB_ENV -Append -Encoding utf8
+          "APP_EXE=$($exe.FullName)" | Out-File $env:GITHUB_ENV -Append -Encoding utf8
+          "UNINSTALLER=$($uninstall.UninstallString -replace '"', '')" | Out-File $env:GITHUB_ENV -Append -Encoding utf8
+          "install dir: $dir" | Tee-Object -Append smoke\report.txt
+          "app exe: $($exe.Name)" | Tee-Object -Append smoke\report.txt
+          Get-ChildItem $dir -Recurse -File | ForEach-Object { "{0,12}  {1}" -f $_.Length, $_.FullName.Substring($dir.Length) } | Out-File smoke\installed-files.txt -Encoding utf8
+
+      - name: Launch the app and check the engine
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          Add-Type -AssemblyName System.Windows.Forms, System.Drawing
+          function Save-Screenshot($name) {
+            $b = [System.Windows.Forms.Screen]::PrimaryScreen.Bounds
+            $bmp = New-Object System.Drawing.Bitmap $b.Width, $b.Height
+            $g = [System.Drawing.Graphics]::FromImage($bmp)
+            $g.CopyFromScreen($b.Location, [System.Drawing.Point]::Empty, $b.Size)
+            $bmp.Save("smoke\$name.png", [System.Drawing.Imaging.ImageFormat]::Png)
+            $g.Dispose(); $bmp.Dispose()
+          }
+          $data = Join-Path $env:RUNNER_TEMP "handvel-smoke-data"
+          New-Item -ItemType Directory -Force $data | Out-Null
+          "DATA_DIR=$data" | Out-File $env:GITHUB_ENV -Append -Encoding utf8
+          $env:SCREENPIPE_DATA_DIR = $data
+          $env:SCREENPIPE_SKIP_ONBOARDING = "1"
+          $app = Start-Process -FilePath $env:APP_EXE -PassThru
+          $result = [ordered]@{ app_started = $true; health = $null; frames = 0; text_found = $false; panic = $false }
+          $healthy = $false
+          for ($i = 0; $i -lt 60; $i++) {
+            Start-Sleep -Seconds 3
+            if ($app.HasExited) { throw "the app exited during startup (exit code $($app.ExitCode))" }
+            try {
+              $h = Invoke-RestMethod -Uri "http://127.0.0.1:3030/health" -TimeoutSec 5
+              $result.health = $h
+              $healthy = $true
+              break
+            } catch { }
+          }
+          Save-Screenshot "01-after-launch"
+          "engine healthy: $healthy" | Tee-Object -Append smoke\report.txt
+          if ($healthy) {
+            # Put known text on screen so capture has something to find.
+            $marker = "handvelsmoke$((Get-Random -Maximum 99999))"
+            Start-Process notepad.exe
+            Start-Sleep -Seconds 3
+            $ws = New-Object -ComObject WScript.Shell
+            $ws.AppActivate("Notepad") | Out-Null
+            Start-Sleep -Milliseconds 500
+            $ws.SendKeys("$marker smoke test text for Handvel capture")
+            Start-Sleep -Seconds 2
+            Save-Screenshot "02-notepad"
+            for ($i = 0; $i -lt 30; $i++) {
+              Start-Sleep -Seconds 4
+              try {
+                $r = Invoke-RestMethod -Uri "http://127.0.0.1:3030/search?q=$marker&limit=5&content_type=all" -TimeoutSec 10
+                if ($r.pagination.total -gt 0 -or @($r.data).Count -gt 0) { $result.text_found = $true; break }
+              } catch { }
+            }
+            try {
+              $all = Invoke-RestMethod -Uri "http://127.0.0.1:3030/search?limit=1&content_type=all" -TimeoutSec 10
+              $result.frames = $all.pagination.total
+            } catch { }
+            Stop-Process -Name notepad -Force -ErrorAction SilentlyContinue
+          }
+          Save-Screenshot "03-end"
+          $result.panic = [bool](Get-ChildItem $data -Filter "last-panic.log" -ErrorAction SilentlyContinue)
+          $result | ConvertTo-Json -Depth 6 | Out-File smoke\result.json -Encoding utf8
+          "frames: $($result.frames); marker text found by search: $($result.text_found); panic log: $($result.panic)" | Tee-Object -Append smoke\report.txt
+          if (-not $app.HasExited) { Stop-Process -Id $app.Id -Force }
+          Get-Process | Where-Object { $_.Path -and $_.Path.StartsWith($env:INSTALL_DIR) } | Stop-Process -Force -ErrorAction SilentlyContinue
+          Start-Sleep -Seconds 3
+          if (-not $healthy) { throw "the engine never answered on http://127.0.0.1:3030/health" }
+          if (-not $result.text_found) { throw "search did not find the text typed into Notepad" }
+          if ($result.panic) { throw "the app wrote last-panic.log" }
+
+      - name: Uninstall silently
+        if: always() && env.UNINSTALLER != ''
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          Get-Process | Where-Object { $_.Path -and $_.Path.StartsWith($env:INSTALL_DIR) } | Stop-Process -Force -ErrorAction SilentlyContinue
+          $p = Start-Process -FilePath $env:UNINSTALLER -ArgumentList "/S" -Wait -PassThru
+          Start-Sleep -Seconds 5
+          $left = Test-Path (Join-Path $env:INSTALL_DIR ([IO.Path]::GetFileName($env:APP_EXE)))
+          "uninstaller exit code: $($p.ExitCode); app exe still present: $left" | Tee-Object -Append smoke\report.txt
+          if ($left) { throw "the app executable is still there after uninstall" }
+
+      - name: Summary
+        if: always()
+        shell: pwsh
+        run: |
+          "## Release smoke test: $env:TAG" | Out-File $env:GITHUB_STEP_SUMMARY -Append -Encoding utf8
+          '```' | Out-File $env:GITHUB_STEP_SUMMARY -Append -Encoding utf8
+          Get-Content smoke\report.txt -ErrorAction SilentlyContinue | Out-File $env:GITHUB_STEP_SUMMARY -Append -Encoding utf8
+          '```' | Out-File $env:GITHUB_STEP_SUMMARY -Append -Encoding utf8
+          if ($env:DATA_DIR -and (Test-Path $env:DATA_DIR)) {
+            New-Item -ItemType Directory -Force smoke\logs | Out-Null
+            Get-ChildItem $env:DATA_DIR -Recurse -Include *.log, *.json -File -ErrorAction SilentlyContinue |
+              Where-Object { $_.Length -lt 20MB } | Copy-Item -Destination smoke\logs -ErrorAction SilentlyContinue
+          }
+
+      - name: Upload smoke artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-smoke-${{ github.event.inputs.tag }}
+          path: smoke
